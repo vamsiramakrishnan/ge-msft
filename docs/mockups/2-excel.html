@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini · Excel</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--host:#107c41;--bg:#f3f2f1;--ink:#201f1e;--soft:#605e5c;--line:#e6e4e1;
+--pl:#ececf1;--psoft:#646579;--fill:#f7f7fb;--grad:linear-gradient(135deg,#4285F4,#9b72f2 48%,#d96570);
+--ui:"Segoe UI",system-ui,sans-serif;--pf:"Inter",system-ui,sans-serif;--sh:0 6px 24px rgba(16,18,40,.14);--gl:#d8e8de}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#cfcdcb;-webkit-font-smoothing:antialiased;overflow:hidden}
+:focus-visible{outline:2px solid var(--host);outline-offset:2px}
+.app{display:flex;flex-direction:column;height:100vh;background:#fff}
+.bar{display:flex;align-items:center;gap:10px;height:38px;padding:0 14px;background:#fff;border-bottom:1px solid var(--line);flex:none;font-size:13px;color:var(--soft)}
+.logo{width:18px;height:18px;border-radius:3px;background:var(--host);color:#fff;font-weight:700;font-size:11px;display:grid;place-items:center}
+.bar b{color:var(--ink);font-weight:600}.dots{display:flex;gap:6px;margin-right:4px}.d{width:11px;height:11px;border-radius:50%}.d1{background:#ff5f57}.d2{background:#febc2e}.d3{background:#28c840}
+.rib{display:flex;align-items:center;gap:2px;height:38px;padding:0 12px;background:#fff;border-bottom:1px solid var(--line);flex:none;font-size:13px}
+.tab{padding:8px 11px;color:var(--soft);border-radius:6px 6px 0 0}.tab.on{color:var(--host);font-weight:600;box-shadow:inset 0 -2px 0 var(--host)}
+.gem{margin-left:auto;display:flex;align-items:center;gap:6px;color:#1f1f24;font-weight:600}.sp{width:15px;height:15px;border-radius:50%;background:var(--grad)}
+.fbar{display:flex;align-items:center;gap:0;height:30px;border-bottom:1px solid var(--line);font-size:13px;background:#fff}
+.namebox{width:80px;text-align:center;color:var(--soft);border-right:1px solid var(--line);font-family:ui-monospace,monospace}
+.fx{width:30px;text-align:center;color:var(--soft);font-style:italic}.formula{flex:1;padding:0 8px;font-family:ui-monospace,monospace;color:#333;border-left:1px solid var(--line)}
+.ws{flex:1;display:flex;min-height:0}
+.grid{flex:1;overflow:auto;background:#fff}
+table{border-collapse:collapse;font-size:13px;table-layout:fixed;width:100%}
+th{background:#f7f7f7;color:var(--soft);font-weight:500;border:1px solid #eee;height:24px;font-family:ui-monospace,monospace;position:sticky;top:0;z-index:2}
+th.rh{width:38px}td{border:1px solid #eee;height:26px;padding:0 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td.rh{background:#f7f7f7;color:var(--soft);text-align:center;font-family:ui-monospace,monospace;width:38px}
+td.num{text-align:right;font-variant-numeric:tabular-nums}td.sel{outline:2px solid var(--host);outline-offset:-2px}
+td.hdr{font-weight:700;background:#fafafa}
+.ent{color:var(--host);cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:5px}.ent::before{content:"◆";font-size:8px;color:var(--host)}
+.gecell{color:#5a4b8a}.streaming{position:relative}.cur{display:inline-block;width:6px;height:13px;background:var(--grad);vertical-align:middle;animation:bl .8s steps(2) infinite}@keyframes bl{50%{opacity:0}}
+.entcard{position:absolute;width:240px;background:#fff;border:1px solid var(--pl);border-radius:11px;box-shadow:var(--sh);z-index:30;font-family:var(--pf);overflow:hidden;opacity:0;pointer-events:none;transform:translateY(4px);transition:.16s}.entcard.show{opacity:1;pointer-events:auto;transform:none}
+.entcard .eh{padding:11px 13px;background:var(--grad);color:#fff}.entcard .eh b{font-size:14px}.entcard .eh .s{font-size:11px;opacity:.9}
+.entcard .er{display:flex;justify-content:space-between;padding:7px 13px;font-size:12px;border-bottom:1px solid #f1f1f5}.entcard .er .k{color:var(--psoft)}.entcard .er .v{font-weight:600}
+.entcard .ef{padding:8px 13px;font-size:11px;color:var(--psoft);display:flex;align-items:center;gap:6px}.entcard .ef .dot{width:7px;height:7px;border-radius:50%;background:#0f9d8c}
+.panel{width:340px;flex:none;background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;font-family:var(--pf)}
+.ph{padding:14px 16px 12px;border-bottom:1px solid var(--pl)}.pht{display:flex;align-items:center;gap:10px}
+.av{width:30px;height:30px;border-radius:9px;background:var(--grad);position:relative;flex:none}.av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+.pn{font-size:14px;font-weight:700}.pss{font-size:11px;color:var(--psoft);margin-top:1px}
+.unit{margin:11px 16px 0;background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:10px 11px}.unit .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin-bottom:7px;display:flex;align-items:center;gap:6px}.unit .h .nb{width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:#fff;border:1px solid var(--pl);border-radius:18px;padding:4px 9px;margin:0 5px 5px 0}.chip .dot{width:7px;height:7px;border-radius:50%}.dgrad{background:var(--grad)}.dteal{background:#0f9d8c}
+.body{flex:1;overflow:auto;padding:14px 16px}
+.lead{font-size:12.5px;color:#2b2d3c;line-height:1.55;margin-bottom:12px}
+.fn{background:var(--fill);border:1px solid var(--pl);border-radius:9px;padding:10px 11px;margin-bottom:10px}
+.fn code{font-family:ui-monospace,monospace;font-size:11.5px;color:#5a4b8a;display:block;margin-bottom:6px}.fn p{margin:0;font-size:11.5px;color:var(--psoft);line-height:1.45}
+.btn{font-family:var(--pf);font-size:12.5px;font-weight:600;border-radius:9px;padding:9px 12px;border:1px solid var(--pl);background:#fff;cursor:pointer;width:100%;text-align:left;margin-bottom:8px}.btn:hover{background:#f4f4f8}.btn.pr{border:none;color:#fff;background:var(--grad)}
+.badge{position:fixed;left:14px;bottom:12px;font-family:var(--pf);font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,20,30,.82);border-radius:18px;padding:5px 11px;display:flex;gap:7px;align-items:center}.badge .s{width:11px;height:11px;border-radius:50%;background:var(--grad)}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.05ms!important}}
+</style></head>
+<body>
+<div class="app">
+<div class="bar"><div class="dots"><span class="d d1"></span><span class="d d2"></span><span class="d d3"></span></div><span class="logo">X</span><b>Vendor_Spend_FY26.xlsx</b><span>· OneDrive</span></div>
+<div class="rib"><span class="tab">File</span><span class="tab on">Home</span><span class="tab">Formulas</span><span class="tab">Data</span><span class="gem"><span class="sp"></span> Gemini Enterprise</span></div>
+<div class="fbar"><div class="namebox" id="nb">D2</div><div class="fx">fx</div><div class="formula" id="formula">=GE.ASK("Summarise FY26 risk exposure for this vendor", A2:C2)</div></div>
+<div class="ws">
+<div class="grid"><table>
+<tr><th class="rh"></th><th>A</th><th>B</th><th>C</th><th style="width:34%">D</th></tr>
+<tr><td class="rh">1</td><td class="hdr">Vendor</td><td class="hdr num">Annual fees</td><td class="hdr">Tier</td><td class="hdr">Gemini risk summary</td></tr>
+<tr><td class="rh">2</td><td><span class="ent" id="ent">Northwind Cloud</span></td><td class="num">$480,000</td><td>Tier 1</td><td class="gecell sel" id="d2"></td></tr>
+<tr><td class="rh">3</td><td><span class="ent">Atlas Data Co</span></td><td class="num">$215,000</td><td>Tier 2</td><td class="gecell" style="color:#9b958c">—</td></tr>
+<tr><td class="rh">4</td><td><span class="ent">Beacon Analytics</span></td><td class="num">$92,000</td><td>Tier 3</td><td class="gecell" style="color:#9b958c">—</td></tr>
+<tr><td class="rh">5</td><td></td><td></td><td></td><td></td></tr>
+<tr><td class="rh">6</td><td></td><td></td><td></td><td></td></tr>
+</table>
+<div class="entcard" id="entcard">
+<div class="eh"><b>Northwind Cloud</b><div class="s">Entity · enriched by Gemini Enterprise</div></div>
+<div class="er"><span class="k">Contract status</span><span class="v">Active · renews Nov 26</span></div>
+<div class="er"><span class="k">SLA</span><span class="v">99.5% (below policy)</span></div>
+<div class="er"><span class="k">ISO 27001</span><span class="v">Valid</span></div>
+<div class="er"><span class="k">Open risks</span><span class="v">2 (liability cap)</span></div>
+<div class="ef"><span class="dot"></span> Loaded from the unit · not stored in the workbook</div>
+</div>
+</div>
+<aside class="panel">
+<div class="ph"><div class="pht"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Worksheet functions · grounded</div></div></div></div>
+<div class="unit"><div class="h"><span class="nb"></span> Research unit · grounding scope</div>
+<span class="chip"><span class="dot dgrad"></span> Notebook: Vendor Risk</span>
+<span class="chip"><span class="dot dteal"></span> SharePoint · contracts</span></div>
+<div class="body">
+<div class="lead">Two Gemini calls live in the grid itself — no copy-paste from a chatbot.</div>
+<div class="fn"><code>=GE.ASK(prompt, range)</code><p>A streaming custom function. Grounds on the unit + the referenced cells, and streams the answer into the cell.</p></div>
+<div class="fn"><code>◆ Entity cells</code><p>Each vendor is a linked entity, enriched on demand from the unit and expandable as a card. Nothing is downloaded into the file.</p></div>
+<button class="btn pr" id="run">Run =GE.ASK in D2</button>
+<button class="btn" id="fill">Fill D3:D4 down</button>
+</div>
+</aside>
+</div></div>
+<div class="badge"><span class="s"></span> Prototype · Excel · simulated</div>
+<script>
+const $=i=>document.getElementById(i);
+const TXT="Tier-1 vendor, $480k/yr. SLA 99.5% sits below your 99.9% policy and the liability cap has no data-breach carve-out — both flagged. Renews Nov 2026.";
+function stream(cell,txt,cb){cell.innerHTML='';cell.classList.add('streaming');let i=0;const cur=document.createElement('span');cur.className='cur';cell.appendChild(cur);(function go(){if(i<txt.length){cur.insertAdjacentText('beforebegin',txt[i]);i++;setTimeout(go,18)}else{cur.remove();cell.classList.remove('streaming');cb&&cb()}})()}
+$('run').onclick=()=>stream($('d2'),TXT);
+$('fill').onclick=()=>{stream($('d2').closest('tr').nextElementSibling.querySelector('.gecell'),"Tier-2, $215k/yr. SLA compliant; minor data-residency clause to confirm.");setTimeout(()=>stream(document.querySelectorAll('.gecell')[2],"Tier-3, $92k/yr. Low exposure; standard terms, no flags."),300)};
+const ec=$('entcard');$('ent').onclick=e=>{e.stopPropagation();const r=$('ent').getBoundingClientRect(),g=$('ent').closest('.grid').getBoundingClientRect();ec.style.left=(r.left-g.left+30)+'px';ec.style.top=(r.top-g.top+r.height+6)+'px';ec.classList.add('show')};
+document.addEventListener('click',()=>ec.classList.remove('show'));
+setTimeout(()=>$('run').click(),600);
+</script></body></html>

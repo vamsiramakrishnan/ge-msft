@@ -1,0 +1,91 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini · Teams</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--host:#5b5fc7;--bg:#f5f5f8;--ink:#1f1f24;--soft:#616168;--line:#e6e6ec;
+--pl:#ececf1;--psoft:#646579;--fill:#f7f7fb;--grad:linear-gradient(135deg,#4285F4,#9b72f2 48%,#d96570);
+--ui:"Segoe UI",system-ui,sans-serif;--pf:"Inter",system-ui,sans-serif;--sh:0 6px 24px rgba(16,18,40,.14);--stage:#1f1f28}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#cfcdcb;-webkit-font-smoothing:antialiased;overflow:hidden}
+:focus-visible{outline:2px solid var(--host);outline-offset:2px}
+.app{display:flex;flex-direction:column;height:100vh;background:var(--bg)}
+.bar{display:flex;align-items:center;gap:10px;height:40px;padding:0 14px;background:#fff;border-bottom:1px solid var(--line);flex:none;font-size:13px;color:var(--soft)}
+.logo{width:18px;height:18px;border-radius:4px;background:var(--host);color:#fff;font-weight:700;font-size:11px;display:grid;place-items:center}
+.bar b{color:var(--ink);font-weight:600}.dots{display:flex;gap:6px;margin-right:4px}.d{width:11px;height:11px;border-radius:50%}.d1{background:#ff5f57}.d2{background:#febc2e}.d3{background:#28c840}
+.live{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px;color:#c4314b;font-weight:600}.live .r{width:8px;height:8px;border-radius:50%;background:#c4314b;animation:p 1.4s infinite}@keyframes p{50%{opacity:.4}}
+.ws{flex:1;display:flex;min-height:0}
+.stage{flex:1;display:flex;flex-direction:column;background:var(--stage);padding:16px;min-width:0}
+.grid{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:12px;align-content:center}
+.tile{aspect-ratio:16/10;border-radius:12px;background:linear-gradient(135deg,#2c2c3a,#373747);position:relative;display:grid;place-items:center;overflow:hidden}
+.tile .ava{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:700;font-size:20px}
+.a1{background:#d6694a}.a2{background:#4a86d6}.a3{background:#5aa86a}.a4{background:#9b6fd6}
+.tile .nm{position:absolute;left:10px;bottom:8px;font-size:11px;color:#fff;background:rgba(0,0,0,.4);border-radius:5px;padding:2px 7px}
+.tile.speak{outline:2px solid #6bb36b}
+.tile.ag{background:linear-gradient(135deg,#2a2342,#3a2c52)}.tile.ag .ava{background:var(--grad);font-size:24px}
+.ctrl{display:flex;justify-content:center;gap:10px;padding-top:14px}.cbtn{width:40px;height:40px;border-radius:10px;background:#33333f;color:#fff;display:grid;place-items:center;font-size:15px}.cbtn.end{background:#c4314b;width:54px}
+.panel{width:368px;flex:none;background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;font-family:var(--pf)}
+.ph{padding:13px 16px;border-bottom:1px solid var(--pl);display:flex;align-items:center;gap:10px}
+.av{width:30px;height:30px;border-radius:9px;background:var(--grad);position:relative;flex:none}.av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+.pn{font-size:14px;font-weight:700}.pss{font-size:11px;color:var(--psoft);margin-top:1px}
+.tabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--pl)}.ptab{padding:10px 12px;font-size:12.5px;color:var(--psoft);cursor:pointer;border-bottom:2px solid transparent}.ptab.on{color:var(--host);font-weight:600;border-bottom-color:var(--host)}
+.unit{margin:11px 16px 0;background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:9px 11px}.unit .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin-bottom:6px;display:flex;align-items:center;gap:6px}.unit .h .nb{width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:#fff;border:1px solid var(--pl);border-radius:18px;padding:4px 9px;margin:0 5px 4px 0}.chip .dot{width:7px;height:7px;border-radius:50%}.dgrad{background:var(--grad)}.dteal{background:#0f9d8c}
+.body{flex:1;overflow:auto;padding:14px 16px}
+.lbl{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin:4px 0 9px}
+.note{display:flex;gap:9px;margin-bottom:11px;opacity:0;transform:translateY(6px);animation:in .4s forwards}@keyframes in{to{opacity:1;transform:none}}
+.note .dot{width:7px;height:7px;border-radius:50%;background:var(--host);margin-top:5px;flex:none}.note .tx{font-size:12.5px;line-height:1.5;color:#2b2d3c}
+.ai{background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:10px 12px;margin-bottom:9px;opacity:0;transform:translateY(6px);animation:in .4s forwards}.ai .who{font-size:11px;font-weight:600;color:var(--host);margin-bottom:3px}.ai .t{font-size:12.5px;color:#2b2d3c;line-height:1.45}.ai .src{font-size:10.5px;color:var(--psoft);margin-top:5px;display:flex;align-items:center;gap:5px}.ai .src .d{width:6px;height:6px;border-radius:2px;background:#0f9d8c}
+.card{border:1px solid var(--pl);border-radius:11px;overflow:hidden;margin-top:6px}.card .ch{background:var(--grad);color:#fff;padding:10px 13px;font-size:12.5px;font-weight:600}.card .cr{padding:9px 13px;font-size:12px;border-bottom:1px solid #f1f1f5;display:flex;gap:8px}.card .cr .dot{width:6px;height:6px;border-radius:50%;background:var(--host);margin-top:5px;flex:none}.card .cf{padding:9px 13px;display:flex;gap:8px}.cbtn2{font-family:var(--pf);font-size:11.5px;font-weight:600;border-radius:7px;padding:6px 10px;border:1px solid var(--pl);background:#fff;cursor:pointer}.cbtn2.pr{border:none;color:#fff;background:var(--grad)}
+.chat{flex:1;overflow:auto;padding:14px 16px;display:none;flex-direction:column;gap:11px}.chat.on{display:flex}
+.m{font-size:12.5px;line-height:1.5}.m.a{display:flex;gap:9px}.m.a .ic{width:22px;height:22px;border-radius:7px;background:var(--grad);flex:none;position:relative}.m.a .ic::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:10px}.m.a .c{background:var(--fill);border:1px solid var(--pl);border-radius:3px 12px 12px 12px;padding:9px 11px}.m.u{align-self:flex-end;background:#eef0fb;border:1px solid #e0e3f6;padding:8px 11px;border-radius:12px 12px 3px 12px}
+.comp{padding:12px 16px;border-top:1px solid var(--pl)}.cb{display:flex;align-items:center;gap:9px;border:1px solid var(--pl);border-radius:11px;padding:9px 11px}.cb:focus-within{border-color:#b9a8f2;box-shadow:0 0 0 3px rgba(155,114,242,.13)}.cb input{flex:1;border:none;outline:none;font-family:var(--pf);font-size:13px;background:transparent}.snd{width:30px;height:30px;border-radius:8px;border:none;background:var(--grad);cursor:pointer;color:#fff;display:grid;place-items:center;flex:none}
+.badge{position:fixed;left:14px;bottom:12px;font-family:var(--pf);font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,20,30,.82);border-radius:18px;padding:5px 11px;display:flex;gap:7px;align-items:center}.badge .s{width:11px;height:11px;border-radius:50%;background:var(--grad)}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.05ms!important}}
+</style></head>
+<body>
+<div class="app">
+<div class="bar"><div class="dots"><span class="d d1"></span><span class="d d2"></span><span class="d d3"></span></div><span class="logo">T</span><b>Vendor Risk Review</b><span>· meeting</span><span class="live"><span class="r"></span> 28:14 · Recording</span></div>
+<div class="ws">
+<div class="stage">
+<div class="grid">
+<div class="tile speak"><div class="ava a1">PN</div><div class="nm">Priya N. (speaking)</div></div>
+<div class="tile"><div class="ava a2">VK</div><div class="nm">Vamsi K.</div></div>
+<div class="tile"><div class="ava a3">RM</div><div class="nm">Raj M.</div></div>
+<div class="tile ag"><div class="ava">✦</div><div class="nm">Gemini Enterprise · in meeting</div></div>
+</div>
+<div class="ctrl"><span class="cbtn">🎙</span><span class="cbtn">📷</span><span class="cbtn">💬</span><span class="cbtn">⤢</span><span class="cbtn end">⤬</span></div>
+</div>
+<aside class="panel">
+<div class="ph"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Meeting app · grounded on the unit + transcript</div></div></div>
+<div class="tabs"><span class="ptab on" id="t-notes">Live notes</span><span class="ptab" id="t-chat">Ask</span></div>
+<div class="unit"><div class="h"><span class="nb"></span> Research unit · grounding scope</div>
+<span class="chip"><span class="dot dgrad"></span> Notebook: Vendor Risk</span>
+<span class="chip"><span class="dot dteal"></span> MSA v3 + transcript</span></div>
+<div class="body" id="notesPane">
+<div class="lbl">Live notes</div><div id="notes"></div>
+<div class="lbl" style="margin-top:14px">Action items</div><div id="actions"></div>
+<div class="card" id="recap" style="display:none"><div class="ch">Meeting recap — ready to send</div>
+<div class="cr"><span class="dot"></span> SLA gap (99.5% vs 99.9%) raised; owner to renegotiate to standard</div>
+<div class="cr"><span class="dot"></span> Offshore-access clause to be tightened for CPS 234</div>
+<div class="cr"><span class="dot"></span> Liability super-cap for data breach to be drafted</div>
+<div class="cf"><button class="cbtn2 pr">Post to channel</button><button class="cbtn2">Save to OneNote</button></div></div>
+</div>
+<div class="chat" id="chatPane">
+<div class="m a"><span class="ic"></span><div class="c">I'm grounded on the Vendor Risk notebook and the live transcript. Ask me anything about what's been discussed.</div></div>
+</div>
+<div class="comp"><div class="cb"><input id="ask" placeholder="Ask the agent in the meeting…"><button class="snd" id="snd">→</button></div></div>
+</aside>
+</div></div>
+<div class="badge"><span class="s"></span> Prototype · Teams · simulated</div>
+<script>
+const $=i=>document.getElementById(i);
+const NOTES=["Priya: the 99.5% SLA is below our Tier-1 standard — flagged in the contract review.","Raj: offshore support access is the bigger concern for the regulator.","Group aligned that the liability cap needs a data-breach carve-out."];
+const ACTS=[{w:"Owner: Vamsi",t:"Renegotiate SLA to 99.9% before signing",s:"Risk Policy §3.2"},{w:"Owner: Priya",t:"Redraft offshore-access clause for CPS 234",s:"CPS 234 §35"}];
+let n=0;function pushNote(){if(n<NOTES.length){const d=document.createElement('div');d.className='note';d.innerHTML='<span class="dot"></span><div class="tx">'+NOTES[n]+'</div>';$('notes').appendChild(d);n++;setTimeout(pushNote,1400)}else pushActs()}
+let a=0;function pushActs(){if(a<ACTS.length){const x=ACTS[a];const d=document.createElement('div');d.className='ai';d.innerHTML='<div class="who">'+x.w+'</div><div class="t">'+x.t+'</div><div class="src"><span class="d"></span> grounded on '+x.s+'</div>';$('actions').appendChild(d);a++;setTimeout(pushActs,1200)}else setTimeout(()=>$('recap').style.display='block',800)}
+$('t-notes').onclick=()=>{$('t-notes').classList.add('on');$('t-chat').classList.remove('on');$('notesPane').style.display='block';$('chatPane').classList.remove('on')};
+$('t-chat').onclick=()=>{$('t-chat').classList.add('on');$('t-notes').classList.remove('on');$('notesPane').style.display='none';$('chatPane').classList.add('on')};
+function add(h,cite){const t=$('chatPane'),m=document.createElement('div');m.className='m a';m.innerHTML='<span class="ic"></span><div class="c">'+h+(cite?'<br><span class="src" style="color:#2563eb;display:inline-flex;align-items:center;gap:5px;margin-top:6px;font-size:11px"><span style="width:6px;height:6px;border-radius:2px;background:#0f9d8c"></span>'+cite+'</span>':'')+'</div>';t.appendChild(m);t.scrollTop=t.scrollHeight}
+$('snd').onclick=()=>{const v=$('ask').value.trim();if(!v)return;if(!$('chatPane').classList.contains('on'))$('t-chat').click();const u=document.createElement('div');u.className='m u';u.textContent=v;$('chatPane').appendChild(u);$('ask').value='';add('Based on the transcript and the unit: the cap is 12 months\' fees (~$480k) with no breach carve-out yet — that\'s the open item Raj raised.','MSA v3 §6')};
+$('ask').addEventListener('keydown',e=>{if(e.key==='Enter')$('snd').click()});
+setTimeout(pushNote,700);
+</script></body></html>

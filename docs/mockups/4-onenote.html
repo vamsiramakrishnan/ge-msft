@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini · OneNote</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--host:#7719aa;--bg:#faf9fb;--ink:#201f1e;--soft:#605e5c;--line:#e9e4ee;
+--pl:#ececf1;--psoft:#646579;--fill:#f7f7fb;--grad:linear-gradient(135deg,#4285F4,#9b72f2 48%,#d96570);
+--ui:"Segoe UI",system-ui,sans-serif;--pf:"Inter",system-ui,sans-serif;--doc:"Segoe UI",system-ui,sans-serif;--sh:0 6px 24px rgba(16,18,40,.14)}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#cfcdcb;-webkit-font-smoothing:antialiased;overflow:hidden}
+:focus-visible{outline:2px solid var(--host);outline-offset:2px}
+.app{display:flex;flex-direction:column;height:100vh;background:var(--bg)}
+.bar{display:flex;align-items:center;gap:10px;height:38px;padding:0 14px;background:var(--host);flex:none;font-size:13px;color:#fff}
+.logo{width:18px;height:18px;border-radius:3px;background:#fff;color:var(--host);font-weight:700;font-size:11px;display:grid;place-items:center}
+.bar b{color:#fff;font-weight:600}.bar span{opacity:.85}.dots{display:flex;gap:6px;margin-right:4px}.d{width:11px;height:11px;border-radius:50%}.d1{background:#ff5f57}.d2{background:#febc2e}.d3{background:#28c840}
+.gem{margin-left:auto;display:flex;align-items:center;gap:6px;color:#fff;font-weight:600}.sp{width:15px;height:15px;border-radius:50%;background:#fff}
+.ws{flex:1;display:flex;min-height:0}
+.nav{width:150px;flex:none;background:#f1ecf5;border-right:1px solid var(--line);overflow:auto;padding:12px 0}
+.nb-h{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#9176a3;padding:0 14px 6px}
+.sec{padding:7px 14px;font-size:13px;color:#4a3a55;border-left:3px solid transparent;cursor:pointer}.sec.on{background:#fff;border-left-color:var(--host);font-weight:600;color:var(--host)}
+.pages{padding:8px 0;border-top:1px solid var(--line);margin-top:8px}.pg{padding:6px 14px 6px 22px;font-size:12.5px;color:#5a5560;cursor:pointer}.pg.on{color:var(--host);font-weight:600}
+.canvas{flex:1;overflow:auto;background:#faf9fb;padding:28px 40px}
+.pagebody{max-width:680px}
+.title{font-size:26px;color:#3a2a45;border:none;outline:none;margin-bottom:4px;font-weight:600}.date{font-size:12px;color:#9b8fa6;margin-bottom:20px}
+.block{font-size:14.5px;line-height:1.7;color:#2c2630;margin-bottom:14px}
+.srcbox{border:1px solid var(--line);border-radius:10px;background:#fff;padding:12px 14px;margin-bottom:16px}
+.srcbox .h{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--psoft);margin-bottom:9px;display:flex;align-items:center;gap:7px}.srcbox .h .nb{width:12px;height:12px;border-radius:3px;background:var(--grad)}
+.src{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:13px;color:#3a3440}.src .dot{width:8px;height:8px;border-radius:2px;flex:none}.dteal{background:#0f9d8c}.dblue{background:#2f6fed}.dgrad{background:var(--grad)}
+.synth{display:none}.synth.show{display:block}
+.synth h3{font-size:15px;color:#3a2a45;margin:18px 0 8px}.synth .pt{font-size:14px;line-height:1.65;color:#2c2630;margin-bottom:9px;padding-left:2px}
+.tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;color:#7719aa;background:#f3eaf8;border-radius:14px;padding:1px 7px;margin-left:4px;vertical-align:middle}.tag .d{width:5px;height:5px;border-radius:50%;background:var(--host)}
+.cur{display:inline-block;width:6px;height:14px;background:var(--grad);vertical-align:middle;animation:bl .8s steps(2) infinite}@keyframes bl{50%{opacity:0}}
+.audio{display:none;align-items:center;gap:11px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-top:8px}.audio.show{display:flex}
+.audio .pl{width:34px;height:34px;border-radius:50%;background:var(--grad);color:#fff;display:grid;place-items:center;flex:none}.audio .wv{display:flex;align-items:flex-end;gap:2px;height:20px;flex:1}.audio .wv span{flex:1;background:var(--grad);opacity:.5;border-radius:2px;height:30%;animation:eq 1s ease-in-out infinite}.audio .wv span:nth-child(2n){animation-delay:.2s}.audio .wv span:nth-child(3n){animation-delay:.4s}@keyframes eq{50%{height:100%}}.audio .t{font-size:12px;color:#5a5560}
+.panel{width:336px;flex:none;background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;font-family:var(--pf)}
+.ph{padding:14px 16px 12px;border-bottom:1px solid var(--pl)}.pht{display:flex;align-items:center;gap:10px}
+.av{width:30px;height:30px;border-radius:9px;background:var(--grad);position:relative;flex:none}.av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+.pn{font-size:14px;font-weight:700}.pss{font-size:11px;color:var(--psoft);margin-top:1px}
+.unit{margin:11px 16px 0;background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:10px 11px}.unit .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin-bottom:7px;display:flex;align-items:center;gap:6px}.unit .h .nb{width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:#fff;border:1px solid var(--pl);border-radius:18px;padding:4px 9px;margin:0 5px 5px 0}.chip .dot{width:7px;height:7px;border-radius:50%}.dgrad2{background:var(--grad)}.dteal2{background:#0f9d8c}.add{border-style:dashed;color:var(--psoft);cursor:pointer}
+.bodyp{flex:1;overflow:auto;padding:14px 16px}.lead{font-size:12.5px;color:#2b2d3c;line-height:1.55;margin-bottom:12px}
+.btn{font-family:var(--pf);font-size:12.5px;font-weight:600;border-radius:9px;padding:10px 12px;border:1px solid var(--pl);background:#fff;cursor:pointer;width:100%;text-align:left;margin-bottom:8px;display:flex;align-items:center;gap:9px}.btn:hover{background:#f4f4f8}.btn.pr{border:none;color:#fff;background:var(--grad)}.btn .i{width:18px;height:18px;border-radius:5px;background:currentColor;opacity:.18;flex:none}
+.badge{position:fixed;left:14px;bottom:12px;font-family:var(--pf);font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,20,30,.82);border-radius:18px;padding:5px 11px;display:flex;gap:7px;align-items:center}.badge .s{width:11px;height:11px;border-radius:50%;background:var(--grad)}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.05ms!important}}
+</style></head>
+<body>
+<div class="app">
+<div class="bar"><div class="dots"><span class="d d1"></span><span class="d d2"></span><span class="d d3"></span></div><span class="logo">N</span><b>Deal Room — Northwind</b><span>· shared notebook</span><span class="gem"><span class="sp"></span> Gemini Enterprise</span></div>
+<div class="ws">
+<div class="nav"><div class="nb-h">Sections</div>
+<div class="sec on">Vendor Risk</div><div class="sec">Pricing</div><div class="sec">Legal</div>
+<div class="pages"><div class="pg on">Source review</div><div class="pg">Meeting notes</div><div class="pg">Open questions</div></div></div>
+<div class="canvas"><div class="pagebody">
+<div class="title">Source review</div><div class="date">20 June 2026</div>
+<div class="block">Pulling the trusted sources into one place before the risk committee. Gemini has them as a unit — ask it to synthesise onto the page.</div>
+<div class="srcbox"><div class="h"><span class="nb"></span> Sources in this notebook</div>
+<div class="src"><span class="dot dteal"></span> Northwind MSA v3 — SharePoint</div>
+<div class="src"><span class="dot dblue"></span> Vendor Risk Policy v4 — SharePoint</div>
+<div class="src"><span class="dot dteal"></span> APRA CPS 234 (2019) — web source</div>
+<div class="src"><span class="dot dgrad"></span> Northwind ISO 27001 certificate</div>
+</div>
+<div class="synth" id="synth"></div>
+<div class="audio" id="audio"><div class="pl">▶</div><div class="wv"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div><div class="t">Audio overview · 4:12 · generated from these 4 sources</div></div>
+</div></div>
+<aside class="panel">
+<div class="ph"><div class="pht"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Research capture · grounded</div></div></div></div>
+<div class="unit"><div class="h"><span class="nb"></span> Research unit · this notebook</div>
+<span class="chip"><span class="dot dgrad2"></span> 4 curated sources</span>
+<span class="chip add" id="addsrc">+ Discover sources</span></div>
+<div class="bodyp">
+<div class="lead">The notebook <i>is</i> the unit — bounded, trusted, shareable. Synthesis grounds only on these sources, with a tag per claim.</div>
+<button class="btn pr" id="summ"><span class="i"></span> Summarise sources onto page</button>
+<button class="btn" id="aud"><span class="i"></span> Make an audio overview</button>
+<button class="btn" id="disc"><span class="i"></span> Discover related sources</button>
+</div>
+</aside>
+</div></div>
+<div class="badge"><span class="s"></span> Prototype · OneNote · simulated</div>
+<script>
+const $=i=>document.getElementById(i);
+const PARTS=[{h:"Where Northwind falls short of policy",t:"The contracted SLA of 99.5% sits below the 99.9% standard for Tier-1 vendors handling customer data",src:"Risk Policy §3.2"},
+{h:"The offshore-access exposure",t:"Section 5 permits support access to Customer Data from outside Australia, which needs tightening to satisfy notifiable-control requirements",src:"CPS 234 §35"},
+{h:"What checks out",t:"ISO 27001 certification is current across all hosting regions and valid through November 2026",src:"ISO cert"}];
+$('summ').onclick=()=>{const s=$('synth');s.classList.add('show');s.innerHTML='';let pi=0;
+(function part(){if(pi>=PARTS.length)return;const p=PARTS[pi];const h=document.createElement('h3');h.textContent=p.h;s.appendChild(h);
+const d=document.createElement('div');d.className='pt';s.appendChild(d);const cur=document.createElement('span');cur.className='cur';d.appendChild(cur);
+let i=0;(function go(){if(i<p.t.length){cur.insertAdjacentText('beforebegin',p.t[i]);i++;setTimeout(go,14)}else{cur.remove();d.insertAdjacentHTML('beforeend',' <span class="tag"><span class="d"></span>'+p.src+'</span>');pi++;setTimeout(part,260)}})()})()};
+$('aud').onclick=()=>$('audio').classList.add('show');
+$('disc').onclick=()=>{const s=$('synth');s.classList.add('show');s.insertAdjacentHTML('beforeend','<h3>Discovered sources</h3><div class="pt">Found 3 related sources on the web — APRA prudential standard CPS 230, an ASIC cloud-outsourcing guidance note, and Northwind\'s latest SOC 2 report. Add any to the notebook to fold them into the unit.</div>')};
+$('addsrc').onclick=()=>$('disc').click();
+setTimeout(()=>$('summ').click(),600);
+</script></body></html>

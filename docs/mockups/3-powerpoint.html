@@ -1,0 +1,87 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini · PowerPoint</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--host:#c43e1c;--bg:#f3f2f1;--ink:#201f1e;--soft:#605e5c;--line:#e6e4e1;
+--pl:#ececf1;--psoft:#646579;--fill:#f7f7fb;--grad:linear-gradient(135deg,#4285F4,#9b72f2 48%,#d96570);
+--ui:"Segoe UI",system-ui,sans-serif;--pf:"Inter",system-ui,sans-serif;--sh:0 6px 24px rgba(16,18,40,.14)}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{font-family:var(--ui);color:var(--ink);background:#cfcdcb;-webkit-font-smoothing:antialiased;overflow:hidden}
+:focus-visible{outline:2px solid var(--host);outline-offset:2px}
+.app{display:flex;flex-direction:column;height:100vh;background:var(--bg)}
+.bar{display:flex;align-items:center;gap:10px;height:38px;padding:0 14px;background:#fff;border-bottom:1px solid var(--line);flex:none;font-size:13px;color:var(--soft)}
+.logo{width:18px;height:18px;border-radius:3px;background:var(--host);color:#fff;font-weight:700;font-size:11px;display:grid;place-items:center}
+.bar b{color:var(--ink);font-weight:600}.dots{display:flex;gap:6px;margin-right:4px}.d{width:11px;height:11px;border-radius:50%}.d1{background:#ff5f57}.d2{background:#febc2e}.d3{background:#28c840}
+.rib{display:flex;align-items:center;gap:2px;height:38px;padding:0 12px;background:#fff;border-bottom:1px solid var(--line);flex:none;font-size:13px}
+.tab{padding:8px 11px;color:var(--soft);border-radius:6px 6px 0 0}.tab.on{color:var(--host);font-weight:600;box-shadow:inset 0 -2px 0 var(--host)}
+.gem{margin-left:auto;display:flex;align-items:center;gap:6px;color:#1f1f24;font-weight:600}.sp{width:15px;height:15px;border-radius:50%;background:var(--grad)}
+.ws{flex:1;display:flex;min-height:0}
+.rail{width:158px;flex:none;background:#fafafa;border-right:1px solid var(--line);overflow:auto;padding:12px 10px}
+.thumb{display:flex;gap:7px;margin-bottom:10px;cursor:pointer}.thumb .n{font-size:11px;color:var(--soft);width:14px;flex:none;padding-top:2px}
+.thumb .pv{flex:1;aspect-ratio:16/9;background:#fff;border:1px solid var(--line);border-radius:3px;padding:6px;overflow:hidden}
+.thumb.on .pv{outline:2px solid var(--host)}.thumb .pv .tt{font-size:6px;font-weight:700;color:#222;margin-bottom:2px;line-height:1.1}.thumb .pv .ln{height:2px;background:#e3e3e3;border-radius:2px;margin:2px 0}
+.thumb.new .pv{border-style:dashed;display:grid;place-items:center;color:#c9c5c0;font-size:18px}
+.thumb.gen .pv{animation:pop .5s ease}@keyframes pop{0%{transform:scale(.9);opacity:0}100%{transform:scale(1);opacity:1}}
+.stage{flex:1;display:flex;flex-direction:column;min-width:0;background:#e9e8e6;padding:22px 26px;overflow:auto}
+.slide{width:min(680px,96%);aspect-ratio:16/9;background:#fff;margin:0 auto;box-shadow:var(--sh);border-radius:4px;padding:42px 48px;position:relative}
+.slide h2{font-size:26px;margin:0 0 6px;color:#1d1d1f}.slide .acc{width:54px;height:4px;background:var(--host);border-radius:2px;margin-bottom:18px}
+.slide ul{margin:0;padding-left:20px;color:#3a3a3c;font-size:16px;line-height:1.9}
+.notes{width:min(680px,96%);margin:14px auto 0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.notes .nh{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--soft);margin-bottom:6px}.notes .nb{font-size:12.5px;color:#444;line-height:1.55;min-height:18px}
+.cur{display:inline-block;width:6px;height:13px;background:var(--grad);vertical-align:middle;animation:bl .8s steps(2) infinite}@keyframes bl{50%{opacity:0}}
+.panel{width:340px;flex:none;background:#fff;border-left:1px solid var(--line);display:flex;flex-direction:column;font-family:var(--pf)}
+.ph{padding:14px 16px 12px;border-bottom:1px solid var(--pl)}.pht{display:flex;align-items:center;gap:10px}
+.av{width:30px;height:30px;border-radius:9px;background:var(--grad);position:relative;flex:none}.av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+.pn{font-size:14px;font-weight:700}.pss{font-size:11px;color:var(--psoft);margin-top:1px}
+.unit{margin:11px 16px 0;background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:10px 11px}.unit .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin-bottom:7px;display:flex;align-items:center;gap:6px}.unit .h .nb{width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:#fff;border:1px solid var(--pl);border-radius:18px;padding:4px 9px;margin:0 5px 5px 0}.chip .dot{width:7px;height:7px;border-radius:50%}.dgrad{background:var(--grad)}.dteal{background:#0f9d8c}
+.body{flex:1;overflow:auto;padding:14px 16px}.lead{font-size:12.5px;color:#2b2d3c;line-height:1.55;margin-bottom:12px}
+.btn{font-family:var(--pf);font-size:12.5px;font-weight:600;border-radius:9px;padding:10px 12px;border:1px solid var(--pl);background:#fff;cursor:pointer;width:100%;text-align:left;margin-bottom:8px;display:flex;align-items:center;gap:9px}.btn:hover{background:#f4f4f8}.btn.pr{border:none;color:#fff;background:var(--grad)}.btn .i{width:18px;height:18px;border-radius:5px;background:currentColor;opacity:.18;flex:none}
+.sugg{background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:11px;margin-top:6px;display:none}.sugg.show{display:block}.sugg .t{font-size:12px;font-weight:600;margin-bottom:5px}.sugg .w{font-size:11.5px;color:var(--psoft);line-height:1.5;margin-bottom:9px}
+.cite{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#2563eb;border:1px solid #d5e0fa;border-radius:18px;padding:2px 8px}.cite .d{width:6px;height:6px;border-radius:2px;background:#0f9d8c}
+.badge{position:fixed;left:14px;bottom:12px;font-family:var(--pf);font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,20,30,.82);border-radius:18px;padding:5px 11px;display:flex;gap:7px;align-items:center}.badge .s{width:11px;height:11px;border-radius:50%;background:var(--grad)}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.05ms!important}}
+</style></head>
+<body>
+<div class="app">
+<div class="bar"><div class="dots"><span class="d d1"></span><span class="d d2"></span><span class="d d3"></span></div><span class="logo">P</span><b>QBR_Northwind.pptx</b><span>· SharePoint</span></div>
+<div class="rib"><span class="tab">File</span><span class="tab on">Home</span><span class="tab">Insert</span><span class="tab">Design</span><span class="gem"><span class="sp"></span> Gemini Enterprise</span></div>
+<div class="ws">
+<div class="rail" id="rail">
+<div class="thumb on"><span class="n">1</span><div class="pv"><div class="tt">Vendor QBR — Northwind</div><div class="ln" style="width:70%"></div><div class="ln" style="width:50%"></div></div></div>
+<div class="thumb new" id="newslide"><span class="n">+</span><div class="pv">+</div></div>
+</div>
+<div class="stage">
+<div class="slide" id="slide"><h2 id="stitle">Vendor QBR — Northwind</h2><div class="acc"></div><ul id="sbody"><li>Quarterly business review</li><li>Risk, spend, and SLA posture</li></ul></div>
+<div class="notes"><div class="nh">Speaker notes</div><div class="nb" id="notes" style="color:#9b958c">Generate notes from the unit →</div></div>
+</div>
+<aside class="panel">
+<div class="ph"><div class="pht"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Deck composer · grounded</div></div></div></div>
+<div class="unit"><div class="h"><span class="nb"></span> Research unit · grounding scope</div>
+<span class="chip"><span class="dot dgrad"></span> Notebook: Vendor Risk</span>
+<span class="chip"><span class="dot dteal"></span> Spend.xlsx · contracts</span></div>
+<div class="body">
+<div class="lead">Build slides from the same unit that powers Word and Excel — every claim traceable to a source.</div>
+<button class="btn pr" id="draft"><span class="i"></span> Draft the risk section</button>
+<button class="btn" id="gennotes"><span class="i"></span> Generate speaker notes</button>
+<button class="btn" id="redesign"><span class="i"></span> Suggest a redesign</button>
+<div class="sugg" id="sugg"><div class="t">Cleaner layout for the SLA slide</div><div class="w">The four metrics fight for attention. I'd lead with the 99.5% gap as a single number, demote the rest to a footer row.</div><span class="cite"><span class="d"></span> Vendor Risk Policy v4</span></div>
+</div>
+</aside>
+</div></div>
+<div class="badge"><span class="s"></span> Prototype · PowerPoint · simulated</div>
+<script>
+const $=i=>document.getElementById(i);
+const NEW=[{t:"SLA & Availability",b:["Contracted: 99.5% monthly","Policy standard: 99.9% — gap flagged","~3.6 hrs/month exposure"]},{t:"Liability Posture",b:["Cap: 12 months' fees (~$480k)","No data-breach carve-out","Recommended: 3× super-cap"]}];
+let added=0;
+$('draft').onclick=()=>{if(added>=NEW.length)return;const s=NEW[added];added++;
+const t=document.createElement('div');t.className='thumb gen';t.innerHTML='<span class="n">'+(added+1)+'</span><div class="pv"><div class="tt">'+s.t+'</div><div class="ln" style="width:65%"></div><div class="ln" style="width:80%"></div><div class="ln" style="width:45%"></div></div>';
+$('rail').insertBefore(t,$('newslide'));
+$('stitle').textContent=s.t;$('sbody').innerHTML='';
+let i=0;(function go(){if(i<s.b.length){const li=document.createElement('li');li.textContent=s.b[i];$('sbody').appendChild(li);i++;setTimeout(go,420)}})();
+document.querySelectorAll('.thumb').forEach(x=>x.classList.remove('on'));t.classList.add('on');
+t.onclick=()=>{$('stitle').textContent=s.t;$('sbody').innerHTML=s.b.map(x=>'<li>'+x+'</li>').join('')}};
+const NOTES="Open on the SLA gap — it's the one thing the risk committee will fixate on. The 99.5% vs 99.9% delta is roughly 3.6 hours of monthly exposure for a Tier-1 vendor. Land the carve-out recommendation before moving to spend.";
+$('gennotes').onclick=()=>{const n=$('notes');n.style.color='#444';n.innerHTML='';let i=0;const c=document.createElement('span');c.className='cur';n.appendChild(c);(function go(){if(i<NOTES.length){c.insertAdjacentText('beforebegin',NOTES[i]);i++;setTimeout(go,16)}else c.remove()})()};
+$('redesign').onclick=()=>$('sugg').classList.toggle('show');
+setTimeout(()=>$('draft').click(),600);
+</script></body></html>

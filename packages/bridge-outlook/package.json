@@ -1,9 +1,9 @@
 {
-  "name": "@ge/bridge-word",
+  "name": "@ge/bridge-outlook",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "word surface bridge (Office.js): native context capture + reversible actuations",
+  "description": "Outlook bridge: read mail item/thread/attachments, draft grounded replies",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": { "build": "tsc -b", "typecheck": "tsc -b --noEmit" },

@@ -1,0 +1,146 @@
+import { describe, it, expect, vi } from 'vitest';
+import type {
+  ActuationRequest,
+  ActuationResult,
+  CapabilityManifest,
+  ContextRef,
+  ResolvedContext,
+  SseEvent,
+} from '@ge/contracts';
+import { StreamAssistClient } from '@ge/gemini-client';
+import { AssistSession } from './assist-session.js';
+import type { DocBridge } from './bridge.js';
+
+/** A fake Word-like bridge: a selection that resolves to one text chunk, and a recording actuator. */
+class FakeBridge implements DocBridge {
+  readonly surface = 'word' as const;
+  applied: ActuationRequest[] = [];
+
+  getCapabilities(): CapabilityManifest {
+    return {
+      surface: 'word',
+      contextKinds: ['selection'],
+      actuations: [
+        {
+          kind: 'tracked-change',
+          surface: 'word',
+          title: 'Insert tracked change',
+          reversible: true,
+        },
+      ],
+    };
+  }
+  listContext(): Promise<ContextRef[]> {
+    return Promise.resolve([
+      { id: 'word:selection', kind: 'selection', surface: 'word', title: 'Selection', live: true },
+    ]);
+  }
+  resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    return Promise.resolve([
+      { ref, value: { as: 'text', text: 'The SLA is 99.5%.', mimeType: 'text/markdown' } },
+    ]);
+  }
+  actuate(request: ActuationRequest): Promise<ActuationResult> {
+    this.applied.push(request);
+    return Promise.resolve({
+      ok: true,
+      changeId: request.changeId,
+      kind: request.kind,
+      location: 'para:3',
+    });
+  }
+}
+
+function streamOf(pieces: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  let i = 0;
+  return new ReadableStream({
+    pull(c) {
+      if (i < pieces.length) c.enqueue(enc.encode(pieces[i++]!));
+      else c.close();
+    },
+  });
+}
+
+function geminiFetch() {
+  const chunks = [
+    {
+      sessionInfo: { session: 'sess_1' },
+      answer: { replies: [{ groundedContent: { content: { text: 'Below ' } } }] },
+    },
+    {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: { text: 'the FSI floor.' },
+              textGroundingMetadata: {
+                references: [{ documentMetadata: { title: 'Vendor Policy', uri: 'https://x' } }],
+              },
+            },
+          },
+        ],
+      },
+    },
+  ];
+  return vi.fn(async () => new Response(streamOf([JSON.stringify(chunks)]), { status: 200 }));
+}
+
+const cfg = { assistant: { project: 'p', location: 'eu', engine: 'e' }, identity: 'v.k@acme' };
+const tokens = { getAccessToken: () => Promise.resolve('t') };
+const unit = { connectors: [], surfaceContext: { kind: 'word' as const } };
+
+async function collect(gen: AsyncGenerator<SseEvent>): Promise<SseEvent[]> {
+  const out: SseEvent[] = [];
+  for await (const e of gen) out.push(e);
+  return out;
+}
+
+describe('AssistSession — the reusable loop', () => {
+  it('auto-attaches bridge context, streams a grounded answer, captures session + citations', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit, autoAttach: ['selection'] });
+
+    const events = await collect(session.ask('Is the SLA below our floor?'));
+
+    expect(session.context.size).toBe(1); // selection attached
+    expect(events.map((e) => e.type)).toContain('token');
+    expect(session.sessionId).toBe('sess_1');
+    expect(session.sources[0]?.title).toBe('Vendor Policy');
+  });
+
+  it('applies an actuation through the bridge, stamping last-turn provenance', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit, autoAttach: ['selection'] });
+    await collect(session.ask('rewrite the SLA clause'));
+
+    const result = await session.apply(
+      'tracked-change',
+      { text: 'The SLA is 99.9%.', target: { matchText: 'The SLA is 99.5%.' } },
+      'change-1',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]).toMatchObject({
+      kind: 'tracked-change',
+      surface: 'word',
+      changeId: 'change-1',
+    });
+    expect(bridge.applied[0]!.provenance?.identity).toBe('v.k@acme');
+    expect(bridge.applied[0]!.provenance?.sources[0]?.title).toBe('Vendor Policy');
+  });
+
+  it('lets the caller attach/detach context explicitly', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+    await session.attachContext(['selection']);
+    expect(session.context.size).toBe(1);
+    session.detach('word:selection');
+    expect(session.context.size).toBe(0);
+  });
+});

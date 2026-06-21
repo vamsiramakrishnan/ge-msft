@@ -1,0 +1,383 @@
+# Search — Vertex AI Search over the engine/data store
+
+Direct retrieval. Useful for entity cards (Excel linked entities), source pickers, and powering custom grounding. Prefer the engine-scoped serving config.
+
+## search
+
+
+Full search with facets, snippets, summaries, and extractive answers.
+
+- **HTTP**: `POST` `https://discoveryengine.googleapis.com/v1alpha/projects/{projectsId}/locations/{locationsId}/collections/{collectionsId}/engines/{enginesId}/servingConfigs/{servingConfigsId}:search`
+- **Method id**: `projects.locations.collections.engines.servingConfigs.search`
+- **Scopes**: `https://www.googleapis.com/auth/cloud-platform, https://www.googleapis.com/auth/discoveryengine.assist.readwrite, https://www.googleapis.com/auth/discoveryengine.readwrite, https://www.googleapis.com/auth/discoveryengine.serving.readwrite`
+
+### Request body — `SearchRequest`
+
+- **pageCategories** `array<string>` — Optional. The categories associated with a category page. Must be set for category navigation queries to achieve good search quality. The format should be the same as PageInfo.p…
+- **contentSearchSpec** `SearchRequestContentSearchSpec` — A specification for configuring the behavior of content search.
+  - **extractiveContentSpec** `SearchRequestContentSearchSpecExtractiveContentSpec` — If there is no extractive_content_spec provided, there will be no extractive answer in the search response.
+    - **returnExtractiveSegmentScore** `boolean` — Specifies whether to return the confidence score from the extractive segments in each search result. This feature is available only for new or allowlisted data stores. To allowl…
+    - **numNextSegments** `integer` — Return at most `num_next_segments` segments after each selected segments.
+    - **maxExtractiveAnswerCount** `integer` — The maximum number of extractive answers returned in each search result. An extractive answer is a verbatim answer extracted from the original document, which provides a precise…
+    - **maxExtractiveSegmentCount** `integer` — The max number of extractive segments returned in each search result. Only applied if the DataStore is set to DataStore.ContentConfig.CONTENT_REQUIRED or DataStore.solution_type…
+    - **numPreviousSegments** `integer` — Specifies whether to also include the adjacent from each selected segments. Return at most `num_previous_segments` segments before each selected segments.
+  - **summarySpec** `SearchRequestContentSearchSpecSummarySpec` — If `summarySpec` is not specified, summaries are not included in the search response.
+    - **ignoreAdversarialQuery** `boolean` — Specifies whether to filter out adversarial queries. The default value is `false`. Google employs search-query classification to detect adversarial queries. No summary is return…
+    - **includeCitations** `boolean` — Specifies whether to include citations in the summary. The default value is `false`. When this field is set to `true`, summaries include in-line citation numbers. Example summar…
+    - **useSemanticChunks** `boolean` — If true, answer will be generated from most relevant chunks from top search results. This feature will improve summary quality. Note that with this feature enabled, not all top …
+    - **summaryResultCount** `integer` — The number of top results to generate the summary from. If the number of results returned is less than `summaryResultCount`, the summary is generated from all of the results. At…
+    - **modelPromptSpec** `SearchRequestContentSearchSpecSummarySpecModelPromptSpec` — If specified, the spec will be used to modify the prompt provided to the LLM.
+      - **preamble** `string` — Text at the beginning of the prompt that instructs the assistant. Examples are available in the user guide.
+    - **ignoreLowRelevantContent** `boolean` — Specifies whether to filter out queries that have low relevance. The default value is `false`. If this field is set to `false`, all search results are used regardless of relevan…
+    - **modelSpec** `SearchRequestContentSearchSpecSummarySpecModelSpec` — If specified, the spec will be used to modify the model specification provided to the LLM.
+      - **version** `string` — The model version used to generate the summary. Supported values are: * `stable`: string. Default value when no value is specified. Uses a generally available, fine-tuned model.…
+    - **ignoreJailBreakingQuery** `boolean` — Optional. Specifies whether to filter out jail-breaking queries. The default value is `false`. Google employs search-query classification to detect jail-breaking queries. No sum…
+    - **languageCode** `string` — Language code for Summary. Use language tags defined by [BCP47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt). Note: This is an experimental feature.
+    - **multimodalSpec** `SearchRequestContentSearchSpecSummarySpecMultiModalSpec` — Optional. Multimodal specification.
+      - **imageSource** `enum` — enum: IMAGE_SOURCE_UNSPECIFIED, ALL_AVAILABLE_SOURCES, CORPUS_IMAGE_ONLY, FIGURE_GENERATION_ONLY — Optional. Source of image returned in the answer.
+    - **ignoreNonSummarySeekingQuery** `boolean` — Specifies whether to filter out queries that are not summary-seeking. The default value is `false`. Google employs search-query classification to detect summary-seeking queries.…
+  - **snippetSpec** `SearchRequestContentSearchSpecSnippetSpec` — If `snippetSpec` is not specified, snippets are not included in the search response.
+    - **maxSnippetCount** `integer` — [DEPRECATED] This field is deprecated. To control snippet return, use `return_snippet` field. For backwards compatibility, we will return snippet if max_snippet_count > 0.
+    - **referenceOnly** `boolean` — [DEPRECATED] This field is deprecated and will have no affect on the snippet.
+    - **returnSnippet** `boolean` — If `true`, then return snippet. If no snippet can be generated, we return "No snippet is available for this page." A `snippet_status` with `SUCCESS` or `NO_SNIPPET_AVAILABLE` wi…
+  - **chunkSpec** `SearchRequestContentSearchSpecChunkSpec` — Specifies the chunk spec to be returned from the search response. Only available if the SearchRequest.ContentSearchSpec.search_result_mode is set to CHUNKS
+    - **numNextChunks** `integer` — The number of next chunks to be returned of the current chunk. The maximum allowed value is 3. If not specified, no next chunks will be returned.
+    - **numPreviousChunks** `integer` — The number of previous chunks to be returned of the current chunk. The maximum allowed value is 3. If not specified, no previous chunks will be returned.
+  - **searchResultMode** `enum` — enum: SEARCH_RESULT_MODE_UNSPECIFIED, DOCUMENTS, CHUNKS — Specifies the search result mode. If unspecified, the search result mode defaults to `DOCUMENTS`.
+- **queryExpansionSpec** `SearchRequestQueryExpansionSpec` — The query expansion specification that specifies the conditions under which query expansion occurs.
+  - **condition** `enum` — enum: CONDITION_UNSPECIFIED, DISABLED, AUTO — The condition under which query expansion should occur. Default to Condition.DISABLED.
+  - **pinUnexpandedResults** `boolean` — Whether to pin unexpanded results. If this field is set to true, unexpanded products are always at the top of the search results, followed by the expanded results.
+- **displaySpec** `SearchRequestDisplaySpec` — Optional. Config for display feature, like match highlighting on search results.
+  - **matchHighlightingCondition** `enum` — enum: MATCH_HIGHLIGHTING_CONDITION_UNSPECIFIED, MATCH_HIGHLIGHTING_DISABLED, MATCH_HIGHLIGHTING_ENABLED — The condition under which match highlighting should occur.
+- **offset** `integer` — A 0-indexed integer that specifies the current offset (that is, starting result location, amongst the Documents deemed by the API as relevant) in search results. This field is o…
+- **query** `string` — Raw search query.
+- **facetSpecs** `array<SearchRequestFacetSpec>` — Facet specifications for faceted search. If empty, no facets are returned. A maximum of 100 values are allowed. Otherwise, an `INVALID_ARGUMENT` error is returned.
+  - **facetKey** `SearchRequestFacetSpecFacetKey` — Required. The facet key specification.
+    - **caseInsensitive** `boolean` — True to make facet keys case insensitive when getting faceting values with prefixes or contains; false otherwise.
+    - **key** `string` — Required. Supported textual and numerical facet keys in Document object, over which the facet values are computed. Facet key is case-sensitive.
+    - **intervals** `array<Interval>` — Set only if values should be bucketed into intervals. Must be set for facets with numerical values. Must not be set for facet with text values. Maximum number of intervals is 30.
+      - **exclusiveMinimum** `number` — Exclusive lower bound.
+      - **maximum** `number` — Inclusive upper bound.
+      - **minimum** `number` — Inclusive lower bound.
+      - **exclusiveMaximum** `number` — Exclusive upper bound.
+    - **restrictedValues** `array<string>` — Only get facet for the given restricted values. Only supported on textual fields. For example, suppose "category" has three values "Action > 2022", "Action > 2021" and "Sci-Fi >…
+    - **prefixes** `array<string>` — Only get facet values that start with the given string prefix. For example, suppose "category" has three values "Action > 2022", "Action > 2021" and "Sci-Fi > 2022". If set "pre…
+    - **contains** `array<string>` — Only get facet values that contain the given strings. For example, suppose "category" has three values "Action > 2022", "Action > 2021" and "Sci-Fi > 2022". If set "contains" to…
+    - **orderBy** `string` — The order in which documents are returned. Allowed values are: * "count desc", which means order by SearchResponse.Facet.values.count descending. * "value desc", which means ord…
+  - **limit** `integer` — Maximum facet values that are returned for this facet. If unspecified, defaults to 20. The maximum allowed value is 300. Values above 300 are coerced to 300. For aggregation in …
+  - **excludedFilterKeys** `array<string>` — List of keys to exclude when faceting. By default, FacetKey.key is not excluded from the filter unless it is listed in this field. Listing a facet key in this field allows its v…
+  - **enableDynamicPosition** `boolean` — Enables dynamic position for this facet. If set to true, the position of this facet among all facets in the response is determined automatically. If dynamic facets are enabled, …
+- **filter** `string` — The filter syntax consists of an expression language for constructing a predicate from one or more fields of the documents being filtered. Filter expression is case-sensitive. I…
+- **rankingExpression** `string` — Optional. The ranking expression controls the customized ranking on retrieval documents. This overrides ServingConfig.ranking_expression. The syntax and supported features depen…
+- **customFineTuningSpec** `CustomFineTuningSpec` — Custom fine tuning configs. If set, it has higher priority than the configs set in ServingConfig.custom_fine_tuning_spec.
+  - **enableSearchAdaptor** `boolean` — Whether or not to enable and include custom fine tuned search adaptor model.
+- **userLabels** `object` — The user labels applied to a resource must meet the following requirements: * Each resource can have multiple labels, up to a maximum of 64. * Each label must be a key-value pai…
+- **session** `string` — The session resource name. Optional. Session allows users to do multi-turn /search API calls or coordination between /search API calls and /answer API calls. Example #1 (multi-t…
+- **languageCode** `string` — The BCP-47 language code, such as "en-US" or "sr-Latn". For more information, see [Standard fields](https://cloud.google.com/apis/design/standard_fields). This field helps to be…
+- **params** `object` — Additional search parameters. For public website search only, supported values are: * `user_country_code`: string. Default empty. If set to non-empty, results are restricted or …
+- **imageQuery** `SearchRequestImageQuery` — Raw image query.
+  - **imageBytes** `string` — Base64 encoded image bytes. Supported image formats: JPEG, PNG, and BMP.
+- **numResultsPerDataStore** `integer` — Optional. The maximum number of results to retrieve from each data store. If not specified, it will use the SearchRequest.DataStoreSpec.num_results if provided, otherwise there …
+- **customRankingParams** `SearchRequestCustomRankingParams` — Optional. Optional configuration for the Custom Ranking feature.
+  - **expressionsToPrecompute** `array<string>` — Optional. A list of ranking expressions (see `ranking_expression` for the syntax documentation) to evaluate. The evaluation results will be returned in `SearchResponse.SearchRes…
+- **relevanceThreshold** `enum` — enum: RELEVANCE_THRESHOLD_UNSPECIFIED, LOWEST, LOW, MEDIUM, HIGH — The global relevance threshold of the search results. Defaults to Google defined threshold, leveraging a balance of precision and recall to deliver both highly accurate results …
+- **entity** `string` — Optional. The entity for customers that may run multiple different entities, domains, sites or regions, for example, "Google US", "Google Ads", "Waymo", "google.com", "youtube.c…
+- **personalizationSpec** `SearchRequestPersonalizationSpec` — The specification for personalization. Notice that if both ServingConfig.personalization_spec and SearchRequest.personalization_spec are set, SearchRequest.personalization_spec …
+  - **mode** `enum` — enum: MODE_UNSPECIFIED, AUTO, DISABLED — The personalization mode of the search request. Defaults to Mode.AUTO.
+- **userPseudoId** `string` — Optional. A unique identifier for tracking visitors. For example, this could be implemented with an HTTP cookie, which should be able to uniquely identify a visitor on a single …
+- **canonicalFilter** `string` — The default filter that is applied when a user performs a search without checking any filters on the search page. The filter applied to every search request when quality improve…
+- **relevanceFilterSpec** `SearchRequestRelevanceFilterSpec` — Optional. The granular relevance filtering specification. If not specified, the global `relevance_threshold` will be used for all sub-searches. If specified, this overrides the …
+  - **keywordSearchThreshold** `SearchRequestRelevanceFilterSpecRelevanceThresholdSpec` — Optional. Relevance filtering threshold specification for keyword search.
+    - **relevanceThreshold** `enum` — enum: RELEVANCE_THRESHOLD_UNSPECIFIED, LOWEST, LOW, MEDIUM, HIGH — Pre-defined relevance threshold for the sub-search.
+    - **semanticRelevanceThreshold** `number` — Custom relevance threshold for the sub-search. The value must be in [0.0, 1.0].
+  - **semanticSearchThreshold** `SearchRequestRelevanceFilterSpecRelevanceThresholdSpec` — Optional. Relevance filtering threshold specification for semantic search.
+    - **relevanceThreshold** `enum` — enum: RELEVANCE_THRESHOLD_UNSPECIFIED, LOWEST, LOW, MEDIUM, HIGH — Pre-defined relevance threshold for the sub-search.
+    - **semanticRelevanceThreshold** `number` — Custom relevance threshold for the sub-search. The value must be in [0.0, 1.0].
+- **branch** `string` — The branch resource name, such as `projects/*/locations/global/collections/default_collection/dataStores/default_data_store/branches/0`. Use `default_branch` as the branch ID or…
+- **searchAddonSpec** `SearchRequestSearchAddonSpec` — Optional. SearchAddonSpec is used to disable add-ons for search as per new repricing model. This field is only supported for search requests.
+  - **disableKpiPersonalizationAddOn** `boolean` — Optional. If true, disables event re-ranking and personalization to optimize KPIs & personalize results.
+  - **disableGenerativeAnswerAddOn** `boolean` — Optional. If true, generative answer add-on is disabled. Generative answer add-on includes natural language to filters and simple answers.
+  - **disableSemanticAddOn** `boolean` — Optional. If true, semantic add-on is disabled. Semantic add-on includes embeddings and jetstream.
+- **pageSize** `integer` — Maximum number of Documents to return. The maximum allowed value depends on the data type. Values above the maximum value are coerced to the maximum value. * Websites with basic…
+- **servingConfig** `string` — Required. The resource name of the Search serving config, such as `projects/*/locations/global/collections/default_collection/engines/*/servingConfigs/default_serving_config`, o…
+- **relevanceScoreSpec** `SearchRequestRelevanceScoreSpec` — Optional. The specification for returning the relevance score.
+  - **returnRelevanceScore** `boolean` — Optional. Whether to return the relevance score for search results. The higher the score, the more relevant the document is to the query.
+- **dataStoreSpecs** `array<SearchRequestDataStoreSpec>` — Specifications that define the specific DataStores to be searched, along with configurations for those data stores. This is only considered for Engines with multiple data stores…
+  - **numResults** `integer` — Optional. The maximum number of results to retrieve from this data store. If not specified, it will use the SearchRequest.num_results_per_data_store if provided, otherwise there…
+  - **boostSpec** `SearchRequestBoostSpec` — Optional. Boost specification to boost certain documents. For more information on boosting, see [Boosting](https://cloud.google.com/generative-ai-app-builder/docs/boost-search-r…
+    - **conditionBoostSpecs** `array<SearchRequestBoostSpecConditionBoostSpec>` — Condition boost specifications. If a document matches multiple conditions in the specifications, boost scores from these specifications are all applied and combined in a non-lin…
+      - **condition** `string` — An expression which specifies a boost condition. The syntax and supported fields are the same as a filter expression. See SearchRequest.filter for detail syntax and limitations.…
+      - **boost** `number` — Strength of the condition boost, which should be in [-1, 1]. Negative boost means demotion. Default is 0.0. Setting to 1.0 gives the document a big promotion. However, it does n…
+      - **boostControlSpec** `SearchRequestBoostSpecConditionBoostSpecBoostControlSpec` — Complex specification for custom ranking based on customer defined attribute value.
+        - **fieldName** `string` — The name of the field whose value will be used to determine the boost amount.
+        - **attributeType** `enum` — enum: ATTRIBUTE_TYPE_UNSPECIFIED, NUMERICAL, FRESHNESS — The attribute type to be used to determine the boost amount. The attribute value can be derived from the field value of the specified field_name. In the case of numerical it is …
+        - **interpolationType** `enum` — enum: INTERPOLATION_TYPE_UNSPECIFIED, LINEAR — The interpolation type to be applied to connect the control points listed below.
+        - **controlPoints** `array<SearchRequestBoostSpecConditionBoostSpecBoostControlSpecControlPoint>` — The control points used to define the curve. The monotonic function (defined through the interpolation_type above) passes through the control points listed here.
+  - **filter** `string` — Optional. Filter specification to filter documents in the data store specified by data_store field. For more information on filtering, see [Filtering](https://cloud.google.com/g…
+  - **dataStore** `string` — Required. Full resource name of DataStore, such as `projects/{project}/locations/{location}/collections/{collection_id}/dataStores/{data_store_id}`. The path must include the pr…
+  - **customSearchOperators** `string` — Optional. Custom search operators which if specified will be used to filter results from workspace data stores. For more information on custom search operators, see [SearchOpera…
+- **rankingExpressionBackend** `enum` — enum: RANKING_EXPRESSION_BACKEND_UNSPECIFIED, BYOE, CLEARBOX, RANK_BY_EMBEDDING, RANK_BY_FORMULA — Optional. The backend to use for the ranking expression evaluation.
+- **useLatestData** `boolean` — Uses the Engine, ServingConfig and Control freshly read from the database. Note: this skips config cache and introduces dependency on databases, which could significantly increa…
+- **regionCode** `string` — The Unicode country/region code (CLDR) of a location, such as "US" and "419". For more information, see [Standard fields](https://cloud.google.com/apis/design/standard_fields). …
+- **pageToken** `string` — A page token received from a previous SearchService.Search call. Provide this to retrieve the subsequent page. When paginating, all other parameters provided to SearchService.Se…
+- **userInfo** `UserInfo` — Information about the end user. Highly recommended for analytics and personalization. UserInfo.user_agent is used to deduce `device_type` for analytics.
+  - **userId** `string` — Highly recommended for logged-in users. Unique identifier for logged-in user, such as a user name. Don't set for anonymous users. Always use a hashed value for this ID. Don't se…
+  - **userAgent** `string` — User agent as included in the HTTP header. The field must be a UTF-8 encoded string with a length limit of 1,000 characters. Otherwise, an `INVALID_ARGUMENT` error is returned. …
+  - **timeZone** `string` — Optional. IANA time zone, e.g. Europe/Budapest.
+  - **preciseLocation** `UserInfoPreciseLocation` — Optional. Input only. Precise location of the user. It is used in Custom Ranking to calculate the distance between the user and the relevant documents.
+    - **point** `GoogleTypeLatLng` — Optional. Location represented by a latitude/longitude point.
+      - **latitude** `number` — The latitude in degrees. It must be in the range [-90.0, +90.0].
+      - **longitude** `number` — The longitude in degrees. It must be in the range [-180.0, +180.0].
+    - **address** `string` — Optional. Location represented by a natural language address. Will later be geocoded and converted to either a point or a polygon.
+- **embeddingSpec** `SearchRequestEmbeddingSpec` — Uses the provided embedding to do additional semantic document retrieval. The retrieval is based on the dot product of SearchRequest.EmbeddingSpec.EmbeddingVector.vector and the…
+  - **embeddingVectors** `array<SearchRequestEmbeddingSpecEmbeddingVector>` — The embedding vector used for retrieval. Limit to 1.
+    - **fieldPath** `string` — Embedding field path in schema.
+    - **vector** `array<number>` — Query embedding vector.
+- **orderBy** `string` — The order in which documents are returned. Documents can be ordered by a field in an Document object. Leave it unset if ordered by relevance. `order_by` expression is case-sensi…
+- **crowdingSpecs** `array<SearchRequestCrowdingSpec>` — Optional. Crowding specifications for improving result diversity. If multiple CrowdingSpecs are specified, crowding will be evaluated on each unique combination of the `field` v…
+  - **mode** `enum` — enum: MODE_UNSPECIFIED, DROP_CROWDED_RESULTS, DEMOTE_CROWDED_RESULTS_TO_END — Mode to use for documents that are crowded away.
+  - **maxCount** `integer` — The maximum number of documents to keep per value of the field. Once there are at least max_count previous results which contain the same value for the given field (according to…
+  - **field** `string` — The field to use for crowding. Documents can be crowded by a field in the Document object. Crowding field is case sensitive.
+- **naturalLanguageQueryUnderstandingSpec** `SearchRequestNaturalLanguageQueryUnderstandingSpec` — Optional. Config for natural language query understanding capabilities, such as extracting structured field filters from the query. Refer to [this documentation](https://cloud.g…
+  - **geoSearchQueryDetectionFieldNames** `array<string>` — Field names used for location-based filtering, where geolocation filters are detected in natural language search queries. Only valid when the FilterExtractionCondition is set to…
+  - **extractedFilterBehavior** `enum` — enum: EXTRACTED_FILTER_BEHAVIOR_UNSPECIFIED, HARD_FILTER, SOFT_BOOST — Optional. Controls behavior of how extracted filters are applied to the search. The default behavior depends on the request. For single datastore structured search, the default …
+  - **allowedFieldNames** `array<string>` — Optional. Allowlist of fields that can be used for natural language filter extraction. By default, if this is unspecified, all indexable fields are eligible for natural language…
+  - **filterExtractionCondition** `enum` — enum: CONDITION_UNSPECIFIED, DISABLED, ENABLED — The condition under which filter extraction should occur. Server behavior defaults to `DISABLED`.
+- **oneBoxPageSize** `integer` — The maximum number of results to return for OneBox. This applies to each OneBox type individually. Default number is 10.
+- **spellCorrectionSpec** `SearchRequestSpellCorrectionSpec` — The spell correction specification that specifies the mode under which spell correction takes effect.
+  - **mode** `enum` — enum: MODE_UNSPECIFIED, SUGGESTION_ONLY, AUTO — The mode under which spell correction replaces the original search query. Defaults to Mode.AUTO.
+- **searchAsYouTypeSpec** `SearchRequestSearchAsYouTypeSpec` — Search as you type configuration. Only supported for the IndustryVertical.MEDIA vertical.
+  - **condition** `enum` — enum: CONDITION_UNSPECIFIED, DISABLED, ENABLED, AUTO — The condition under which search as you type should occur. Default to Condition.DISABLED.
+- **sessionSpec** `SearchRequestSessionSpec` — Session specification. Can be used only when `session` is set.
+  - **queryId** `string` — If set, the search result gets stored to the "turn" specified by this query ID. Example: Let's say the session looks like this: session { name: ".../sessions/xxx" turns { query …
+  - **searchResultPersistenceCount** `integer` — The number of top search results to persist. The persisted search results can be used for the subsequent /answer api call. This field is similar to the `summary_result_count` fi…
+- **safeSearch** `boolean` — Whether to turn on safe search. This is only supported for website search.
+- **boostSpec** `SearchRequestBoostSpec` — Boost specification to boost certain documents. For more information on boosting, see [Boosting](https://cloud.google.com/generative-ai-app-builder/docs/boost-search-results)
+  - **conditionBoostSpecs** `array<SearchRequestBoostSpecConditionBoostSpec>` — Condition boost specifications. If a document matches multiple conditions in the specifications, boost scores from these specifications are all applied and combined in a non-lin…
+    - **condition** `string` — An expression which specifies a boost condition. The syntax and supported fields are the same as a filter expression. See SearchRequest.filter for detail syntax and limitations.…
+    - **boost** `number` — Strength of the condition boost, which should be in [-1, 1]. Negative boost means demotion. Default is 0.0. Setting to 1.0 gives the document a big promotion. However, it does n…
+    - **boostControlSpec** `SearchRequestBoostSpecConditionBoostSpecBoostControlSpec` — Complex specification for custom ranking based on customer defined attribute value.
+      - **fieldName** `string` — The name of the field whose value will be used to determine the boost amount.
+      - **attributeType** `enum` — enum: ATTRIBUTE_TYPE_UNSPECIFIED, NUMERICAL, FRESHNESS — The attribute type to be used to determine the boost amount. The attribute value can be derived from the field value of the specified field_name. In the case of numerical it is …
+      - **interpolationType** `enum` — enum: INTERPOLATION_TYPE_UNSPECIFIED, LINEAR — The interpolation type to be applied to connect the control points listed below.
+      - **controlPoints** `array<SearchRequestBoostSpecConditionBoostSpecBoostControlSpecControlPoint>` — The control points used to define the curve. The monotonic function (defined through the interpolation_type above) passes through the control points listed here.
+        - **attributeValue** `string` — Can be one of: 1. The numerical field value. 2. The duration spec for freshness: The value must be formatted as an XSD `dayTimeDuration` value (a restricted subset of an ISO 860…
+        - **boostAmount** `number` — The value between -1 to 1 by which to boost the score if the attribute_value evaluates to the value specified above.
+
+### Response — `SearchResponse`
+
+- **correctedQuery** `string` — Contains the spell corrected query, if found. If the spell correction type is AUTOMATIC, then the search results are based on corrected_query. Otherwise the original query is us…
+- **results** `array<SearchResponseSearchResult>` — A list of matched documents. The order represents the ranking.
+  - **document** `Document` — The document data snippet in the search response. Only fields that are marked as `retrievable` are populated.
+    - **name** `string` — Immutable. The full resource name of the document. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/…
+    - **indexTime** `string` — Output only. The time when the document was last indexed. If this field is populated, it means the document has been indexed. While documents typically become searchable within …
+    - **derivedStructData** `object` — Output only. This field is OUTPUT_ONLY. It contains derived data that are not in the original input document.
+    - **jsonData** `string` — The JSON string representation of the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+    - **aclInfo** `DocumentAclInfo` — Access control information for the document.
+      - **readers** `array<DocumentAclInfoAccessRestriction>` — Readers of the document.
+        - **principals** `array<Principal>` — List of principals.
+        - **idpWide** `boolean` — All users within the Identity Provider.
+    - **indexStatus** `DocumentIndexStatus` — Output only. The index status of the document. * If document is indexed successfully, the index_time field is populated. * Otherwise, if document is not indexed due to errors, t…
+      - **indexTime** `string` — The time when the document was indexed. If this field is populated, it means the document has been indexed. While documents typically become searchable within seconds of indexin…
+      - **errorSamples** `array<GoogleRpcStatus>` — A sample of errors encountered while indexing the document. If this field is populated, the document is not indexed due to errors.
+        - **message** `string` — A developer-facing error message, which should be in English. Any user-facing error message should be localized and sent in the google.rpc.Status.details field, or localized by …
+        - **code** `integer` — The status code, which should be an enum value of google.rpc.Code.
+        - **details** `array<object>` — A list of messages that carry the error details. There is a common set of message types for APIs to use.
+      - **pendingMessage** `string` — Immutable. The message indicates the document index is in progress. If this field is populated, the document index is pending.
+    - **parentDocumentId** `string` — The identifier of the parent document. Currently supports at most two level document hierarchy. Id should conform to [RFC-1034](https://tools.ietf.org/html/rfc1034) standard wit…
+    - **id** `string` — Immutable. The identifier of the document. Id should conform to [RFC-1034](https://tools.ietf.org/html/rfc1034) standard with a length limit of 128 characters.
+    - **schemaId** `string` — The identifier of the schema located in the same data store.
+    - **content** `DocumentContent` — The unstructured data linked to this document. Content can only be set and must be set if this document is under a `CONTENT_REQUIRED` data store.
+      - **rawBytes** `string` — The content represented as a stream of bytes. The maximum length is 1,000,000 bytes (1 MB / ~0.95 MiB). Note: As with all `bytes` fields, this field is represented as pure binar…
+      - **mimeType** `string` — The MIME type of the content. Supported types: * `application/pdf` (PDF, only native PDFs are supported for now) * `text/html` (HTML) * `text/plain` (TXT) * `application/xml` or…
+      - **uri** `string` — The URI of the content. Only Cloud Storage URIs (e.g. `gs://bucket-name/path/to/file`) are supported. The maximum file size is 2.5 MB for text-based formats, 200 MB for other fo…
+    - **structData** `object` — The structured JSON data for the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+  - **modelScores** `object` — Output only. Google provided available scores.
+  - **rankSignals** `SearchResponseSearchResultRankSignals` — Optional. A set of ranking signals associated with the result.
+    - **pctrRank** `number` — Optional. Predicted conversion rate adjustment as a rank.
+    - **customSignals** `array<SearchResponseSearchResultRankSignalsCustomSignal>` — Optional. A list of custom clearbox signals.
+      - **name** `string` — Optional. Name of the signal.
+      - **value** `number` — Optional. Float value representing the ranking signal (e.g. 1.25 for BM25).
+    - **documentAge** `number` — Optional. Age of the document in hours.
+    - **defaultRank** `number` — Optional. The default rank of the result.
+    - **topicalityRank** `number` — Optional. Topicality adjustment as a rank.
+    - **keywordSimilarityScore** `number` — Optional. Keyword matching adjustment.
+    - **relevanceScore** `number` — Optional. Semantic relevance adjustment.
+    - **semanticSimilarityScore** `number` — Optional. Semantic similarity adjustment.
+    - **boostingFactor** `number` — Optional. Combined custom boosts for a doc.
+    - **precomputedExpressionValues** `array<number>` — Optional. A list of precomputed expression results for a given document, in the same order as requested in `SearchRequest.custom_ranking_params.expressions_to_precompute`.
+  - **chunk** `Chunk` — The chunk data in the search response if the SearchRequest.ContentSearchSpec.search_result_mode is set to CHUNKS.
+    - **relevanceScore** `number` — Output only. Represents the relevance score based on similarity. Higher score indicates higher chunk relevance. The score is in range [-1.0, 1.0]. Only populated on SearchResponse.
+    - **dataUrls** `array<string>` — Output only. Image Data URLs if the current chunk contains images. Data URLs are composed of four parts: a prefix (data:), a MIME type indicating the type of data, an optional b…
+    - **annotationMetadata** `array<ChunkAnnotationMetadata>` — Output only. The annotation metadata includes structured content in the current chunk.
+      - **structuredContent** `ChunkStructuredContent` — Output only. The structured content information.
+        - **structureType** `enum` — enum: STRUCTURE_TYPE_UNSPECIFIED, SHAREHOLDER_STRUCTURE, SIGNATURE_STRUCTURE, CHECKBOX_STRUCTURE — Output only. The structure type of the structured content.
+        - **content** `string` — Output only. The content of the structured content.
+      - **imageId** `string` — Output only. Image id is provided if the structured content is based on an image.
+    - **name** `string` — The full resource name of the chunk. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/{document_id}/…
+    - **documentMetadata** `ChunkDocumentMetadata` — Metadata of the document from the current chunk.
+      - **mimeType** `string` — The mime type of the document. https://www.iana.org/assignments/media-types/media-types.xhtml.
+      - **structData** `object` — Data representation. The structured JSON data for the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+      - **uri** `string` — Uri of the document.
+      - **title** `string` — Title of the document.
+    - **derivedStructData** `object` — Output only. This field is OUTPUT_ONLY. It contains derived data that are not in the original input document.
+    - **pageSpan** `ChunkPageSpan` — Page span of the chunk.
+      - **pageStart** `integer` — The start page of the chunk.
+      - **pageEnd** `integer` — The end page of the chunk.
+    - **content** `string` — Content is a string from a document (parsed content).
+    - **chunkMetadata** `ChunkChunkMetadata` — Output only. Metadata of the current chunk.
+      - **previousChunks** `array<Chunk>` — The previous chunks of the current chunk. The number is controlled by SearchRequest.ContentSearchSpec.ChunkSpec.num_previous_chunks. This field is only populated on SearchServic…
+      - **nextChunks** `array<Chunk>` — The next chunks of the current chunk. The number is controlled by SearchRequest.ContentSearchSpec.ChunkSpec.num_next_chunks. This field is only populated on SearchService.Search…
+    - **annotationContents** `array<string>` — Output only. Annotation contents if the current chunk contains annotations.
+    - **id** `string` — Unique chunk ID of the current chunk.
+  - **id** `string` — Document.id of the searched Document.
+- **naturalLanguageQueryUnderstandingInfo** `SearchResponseNaturalLanguageQueryUnderstandingInfo` — Output only. Natural language query understanding information for the returned results.
+  - **extractedFilters** `string` — The filters that were extracted from the input query.
+  - **classifiedIntents** `array<string>` — The classified intents from the input query.
+  - **rewrittenQuery** `string` — Rewritten input query minus the extracted filters.
+  - **structuredExtractedFilter** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilter` — The filters that were extracted from the input query represented in a structured form.
+    - **expression** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterExpression` — The expression denoting the filter that was extracted from the input query in a structured form. It can be a simple expression denoting a single string, numerical or geolocation…
+      - **stringConstraint** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterStringConstraint` — String constraint expression.
+        - **fieldName** `string` — Name of the string field as defined in the schema.
+        - **values** `array<string>` — Values of the string field. The record will only be returned if the field value matches one of the values specified here.
+        - **querySegment** `string` — Identifies the keywords within the search query that match a filter.
+      - **geolocationConstraint** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterGeolocationConstraint` — Geolocation constraint expression.
+        - **address** `string` — The reference address that was inferred from the input query. The proximity of the reference address to the geolocation field will be used to filter the results.
+        - **longitude** `number` — The longitude of the geolocation inferred from the input query.
+        - **radiusInMeters** `number` — The radius in meters around the address. The record is returned if the location of the geolocation field is within the radius.
+        - **latitude** `number` — The latitude of the geolocation inferred from the input query.
+        - **fieldName** `string` — The name of the geolocation field as defined in the schema.
+      - **numberConstraint** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterNumberConstraint` — Numerical constraint expression.
+        - **fieldName** `string` — Name of the numerical field as defined in the schema.
+        - **value** `number` — The value specified in the numerical constraint.
+        - **querySegment** `string` — Identifies the keywords within the search query that match a filter.
+        - **comparison** `enum` — enum: COMPARISON_UNSPECIFIED, EQUALS, LESS_THAN_EQUALS, LESS_THAN, GREATER_THAN_EQUALS, GREATER_THAN — The comparison operation performed between the field value and the value specified in the constraint.
+      - **andExpr** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterAndExpression` — Logical "And" compound operator connecting multiple expressions.
+        - **expressions** `array<SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterExpression>` — The expressions that were ANDed together.
+      - **orExpr** `SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterOrExpression` — Logical "Or" compound operator connecting multiple expressions.
+        - **expressions** `array<SearchResponseNaturalLanguageQueryUnderstandingInfoStructuredExtractedFilterExpression>` — The expressions that were ORed together.
+- **appliedControls** `array<string>` — Controls applied as part of the Control service.
+- **searchLinkPromotions** `array<SearchLinkPromotion>` — Promotions for site search.
+  - **description** `string` — Optional. The Promotion description. Maximum length: 200 characters.
+  - **document** `string` — Optional. The Document the user wants to promote. For site search, leave unset and only populate uri. Can be set along with uri.
+  - **title** `string` — Required. The title of the promotion. Maximum length: 160 characters.
+  - **imageUri** `string` — Optional. The promotion thumbnail image url.
+  - **enabled** `boolean` — Optional. The enabled promotion will be returned for any serving configs associated with the parent of the control this promotion is attached to. This flag is used for basic sit…
+  - **uri** `string` — Optional. The URL for the page the user wants to promote. Must be set for site search. For other verticals, this is optional.
+- **attributionToken** `string` — A unique search token. This should be included in the UserEvent logs resulting from this search, which enables accurate attribution of search model performance. This also helps …
+- **nextPageToken** `string` — A token that can be sent as SearchRequest.page_token to retrieve the next page. If this field is omitted, there are no subsequent pages.
+- **suggestedQuery** `string` — Corrected query with low confidence, AKA did you mean query. Compared with corrected_query, this field is set when SpellCorrector returned a response, but FPR(full page replacem…
+- **facets** `array<SearchResponseFacet>` — Results of facets requested by user.
+  - **values** `array<SearchResponseFacetFacetValue>` — The facet values for this field.
+    - **value** `string` — Text value of a facet, such as "Black" for facet "colors".
+    - **count** `string` — Number of items that have this facet value.
+    - **interval** `Interval` — Interval value for a facet, such as 10, 20) for facet "price". It matches [SearchRequest.FacetSpec.FacetKey.intervals.
+      - **exclusiveMinimum** `number` — Exclusive lower bound.
+      - **maximum** `number` — Inclusive upper bound.
+      - **minimum** `number` — Inclusive lower bound.
+      - **exclusiveMaximum** `number` — Exclusive upper bound.
+  - **key** `string` — The key for this facet. For example, `"colors"` or `"price"`. It matches SearchRequest.FacetSpec.FacetKey.key.
+  - **dynamicFacet** `boolean` — Whether the facet is dynamically generated.
+- **redirectUri** `string` — The URI of a customer-defined redirect page. If redirect action is triggered, no search is performed, and only redirect_uri and attribution_token are set in the response.
+- **semanticState** `enum` — enum: SEMANTIC_STATE_UNSPECIFIED, DISABLED, ENABLED — Output only. Indicates the semantic state of the search response.
+- **queryExpansionInfo** `SearchResponseQueryExpansionInfo` — Query expansion information for the returned results.
+  - **expandedQuery** `boolean` — Bool describing whether query expansion has occurred.
+  - **pinnedResultCount** `string` — Number of pinned results. This field will only be set when expansion happens and SearchRequest.QueryExpansionSpec.pin_unexpanded_results is set to true.
+- **oneBoxResults** `array<SearchResponseOneBoxResult>` — A list of One Box results. There can be multiple One Box results of different types.
+  - **oneBoxType** `enum` — enum: ONE_BOX_TYPE_UNSPECIFIED, PEOPLE, ORGANIZATION, SLACK, KNOWLEDGE_GRAPH — The type of One Box result.
+  - **searchResults** `array<SearchResponseSearchResult>` — The search results for this One Box.
+    - **document** `Document` — The document data snippet in the search response. Only fields that are marked as `retrievable` are populated.
+      - **name** `string` — Immutable. The full resource name of the document. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/…
+      - **indexTime** `string` — Output only. The time when the document was last indexed. If this field is populated, it means the document has been indexed. While documents typically become searchable within …
+      - **derivedStructData** `object` — Output only. This field is OUTPUT_ONLY. It contains derived data that are not in the original input document.
+      - **jsonData** `string` — The JSON string representation of the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+      - **aclInfo** `DocumentAclInfo` — Access control information for the document.
+        - **readers** `array<DocumentAclInfoAccessRestriction>` — Readers of the document.
+      - **indexStatus** `DocumentIndexStatus` — Output only. The index status of the document. * If document is indexed successfully, the index_time field is populated. * Otherwise, if document is not indexed due to errors, t…
+        - **indexTime** `string` — The time when the document was indexed. If this field is populated, it means the document has been indexed. While documents typically become searchable within seconds of indexin…
+        - **errorSamples** `array<GoogleRpcStatus>` — A sample of errors encountered while indexing the document. If this field is populated, the document is not indexed due to errors.
+        - **pendingMessage** `string` — Immutable. The message indicates the document index is in progress. If this field is populated, the document index is pending.
+      - **parentDocumentId** `string` — The identifier of the parent document. Currently supports at most two level document hierarchy. Id should conform to [RFC-1034](https://tools.ietf.org/html/rfc1034) standard wit…
+      - **id** `string` — Immutable. The identifier of the document. Id should conform to [RFC-1034](https://tools.ietf.org/html/rfc1034) standard with a length limit of 128 characters.
+      - **schemaId** `string` — The identifier of the schema located in the same data store.
+      - **content** `DocumentContent` — The unstructured data linked to this document. Content can only be set and must be set if this document is under a `CONTENT_REQUIRED` data store.
+        - **rawBytes** `string` — The content represented as a stream of bytes. The maximum length is 1,000,000 bytes (1 MB / ~0.95 MiB). Note: As with all `bytes` fields, this field is represented as pure binar…
+        - **mimeType** `string` — The MIME type of the content. Supported types: * `application/pdf` (PDF, only native PDFs are supported for now) * `text/html` (HTML) * `text/plain` (TXT) * `application/xml` or…
+        - **uri** `string` — The URI of the content. Only Cloud Storage URIs (e.g. `gs://bucket-name/path/to/file`) are supported. The maximum file size is 2.5 MB for text-based formats, 200 MB for other fo…
+      - **structData** `object` — The structured JSON data for the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+    - **modelScores** `object` — Output only. Google provided available scores.
+    - **rankSignals** `SearchResponseSearchResultRankSignals` — Optional. A set of ranking signals associated with the result.
+      - **pctrRank** `number` — Optional. Predicted conversion rate adjustment as a rank.
+      - **customSignals** `array<SearchResponseSearchResultRankSignalsCustomSignal>` — Optional. A list of custom clearbox signals.
+        - **name** `string` — Optional. Name of the signal.
+        - **value** `number` — Optional. Float value representing the ranking signal (e.g. 1.25 for BM25).
+      - **documentAge** `number` — Optional. Age of the document in hours.
+      - **defaultRank** `number` — Optional. The default rank of the result.
+      - **topicalityRank** `number` — Optional. Topicality adjustment as a rank.
+      - **keywordSimilarityScore** `number` — Optional. Keyword matching adjustment.
+      - **relevanceScore** `number` — Optional. Semantic relevance adjustment.
+      - **semanticSimilarityScore** `number` — Optional. Semantic similarity adjustment.
+      - **boostingFactor** `number` — Optional. Combined custom boosts for a doc.
+      - **precomputedExpressionValues** `array<number>` — Optional. A list of precomputed expression results for a given document, in the same order as requested in `SearchRequest.custom_ranking_params.expressions_to_precompute`.
+    - **chunk** `Chunk` — The chunk data in the search response if the SearchRequest.ContentSearchSpec.search_result_mode is set to CHUNKS.
+      - **relevanceScore** `number` — Output only. Represents the relevance score based on similarity. Higher score indicates higher chunk relevance. The score is in range [-1.0, 1.0]. Only populated on SearchResponse.
+      - **dataUrls** `array<string>` — Output only. Image Data URLs if the current chunk contains images. Data URLs are composed of four parts: a prefix (data:), a MIME type indicating the type of data, an optional b…
+      - **annotationMetadata** `array<ChunkAnnotationMetadata>` — Output only. The annotation metadata includes structured content in the current chunk.
+        - **structuredContent** `ChunkStructuredContent` — Output only. The structured content information.
+        - **imageId** `string` — Output only. Image id is provided if the structured content is based on an image.
+      - **name** `string` — The full resource name of the chunk. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/{document_id}/…
+      - **documentMetadata** `ChunkDocumentMetadata` — Metadata of the document from the current chunk.
+        - **mimeType** `string` — The mime type of the document. https://www.iana.org/assignments/media-types/media-types.xhtml.
+        - **structData** `object` — Data representation. The structured JSON data for the document. It should conform to the registered Schema or an `INVALID_ARGUMENT` error is thrown.
+        - **uri** `string` — Uri of the document.
+        - **title** `string` — Title of the document.
+      - **derivedStructData** `object` — Output only. This field is OUTPUT_ONLY. It contains derived data that are not in the original input document.
+      - **pageSpan** `ChunkPageSpan` — Page span of the chunk.
+        - **pageStart** `integer` — The start page of the chunk.
+        - **pageEnd** `integer` — The end page of the chunk.
+      - **content** `string` — Content is a string from a document (parsed content).
+      - **chunkMetadata** `ChunkChunkMetadata` — Output only. Metadata of the current chunk.
+        - **previousChunks** `array<Chunk>` — The previous chunks of the current chunk. The number is controlled by SearchRequest.ContentSearchSpec.ChunkSpec.num_previous_chunks. This field is only populated on SearchServic…
+        - **nextChunks** `array<Chunk>` — The next chunks of the current chunk. The number is controlled by SearchRequest.ContentSearchSpec.ChunkSpec.num_next_chunks. This field is only populated on SearchService.Search…
+      - **annotationContents** `array<string>` — Output only. Annotation contents if the current chunk contains annotations.
+      - **id** `string` — Unique chunk ID of the current chunk.
+    - **id** `string` — Document.id of the searched Document.
+- **summary** `SearchResponseSummary` — A summary as part of the search results. This field is only returned if SearchRequest.ContentSearchSpec.summary_spec is set.
+  - **summarySkippedReasons** `array<enum>` — Additional summary-skipped reasons. This provides the reason for ignored cases. If nothing is skipped, this field is not set.
+  - **summaryWithMetadata** `SearchResponseSummarySummaryWithMetadata` — Summary with metadata information.
+    - **citationMetadata** `SearchResponseSummaryCitationMetadata` — Citation metadata for given summary.
+      - **citations** `array<SearchResponseSummaryCitation>` — Citations for segments.
+        - **startIndex** `string` — Index indicates the start of the segment, measured in bytes/unicode.
+        - **sources** `array<SearchResponseSummaryCitationSource>` — Citation sources for the attributed segment.
+        - **endIndex** `string` — End of the attributed segment, exclusive.
+    - **references** `array<SearchResponseSummaryReference>` — Document References.
+      - **title** `string` — Title of the document.
+      - **chunkContents** `array<SearchResponseSummaryReferenceChunkContent>` — List of cited chunk contents derived from document content.
+        - **content** `string` — Chunk textual content.
+        - **pageIdentifier** `string` — Page identifier.
+        - **blobAttachmentIndexes** `array<string>` — Output only. Stores indexes of blobattachments linked to this chunk.
+      - **document** `string` — Required. Document.name of the document. Full resource name of the referenced document, in the format `projects/*/locations/*/collections/*/dataStores/*/branches/*/documents/*`.
+      - **uri** `string` — Cloud Storage or HTTP uri for the document.
+    - **summary** `string` — Summary text with no citation information.
+    - **blobAttachments** `array<SearchResponseSummaryBlobAttachment>` — Output only. Store multimodal data for answer enhancement.
+      - **data** `SearchResponseSummaryBlobAttachmentBlob` — Output only. The blob data.
+        - **mimeType** `string` — Output only. The media type (MIME type) of the generated data.
+        - **data** `string` — Output only. Raw bytes.
+      - **attributionType** `enum` — enum: ATTRIBUTION_TYPE_UNSPECIFIED, CORPUS, GENERATED — Output only. The attribution type of the blob.
+  - **safetyAttributes** `SearchResponseSummarySafetyAttributes` — A collection of Safety Attribute categories and their associated confidence scores.
+    - **categories** `array<string>` — The display names of Safety Attribute categories associated with the generated content. Order matches the Scores.
+    - **scores** `array<number>` — The confidence scores of the each category, higher value means higher confidence. Order matches the Categories.
+  - **summaryText** `string` — The summary content.
+- **geoSearchDebugInfo** `array<SearchResponseGeoSearchDebugInfo>`
+  - **originalAddressQuery** `string` — The address from which forward geocoding ingestion produced issues.
+  - **errorMessage** `string` — The error produced.
+- **sessionInfo** `SearchResponseSessionInfo` — Session information. Only set if SearchRequest.session is provided. See its description for more details.
+  - **name** `string` — Name of the session. If the auto-session mode is used (when SearchRequest.session ends with "-"), this field holds the newly generated session name.
+  - **queryId** `string` — Query ID that corresponds to this search API call. One session can have multiple turns, each with a unique query ID. By specifying the session name and this query ID in the Answ…
+- **totalSize** `integer` — The estimated total count of matched items irrespective of pagination. The count of results returned by pagination may be less than the total_size that matches.
+- **guidedSearchResult** `SearchResponseGuidedSearchResult` — Guided search result.
+  - **refinementAttributes** `array<SearchResponseGuidedSearchResultRefinementAttribute>` — A list of ranked refinement attributes.
+    - **attributeKey** `string` — Attribute key used to refine the results. For example, `"movie_type"`.
+    - **attributeValue** `string` — Attribute value used to refine the results. For example, `"drama"`.
+  - **followUpQuestions** `array<string>` — Suggested follow-up questions.
+

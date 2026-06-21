@@ -1,0 +1,346 @@
+# Answer — grounded answer with citations & follow-ups
+
+Single-shot grounded answer (non-stream) returning citations, references, and related questions. Good for OneNote synthesis and Word review summaries when streaming is not needed.
+
+## answer
+
+
+Answer a query; returns answer text, citations, related questions.
+
+- **HTTP**: `POST` `https://discoveryengine.googleapis.com/v1alpha/projects/{projectsId}/locations/{locationsId}/collections/{collectionsId}/engines/{enginesId}/servingConfigs/{servingConfigsId}:answer`
+- **Method id**: `projects.locations.collections.engines.servingConfigs.answer`
+- **Scopes**: `https://www.googleapis.com/auth/cloud-platform, https://www.googleapis.com/auth/discoveryengine.assist.readwrite, https://www.googleapis.com/auth/discoveryengine.readwrite, https://www.googleapis.com/auth/discoveryengine.serving.readwrite`
+
+### Request body — `AnswerQueryRequest`
+
+- **asynchronousMode** `boolean` — Deprecated: This field is deprecated. Streaming Answer API will be supported. Asynchronous mode control. If enabled, the response will be returned with answer/session resource n…
+- **session** `string` — The session resource name. Not required. When session field is not set, the API is in sessionless mode. We support auto session mode: users can use the wildcard symbol `-` as se…
+- **safetySpec** `AnswerQueryRequestSafetySpec` — Model specification.
+  - **enable** `boolean` — Enable the safety filtering on the answer response. It is false by default.
+  - **safetySettings** `array<AnswerQueryRequestSafetySpecSafetySetting>` — Optional. Safety settings. This settings are effective only when the safety_spec.enable is true.
+    - **category** `enum` — enum: HARM_CATEGORY_UNSPECIFIED, HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT, HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_CIVIC_INTEGRITY — Required. Harm category.
+    - **threshold** `enum` — enum: HARM_BLOCK_THRESHOLD_UNSPECIFIED, BLOCK_LOW_AND_ABOVE, BLOCK_MEDIUM_AND_ABOVE, BLOCK_ONLY_HIGH, BLOCK_NONE, OFF — Required. The harm block threshold.
+- **searchSpec** `AnswerQueryRequestSearchSpec` — Search specification.
+  - **searchParams** `AnswerQueryRequestSearchSpecSearchParams` — Search parameters.
+    - **naturalLanguageQueryUnderstandingSpec** `SearchRequestNaturalLanguageQueryUnderstandingSpec` — Optional. Specification to enable natural language understanding capabilities for search requests.
+      - **geoSearchQueryDetectionFieldNames** `array<string>` — Field names used for location-based filtering, where geolocation filters are detected in natural language search queries. Only valid when the FilterExtractionCondition is set to…
+      - **extractedFilterBehavior** `enum` — enum: EXTRACTED_FILTER_BEHAVIOR_UNSPECIFIED, HARD_FILTER, SOFT_BOOST — Optional. Controls behavior of how extracted filters are applied to the search. The default behavior depends on the request. For single datastore structured search, the default …
+      - **allowedFieldNames** `array<string>` — Optional. Allowlist of fields that can be used for natural language filter extraction. By default, if this is unspecified, all indexable fields are eligible for natural language…
+      - **filterExtractionCondition** `enum` — enum: CONDITION_UNSPECIFIED, DISABLED, ENABLED — The condition under which filter extraction should occur. Server behavior defaults to `DISABLED`.
+    - **filter** `string` — The filter syntax consists of an expression language for constructing a predicate from one or more fields of the documents being filtered. Filter expression is case-sensitive. T…
+    - **orderBy** `string` — The order in which documents are returned. Documents can be ordered by a field in an Document object. Leave it unset if ordered by relevance. `order_by` expression is case-sensi…
+    - **dataStoreSpecs** `array<SearchRequestDataStoreSpec>` — Specs defining dataStores to filter on in a search call and configurations for those dataStores. This is only considered for engines with multiple dataStores use case. For singl…
+      - **numResults** `integer` — Optional. The maximum number of results to retrieve from this data store. If not specified, it will use the SearchRequest.num_results_per_data_store if provided, otherwise there…
+      - **boostSpec** `SearchRequestBoostSpec` — Optional. Boost specification to boost certain documents. For more information on boosting, see [Boosting](https://cloud.google.com/generative-ai-app-builder/docs/boost-search-r…
+        - **conditionBoostSpecs** `array<SearchRequestBoostSpecConditionBoostSpec>` — Condition boost specifications. If a document matches multiple conditions in the specifications, boost scores from these specifications are all applied and combined in a non-lin…
+          - **condition** `string` — An expression which specifies a boost condition. The syntax and supported fields are the same as a filter expression. See SearchRequest.filter for detail syntax and limitations.…
+          - **boost** `number` — Strength of the condition boost, which should be in [-1, 1]. Negative boost means demotion. Default is 0.0. Setting to 1.0 gives the document a big promotion. However, it does n…
+          - **boostControlSpec** `SearchRequestBoostSpecConditionBoostSpecBoostControlSpec` — Complex specification for custom ranking based on customer defined attribute value.
+      - **filter** `string` — Optional. Filter specification to filter documents in the data store specified by data_store field. For more information on filtering, see [Filtering](https://cloud.google.com/g…
+      - **dataStore** `string` — Required. Full resource name of DataStore, such as `projects/{project}/locations/{location}/collections/{collection_id}/dataStores/{data_store_id}`. The path must include the pr…
+      - **customSearchOperators** `string` — Optional. Custom search operators which if specified will be used to filter results from workspace data stores. For more information on custom search operators, see [SearchOpera…
+    - **searchResultMode** `enum` — enum: SEARCH_RESULT_MODE_UNSPECIFIED, DOCUMENTS, CHUNKS — Specifies the search result mode. If unspecified, the search result mode defaults to `DOCUMENTS`. See [parse and chunk documents](https://cloud.google.com/generative-ai-app-buil…
+    - **maxReturnResults** `integer` — Number of search results to return. The default value is 10.
+    - **boostSpec** `SearchRequestBoostSpec` — Boost specification to boost certain documents in search results which may affect the answer query response. For more information on boosting, see [Boosting](https://cloud.googl…
+      - **conditionBoostSpecs** `array<SearchRequestBoostSpecConditionBoostSpec>` — Condition boost specifications. If a document matches multiple conditions in the specifications, boost scores from these specifications are all applied and combined in a non-lin…
+        - **condition** `string` — An expression which specifies a boost condition. The syntax and supported fields are the same as a filter expression. See SearchRequest.filter for detail syntax and limitations.…
+        - **boost** `number` — Strength of the condition boost, which should be in [-1, 1]. Negative boost means demotion. Default is 0.0. Setting to 1.0 gives the document a big promotion. However, it does n…
+        - **boostControlSpec** `SearchRequestBoostSpecConditionBoostSpecBoostControlSpec` — Complex specification for custom ranking based on customer defined attribute value.
+          - **fieldName** `string` — The name of the field whose value will be used to determine the boost amount.
+          - **attributeType** `enum` — enum: ATTRIBUTE_TYPE_UNSPECIFIED, NUMERICAL, FRESHNESS — The attribute type to be used to determine the boost amount. The attribute value can be derived from the field value of the specified field_name. In the case of numerical it is …
+          - **interpolationType** `enum` — enum: INTERPOLATION_TYPE_UNSPECIFIED, LINEAR — The interpolation type to be applied to connect the control points listed below.
+          - **controlPoints** `array<SearchRequestBoostSpecConditionBoostSpecBoostControlSpecControlPoint>` — The control points used to define the curve. The monotonic function (defined through the interpolation_type above) passes through the control points listed here.
+    - **customFineTuningSpec** `CustomFineTuningSpec` — Optional. Custom fine tuning configs.
+      - **enableSearchAdaptor** `boolean` — Whether or not to enable and include custom fine tuned search adaptor model.
+  - **searchResultList** `AnswerQueryRequestSearchSpecSearchResultList` — Search result list.
+    - **searchResults** `array<AnswerQueryRequestSearchSpecSearchResultListSearchResult>` — Search results.
+      - **unstructuredDocumentInfo** `AnswerQueryRequestSearchSpecSearchResultListSearchResultUnstructuredDocumentInfo` — Unstructured document information.
+        - **uri** `string` — URI for the document.
+        - **documentContexts** `array<AnswerQueryRequestSearchSpecSearchResultListSearchResultUnstructuredDocumentInfoDocumentContext>` — List of document contexts. The content will be used for Answer Generation. This is supposed to be the main content of the document that can be long and comprehensive.
+          - **pageIdentifier** `string` — Page identifier.
+          - **content** `string` — Document content to be used for answer generation.
+        - **title** `string` — Title.
+        - **extractiveSegments** `array<AnswerQueryRequestSearchSpecSearchResultListSearchResultUnstructuredDocumentInfoExtractiveSegment>` — List of extractive segments.
+          - **content** `string` — Extractive segment content.
+          - **pageIdentifier** `string` — Page identifier.
+        - **document** `string` — Document resource name.
+        - **extractiveAnswers** `array<AnswerQueryRequestSearchSpecSearchResultListSearchResultUnstructuredDocumentInfoExtractiveAnswer>` — Deprecated: This field is deprecated and will have no effect on the Answer generation. Please use document_contexts and extractive_segments fields. List of extractive answers.
+          - **pageIdentifier** `string` — Page identifier.
+          - **content** `string` — Extractive answer content.
+      - **chunkInfo** `AnswerQueryRequestSearchSpecSearchResultListSearchResultChunkInfo` — Chunk information.
+        - **documentMetadata** `AnswerQueryRequestSearchSpecSearchResultListSearchResultChunkInfoDocumentMetadata` — Metadata of the document from the current chunk.
+          - **title** `string` — Title of the document.
+          - **uri** `string` — Uri of the document.
+        - **chunk** `string` — Chunk resource name.
+        - **content** `string` — Chunk textual content.
+- **userPseudoId** `string` — A unique identifier for tracking visitors. For example, this could be implemented with an HTTP cookie, which should be able to uniquely identify a visitor on a single device. Th…
+- **userLabels** `object` — The user labels applied to a resource must meet the following requirements: * Each resource can have multiple labels, up to a maximum of 64. * Each label must be a key-value pai…
+- **relatedQuestionsSpec** `AnswerQueryRequestRelatedQuestionsSpec` — Related questions specification.
+  - **enable** `boolean` — Enable related questions feature if true.
+- **query** `Query` — Required. Current user query.
+  - **queryId** `string` — Output only. Unique Id for the query.
+  - **parts** `array<QueryPart>` — Query content parts.
+    - **uiJsonPayload** `string` — This field is expected to be a ui message in JSON format. As of Q1 2026, ui_json_payload is only supported for A2UI messages.
+    - **mimeType** `string` — Optional. The IANA standard MIME type of the data. See https://www.iana.org/assignments/media-types/media-types.xhtml. This field is optional. If not set, the default assumed MI…
+    - **text** `string` — Text content.
+    - **driveDocumentReference** `QueryPartDriveDocumentReference` — Reference to a Google Drive document.
+      - **displayTitle** `string` — The display title of the reference.
+      - **documentName** `string` — The full resource name of the document. Format: `projects/*/locations/*/collections/*/dataStores/*/branches/*/documents/*`.
+      - **fileId** `string` — Output only. The file id of the Drive document data stored in the session context files.
+      - **iconUri** `string` — The icon uri of the Drive document reference.
+      - **destinationUri** `string` — The destination uri of the reference.
+      - **driveId** `string` — The Drive id of the document.
+    - **personReference** `QueryPartPersonReference` — Reference to a person.
+      - **displayPhotoUri** `string` — The display photo url of the person.
+      - **displayName** `string` — The display name of the person.
+      - **documentName** `string` — The full resource name of the person. Format: `projects/*/locations/*/collections/*/dataStores/*/branches/*/documents/*`.
+      - **fileId** `string` — Output only. The file id of the person data stored in the session context files.
+      - **destinationUri** `string` — The destination uri of the person.
+      - **email** `string` — The email of the person.
+      - **personId** `string` — The person id of the person.
+    - **documentReference** `QueryPartDocumentReference` — Other VAIS Document references.
+      - **urlForConnector** `string` — Input only. The url_for_connector of the document returned by Federated Search.
+      - **displayTitle** `string` — The display title of the reference.
+      - **documentName** `string` — The full resource name of the document. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/{document_i…
+      - **fileId** `string` — Output only. The file id of the document data stored in the session context files.
+      - **destinationUri** `string` — The destination uri of the reference.
+      - **iconUri** `string` — The icon uri of the reference.
+  - **text** `string` — Plain text.
+  - **createTime** `string` — Output only. The time at which the server accepted this query.
+- **queryUnderstandingSpec** `AnswerQueryRequestQueryUnderstandingSpec` — Query understanding specification.
+  - **queryRephraserSpec** `AnswerQueryRequestQueryUnderstandingSpecQueryRephraserSpec` — Query rephraser specification.
+    - **modelSpec** `AnswerQueryRequestQueryUnderstandingSpecQueryRephraserSpecModelSpec` — Optional. Query Rephraser Model specification.
+      - **modelType** `enum` — enum: MODEL_TYPE_UNSPECIFIED, SMALL, LARGE — Optional. Enabled query rephraser model type. If not set, it will use LARGE by default.
+    - **maxRephraseSteps** `integer` — Max rephrase steps. The max number is 5 steps. If not set or set to < 1, it will be set to 1 by default.
+    - **disable** `boolean` — Disable query rephraser.
+  - **disableSpellCorrection** `boolean` — Optional. Whether to disable spell correction. The default value is `false`.
+  - **queryClassificationSpec** `AnswerQueryRequestQueryUnderstandingSpecQueryClassificationSpec` — Query classification specification.
+    - **types** `array<enum>` — Enabled query classification types.
+- **answerGenerationSpec** `AnswerQueryRequestAnswerGenerationSpec` — Answer generation specification.
+  - **ignoreJailBreakingQuery** `boolean` — Optional. Specifies whether to filter out jail-breaking queries. The default value is `false`. Google employs search-query classification to detect jail-breaking queries. No sum…
+  - **promptSpec** `AnswerQueryRequestAnswerGenerationSpecPromptSpec` — Answer generation prompt specification.
+    - **preamble** `string` — Customized preamble.
+  - **answerLanguageCode** `string` — Language code for Answer. Use language tags defined by [BCP47](https://www.rfc-editor.org/rfc/bcp/bcp47.txt). Note: This is an experimental feature.
+  - **multimodalSpec** `AnswerQueryRequestAnswerGenerationSpecMultimodalSpec` — Optional. Multimodal specification.
+    - **imageSource** `enum` — enum: IMAGE_SOURCE_UNSPECIFIED, ALL_AVAILABLE_SOURCES, CORPUS_IMAGE_ONLY, FIGURE_GENERATION_ONLY — Optional. Source of image returned in the answer.
+  - **ignoreAdversarialQuery** `boolean` — Specifies whether to filter out adversarial queries. The default value is `false`. Google employs search-query classification to detect adversarial queries. No answer is returne…
+  - **ignoreNonAnswerSeekingQuery** `boolean` — Specifies whether to filter out queries that are not answer-seeking. The default value is `false`. Google employs search-query classification to detect answer-seeking queries. N…
+  - **includeCitations** `boolean` — Specifies whether to include citation metadata in the answer. The default value is `false`.
+  - **modelSpec** `AnswerQueryRequestAnswerGenerationSpecModelSpec` — Answer generation model specification.
+    - **modelVersion** `string` — Model version. If not set, it will use the default stable model. Allowed values are: stable, preview.
+  - **ignoreLowRelevantContent** `boolean` — Specifies whether to filter out queries that have low relevance. If this field is set to `false`, all search results are used regardless of relevance to generate answers. If set…
+- **groundingSpec** `AnswerQueryRequestGroundingSpec` — Optional. Grounding specification.
+  - **includeGroundingSupports** `boolean` — Optional. Specifies whether to include grounding_supports in the answer. The default value is `false`. When this field is set to `true`, returned answer will have `grounding_sco…
+  - **filteringLevel** `enum` — enum: FILTERING_LEVEL_UNSPECIFIED, FILTERING_LEVEL_LOW, FILTERING_LEVEL_HIGH — Optional. Specifies whether to enable the filtering based on grounding score and at what level.
+- **endUserSpec** `AnswerQueryRequestEndUserSpec` — Optional. End user specification.
+  - **endUserMetadata** `array<AnswerQueryRequestEndUserSpecEndUserMetaData>` — Optional. End user metadata.
+    - **chunkInfo** `AnswerQueryRequestEndUserSpecEndUserMetaDataChunkInfo` — Chunk information.
+      - **content** `string` — Chunk textual content. It is limited to 8000 characters.
+      - **documentMetadata** `AnswerQueryRequestEndUserSpecEndUserMetaDataChunkInfoDocumentMetadata` — Metadata of the document from the current chunk.
+        - **title** `string` — Title of the document.
+
+### Response — `AnswerQueryResponse`
+
+- **answer** `Answer` — Answer resource object. If AnswerQueryRequest.QueryUnderstandingSpec.QueryRephraserSpec.max_rephrase_steps is greater than 1, use Answer.name to fetch answer information using C…
+  - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED, STREAMING — The state of the answer generation.
+  - **groundingScore** `number` — A score in the range of [0, 1] describing how grounded the answer is by the reference chunks.
+  - **createTime** `string` — Output only. Answer creation timestamp.
+  - **safetyRatings** `array<SafetyRating>` — Optional. Safety ratings.
+    - **category** `enum` — enum: HARM_CATEGORY_UNSPECIFIED, HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT, HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_CIVIC_INTEGRITY — Output only. Harm category.
+    - **severity** `enum` — enum: HARM_SEVERITY_UNSPECIFIED, HARM_SEVERITY_NEGLIGIBLE, HARM_SEVERITY_LOW, HARM_SEVERITY_MEDIUM, HARM_SEVERITY_HIGH — Output only. Harm severity levels in the content.
+    - **severityScore** `number` — Output only. Harm severity score.
+    - **blocked** `boolean` — Output only. Indicates whether the content was filtered out because of this rating.
+    - **probability** `enum` — enum: HARM_PROBABILITY_UNSPECIFIED, NEGLIGIBLE, LOW, MEDIUM, HIGH — Output only. Harm probability levels in the content.
+    - **probabilityScore** `number` — Output only. Harm probability score.
+  - **name** `string` — Immutable. Fully qualified name `projects/{project}/locations/global/collections/{collection}/engines/{engine}/sessions/*/answers/*`
+  - **references** `array<AnswerReference>` — References.
+    - **structuredDocumentInfo** `AnswerReferenceStructuredDocumentInfo` — Structured document information.
+      - **structData** `object` — Structured search data.
+      - **title** `string` — Output only. The title of the document.
+      - **document** `string` — Document resource name.
+      - **uri** `string` — Output only. The URI of the document.
+    - **unstructuredDocumentInfo** `AnswerReferenceUnstructuredDocumentInfo` — Unstructured document information.
+      - **chunkContents** `array<AnswerReferenceUnstructuredDocumentInfoChunkContent>` — List of cited chunk contents derived from document content.
+        - **content** `string` — Chunk textual content.
+        - **relevanceScore** `number` — The relevance of the chunk for a given query. Values range from 0.0 (completely irrelevant) to 1.0 (completely relevant). This value is for informational purpose only. It may ch…
+        - **blobAttachmentIndexes** `array<string>` — Output only. Stores indexes of blobattachments linked to this chunk.
+        - **pageIdentifier** `string` — Page identifier.
+      - **uri** `string` — URI for the document.
+      - **structData** `object` — The structured JSON metadata for the document. It is populated from the struct data from the Chunk in search result.
+      - **title** `string` — Title.
+      - **document** `string` — Document resource name.
+    - **chunkInfo** `AnswerReferenceChunkInfo` — Chunk information.
+      - **documentMetadata** `AnswerReferenceChunkInfoDocumentMetadata` — Document metadata.
+        - **uri** `string` — URI for the document.
+        - **pageIdentifier** `string` — Page identifier.
+        - **structData** `object` — The structured JSON metadata for the document. It is populated from the struct data from the Chunk in search result.
+        - **document** `string` — Document resource name.
+        - **title** `string` — Title.
+      - **blobAttachmentIndexes** `array<string>` — Output only. Stores indexes of blobattachments linked to this chunk.
+      - **chunk** `string` — Chunk resource name.
+      - **content** `string` — Chunk textual content.
+      - **relevanceScore** `number` — The relevance of the chunk for a given query. Values range from 0.0 (completely irrelevant) to 1.0 (completely relevant). This value is for informational purpose only. It may ch…
+  - **groundingSupports** `array<AnswerGroundingSupport>` — Optional. Grounding supports.
+    - **startIndex** `string` — Required. Index indicates the start of the claim, measured in bytes (UTF-8 unicode).
+    - **groundingScore** `number` — A score in the range of [0, 1] describing how grounded is a specific claim by the references. Higher value means that the claim is better supported by the reference chunks.
+    - **groundingCheckRequired** `boolean` — Indicates that this claim required grounding check. When the system decided this claim didn't require attribution/grounding check, this field is set to false. In that case, no g…
+    - **sources** `array<AnswerCitationSource>` — Optional. Citation sources for the claim.
+      - **referenceId** `string` — ID of the citation source.
+    - **endIndex** `string` — Required. End of the claim, exclusive.
+  - **answerSkippedReasons** `array<enum>` — Additional answer-skipped reasons. This provides the reason for ignored cases. If nothing is skipped, this field is not set.
+  - **relatedQuestions** `array<string>` — Suggested related questions.
+  - **completeTime** `string` — Output only. Answer completed timestamp.
+  - **answerText** `string` — The textual answer.
+  - **blobAttachments** `array<AnswerBlobAttachment>` — Output only. List of blob attachments in the answer.
+    - **data** `AnswerBlobAttachmentBlob` — Output only. The mime type and data of the blob.
+      - **mimeType** `string` — Output only. The media type (MIME type) of the generated or retrieved data.
+      - **data** `string` — Output only. Raw bytes.
+    - **attributionType** `enum` — enum: ATTRIBUTION_TYPE_UNSPECIFIED, CORPUS, GENERATED — Output only. The attribution type of the blob.
+  - **steps** `array<AnswerStep>` — Answer generation steps.
+    - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED — The state of the step.
+    - **thought** `string` — The thought of the step.
+    - **actions** `array<AnswerStepAction>` — Actions.
+      - **searchAction** `AnswerStepActionSearchAction` — Search action.
+        - **query** `string` — The query to search.
+      - **observation** `AnswerStepActionObservation` — Observation.
+        - **searchResults** `array<AnswerStepActionObservationSearchResult>` — Search results observed by the search action, it can be snippets info or chunk info, depending on the citation type set by the user.
+          - **document** `string` — Document resource name.
+          - **title** `string` — Title.
+          - **snippetInfo** `array<AnswerStepActionObservationSearchResultSnippetInfo>` — If citation_type is DOCUMENT_LEVEL_CITATION, populate document level snippets.
+          - **uri** `string` — URI for the document.
+          - **chunkInfo** `array<AnswerStepActionObservationSearchResultChunkInfo>` — If citation_type is CHUNK_LEVEL_CITATION and chunk mode is on, populate chunk info.
+          - **structData** `object` — Data representation. The structured JSON data for the document. It's populated from the struct data from the Document, or the Chunk in search result.
+    - **description** `string` — The description of the step.
+  - **queryUnderstandingInfo** `AnswerQueryUnderstandingInfo` — Query understanding information.
+    - **queryClassificationInfo** `array<AnswerQueryUnderstandingInfoQueryClassificationInfo>` — Query classification information.
+      - **positive** `boolean` — Classification output.
+      - **type** `enum` — enum: TYPE_UNSPECIFIED, ADVERSARIAL_QUERY, NON_ANSWER_SEEKING_QUERY, JAIL_BREAKING_QUERY, NON_ANSWER_SEEKING_QUERY_V2, USER_DEFINED_CLASSIFICATION_QUERY — Query classification type.
+  - **citations** `array<AnswerCitation>` — Citations.
+    - **startIndex** `string` — Index indicates the start of the segment, measured in bytes (UTF-8 unicode). If there are multi-byte characters,such as non-ASCII characters, the index measurement is longer tha…
+    - **sources** `array<AnswerCitationSource>` — Citation sources for the attributed segment.
+      - **referenceId** `string` — ID of the citation source.
+    - **endIndex** `string` — End of the attributed segment, exclusive. Measured in bytes (UTF-8 unicode). If there are multi-byte characters,such as non-ASCII characters, the index measurement is longer tha…
+- **answerQueryToken** `string` — A global unique ID used for logging.
+- **session** `Session` — Session resource object. It will be only available when session field is set and valid in the AnswerQueryRequest request.
+  - **startTime** `string` — Output only. The time the session started.
+  - **labels** `array<string>` — Optional. The labels for the session. Can be set as filter in ListSessionsRequest.
+  - **name** `string` — Immutable. Fully qualified name `projects/{project}/locations/global/collections/{collection}/engines/{engine}/sessions/*`
+  - **isPinned** `boolean` — Optional. Whether the session is pinned, pinned session will be displayed on the top of the session list.
+  - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS — The state of the session.
+  - **userPseudoId** `string` — A unique identifier for tracking users.
+  - **pendingAsyncAssistOperationId** `string` — Output only. Full resource name of an in-progress AsyncAssist operation for this session, e.g. `projects/*/locations/*/collections/*/engines/*/sessions/*/operations/*`. Set when…
+  - **endTime** `string` — Output only. The time the session finished.
+  - **turns** `array<SessionTurn>` — Turns.
+    - **live** `boolean` — Optional. Indicates whether this turn is a live turn.
+    - **query** `Query` — Optional. The user query. May not be set if this turn is merely regenerating an answer to a different turn
+      - **queryId** `string` — Output only. Unique Id for the query.
+      - **parts** `array<QueryPart>` — Query content parts.
+        - **uiJsonPayload** `string` — This field is expected to be a ui message in JSON format. As of Q1 2026, ui_json_payload is only supported for A2UI messages.
+        - **mimeType** `string` — Optional. The IANA standard MIME type of the data. See https://www.iana.org/assignments/media-types/media-types.xhtml. This field is optional. If not set, the default assumed MI…
+        - **text** `string` — Text content.
+        - **driveDocumentReference** `QueryPartDriveDocumentReference` — Reference to a Google Drive document.
+          - **displayTitle** `string` — The display title of the reference.
+          - **documentName** `string` — The full resource name of the document. Format: `projects/*/locations/*/collections/*/dataStores/*/branches/*/documents/*`.
+          - **fileId** `string` — Output only. The file id of the Drive document data stored in the session context files.
+          - **iconUri** `string` — The icon uri of the Drive document reference.
+          - **destinationUri** `string` — The destination uri of the reference.
+          - **driveId** `string` — The Drive id of the document.
+        - **personReference** `QueryPartPersonReference` — Reference to a person.
+          - **displayPhotoUri** `string` — The display photo url of the person.
+          - **displayName** `string` — The display name of the person.
+          - **documentName** `string` — The full resource name of the person. Format: `projects/*/locations/*/collections/*/dataStores/*/branches/*/documents/*`.
+          - **fileId** `string` — Output only. The file id of the person data stored in the session context files.
+          - **destinationUri** `string` — The destination uri of the person.
+          - **email** `string` — The email of the person.
+          - **personId** `string` — The person id of the person.
+        - **documentReference** `QueryPartDocumentReference` — Other VAIS Document references.
+          - **urlForConnector** `string` — Input only. The url_for_connector of the document returned by Federated Search.
+          - **displayTitle** `string` — The display title of the reference.
+          - **documentName** `string` — The full resource name of the document. Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{data_store}/branches/{branch}/documents/{document_i…
+          - **fileId** `string` — Output only. The file id of the document data stored in the session context files.
+          - **destinationUri** `string` — The destination uri of the reference.
+          - **iconUri** `string` — The icon uri of the reference.
+      - **text** `string` — Plain text.
+      - **createTime** `string` — Output only. The time at which the server accepted this query.
+    - **answer** `string` — Optional. The resource name of the answer to the user query. Only set if the answer generation (/answer API call) happened in this turn.
+    - **detailedAssistAnswer** `AssistAnswer` — Output only. In ConversationalSearchService.GetSession API, if GetSessionRequest.include_answer_details is set to true, this field will be populated when getting assistant session.
+      - **assistSkippedReasons** `array<enum>` — Reasons for not answering the assist call.
+      - **replies** `array<AssistAnswerReply>` — Replies of the assistant.
+        - **createTime** `string` — The time when the reply was created.
+        - **groundedContent** `AssistantGroundedContent` — Possibly grounded response text or media from the assistant.
+          - **textGroundingMetadata** `AssistantGroundedContentTextGroundingMetadata` — Metadata for grounding based on text sources.
+          - **content** `AssistantContent` — The content.
+          - **citationMetadata** `CitationMetadata` — Source attribution of the generated content. See also https://cloud.google.com/vertex-ai/generative-ai/docs/learn/overview#citation_check
+        - **replyId** `string` — Output only. When set, uniquely identifies a reply within the `AssistAnswer` resource. During an AssistantService.StreamAssist call, multiple `Reply` messages with the same ID c…
+      - **name** `string` — Immutable. Identifier. Resource name of the `AssistAnswer`. Format: `projects/{project}/locations/{location}/collections/{collection}/engines/{engine}/sessions/{session}/assistA…
+      - **customerPolicyEnforcementResult** `AssistAnswerCustomerPolicyEnforcementResult` — Optional. The field contains information about the various policy checks' results like the banned phrases or the Model Armor checks. This field is populated only if the assist c…
+        - **verdict** `enum` — enum: UNSPECIFIED, ALLOW, BLOCK — Final verdict of the customer policy enforcement. If only one policy blocked the processing, the verdict is BLOCK.
+        - **policyResults** `array<AssistAnswerCustomerPolicyEnforcementResultPolicyEnforcementResult>` — Customer policy enforcement results. Populated only if the assist call was skipped due to a policy violation. It contains results from those filters that blocked the processing …
+          - **modelArmorEnforcementResult** `AssistAnswerCustomerPolicyEnforcementResultModelArmorEnforcementResult` — The policy enforcement result for the Model Armor policy.
+          - **bannedPhraseEnforcementResult** `AssistAnswerCustomerPolicyEnforcementResultBannedPhraseEnforcementResult` — The policy enforcement result for the banned phrase policy.
+      - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED, SKIPPED, CANCELLED — State of the answer generation.
+    - **detailedAnswer** `Answer` — Output only. In ConversationalSearchService.GetSession API, if GetSessionRequest.include_answer_details is set to true, this field will be populated when getting answer query se…
+      - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED, STREAMING — The state of the answer generation.
+      - **groundingScore** `number` — A score in the range of [0, 1] describing how grounded the answer is by the reference chunks.
+      - **createTime** `string` — Output only. Answer creation timestamp.
+      - **safetyRatings** `array<SafetyRating>` — Optional. Safety ratings.
+        - **category** `enum` — enum: HARM_CATEGORY_UNSPECIFIED, HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT, HARM_CATEGORY_HARASSMENT, HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_CIVIC_INTEGRITY — Output only. Harm category.
+        - **severity** `enum` — enum: HARM_SEVERITY_UNSPECIFIED, HARM_SEVERITY_NEGLIGIBLE, HARM_SEVERITY_LOW, HARM_SEVERITY_MEDIUM, HARM_SEVERITY_HIGH — Output only. Harm severity levels in the content.
+        - **severityScore** `number` — Output only. Harm severity score.
+        - **blocked** `boolean` — Output only. Indicates whether the content was filtered out because of this rating.
+        - **probability** `enum` — enum: HARM_PROBABILITY_UNSPECIFIED, NEGLIGIBLE, LOW, MEDIUM, HIGH — Output only. Harm probability levels in the content.
+        - **probabilityScore** `number` — Output only. Harm probability score.
+      - **name** `string` — Immutable. Fully qualified name `projects/{project}/locations/global/collections/{collection}/engines/{engine}/sessions/*/answers/*`
+      - **references** `array<AnswerReference>` — References.
+        - **structuredDocumentInfo** `AnswerReferenceStructuredDocumentInfo` — Structured document information.
+          - **structData** `object` — Structured search data.
+          - **title** `string` — Output only. The title of the document.
+          - **document** `string` — Document resource name.
+          - **uri** `string` — Output only. The URI of the document.
+        - **unstructuredDocumentInfo** `AnswerReferenceUnstructuredDocumentInfo` — Unstructured document information.
+          - **chunkContents** `array<AnswerReferenceUnstructuredDocumentInfoChunkContent>` — List of cited chunk contents derived from document content.
+          - **uri** `string` — URI for the document.
+          - **structData** `object` — The structured JSON metadata for the document. It is populated from the struct data from the Chunk in search result.
+          - **title** `string` — Title.
+          - **document** `string` — Document resource name.
+        - **chunkInfo** `AnswerReferenceChunkInfo` — Chunk information.
+          - **documentMetadata** `AnswerReferenceChunkInfoDocumentMetadata` — Document metadata.
+          - **blobAttachmentIndexes** `array<string>` — Output only. Stores indexes of blobattachments linked to this chunk.
+          - **chunk** `string` — Chunk resource name.
+          - **content** `string` — Chunk textual content.
+          - **relevanceScore** `number` — The relevance of the chunk for a given query. Values range from 0.0 (completely irrelevant) to 1.0 (completely relevant). This value is for informational purpose only. It may ch…
+      - **groundingSupports** `array<AnswerGroundingSupport>` — Optional. Grounding supports.
+        - **startIndex** `string` — Required. Index indicates the start of the claim, measured in bytes (UTF-8 unicode).
+        - **groundingScore** `number` — A score in the range of [0, 1] describing how grounded is a specific claim by the references. Higher value means that the claim is better supported by the reference chunks.
+        - **groundingCheckRequired** `boolean` — Indicates that this claim required grounding check. When the system decided this claim didn't require attribution/grounding check, this field is set to false. In that case, no g…
+        - **sources** `array<AnswerCitationSource>` — Optional. Citation sources for the claim.
+          - **referenceId** `string` — ID of the citation source.
+        - **endIndex** `string` — Required. End of the claim, exclusive.
+      - **answerSkippedReasons** `array<enum>` — Additional answer-skipped reasons. This provides the reason for ignored cases. If nothing is skipped, this field is not set.
+      - **relatedQuestions** `array<string>` — Suggested related questions.
+      - **completeTime** `string` — Output only. Answer completed timestamp.
+      - **answerText** `string` — The textual answer.
+      - **blobAttachments** `array<AnswerBlobAttachment>` — Output only. List of blob attachments in the answer.
+        - **data** `AnswerBlobAttachmentBlob` — Output only. The mime type and data of the blob.
+          - **mimeType** `string` — Output only. The media type (MIME type) of the generated or retrieved data.
+          - **data** `string` — Output only. Raw bytes.
+        - **attributionType** `enum` — enum: ATTRIBUTION_TYPE_UNSPECIFIED, CORPUS, GENERATED — Output only. The attribution type of the blob.
+      - **steps** `array<AnswerStep>` — Answer generation steps.
+        - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED — The state of the step.
+        - **thought** `string` — The thought of the step.
+        - **actions** `array<AnswerStepAction>` — Actions.
+          - **searchAction** `AnswerStepActionSearchAction` — Search action.
+          - **observation** `AnswerStepActionObservation` — Observation.
+        - **description** `string` — The description of the step.
+      - **queryUnderstandingInfo** `AnswerQueryUnderstandingInfo` — Query understanding information.
+        - **queryClassificationInfo** `array<AnswerQueryUnderstandingInfoQueryClassificationInfo>` — Query classification information.
+          - **positive** `boolean` — Classification output.
+          - **type** `enum` — enum: TYPE_UNSPECIFIED, ADVERSARIAL_QUERY, NON_ANSWER_SEEKING_QUERY, JAIL_BREAKING_QUERY, NON_ANSWER_SEEKING_QUERY_V2, USER_DEFINED_CLASSIFICATION_QUERY — Query classification type.
+      - **citations** `array<AnswerCitation>` — Citations.
+        - **startIndex** `string` — Index indicates the start of the segment, measured in bytes (UTF-8 unicode). If there are multi-byte characters,such as non-ASCII characters, the index measurement is longer tha…
+        - **sources** `array<AnswerCitationSource>` — Citation sources for the attributed segment.
+          - **referenceId** `string` — ID of the citation source.
+        - **endIndex** `string` — End of the attributed segment, exclusive. Measured in bytes (UTF-8 unicode). If there are multi-byte characters,such as non-ASCII characters, the index measurement is longer tha…
+    - **queryConfig** `object` — Optional. Represents metadata related to the query config, for example LLM model and version used, model parameters (temperature, grounding parameters, etc.). The prefix "google…
+  - **displayName** `string` — Optional. The display name of the session. This field is used to identify the session in the UI. By default, the display name is the first turn query text in the session.
+

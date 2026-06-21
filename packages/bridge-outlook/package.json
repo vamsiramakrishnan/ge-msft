@@ -6,6 +6,13 @@
   "description": "Outlook bridge: read mail item/thread/attachments, draft grounded replies",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": { "build": "tsc -b", "typecheck": "tsc -b --noEmit" },
-  "dependencies": { "@ge/contracts": "*", "@ge/content": "*", "@ge/runtime": "*" }
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "@ge/content": "*",
+    "@ge/runtime": "*"
+  }
 }

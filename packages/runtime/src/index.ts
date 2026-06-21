@@ -4,3 +4,8 @@
  */
 export type { DocBridge, AuthClient, UserIdentity } from './bridge.js';
 export { AssistSession, type AssistSessionOptions } from './assist-session.js';
+export {
+  Orchestrator,
+  type OrchestratorHandlers,
+  type OrchestratorOptions,
+} from './orchestrator.js';

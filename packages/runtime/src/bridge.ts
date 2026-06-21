@@ -6,6 +6,7 @@ import type {
   ResolvedContext,
   Surface,
 } from '@ge/contracts';
+import type { HostEvent, Unsubscribe } from '@ge/triggers';
 
 /**
  * The one interface every surface implements. The runtime (and the UI above it) talk
@@ -32,6 +33,14 @@ export interface DocBridge {
 
   /** Perform a reversible, provenanced write. Never called without user confirmation. */
   actuate(request: ActuationRequest): Promise<ActuationResult>;
+
+  /**
+   * Stream host events (selection/document/comment changes; Outlook compose/send) into the
+   * trigger engine. Optional — a surface that can't observe events simply omits it. The
+   * bridge tags each event's `origin` so the system ignores remote/own-write echoes.
+   * Returns an unsubscribe handle.
+   */
+  watch?(emit: (event: HostEvent) => void): Unsubscribe;
 }
 
 /**

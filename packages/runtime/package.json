@@ -13,6 +13,7 @@
   "dependencies": {
     "@ge/contracts": "*",
     "@ge/content": "*",
-    "@ge/gemini-client": "*"
+    "@ge/gemini-client": "*",
+    "@ge/triggers": "*"
   }
 }

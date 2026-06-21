@@ -29,10 +29,41 @@ export interface GeminiClientConfig {
 
 const GLOBAL_HOST = 'https://discoveryengine.googleapis.com';
 
-/** Regional host for residency (e.g. 'eu', 'us', 'asia-northeast1'); 'global' → global host. */
+/**
+ * Regional host for residency (e.g. 'eu', 'us', 'asia-northeast1'). Only the explicit value
+ * `'global'` selects the global host — a missing/empty location is a configuration error, never
+ * a silent global fallback, so a residency-pinned tenant cannot be downgraded by misconfig.
+ */
 export function discoveryEngineHost(location: string): string {
-  if (!location || location === 'global') return GLOBAL_HOST;
+  if (location === 'global') return GLOBAL_HOST;
+  if (!location) {
+    throw new Error(
+      'Discovery Engine location is required (residency pin): set assistant.location to a ' +
+        'region (e.g. "eu", "us") or the explicit value "global".',
+    );
+  }
   return `https://discoveryengine.${location}.rep.googleapis.com`;
+}
+
+/**
+ * Validate + normalize the optional egress proxy. The federated bearer token is attached to this
+ * origin (see de-fetch.ts), so it MUST be HTTPS — otherwise the token could leak in cleartext or
+ * to an unintended origin. `localhost`/`127.0.0.1` may use HTTP for local dev only.
+ */
+export function proxyBase(proxyUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch {
+    throw new Error(`Invalid proxyUrl: ${proxyUrl}`);
+  }
+  const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLocalhost)) {
+    throw new Error(
+      `proxyUrl must be https (the federated token is attached to it): got ${parsed.protocol}`,
+    );
+  }
+  return proxyUrl.replace(/\/$/, '');
 }
 
 export function assistantResourceName(p: AssistantPath): string {
@@ -46,7 +77,7 @@ export function assistantResourceName(p: AssistantPath): string {
 
 /** Absolute URL for the `:streamAssist` call (or the proxy, if configured). */
 export function streamAssistUrl(cfg: GeminiClientConfig): string {
-  if (cfg.proxyUrl) return `${cfg.proxyUrl.replace(/\/$/, '')}/streamAssist`;
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/streamAssist`;
   const host = discoveryEngineHost(cfg.assistant.location);
   return `${host}/v1alpha/${assistantResourceName(cfg.assistant)}:streamAssist`;
 }
@@ -55,4 +86,53 @@ export function streamAssistUrl(cfg: GeminiClientConfig): string {
 export function engineResourceName(p: AssistantPath): string {
   const collection = p.collection ?? 'default_collection';
   return `projects/${p.project}/locations/${p.location}/collections/${collection}/engines/${p.engine}`;
+}
+
+/** Project+location resource name (parent of grounding/ranking configs). */
+export function projectLocationResourceName(p: AssistantPath): string {
+  return `projects/${p.project}/locations/${p.location}`;
+}
+
+/**
+ * Absolute URL for the engine-scoped `:search` serving config call (or the proxy).
+ * Default serving config id is `default_search`.
+ */
+export function searchUrl(cfg: GeminiClientConfig, servingConfig = 'default_search'): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/search`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  const engine = engineResourceName(cfg.assistant);
+  return `${host}/v1alpha/${engine}/servingConfigs/${servingConfig}:search`;
+}
+
+/** Absolute URL for the engine-scoped `completionConfig:completeQuery` call (or the proxy). */
+export function completeQueryUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/completeQuery`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  const engine = engineResourceName(cfg.assistant);
+  return `${host}/v1alpha/${engine}/completionConfig:completeQuery`;
+}
+
+/**
+ * Absolute URL for the project+location-scoped `groundingConfigs:check` call (or the proxy).
+ * Default grounding config id is `default_grounding_config`. NOT under the engine.
+ */
+export function checkGroundingUrl(
+  cfg: GeminiClientConfig,
+  groundingConfig = 'default_grounding_config',
+): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/checkGrounding`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  const base = projectLocationResourceName(cfg.assistant);
+  return `${host}/v1alpha/${base}/groundingConfigs/${groundingConfig}:check`;
+}
+
+/**
+ * Absolute URL for the project+location-scoped `rankingConfigs:rank` call (or the proxy).
+ * Default ranking config id is `default_ranking_config`. NOT under the engine.
+ */
+export function rankUrl(cfg: GeminiClientConfig, rankingConfig = 'default_ranking_config'): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/rank`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  const base = projectLocationResourceName(cfg.assistant);
+  return `${host}/v1alpha/${base}/rankingConfigs/${rankingConfig}:rank`;
 }

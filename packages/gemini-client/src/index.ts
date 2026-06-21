@@ -8,6 +8,17 @@ export * from './config.js';
 export * from './wif.js';
 export * from './stream-assist.js';
 export * from './session-context.js';
+export * from './search.js';
+export * from './autocomplete.js';
+export * from './grounding.js';
+export * from './ranking.js';
+export { postJson, type FetchLike } from './de-fetch.js';
 export { parseJsonArrayStream } from './json-stream.js';
 export { contentHash } from './hash.js';
 export type { DeStreamAssistResponse } from './de-types.js';
+export type {
+  DeSearchResponse,
+  DeCompleteQueryResponse,
+  DeCheckGroundingResponse,
+  DeRankResponse,
+} from './de-search-types.js';

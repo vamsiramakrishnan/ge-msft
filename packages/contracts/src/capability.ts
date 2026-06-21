@@ -30,6 +30,7 @@ export const ActuationKindSchema = z.enum([
   'create-event', // Outlook/Graph: create a calendar item
   'create-task', // Planner/To Do: create a task
   'post-card', // Teams: post an Adaptive Card (notes/action items)
+  'post-message', // Teams: stage a reviewable chat post / Adaptive Card (reversible)
 ]);
 export type ActuationKind = z.infer<typeof ActuationKindSchema>;
 

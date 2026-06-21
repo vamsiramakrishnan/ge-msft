@@ -1,2 +1,9 @@
-// Excel: =GE.ASK streaming function + linked-entity load — placeholder; implemented per docs/BUILD-PLAN.md
-export {};
+/**
+ * @ge/bridge-excel — the Excel DocBridge. Native context capture (selected range / used
+ * range → table block) + address-anchored `write-cells` writes. Implements @ge/runtime's
+ * DocBridge, so it plugs into the shared AssistSession loop unchanged.
+ */
+export { ExcelBridge, parseAddress } from './excel-bridge.js';
+export { EXCEL_CAPABILITIES } from './capabilities.js';
+export { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
+export { planWriteCells, type WriteCellsPlan } from './actuate-plan.js';

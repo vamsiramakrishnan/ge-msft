@@ -5,6 +5,7 @@
   "references": [
     { "path": "../contracts" },
     { "path": "../content" },
-    { "path": "../gemini-client" }
+    { "path": "../gemini-client" },
+    { "path": "../triggers" }
   ]
 }

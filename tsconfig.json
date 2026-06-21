@@ -4,6 +4,7 @@
     { "path": "packages/contracts" },
     { "path": "packages/content" },
     { "path": "packages/graph-client" },
+    { "path": "packages/triggers" },
     { "path": "packages/gemini-client" },
     { "path": "packages/runtime" },
     { "path": "packages/web-shell" },

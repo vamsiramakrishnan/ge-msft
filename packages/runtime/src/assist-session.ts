@@ -10,6 +10,7 @@ import type {
   UnitDescriptor,
 } from '@ge/contracts';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
+import type { TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
 
 /**
@@ -25,6 +26,8 @@ export interface AssistSessionOptions {
   unit: UnitDescriptor;
   /** Default kinds to auto-attach from the bridge before a turn (e.g. ['selection']). */
   autoAttach?: ContextKind[];
+  /** Optional trigger registry: gates every write (pre-actuation) and audits it (post-actuation). */
+  triggers?: TriggerRegistry;
 }
 
 export class AssistSession {
@@ -100,7 +103,26 @@ export class AssistSession {
       params,
       ...(this.lastProvenance ? { provenance: this.lastProvenance } : {}),
     };
-    return this.bridge.actuate(request);
+
+    // PreToolUse-style gate: a trigger may veto the write before it lands.
+    const triggers = this.options.triggers;
+    if (triggers) {
+      const gate = await triggers.gate({ type: 'pre-actuation', request });
+      if (gate.kind === 'block') {
+        return {
+          ok: false,
+          changeId,
+          kind,
+          error: { code: 'blocked', message: gate.reason },
+        };
+      }
+    }
+
+    const result = await this.bridge.actuate(request);
+
+    // PostToolUse-style audit hook (fire-and-forget).
+    if (triggers) void triggers.dispatch({ type: 'post-actuation', request, result });
+    return result;
   }
 
   get sessionId(): string | undefined {

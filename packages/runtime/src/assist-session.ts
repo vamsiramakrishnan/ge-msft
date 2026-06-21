@@ -10,8 +10,9 @@ import type {
   UnitDescriptor,
 } from '@ge/contracts';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
-import type { TriggerRegistry } from '@ge/triggers';
+import type { HostEvent, TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
+import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 
 /**
  * The surface-agnostic assist loop — the analog of Claude's add-in runtime, but grounded
@@ -28,10 +29,18 @@ export interface AssistSessionOptions {
   autoAttach?: ContextKind[];
   /** Optional trigger registry: gates every write (pre-actuation) and audits it (post-actuation). */
   triggers?: TriggerRegistry;
+  /** Resume a prior session (persisted in host metadata) — the constructed context survives. */
+  resumeSessionId?: string;
 }
+
+/** What a `prime` turn asks of the engine: absorb the working context, don't act on it. */
+const PRIME_INSTRUCTION =
+  'Note the attached working context for our conversation. Acknowledge briefly; take no action.';
 
 export class AssistSession {
   readonly context = new SessionContext();
+  /** The event-fed constructor of the working-context brief (see context-model.ts). */
+  readonly model: ContextModel;
   private session: string | undefined;
   private lastProvenance: ProvenancePayload | undefined;
   private readonly citations: SourceRef[] = [];
@@ -40,7 +49,10 @@ export class AssistSession {
     private readonly bridge: DocBridge,
     private readonly client: StreamAssistClient,
     private readonly options: AssistSessionOptions,
-  ) {}
+  ) {
+    this.model = new ContextModel(bridge.surface);
+    this.session = options.resumeSessionId;
+  }
 
   /** Pull attachable context from the bridge and add it to the live session set. */
   async attachContext(kinds?: ContextKind[]): Promise<ContextRef[]> {
@@ -68,6 +80,8 @@ export class AssistSession {
     if (this.options.autoAttach && this.context.size === 0) {
       await this.attachContext(this.options.autoAttach);
     }
+    // Fold any constructed-but-uncommitted brief so it rides this turn (the lazy commit path).
+    if (this.model.hasPending) this.commit('fold');
     const req = {
       intent: 'assist' as const,
       query,
@@ -84,6 +98,46 @@ export class AssistSession {
       }
       yield event;
     }
+    // The folded brief is now in the session history → mark resident and drop the local part.
+    this.model.markCommitted();
+    this.context.remove(BRIEF_REF_ID);
+  }
+
+  /**
+   * Feed a host event into the working-context model and commit at the checkpoints it signals.
+   * This is the "react to events" path that does NOT run the assistant: most events just
+   * construct context (folded into the next turn); a few high-value ones prime it now.
+   */
+  async ingest(event: HostEvent): Promise<void> {
+    const hint = this.model.observe(event);
+    if (hint.commit) await this.commit(hint.commit);
+  }
+
+  /**
+   * Commit the constructed brief to the Gemini Enterprise session.
+   *  • `fold` — stage it as a query part for the *next* `ask` (no network call).
+   *  • `prime` — send it now as a context-only turn so it is resident before the user asks.
+   * Both are no-ops when nothing is pending.
+   */
+  async commit(mode: CommitMode): Promise<void> {
+    const brief = this.model.pendingBrief();
+    if (!brief) return;
+    if (mode === 'fold') {
+      for (const entry of brief.entries) this.context.add(entry);
+      return; // marked committed when the next ask() completes
+    }
+    const req = {
+      intent: 'assist' as const,
+      query: PRIME_INSTRUCTION,
+      unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
+    };
+    for await (const event of this.client.stream(req, {
+      session: this.session,
+      context: brief.entries,
+    })) {
+      if (event.type === 'provenance') this.session = event.payload.sessionId ?? this.session;
+    }
+    this.model.markCommitted();
   }
 
   /**

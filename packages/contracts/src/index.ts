@@ -9,5 +9,6 @@ export * from './finding.js';
 export * from './provenance.js';
 export * from './request.js';
 export * from './sse.js';
+export * from './anchor.js';
 export * from './context.js';
 export * from './capability.js';

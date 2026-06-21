@@ -1,0 +1,16 @@
+{
+  "name": "@ge/content",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Content processing for grounding: normalize to Markdown, structure-aware chunk, contextualize, and emit metadata-rich context parts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*"
+  }
+}

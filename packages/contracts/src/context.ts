@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AnchorSchema } from './anchor.js';
 
 /**
  * The capability foundation (part 1 of 2): **context capture**.
@@ -48,6 +49,8 @@ export const ContextRefSchema = z.object({
   preview: z.string().optional(), // short snippet for the UI
   mimeType: z.string().optional(),
   sizeBytes: z.number().optional(), // for budgeting/large-object warnings
+  tokensEstimate: z.number().optional(), // approximate token cost (context-budget UI)
+  anchor: AnchorSchema.optional(), // how to write back to this span (content chunks)
   live: z.boolean().optional(), // true ⇒ re-resolve at send-time (e.g. "current selection")
 });
 export type ContextRef = z.infer<typeof ContextRefSchema>;

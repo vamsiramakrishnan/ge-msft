@@ -214,6 +214,8 @@ function surfaceContextText(req: AssistRequest): string {
       return sc.values ? sc.values.map((row) => row.join('\t')).join('\n') : '';
     case 'onenote':
       return sc.sources ? sc.sources.join('\n') : '';
+    case 'outlook':
+      return [sc.subject, sc.body].filter(Boolean).join('\n');
   }
 }
 

@@ -27,6 +27,12 @@ export const SurfaceContextSchema = z.discriminatedUnion('kind', [
     sources: z.array(z.string()).optional(),
   }),
   z.object({ kind: z.literal('teams'), transcriptWindow: z.string().optional() }),
+  z.object({
+    kind: z.literal('outlook'),
+    subject: z.string().optional(),
+    body: z.string().optional(),
+    from: z.string().optional(),
+  }),
 ]);
 export type SurfaceContext = z.infer<typeof SurfaceContextSchema>;
 

@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/contracts" },
+    { "path": "packages/gemini-client" },
     { "path": "packages/web-shell" },
     { "path": "packages/bridge-word" },
     { "path": "packages/bridge-excel" },

@@ -3,8 +3,8 @@ import { IntentSchema } from './intent.js';
 import { UnitDescriptorSchema } from './unit.js';
 
 /**
- * Every grounded call carries the user's Entra/Teams bearer token in
- * `Authorization`; the gateway validates it and federates identity. The body:
+ * Every grounded call is made as the signed-in user: the client federates the user's
+ * Entra identity to Google (WIF) and sends the resulting token directly. The body:
  */
 export const AssistRequestSchema = z.object({
   intent: IntentSchema,

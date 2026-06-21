@@ -4,7 +4,7 @@ This file is the source of truth for how this repo works. Read it fully before d
 
 ## What we're building
 
-A multi-surface Microsoft 365 add-in that brings **Gemini Enterprise** into Word, Excel, PowerPoint, OneNote, and Teams. One stateless **Surface Gateway** holds all Google credentials and does the real work; the surface clients are thin. The agent grounds on a composable **research unit** (a NotebookLM notebook + federated SharePoint/OneDrive sources + the working document), acts with the **signed-in user's identity end to end**, and leaves changes that are **traceable and reversible**.
+A multi-surface Microsoft 365 add-in that brings **Gemini Enterprise** into Word, Excel, PowerPoint, OneNote, and Teams. It is **client-direct** (ADR-0001): the add-in federates the **signed-in user's identity end to end** to Google (Workforce Identity Federation) and calls Gemini Enterprise directly — no gateway holds credentials, no Google secret ever reaches a client. A surface-agnostic core (`runtime` + `web-shell`) is reused across thin per-surface bridges. The agent grounds on a composable **research unit** (a NotebookLM notebook + federated SharePoint/OneDrive sources + the working document), and leaves changes that are **traceable and reversible**.
 
 The full reasoning lives in `docs/` — read these before implementing the corresponding layer:
 - `docs/01-architecture.md` — the three tiers, the gateway internals, identity federation, the anchoring contract.
@@ -26,37 +26,47 @@ The full reasoning lives in `docs/` — read these before implementing the corre
 
 ## Repo structure
 
+**Architecture note:** we are **client-direct** (see `docs/ADR-0001-client-direct-architecture.md`).
+The add-in federates the signed-in user's Entra identity to Google (Workforce Identity Federation,
+browser-side) and calls Gemini Enterprise (Discovery Engine) directly — there is **no gateway by
+default**. The only optional server piece is a transparent CORS/audit proxy, configured via
+`proxyUrl`; it is a deploy artifact, not a workspace package. Model Armor, agent routing, and
+grounding are Gemini Enterprise engine config, not our code.
+
 ```
 packages/
   contracts/        Shared TypeScript types + Zod schemas (the gateway↔client boundary)
-  web-shell/        The reused web app: panel, UnitComposer, AuthClient (NAA), StreamClient, ProvenanceStore
-  bridge-word/      Word DocBridge: annotations, anchoring, comment queue, surgical regen
-  bridge-excel/     Excel: =GE.ASK streaming custom function + linked-entity load service
-  bridge-powerpoint/PowerPoint: deck composer + speaker notes
-  bridge-onenote/   OneNote page synthesis (ships as its own package — web-only, legacy manifest)
-  teams/            Teams tab + meeting app + bot (Bot Framework) + message extension
-services/
-  gateway/          Cloud Run: auth, identity federation, router, SSE relay, provenance, audit
-  agents/           ADK (Python) A2A specialist agents for Agent Engine (review, redline, compliance)
+  content/          Native-first content processing: host object model → blocks → budgeted chunks
+  gemini-client/    Client-direct Discovery Engine: WIF token exchange, streamAssist, search/rank/grounding
+  graph-client/     Microsoft Graph reader (Plane B / estate), delegated, client-direct
+  triggers/         Event-driven layer: HostEvent lifecycle, TriggerRegistry, debounce, the actuation gate
+  runtime/          Surface-agnostic core: DocBridge/AuthClient, AssistSession, ContextModel, Orchestrator
+  web-shell/        The reused web app core: AuthClient (NAA), composeSession, PanelController, ProvenanceStore
+  bridge-word/      Word DocBridge: native capture + content-anchored tracked changes + watch()
+  bridge-excel/     Excel DocBridge: range capture + address-anchored write-cells + watch()
+  bridge-outlook/   Outlook DocBridge: mail capture + reviewable reply + the on-send gate
+  bridge-powerpoint/PowerPoint: deck composer + speaker notes (planned)
+  bridge-onenote/   OneNote page synthesis (web-only, legacy manifest) (planned)
+  teams/            Teams DocBridge: transcript capture + reviewable post-message + meeting events
 manifests/          m365-unified.manifest.json (Package A) + onenote.manifest.xml (Package B)
 docs/               Design, architecture, implementation, contracts, conventions, build plan, mockups
 ```
 
-`web-shell` is the bulk of the client and is **surface-agnostic** — it must not contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*` and `teams/`.
+`web-shell` and `runtime` are the bulk of the client and are **surface-agnostic** — they must not
+contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*` and `teams/`,
+which are the ONLY code that touches Office.js / TeamsJS / Graph.
 
 ## Tech stack (decided — don't re-litigate without reason)
 
-- **Language:** TypeScript everywhere on the client/gateway; Python for `services/agents` (ADK).
-- **Client:** React + Office.js (Word/Excel/PPT/OneNote) and TeamsJS + Bot Framework (Teams). Build with Vite; scaffold task panes with the M365 Agents Toolkit / Yo Office patterns.
-- **Gateway:** Fastify on Node 20+, deployed to Cloud Run. SSE for streaming.
-- **Agents:** Google ADK, exposed as A2A servers, deployed to Agent Engine.
-- **Monorepo:** npm workspaces. **Validation:** Zod (shared in `packages/contracts`). **Tests:** Vitest (TS), pytest (agents).
+- **Language:** TypeScript everywhere (client-direct; no server tier by default).
+- **Client:** React + Office.js (Word/Excel/PPT/OneNote) and TeamsJS (Teams). Build with Vite; scaffold task panes with the M365 Agents Toolkit / Yo Office patterns.
+- **Gemini Enterprise:** Discovery Engine `v1alpha` called directly; SSE for streaming. Agents/Model Armor are engine config.
+- **Monorepo:** npm workspaces + TS project references. **Validation:** Zod (shared in `packages/contracts`). **Tests:** Vitest.
 
 ## Commands
 
 ```bash
 npm install                  # install all workspaces
-npm run dev -w services/gateway     # run the gateway locally (needs .env)
 npm run dev -w packages/web-shell   # run the web-shell dev server (HTTPS)
 npm run build                # build all workspaces
 npm run typecheck            # tsc --noEmit across workspaces

@@ -13,7 +13,6 @@
     { "path": "packages/bridge-outlook" },
     { "path": "packages/bridge-powerpoint" },
     { "path": "packages/bridge-onenote" },
-    { "path": "packages/teams" },
-    { "path": "services/gateway" }
+    { "path": "packages/teams" }
   ]
 }

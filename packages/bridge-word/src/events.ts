@@ -1,5 +1,5 @@
 import type { ContextRef } from '@ge/contracts';
-import type { EventOrigin, HostEvent } from '@ge/triggers';
+import { coauthorOrigin, type EventOrigin, type HostEvent } from '@ge/triggers';
 
 /**
  * Pure mapping from raw Office.js event payloads into `HostEvent`s — no Office.js calls here,
@@ -14,15 +14,12 @@ import type { EventOrigin, HostEvent } from '@ge/triggers';
  */
 
 /**
- * Map Word's coauthoring `EventSource` to our `EventOrigin`. Accepts the raw value as `unknown`
- * because handler args are untrusted at the boundary; we narrow defensively. The enum string
- * values are `'Local'` / `'Remote'` (case-insensitive match), or the enum members themselves.
+ * Map Word's coauthoring `EventSource` (`'Local'`/`'Remote'`) to our `EventOrigin`. Thin
+ * surface-named wrapper over the shared `coauthorOrigin` rule; takes `unknown` because handler
+ * args are untrusted at the boundary.
  */
 export function originFromWordSource(source: unknown): EventOrigin {
-  if (typeof source === 'string' && source.toLowerCase() === 'remote') {
-    return 'remote';
-  }
-  return 'local';
+  return coauthorOrigin(source);
 }
 
 /** Build a `selection-changed` HostEvent. Selection has no coauthor source → always `'local'`. */

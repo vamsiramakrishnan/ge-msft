@@ -40,8 +40,29 @@ class FakeAssist implements AssistLike {
   detach(id: string): void {
     this.detached.push(id);
   }
-  async *ask(_query: string): AsyncGenerator<SseEvent> {
-    for (const ev of this.script) yield ev;
+  /** Per-turn scripts (queries in order); falls back to `script` when exhausted. */
+  scriptFor: SseEvent[][] = [];
+  asked: string[] = [];
+  /** When set, the stream pauses on this promise before emitting `done`, holding the turn open. */
+  private gate: { promise: Promise<void>; release: () => void } | undefined;
+  /** Arm a gate so the next `ask` blocks before completing; call `release()` to let it finish. */
+  hold(): () => void {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.gate = { promise, release };
+    return release;
+  }
+  async *ask(query: string): AsyncGenerator<SseEvent> {
+    this.asked.push(query);
+    const script = this.scriptFor.shift() ?? this.script;
+    const gate = this.gate;
+    this.gate = undefined;
+    for (const ev of script) {
+      if (gate && ev.type === 'done') await gate.promise;
+      yield ev;
+    }
   }
   apply(
     kind: ActuationRequest['kind'],
@@ -135,6 +156,28 @@ describe('PanelController — actuation review', () => {
     expect(c.getState().changes).toHaveLength(1);
   });
 
+  it('guards against double-apply: two concurrent calls yield one apply and one record', async () => {
+    const assist = new FakeAssist();
+    const c = new PanelController(assist, lister([]));
+    const p = c.propose('tracked-change', { text: 'x' }, 'Rewrite SLA clause');
+
+    const statuses: string[] = [];
+    c.subscribe((s) => {
+      const st = s.proposals[0]?.status;
+      if (st) statuses.push(st);
+    });
+
+    // Double-click: both fire before the first await resolves.
+    await Promise.all([c.applyProposal(p.changeId), c.applyProposal(p.changeId)]);
+
+    expect(assist.applied).toEqual([{ kind: 'tracked-change', changeId: p.changeId }]);
+    expect(c.getState().changes).toHaveLength(1);
+    expect(c.getState().proposals[0]?.status).toBe('applied');
+    // A subscriber observes the transient 'applying' then the final status.
+    expect(statuses).toContain('applying');
+    expect(statuses).toContain('applied');
+  });
+
   it('marks a blocked proposal from a gate veto', async () => {
     const assist = new FakeAssist();
     assist.applyResult = {
@@ -171,5 +214,32 @@ describe('PanelController — event-driven inputs', () => {
     const send = vi.spyOn(c, 'send');
     c.onAutomate('go');
     expect(send).toHaveBeenCalledWith('go');
+  });
+
+  it('queues an onAutomate turn fired while a send is streaming (not dropped)', async () => {
+    const assist = new FakeAssist();
+    assist.scriptFor = [
+      [{ type: 'token', text: 'a-reply' }, { type: 'done' }],
+      [{ type: 'token', text: 'b-reply' }, { type: 'done' }],
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    // Hold the first turn open so it is still streaming when onAutomate fires.
+    const release = assist.hold();
+    const first = c.send('a');
+    expect(c.getState().busy).toBe(true);
+
+    // Automated turn fired mid-stream: must be queued, not silently dropped.
+    c.onAutomate('b');
+    expect(assist.asked).toEqual(['a']); // 'b' not started yet
+
+    release();
+    await first;
+    // Drain runs 'b' as a scheduled microtask; let it settle.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(assist.asked).toEqual(['a', 'b']);
+    expect(c.getState().busy).toBe(false);
+    expect(c.getState().messages.map((m) => m.text)).toEqual(['a', 'a-reply', 'b', 'b-reply']);
   });
 });

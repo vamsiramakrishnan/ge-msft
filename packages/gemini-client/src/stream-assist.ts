@@ -92,7 +92,7 @@ export class StreamAssistClient {
             ...(dm.uri ? { uri: dm.uri } : {}),
             ...(dm.pageIdentifier ? { locator: dm.pageIdentifier } : {}),
           };
-          const key = source.uri ?? source.title;
+          const key = source.uri ?? `${source.title}#${source.locator ?? ''}`;
           if (!citations.has(key)) {
             citations.set(key, source);
             yield { type: 'citation', source };

@@ -158,7 +158,8 @@ export function splitText(
     if (estimateTokens(u.text) > maxTokens) {
       flush();
       buf = [];
-      for (const w of wordWrap(u, maxTokens)) out.push(w);
+      for (const w of wordWrap(u, maxTokens))
+        out.push({ text: w.text, start: baseOffset + w.start, end: baseOffset + w.end });
       continue;
     }
     if (bufTokens() + estimateTokens(u.text) > maxTokens && buf.length > 0) flush();
@@ -216,16 +217,60 @@ function wordWrap(u: Unit, maxTokens: number): { text: string; start: number; en
   let buf = '';
   let start = u.start;
   let cursor = u.start;
+  const push = (): void => {
+    if (buf.trim().length === 0) return;
+    out.push({ text: buf.trim(), start, end: cursor });
+    buf = '';
+    start = cursor;
+  };
   for (const w of words) {
-    if (estimateTokens(buf + w) > maxTokens && buf.trim().length > 0) {
-      out.push({ text: buf.trim(), start, end: cursor });
-      buf = '';
+    // A single "word" that alone exceeds the budget (long URL/base64, or whitespace-free
+    // CJK text) won't be broken by buffer-flush alone — hard-split it by character so each
+    // slice stays within budget. Carry char offsets through so anchors stay valid.
+    if (estimateTokens(w) > maxTokens) {
+      push();
+      for (const slice of hardSplit(w, cursor, maxTokens)) out.push(slice);
+      cursor += w.length;
       start = cursor;
+      continue;
     }
+    if (estimateTokens(buf + w) > maxTokens && buf.trim().length > 0) push();
     buf += w;
     cursor += w.length;
   }
-  if (buf.trim().length > 0) out.push({ text: buf.trim(), start, end: cursor });
+  push();
+  return out;
+}
+
+/**
+ * Split a whitespace-free run into budget-sized character slices. Estimates the per-slice
+ * char count from the token budget and the run's own token density, then bisects down until
+ * each slice is within budget. Offsets are absolute (anchored at `offset`).
+ */
+function hardSplit(
+  word: string,
+  offset: number,
+  maxTokens: number,
+): { text: string; start: number; end: number }[] {
+  const out: { text: string; start: number; end: number }[] = [];
+  const tokens = estimateTokens(word);
+  if (tokens <= maxTokens || word.length <= 1) {
+    out.push({ text: word, start: offset, end: offset + word.length });
+    return out;
+  }
+  // Conservative initial slice length, then shrink any slice still over budget.
+  let sliceLen = Math.max(1, Math.floor((word.length * maxTokens) / tokens));
+  let pos = 0;
+  while (pos < word.length) {
+    let len = Math.min(sliceLen, word.length - pos);
+    while (len > 1 && estimateTokens(word.slice(pos, pos + len)) > maxTokens) {
+      len = Math.floor(len / 2);
+    }
+    if (len < 1) len = 1;
+    out.push({ text: word.slice(pos, pos + len), start: offset + pos, end: offset + pos + len });
+    sliceLen = len;
+    pos += len;
+  }
   return out;
 }
 

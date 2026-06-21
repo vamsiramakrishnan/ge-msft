@@ -195,29 +195,32 @@ export class WordBridge implements DocBridge {
    *     feature-detected at runtime and skipped when absent.
    */
   watch(emit: (event: HostEvent) => void): Unsubscribe {
-    const teardowns: Array<() => void> = [];
-
     // --- Selection (Office host event; no coauthor source → local) ---
+    // Registered synchronously; its removal is folded into the single settled teardown path below
+    // so there is exactly one owner of teardown (no second, racing removal path).
+    let onSelection: (() => void) | undefined;
     try {
-      const onSelection = (): void => {
+      const handler = (): void => {
         emit(selectionChangedEvent());
       };
-      Office.context.document.addHandlerAsync(
-        Office.EventType.DocumentSelectionChanged,
-        onSelection,
-      );
-      teardowns.push(() => {
-        try {
-          Office.context.document.removeHandlerAsync(Office.EventType.DocumentSelectionChanged, {
-            handler: onSelection,
-          });
-        } catch {
-          // best-effort: removal may fail if the host already tore the handler down.
-        }
-      });
+      Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, handler);
+      onSelection = handler;
     } catch {
       // Selection observation unavailable on this host — simply don't emit it.
     }
+
+    const removeSelection = (): void => {
+      if (!onSelection) return;
+      try {
+        Office.context.document.removeHandlerAsync(Office.EventType.DocumentSelectionChanged, {
+          handler: onSelection,
+        });
+      } catch {
+        // best-effort: removal may fail if the host already tore the handler down.
+      } finally {
+        onSelection = undefined;
+      }
+    };
 
     // --- Document edits + comments (Word object-model events; carry coauthor source) ---
     // Registration runs async inside Word.run; the returned EventHandlerResults are collected so
@@ -225,7 +228,10 @@ export class WordBridge implements DocBridge {
     const removers: Array<{ remove(): void }> = [];
     let unsubscribed = false;
 
-    void Word.run(async (ctx) => {
+    // Mirror the Excel bridge: capture the registration promise and have the teardown chain off
+    // it. The single removal path lives in that settled `.then`, so handlers committed on the host
+    // after a synchronous unsubscribe are still removed exactly once — no leak, no double-splice.
+    const registration = Word.run(async (ctx) => {
       const doc = ctx.document;
 
       const onDocChange = (args: {
@@ -269,21 +275,16 @@ export class WordBridge implements DocBridge {
       }
 
       await ctx.sync();
-
-      // If unsubscribe already fired before registration completed, tear down immediately.
-      if (unsubscribed) await this.removeWordHandlers(removers.splice(0));
     }).catch(() => {
       // Word.run failed (no host / unsupported) — nothing registered, nothing to clean up.
     });
 
-    teardowns.push(() => {
-      unsubscribed = true;
-      const toRemove = removers.splice(0);
-      if (toRemove.length > 0) void this.removeWordHandlers(toRemove);
-    });
-
     return () => {
-      for (const teardown of teardowns) teardown();
+      if (unsubscribed) return; // idempotent: only the first call performs teardown.
+      unsubscribed = true;
+      removeSelection();
+      // Single removal path: wait for registration to settle, then drain the removers once.
+      void registration.then(() => this.removeWordHandlers(removers.splice(0)));
     };
   }
 

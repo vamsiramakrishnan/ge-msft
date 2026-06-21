@@ -232,4 +232,99 @@ describe('AssistSession — event-fed context model (construct → commit)', () 
     expect(session.model.hasPending).toBe(false);
     expect(bodies).toHaveLength(0);
   });
+
+  it('keeps the brief pending (re-sends next turn) when a turn fails mid-stream — no loss, no double-mark', async () => {
+    const bridge = new FakeBridge();
+    const bodies: Array<Record<string, unknown>> = [];
+    let call = 0;
+    const fetchImpl = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(JSON.parse(init?.body ?? '{}') as Record<string, unknown>);
+      call += 1;
+      // First turn: the response body throws mid-iteration (socket reset). Second: succeeds.
+      const body =
+        call === 1
+          ? new ReadableStream<Uint8Array>({
+              pull() {
+                throw new Error('socket reset');
+              },
+            })
+          : streamOf([
+              JSON.stringify([
+                {
+                  sessionInfo: { session: 'sess_1' },
+                  answer: {
+                    state: 'SUCCEEDED',
+                    replies: [{ groundedContent: { content: { text: 'ok' } } }],
+                  },
+                },
+              ]),
+            ]);
+      return new Response(body, { status: 200 });
+    });
+    const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'local',
+      commentId: 'k1',
+      text: 'note one',
+    });
+
+    // The failing turn propagates; the brief must NOT be marked resident.
+    await expect(
+      (async () => {
+        for await (const _ of session.ask('q1')) void _;
+      })(),
+    ).rejects.toThrow(/socket reset/);
+    expect(session.model.hasPending).toBe(true); // not lost
+    expect(session.context.size).toBe(0); // brief part unstaged in finally
+
+    // The next turn re-sends it and only now marks it resident.
+    await collect(session.ask('q2'));
+    expect(partTexts(bodies[bodies.length - 1]!).some((t) => t.includes('note one'))).toBe(true);
+    expect(session.model.hasPending).toBe(false);
+  });
+
+  it('does not lose a note ingested while a turn is streaming (version-scoped commit)', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'local',
+      commentId: 'k1',
+      text: 'first note',
+    });
+
+    // Ingest a second note partway through the first turn's stream.
+    let injected = false;
+    for await (const _ of session.ask('q1')) {
+      void _;
+      if (!injected) {
+        injected = true;
+        await session.ingest({
+          type: 'comment-added',
+          surface: 'word',
+          origin: 'local',
+          commentId: 'k2',
+          text: 'second note',
+        });
+      }
+    }
+    // The first note was on the wire (resident); the mid-stream note stays pending.
+    expect(partTexts(bodies[0]!).some((t) => t.includes('first note'))).toBe(true);
+    expect(session.model.hasPending).toBe(true);
+
+    // The next turn sends the second note — and not the first again.
+    await collect(session.ask('q2'));
+    const last = partTexts(bodies[bodies.length - 1]!);
+    expect(last.some((t) => t.includes('second note'))).toBe(true);
+    expect(last.some((t) => t.includes('first note'))).toBe(false);
+    expect(session.model.hasPending).toBe(false);
+  });
 });

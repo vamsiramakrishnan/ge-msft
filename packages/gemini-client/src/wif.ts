@@ -49,6 +49,8 @@ interface CachedToken {
 export class WifTokenClient {
   private cached: CachedToken | null = null;
   private inflight: Promise<string> | null = null;
+  /** Bumped by invalidate(); an exchange only commits its result if this is unchanged. */
+  private epoch = 0;
 
   constructor(
     private readonly entra: EntraTokenProvider,
@@ -80,9 +82,12 @@ export class WifTokenClient {
   /** Force the next call to re-exchange (e.g. after a 401 from Discovery Engine). */
   invalidate(): void {
     this.cached = null;
+    // Bump the epoch so any inflight exchange won't reinstate a pre-invalidate token.
+    this.epoch += 1;
   }
 
   private async exchange(): Promise<string> {
+    const startEpoch = this.epoch;
     const idToken = await this.entra.getIdToken();
     const body: Record<string, string> = {
       grantType: TOKEN_EXCHANGE_GRANT,
@@ -106,8 +111,12 @@ export class WifTokenClient {
       throw new Error(`WIF token exchange failed (${res.status}): ${detail}`);
     }
     const parsed = StsResponseSchema.parse(await res.json());
-    const ttlMs = (parsed.expires_in ?? 3600) * 1000;
-    this.cached = { accessToken: parsed.access_token, expiresAtMs: this.now() + ttlMs };
+    // If invalidate() ran while this exchange was in flight, hand the freshly-fetched
+    // token to *this* caller but do not cache it — the next call must re-exchange.
+    if (this.epoch === startEpoch) {
+      const ttlMs = (parsed.expires_in ?? 3600) * 1000;
+      this.cached = { accessToken: parsed.access_token, expiresAtMs: this.now() + ttlMs };
+    }
     return parsed.access_token;
   }
 }

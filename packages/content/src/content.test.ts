@@ -3,7 +3,7 @@ import { ResolvedContextSchema } from '@ge/contracts';
 import { estimateTokens } from './tokens.js';
 import { parseMarkdownBlocks, tableToMarkdown } from './markdown.js';
 import { htmlToMarkdown } from './normalize.js';
-import { chunkBlocks } from './chunk.js';
+import { chunkBlocks, splitText } from './chunk.js';
 import { contextualizeChunk } from './contextualize.js';
 import { processContent, toContext } from './process.js';
 import type { RawContent } from './model.js';
@@ -94,6 +94,32 @@ describe('chunking', () => {
     });
     expect(chunks.length).toBeGreaterThan(2);
     for (const c of chunks) expect(c.meta.tokensEstimate).toBeLessThanOrEqual(80);
+  });
+
+  // Bug B regression: an oversized sentence is split via wordWrap, whose offsets must carry
+  // baseOffset (matching the normal flush path) so char anchors aren't off by block.start.
+  it('carries baseOffset through wordWrap for an oversized sentence', () => {
+    const text = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima';
+    const base = 1000;
+    const pieces = splitText(text, 3, 1, base);
+    expect(pieces.length).toBeGreaterThan(1);
+    // No piece should start before baseOffset — that would mean baseOffset was dropped.
+    for (const p of pieces) {
+      expect(p.start).toBeGreaterThanOrEqual(base);
+      expect(p.end).toBeGreaterThanOrEqual(p.start);
+    }
+    expect(pieces[0]!.start).toBe(base);
+  });
+
+  // Bug C regression: whitespace-free oversized text (e.g. CJK with no spaces) must be
+  // hard-split so every chunk respects the token budget.
+  it('sub-splits a whitespace-free CJK block to stay within budget', () => {
+    const cjk = '今'.repeat(2000); // ~500 tokens
+    const { blocks } = processContent(raw(cjk));
+    const budget = 400;
+    const chunks = chunkBlocks(blocks, raw(cjk), { maxTokens: budget });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.meta.tokensEstimate).toBeLessThanOrEqual(budget);
   });
 });
 

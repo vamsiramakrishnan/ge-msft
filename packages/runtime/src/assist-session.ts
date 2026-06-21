@@ -88,26 +88,41 @@ export class AssistSession {
       await this.attachContext(this.options.autoAttach);
     }
     // Fold any constructed-but-uncommitted brief so it rides this turn (the lazy commit path).
-    if (this.model.hasPending) this.commit('fold');
+    // Capture the exact version folded: only notes up to here are on the wire, so only these may
+    // be marked resident — notes that arrive mid-stream stay pending for the next turn.
+    let foldedVersion: number | undefined;
+    if (this.model.hasPending) {
+      const brief = this.model.pendingBrief();
+      if (brief) {
+        for (const entry of brief.entries) this.context.add(entry);
+        foldedVersion = brief.version;
+      }
+    }
     const req = {
       intent: 'assist' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.client.stream(req, {
-      session: this.session,
-      context: this.context.list(),
-    })) {
-      if (event.type === 'citation') this.citations.push(event.source);
-      if (event.type === 'provenance') {
-        this.lastProvenance = event.payload;
-        this.session = event.payload.sessionId ?? this.session;
+    try {
+      for await (const event of this.client.stream(req, {
+        session: this.session,
+        context: this.context.list(),
+      })) {
+        if (event.type === 'citation') this.citations.push(event.source);
+        if (event.type === 'provenance') {
+          this.lastProvenance = event.payload;
+          this.session = event.payload.sessionId ?? this.session;
+        }
+        yield event;
       }
-      yield event;
+      // Reached only on a fully-consumed stream → the folded brief is now in the session
+      // history; mark exactly those notes resident. On a mid-stream throw this is skipped, so
+      // the notes stay pending and re-fold next turn (at-least-once, never lost).
+      if (foldedVersion !== undefined) this.model.markCommitted(foldedVersion);
+    } finally {
+      // Always unstage the brief part: on success it is resident; on failure it re-folds next turn.
+      this.context.remove(BRIEF_REF_ID);
     }
-    // The folded brief is now in the session history → mark resident and drop the local part.
-    this.model.markCommitted();
-    this.context.remove(BRIEF_REF_ID);
   }
 
   /**
@@ -144,7 +159,8 @@ export class AssistSession {
     })) {
       if (event.type === 'provenance') this.session = event.payload.sessionId ?? this.session;
     }
-    this.model.markCommitted();
+    // Mark exactly the notes that were primed (by version) resident — not any that arrived since.
+    this.model.markCommitted(brief.version);
   }
 
   /**

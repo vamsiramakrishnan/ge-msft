@@ -145,6 +145,33 @@ describe('WifTokenClient', () => {
     const wif = new WifTokenClient(entra, { poolId: 'p', providerId: 'pr' }, f as never);
     await expect(wif.getAccessToken()).rejects.toThrow(/WIF token exchange failed \(400\)/);
   });
+
+  it('does not cache a token when invalidate() races an inflight exchange', async () => {
+    // Gate the first exchange's STS response so we can invalidate mid-flight.
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const f = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await firstGate;
+        return jsonResponse({ access_token: 'STALE', token_type: 'Bearer', expires_in: 3600 });
+      })
+      .mockImplementationOnce(async () =>
+        jsonResponse({ access_token: 'FRESH', token_type: 'Bearer', expires_in: 3600 }),
+      );
+    const wif = new WifTokenClient(entra, { poolId: 'p', providerId: 'pr' }, f as never);
+
+    const inflight = wif.getAccessToken(); // starts exchange #1 (STALE), now blocked on the gate
+    wif.invalidate(); // 401-driven invalidation lands while exchange #1 is in flight
+    releaseFirst!();
+    expect(await inflight).toBe('STALE'); // this caller still receives its fetched token
+
+    // The post-invalidate write must have been suppressed: next call re-exchanges → FRESH.
+    expect(await wif.getAccessToken()).toBe('FRESH');
+    expect(f).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('StreamAssistClient', () => {
@@ -206,6 +233,40 @@ describe('StreamAssistClient', () => {
     if (prov?.type === 'provenance') {
       expect(prov.payload.sources[0]?.title).toBe('Vendor Risk Policy v4');
       expect(prov.payload.agentId).toContain('eng1');
+    }
+  });
+
+  it('keeps distinct same-title/no-uri sources that differ only by locator', async () => {
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: { text: 'See the report.' },
+              textGroundingMetadata: {
+                references: [
+                  { documentMetadata: { title: 'Report', pageIdentifier: 'p1' } },
+                  { documentMetadata: { title: 'Report', pageIdentifier: 'p2' } },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    const citations = events
+      .filter((e): e is Extract<SseEvent, { type: 'citation' }> => e.type === 'citation')
+      .map((e) => e.source);
+    expect(citations.map((s) => s.locator)).toEqual(['p1', 'p2']);
+
+    const prov = events.find((e) => e.type === 'provenance');
+    if (prov?.type === 'provenance') {
+      expect(prov.payload.sources.map((s) => s.locator)).toEqual(['p1', 'p2']);
     }
   });
 

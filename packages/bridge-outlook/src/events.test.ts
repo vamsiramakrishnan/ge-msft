@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { TriggerRegistry, type TriggerOutcome } from '@ge/triggers';
 import { composeEvent, receivedEvent, sendEvent, decideSend } from './events.js';
-import { createMessageSendHandler, type OnSendCompletedOptions } from './on-send.js';
+import {
+  createMessageSendHandler,
+  type OnSendCompletedOptions,
+  type OnSendEvent,
+} from './on-send.js';
 
 describe('outlook event builders (pure)', () => {
   it('builds a mail-compose without an id', () => {
@@ -113,5 +117,34 @@ describe('createMessageSendHandler (host glue with a real registry, stubbed even
     const { calls, event } = fakeEvent();
     await handler(event);
     expect(calls).toEqual([{ allowEvent: true }]);
+  });
+
+  // HIGH-2 regression: a decided block whose first `completed(...)` throws must NOT be downgraded
+  // to a second `completed({ allowEvent: true })`. The block must stand (the error propagates),
+  // never silently letting the mail send.
+  it('does NOT downgrade a real block to allow if completed() throws on the block call', async () => {
+    const registry = new TriggerRegistry();
+    registry.register({
+      id: 'block-throwing-host',
+      on: 'mail-send',
+      handle: () => ({ kind: 'block', reason: 'Confidential — do not send externally' }),
+    });
+    const handler = createMessageSendHandler(registry);
+
+    const calls: OnSendCompletedOptions[] = [];
+    const event: OnSendEvent = {
+      completed: (options?: OnSendCompletedOptions) => {
+        calls.push(options ?? {});
+        // The host's first completed() for the genuine block throws.
+        throw new Error('host completed() exploded');
+      },
+    };
+
+    await expect(handler(event)).rejects.toThrow('host completed() exploded');
+    // Exactly one completed call, and it stayed a block — never a second allowEvent:true.
+    expect(calls).toEqual([
+      { allowEvent: false, errorMessage: 'Confidential — do not send externally' },
+    ]);
+    expect(calls.some((c) => c.allowEvent === true)).toBe(false);
   });
 });

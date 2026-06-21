@@ -34,20 +34,31 @@ export type MessageSendHandler = (event: OnSendEvent) => Promise<void>;
  * trigger registry as a veto gate, maps the outcome with the pure `decideSend`, and signals the
  * host via `event.completed`.
  *
- * FAIL SAFE: if anything in the gate path throws, we still call `completed({ allowEvent: true })`.
- * A guard add-in that crashes must never permanently wedge the user's Send button — refusing to
- * send on our own bug would be worse than letting the mail through. The strict decision stays in
- * `decideSend`; only this host boundary swallows errors.
+ * FAIL SAFE (decision path only): if computing the decision throws, we call
+ * `completed({ allowEvent: true })`. A guard add-in that crashes while deciding must never wedge
+ * the user's Send button — refusing on our own bug is worse than letting the mail through. But the
+ * fail-safe is scoped to the DECISION: once a `block` is decided, a crash inside `event.completed`
+ * must NOT be downgraded to an allow (that would silently send a blocked mail). The strict decision
+ * stays in `decideSend`; only the decision-computation step of this host boundary swallows errors.
  */
 export function createMessageSendHandler(
   registry: TriggerRegistry,
   opts: MessageSendHandlerOptions = {},
 ): MessageSendHandler {
   return async (event: OnSendEvent): Promise<void> => {
+    // Two distinct failure domains. (1) Computing the decision: if THAT throws we fail safe and
+    // let Send proceed — refusing on our own bug is worse than the mail going out. (2) Signalling
+    // the host via `event.completed`: once a decision is reached we must NOT re-call `completed`
+    // with `allowEvent: true`, or a real block would silently downgrade to an allow if the first
+    // `completed(...)` throws. The `decided` flag separates the two: the catch only fails open
+    // while no decision had been committed yet.
+    let decided = false;
     try {
       const id = opts.resolveItemId?.();
       const outcome = await registry.gate(sendEvent(id));
       const decision = decideSend(outcome);
+      // Decision computed — from here on a throw must propagate, never fail open.
+      decided = true;
       if (!decision.allowEvent) {
         event.completed(
           decision.message !== undefined
@@ -57,8 +68,10 @@ export function createMessageSendHandler(
         return;
       }
       event.completed({ allowEvent: true });
-    } catch {
-      // Fail safe: never block Send on our own error. See the doc comment above.
+    } catch (err) {
+      // Fail safe ONLY for errors while deciding. If a decision was already committed, a crash
+      // happened inside `event.completed`; re-allowing would downgrade a genuine block — re-throw.
+      if (decided) throw err instanceof Error ? err : new Error(String(err));
       event.completed({ allowEvent: true });
     }
   };

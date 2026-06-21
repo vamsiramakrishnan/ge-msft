@@ -6,4 +6,11 @@
 export { ExcelBridge, parseAddress } from './excel-bridge.js';
 export { EXCEL_CAPABILITIES } from './capabilities.js';
 export { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
+export {
+  deriveOrigin,
+  selectionChanged,
+  documentChanged,
+  commentAdded,
+  type ExcelEventSourceLike,
+} from './events.js';
 export { planWriteCells, type WriteCellsPlan } from './actuate-plan.js';

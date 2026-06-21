@@ -6,9 +6,11 @@ import type {
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
+import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import { mailItemToContext, type MailItem } from './capture.js';
 import { planReply } from './actuate-plan.js';
+import { composeEvent, receivedEvent } from './events.js';
 
 /**
  * The Outlook `DocBridge`. The ONLY place Office.js mailbox APIs are touched. Unlike Word/Excel
@@ -70,6 +72,47 @@ export class OutlookBridge implements DocBridge {
     }
   }
 
+  /**
+   * Stream Outlook host activity into the trigger engine. From the task pane the one observable
+   * lifecycle event is `ItemChanged` (Mailbox 1.5): it fires when the user switches the active
+   * item while the pane is pinned. We map the new active item to `mail-compose` (a draft, no
+   * `itemId`) or `mail-received` (a saved item) and emit it.
+   *
+   * Launch events (`OnNewMessageCompose` / `OnMessageSend`) are manifest-declared and run in the
+   * separate function-file runtime — they are NOT registered here. The on-send gate is exposed as
+   * a factory in `on-send.ts` instead.
+   *
+   * Defensive throughout: the mailbox may be undefined (wrong host / pane not in a mailbox), and
+   * `watch` must never throw — a failed registration just yields a no-op unsubscribe.
+   */
+  watch(emit: (event: HostEvent) => void): Unsubscribe {
+    const mailbox = Office.context.mailbox;
+    if (!mailbox) return () => {};
+
+    const handler = (): void => {
+      try {
+        const event = activeItemEvent(mailbox.item);
+        if (event) emit(event);
+      } catch {
+        // An event-source failure must not break the host; drop this notification.
+      }
+    };
+
+    try {
+      mailbox.addHandlerAsync(Office.EventType.ItemChanged, handler);
+    } catch {
+      return () => {};
+    }
+
+    return () => {
+      try {
+        mailbox.removeHandlerAsync(Office.EventType.ItemChanged, handler);
+      } catch {
+        // Best-effort teardown; ignore if the host already tore the handler down.
+      }
+    };
+  }
+
   private async applyReply(req: ActuationRequest): Promise<ActuationResult> {
     const item = Office.context.mailbox?.item;
     if (!item) {
@@ -93,6 +136,24 @@ export class OutlookBridge implements DocBridge {
     item.displayReplyForm({ htmlBody: plan.body });
     return { ok: true, changeId: req.changeId, kind: req.kind, location: 'reply-form' };
   }
+}
+
+/**
+ * Classify the newly active mail item into a HostEvent. Read-mode items expose a stable
+ * `itemId` → `mail-received`; compose-mode drafts have no saved id → `mail-compose`. Returns
+ * undefined when no item is active (nothing to emit). Reads only the opaque `itemId`, never the
+ * subject/body (untrusted content stays out of the event).
+ */
+function activeItemEvent(item: Office.Item | undefined): HostEvent | undefined {
+  if (!item) return undefined;
+  const id = readItemId(item);
+  return id ? receivedEvent(id) : composeEvent();
+}
+
+/** Read the saved item id (read mode) as a non-empty string; undefined for unsaved drafts. */
+function readItemId(item: Office.Item): string | undefined {
+  const id: unknown = (item as { itemId?: unknown }).itemId;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
 }
 
 /** Read the subject as a string (read-mode shape); empty when unavailable. */

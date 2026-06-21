@@ -6,8 +6,10 @@ import type {
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
+import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
 import { rangeToContext, selectionValuesToContext } from './capture.js';
+import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
 import { planWriteCells } from './actuate-plan.js';
 
 /**
@@ -88,6 +90,81 @@ export class ExcelBridge implements DocBridge {
           error: { code: 'unsupported', message: `Excel bridge cannot ${req.kind}` },
         };
     }
+  }
+
+  /**
+   * Stream Excel host events into the trigger engine. Wires three Office.js events on the
+   * workbook-wide collections (all sheets), maps each to a {@link HostEvent} via the pure
+   * `events.ts` builders, and returns an `Unsubscribe` that removes every handler.
+   *
+   * - selection → `selection-changed` (no coauthor source on the args → always `'local'`).
+   * - edits → `document-changed` (maps `args.source`, so a coauthor's edit is `'remote'`).
+   * - comments → `comment-added`, one per added id (maps `args.source` for origin).
+   *
+   * Defensive: registration runs in a single `Excel.run` and feature-detects each event
+   * (older requirement sets lack some). `watch` never throws — a failed registration just
+   * yields an unsubscribe that removes whatever did attach. Removal happens in a fresh
+   * `Excel.run`; each `EventHandlerResult.remove()` carries its own request context.
+   */
+  watch(emit: (event: HostEvent) => void): Unsubscribe {
+    // Collected as the handlers register; the unsubscribe drains this list.
+    const handles: Array<{ remove(): void }> = [];
+
+    const registration = Excel.run(async (ctx) => {
+      const workbook = ctx.workbook;
+      const sheets = workbook.worksheets;
+
+      // selection-changed — workbook-wide; args carry only `address` (no coauthor source).
+      if (sheets.onSelectionChanged) {
+        handles.push(
+          sheets.onSelectionChanged.add(async (args) => {
+            emit(selectionChanged(args.address));
+          }),
+        );
+      }
+
+      // document-changed — workbook-wide edits; map the coauthoring source to origin.
+      if (sheets.onChanged) {
+        handles.push(
+          sheets.onChanged.add(async (args) => {
+            emit(documentChanged(deriveOrigin(args.source)));
+          }),
+        );
+      }
+
+      // comment-added — one HostEvent per added comment id. `args.source` gives the
+      // coauthoring origin (a teammate's comment is remote); fall back to 'local'.
+      const comments = workbook.comments;
+      if (comments && comments.onAdded) {
+        handles.push(
+          comments.onAdded.add(async (args) => {
+            const origin = deriveOrigin(args.source);
+            for (const detail of args.commentDetails) {
+              emit(commentAdded(detail.commentId, origin));
+            }
+          }),
+        );
+      }
+
+      await ctx.sync();
+    }).catch(() => {
+      // Never throw from watch: a requirement-set/host failure leaves `handles` with
+      // whatever attached before the error, which the unsubscribe still cleans up.
+    });
+
+    return () => {
+      void registration
+        .then(() =>
+          Excel.run(async (ctx) => {
+            for (const handle of handles) handle.remove();
+            handles.length = 0;
+            await ctx.sync();
+          }),
+        )
+        .catch(() => {
+          // Best-effort teardown; swallow so unsubscribe never rejects.
+        });
+    };
   }
 
   private async applyWriteCells(req: ActuationRequest): Promise<ActuationResult> {

@@ -13,3 +13,9 @@ export {
   type WordElement,
 } from './capture.js';
 export { planTrackedChange, chooseAnchorIndex, type TrackedChangePlan } from './actuate-plan.js';
+export {
+  originFromWordSource,
+  selectionChangedEvent,
+  documentChangedEvent,
+  commentAddedEvent,
+} from './events.js';

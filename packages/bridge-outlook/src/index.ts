@@ -8,3 +8,12 @@ export { OutlookBridge } from './outlook-bridge.js';
 export { OUTLOOK_CAPABILITIES } from './capabilities.js';
 export { mailItemToContext, type MailItem } from './capture.js';
 export { planReply, type ReplyPlan } from './actuate-plan.js';
+export { composeEvent, receivedEvent, sendEvent, decideSend, type SendDecision } from './events.js';
+export {
+  createMessageSendHandler,
+  activeItemIdResolver,
+  type MessageSendHandler,
+  type MessageSendHandlerOptions,
+  type OnSendEvent,
+  type OnSendCompletedOptions,
+} from './on-send.js';

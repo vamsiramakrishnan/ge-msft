@@ -13,6 +13,8 @@ stores are configured **in the Gemini Enterprise engine/assistant**, not in our 
 `assistant-config.md`.
 
 ## Files
+
+**Method references**
 - `streamAssist.md` — primary streaming grounded assistant (chat over the unit).
 - `search.md` — Vertex AI Search (retrieval, snippets, summaries, extractive answers).
 - `answer.md` — single-shot grounded answer with citations + related questions.
@@ -22,6 +24,14 @@ stores are configured **in the Gemini Enterprise engine/assistant**, not in our 
 - `ranking.md` — semantic reranking of candidates.
 - `assistant-config.md` — engine/assistant config (Model Armor, tools, canned queries) — read-only reference.
 - `methods-index.md` — every method in the surface (index).
+
+**How-to / mechanisms** (research distilled for the add-in)
+- `context-mechanisms.md` — how to attach context (`query.parts[]`, reference-over-inline) and scope
+  connectors (`toolsSpec.dataStoreSpecs` + `filter` + `boost`), `actionSpec`, sessions.
+- `agent-invocation.md` — targeting a specific agent (no `agentsSpec` in `v1alpha`; assistant
+  targeting + `actionSpec`; A2A-direct caveats).
+- `a2ui.md` — A2UI agent-authored interactive UI and how the add-in maps its actions to host
+  actuations.
 
 ## Endpoint & regions
 - Global: `https://discoveryengine.googleapis.com`

@@ -1,0 +1,13 @@
+{
+  "name": "@ge/bridge-word",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Word DocBridge: annotations, anchoring, comment queue, regen",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  }
+}

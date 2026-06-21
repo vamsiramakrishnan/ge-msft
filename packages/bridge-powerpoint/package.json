@@ -1,0 +1,13 @@
+{
+  "name": "@ge/bridge-powerpoint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PowerPoint deck composer + speaker notes",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@ge/teams",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Teams tab + meeting app + bot + message extension",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  }
+}

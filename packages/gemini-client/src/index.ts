@@ -7,6 +7,7 @@
 export * from './config.js';
 export * from './wif.js';
 export * from './stream-assist.js';
+export * from './session-context.js';
 export { parseJsonArrayStream } from './json-stream.js';
 export { contentHash } from './hash.js';
 export type { DeStreamAssistResponse } from './de-types.js';

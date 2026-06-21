@@ -9,3 +9,6 @@ docs
 manifests
 *.md
 .claude/settings.json
+
+# Vendored API schema slices (generated from Google's discovery doc)
+packages/*/vendor

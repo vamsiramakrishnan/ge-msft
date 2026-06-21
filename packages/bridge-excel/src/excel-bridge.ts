@@ -114,36 +114,53 @@ export class ExcelBridge implements DocBridge {
       const workbook = ctx.workbook;
       const sheets = workbook.worksheets;
 
+      // Each registration is isolated in its own try/catch: the `if (event)` truthiness check is
+      // effectively always true on the Office.js proxy, so on an older requirement set `.add()`
+      // can THROW. Sharing one try would let an earlier unsupported event abort the whole run and
+      // prevent later handlers from attaching. `handles` only gains a remover on a successful add.
+
       // selection-changed — workbook-wide; args carry only `address` (no coauthor source).
       if (sheets.onSelectionChanged) {
-        handles.push(
-          sheets.onSelectionChanged.add(async (args) => {
-            emit(selectionChanged(args.address));
-          }),
-        );
+        try {
+          handles.push(
+            sheets.onSelectionChanged.add(async (args) => {
+              emit(selectionChanged(args.address));
+            }),
+          );
+        } catch {
+          // selection events not in the active requirement set — skip this one only.
+        }
       }
 
       // document-changed — workbook-wide edits; map the coauthoring source to origin.
       if (sheets.onChanged) {
-        handles.push(
-          sheets.onChanged.add(async (args) => {
-            emit(documentChanged(deriveOrigin(args.source)));
-          }),
-        );
+        try {
+          handles.push(
+            sheets.onChanged.add(async (args) => {
+              emit(documentChanged(deriveOrigin(args.source)));
+            }),
+          );
+        } catch {
+          // change events not in the active requirement set — skip this one only.
+        }
       }
 
       // comment-added — one HostEvent per added comment id. `args.source` gives the
       // coauthoring origin (a teammate's comment is remote); fall back to 'local'.
       const comments = workbook.comments;
       if (comments && comments.onAdded) {
-        handles.push(
-          comments.onAdded.add(async (args) => {
-            const origin = deriveOrigin(args.source);
-            for (const detail of args.commentDetails) {
-              emit(commentAdded(detail.commentId, origin));
-            }
-          }),
-        );
+        try {
+          handles.push(
+            comments.onAdded.add(async (args) => {
+              const origin = deriveOrigin(args.source);
+              for (const detail of args.commentDetails) {
+                emit(commentAdded(detail.commentId, origin));
+              }
+            }),
+          );
+        } catch {
+          // comment events not in the active requirement set — skip this one only.
+        }
       }
 
       await ctx.sync();

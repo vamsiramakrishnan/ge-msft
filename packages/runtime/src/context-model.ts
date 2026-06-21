@@ -33,6 +33,8 @@ interface Note {
   text: string;
   /** True once this note has been committed to the session (resident server-side). */
   sent: boolean;
+  /** The version at which this note was added (monotonic), so commits can be version-scoped. */
+  seq: number;
 }
 
 export class ContextModel {
@@ -94,9 +96,9 @@ export class ContextModel {
     if (!t) return;
     const last = this.notes[this.notes.length - 1];
     if (last && last.text === t) return;
-    this.notes.push({ text: t, sent: false });
-    this.prune();
     this._version++;
+    this.notes.push({ text: t, sent: false, seq: this._version });
+    this.prune();
   }
 
   /**
@@ -125,9 +127,16 @@ export class ContextModel {
     return { version: this._version, entries: [entry] };
   }
 
-  /** Mark the currently-pending notes as committed (resident in the session, won't be re-sent). */
-  markCommitted(): void {
-    for (const n of this.notes) n.sent = true;
+  /**
+   * Mark notes committed (resident in the session, won't be re-sent) up to and including
+   * `throughVersion` — defaults to the current version (all pending). Version-scoping is what
+   * makes a turn safe: only the notes that were actually on the wire are marked, so a note that
+   * arrives mid-`ask` (higher seq) is never silently marked resident without being sent.
+   */
+  markCommitted(throughVersion: number = this._version): void {
+    for (const n of this.notes) {
+      if (!n.sent && n.seq <= throughVersion) n.sent = true;
+    }
     this.prune();
   }
 

@@ -63,7 +63,7 @@ export interface Proposal {
   kind: ActuationRequest['kind'];
   params: ActuationParams;
   label: string;
-  status: 'pending' | 'applied' | 'blocked' | 'degraded' | 'failed';
+  status: 'pending' | 'applying' | 'applied' | 'blocked' | 'degraded' | 'failed';
   detail?: string;
 }
 
@@ -98,6 +98,8 @@ export class PanelController {
   private readonly refs = new Map<string, ContextRef>();
   private lastProvenance: ProvenancePayload | undefined;
   private seq = 0;
+  /** Single-slot queue (latest wins): a turn requested while another is streaming. */
+  private pendingQuery: string | undefined;
 
   constructor(
     private readonly session: AssistLike,
@@ -159,7 +161,13 @@ export class PanelController {
   /** Ask a grounded question; stream tokens + citations into the assistant message. */
   async send(query: string): Promise<void> {
     const q = query.trim();
-    if (!q || this.state.busy) return;
+    if (!q) return;
+    // A turn requested mid-stream is held (latest wins) and drained when the current turn ends,
+    // so an opt-in automated turn is never silently dropped. See `finally` below.
+    if (this.state.busy) {
+      this.pendingQuery = q;
+      return;
+    }
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: q };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
@@ -196,6 +204,13 @@ export class PanelController {
     } finally {
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false });
+      // Drain a queued turn, if any. Clearing the slot first avoids re-enqueueing it; the call
+      // is scheduled (not awaited) so draining does not re-enter synchronously while busy.
+      const next = this.pendingQuery;
+      if (next !== undefined) {
+        this.pendingQuery = undefined;
+        void this.send(next);
+      }
     }
   }
 
@@ -212,6 +227,10 @@ export class PanelController {
   async applyProposal(changeId: string): Promise<void> {
     const proposal = this.state.proposals.find((p) => p.changeId === changeId);
     if (!proposal || proposal.status !== 'pending') return;
+
+    // Flip status synchronously before awaiting so a second (e.g. double-click) call bails at
+    // the guard above — preventing a double host write / duplicate ChangeRecord.
+    this.setProposal(changeId, { status: 'applying' });
 
     const result = await this.session.apply(proposal.kind, proposal.params, proposal.changeId);
     this.store.record(result, this.lastProvenance);

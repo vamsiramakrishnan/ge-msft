@@ -19,3 +19,11 @@ export { parseMarkdownBlocks, tableToMarkdown } from './markdown.js';
 export { chunkBlocks, splitText } from './chunk.js';
 export { contextualizeChunk } from './contextualize.js';
 export { processContent, processNative, toContext, toContextNative } from './process.js';
+export {
+  recommendStrategy,
+  ContextBudget,
+  DEFAULT_MAX_INLINE_TOKENS,
+  DEFAULT_CONTEXT_BUDGET_TOKENS,
+  type AttachStrategy,
+  type StrategyInput,
+} from './budget.js';

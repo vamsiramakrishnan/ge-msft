@@ -32,6 +32,9 @@ stores are configured **in the Gemini Enterprise engine/assistant**, not in our 
   targeting + `actionSpec`; A2A-direct caveats).
 - `a2ui.md` — A2UI agent-authored interactive UI and how the add-in maps its actions to host
   actuations.
+- `files-and-limits.md` — inline context vs session context files (`addContextFile`), **code
+  execution** for xlsx/csv analysis, the verified quotas, and the inline/reference/upload decision
+  policy.
 
 ## Endpoint & regions
 - Global: `https://discoveryengine.googleapis.com`

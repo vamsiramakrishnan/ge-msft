@@ -6,3 +6,6 @@ build/
 *.log
 .DS_Store
 coverage/
+
+# TS build info (artifact)
+*.tsbuildinfo

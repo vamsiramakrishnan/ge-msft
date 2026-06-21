@@ -1,8 +1,15 @@
-import type { AssistRequest, ProvenancePayload, SourceRef, SseEvent } from '@ge/contracts';
+import type {
+  AssistRequest,
+  ProvenancePayload,
+  ResolvedContext,
+  SourceRef,
+  SseEvent,
+} from '@ge/contracts';
 import { GeminiClientConfig, streamAssistUrl } from './config.js';
 import { DeStreamAssistResponseSchema } from './de-types.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { contentHash } from './hash.js';
+import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
 export interface TokenSource {
@@ -13,6 +20,8 @@ export interface TokenSource {
 export interface StreamOptions {
   /** Resume an existing conversation; otherwise the engine starts a fresh one. */
   session?: string;
+  /** Live host objects attached to the session (from a bridge / SessionContext). */
+  context?: ResolvedContext[];
   signal?: AbortSignal;
 }
 
@@ -106,7 +115,9 @@ export class StreamAssistClient {
 
   private async post(req: AssistRequest, opts: StreamOptions): Promise<Response> {
     const url = streamAssistUrl(this.config);
-    const body = JSON.stringify(buildStreamAssistRequest(req, this.config, opts.session));
+    const body = JSON.stringify(
+      buildStreamAssistRequest(req, this.config, opts.session, opts.context),
+    );
     const send = async (): Promise<Response> => {
       const token = await this.tokens.getAccessToken();
       return this.fetchImpl(url, {
@@ -155,14 +166,30 @@ export function buildStreamAssistRequest(
   req: AssistRequest,
   cfg: GeminiClientConfig,
   session?: string,
+  context?: ResolvedContext[],
 ): Record<string, unknown> {
-  const text = composeQuery(req);
-  const out: Record<string, unknown> = { query: { text } };
+  const attached = (context ?? []).map((c) => contextValueToQueryPart(c.value));
+  const out: Record<string, unknown> = { query: buildQuery(req, attached) };
   if (session) out.session = session;
   if (cfg.modelId) out.generationSpec = { modelId: cfg.modelId };
   const filter = unitFilter(req);
   if (filter) out.toolsSpec = { vertexAiSearchSpec: { filter } };
   return out;
+}
+
+/**
+ * When live context is attached, send a multi-part query: each context object as its
+ * own part (data), then the user's question as a trailing text part. With no attached
+ * context we fall back to the surfaceContext-composed single text query.
+ */
+function buildQuery(req: AssistRequest, attached: QueryPart[]): Record<string, unknown> {
+  if (attached.length === 0) {
+    return { text: composeQuery(req) };
+  }
+  const question = req.query?.trim();
+  const parts: QueryPart[] = [...attached];
+  if (question) parts.push({ text: question });
+  return { parts };
 }
 
 function composeQuery(req: AssistRequest): string {

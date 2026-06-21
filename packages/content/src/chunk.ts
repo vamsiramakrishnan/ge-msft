@@ -1,5 +1,5 @@
 import type { Anchor } from '@ge/contracts';
-import type { Block, Chunk, ChunkOptions, RawContent } from './model.js';
+import type { Block, Chunk, ChunkOptions, SourceMeta } from './model.js';
 import { estimateTokens } from './tokens.js';
 
 const DEFAULTS = { maxTokens: 400, overlapTokens: 40, sectionBreakLevel: 2 } as const;
@@ -8,10 +8,13 @@ const DEFAULTS = { maxTokens: 400, overlapTokens: 40, sectionBreakLevel: 2 } as 
  * Structure-aware chunker. Groups blocks under their heading breadcrumb, packs them up
  * to a soft token budget, starts a fresh chunk at section boundaries, and never splits a
  * table. A block that alone exceeds the budget is recursively split (paragraph → sentence
- * → word) with sentence overlap — the LangChain RecursiveCharacterTextSplitter idea, but
- * token-aware and offset-preserving so every chunk keeps a write-back anchor.
+ * → word) with sentence overlap. Every chunk keeps a write-back anchor: a native host
+ * `locator` when the source provided one, else `chars:start-end` from the string path.
+ *
+ * Works the same whether `blocks` came from the Office object model (native) or the
+ * Markdown parser (string fallback).
  */
-export function chunkBlocks(blocks: Block[], raw: RawContent, opts: ChunkOptions = {}): Chunk[] {
+export function chunkBlocks(blocks: Block[], meta: SourceMeta, opts: ChunkOptions = {}): Chunk[] {
   const o = { ...DEFAULTS, ...opts };
   const chunks: Chunk[] = [];
   const headingStack: { level: number; title: string }[] = [];
@@ -21,14 +24,7 @@ export function chunkBlocks(blocks: Block[], raw: RawContent, opts: ChunkOptions
 
   const flush = (): void => {
     if (pending.length === 0) return;
-    const path = sectionPath();
-    const text = pending
-      .map((b) => b.text)
-      .join('\n\n')
-      .trim();
-    const start = pending[0]!.start;
-    const end = pending[pending.length - 1]!.end;
-    emit(chunks, raw, text, start, end, path, dedupeKinds(pending), o);
+    emit(chunks, meta, pending, sectionPath(), o);
     pending = [];
   };
 
@@ -37,23 +33,30 @@ export function chunkBlocks(blocks: Block[], raw: RawContent, opts: ChunkOptions
   for (const block of blocks) {
     if (block.kind === 'heading') {
       const level = block.level ?? 6;
-      // A section-level heading closes the current chunk and updates the breadcrumb.
       if (level <= o.sectionBreakLevel) flush();
       while (headingStack.length && headingStack[headingStack.length - 1]!.level >= level) {
         headingStack.pop();
       }
       headingStack.push({ level, title: headingText(block.text) });
-      pending.push(block); // keep the heading with its section
+      pending.push(block);
       continue;
     }
 
     const blockTokens = estimateTokens(block.text);
-    if (blockTokens > o.maxTokens) {
-      // Oversized block: flush what we have, then split this block on its own.
+    // Tables and other native structured blocks are kept whole even if large.
+    if (blockTokens > o.maxTokens && block.kind !== 'table') {
       flush();
       const path = sectionPath();
-      for (const piece of splitText(block.text, o.maxTokens, o.overlapTokens, block.start)) {
-        emit(chunks, raw, piece.text, piece.start, piece.end, path, [block.kind], o);
+      const base = block.start ?? 0;
+      for (const piece of splitText(block.text, o.maxTokens, o.overlapTokens, base)) {
+        const part: Block = {
+          kind: block.kind,
+          text: piece.text,
+          start: block.start === undefined ? undefined : piece.start,
+          end: block.start === undefined ? undefined : piece.end,
+          ...(block.locator ? { locator: block.locator } : {}),
+        };
+        emit(chunks, meta, [part], path, o);
       }
       continue;
     }
@@ -67,37 +70,52 @@ export function chunkBlocks(blocks: Block[], raw: RawContent, opts: ChunkOptions
 
 function emit(
   chunks: Chunk[],
-  raw: RawContent,
-  text: string,
-  start: number,
-  end: number,
+  meta: SourceMeta,
+  blocks: Block[],
   sectionPath: string[],
-  kinds: Block['kind'][],
   _o: ChunkOptions,
 ): void {
-  if (text.trim().length === 0) return;
+  const text = blocks
+    .map((b) => b.text)
+    .join('\n\n')
+    .trim();
+  if (text.length === 0) return;
   const index = chunks.length;
+  const first = blocks[0]!;
+  const last = blocks[blocks.length - 1]!;
+  const locator = locatorFor(blocks);
   const anchor: Anchor = {
     matchText: firstLine(text).slice(0, 90),
     ...(sectionPath.length ? { contextHint: sectionPath.join(' › ') } : {}),
-    locator: `chars:${start}-${end}`,
+    ...(locator ? { locator } : {}),
   };
+  const hasOffsets = first.start !== undefined && last.end !== undefined;
   chunks.push({
-    id: `${raw.sourceId}#${index}`,
+    id: `${meta.sourceId}#${index}`,
     index,
     text,
     meta: {
-      sourceId: raw.sourceId,
-      ...(raw.title ? { sourceTitle: raw.title } : {}),
-      ...(raw.surface ? { surface: raw.surface } : {}),
+      sourceId: meta.sourceId,
+      ...(meta.title ? { sourceTitle: meta.title } : {}),
+      ...(meta.surface ? { surface: meta.surface } : {}),
       sectionPath,
-      kinds,
-      charStart: start,
-      charEnd: end,
+      kinds: [...new Set(blocks.map((b) => b.kind))],
+      ...(hasOffsets ? { charStart: first.start, charEnd: last.end } : {}),
       tokensEstimate: estimateTokens(text),
       anchor,
     },
   });
+}
+
+/** Prefer a native locator from the chunk's blocks; else fall back to a char range. */
+function locatorFor(blocks: Block[]): string | undefined {
+  const native = blocks.find((b) => b.locator)?.locator;
+  if (native) return native;
+  const first = blocks[0]!;
+  const last = blocks[blocks.length - 1]!;
+  if (first.start !== undefined && last.end !== undefined)
+    return `chars:${first.start}-${last.end}`;
+  return undefined;
 }
 
 /**
@@ -118,17 +136,14 @@ export function splitText(
 
   const flush = (): void => {
     if (buf.length === 0) return;
-    const start = baseOffset + buf[0]!.start;
-    const end = baseOffset + buf[buf.length - 1]!.end;
     out.push({
       text: buf
         .map((u) => u.text)
         .join('')
         .trim(),
-      start,
-      end,
+      start: baseOffset + buf[0]!.start,
+      end: baseOffset + buf[buf.length - 1]!.end,
     });
-    // Carry trailing units as overlap for the next piece.
     const overlap: typeof units = [];
     let acc = 0;
     for (let k = buf.length - 1; k >= 0; k--) {
@@ -141,7 +156,6 @@ export function splitText(
 
   for (const u of units) {
     if (estimateTokens(u.text) > maxTokens) {
-      // A single unit still too big (e.g. no sentence breaks): hard-wrap by words.
       flush();
       buf = [];
       for (const w of wordWrap(u, maxTokens)) out.push(w);
@@ -151,15 +165,13 @@ export function splitText(
     buf.push(u);
   }
   if (buf.length) {
-    const start = baseOffset + buf[0]!.start;
-    const end = baseOffset + buf[buf.length - 1]!.end;
     out.push({
       text: buf
         .map((u) => u.text)
         .join('')
         .trim(),
-      start,
-      end,
+      start: baseOffset + buf[0]!.start,
+      end: baseOffset + buf[buf.length - 1]!.end,
     });
   }
   return out.filter((p) => p.text.length > 0);
@@ -171,10 +183,8 @@ interface Unit {
   end: number;
 }
 
-/** Split into paragraph-or-sentence units, preserving offsets and trailing whitespace. */
 function segment(text: string): Unit[] {
   const units: Unit[] = [];
-  // Paragraph boundaries first.
   const paraRe = /[^\n]*(?:\n(?!\n)[^\n]*)*(?:\n\n+|$)/g;
   let m: RegExpExecArray | null;
   while ((m = paraRe.exec(text)) !== null) {
@@ -183,7 +193,6 @@ function segment(text: string): Unit[] {
       continue;
     }
     const paraStart = m.index;
-    // Sentence boundaries within the paragraph.
     const sentRe = /[^.!?]*[.!?]+[\s)"']*|\S[^.!?]*$/g;
     let s: RegExpExecArray | null;
     let any = false;
@@ -229,8 +238,4 @@ function firstLine(text: string): string {
     .replace(/^#{1,6}\s+/, '')
     .split('\n')[0]!
     .trim();
-}
-
-function dedupeKinds(blocks: Block[]): Block['kind'][] {
-  return [...new Set(blocks.map((b) => b.kind))];
 }

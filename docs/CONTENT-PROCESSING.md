@@ -20,24 +20,42 @@ Sources: [MarkItDown](https://github.com/microsoft/markitdown) ·
 [LangChain chunking](https://www.firecrawl.dev/blog/best-chunking-strategies-rag) ·
 [Anthropic Contextual Retrieval](https://www.anthropic.com/news/contextual-retrieval).
 
+## Not RAG — and native-first
+
+To be explicit: there is **no embedding model, no vector store, no retrieval** in this package.
+Gemini Enterprise does the grounding/retrieval (server-side, over the connected data stores). This
+layer only **normalizes + chunks + labels** what the add-in attaches as `query.parts[]`. It's the
+opposite of heavyweight.
+
+**Best use of Office = use the native object model, not a string round-trip.** The Office host already
+exposes structure — Word `paragraphs`/`tables`/`contentControls` (with ids + styles), Excel `range`
+values/addresses, PowerPoint `slides`/shapes. So bridges build `Block[]` **directly** from the object
+model via the `native` builders, skipping the Markdown regex reparse and preserving a **native host
+locator** for write-back. The Markdown string path is only the *fallback* for sources that genuinely
+arrive as a blob (an Outlook HTML body, plain text). (`Document.getFileAsync` OOXML is intentionally
+avoided: it's slow for pptx and can't be attached to `streamAssist` anyway — no blob parts.)
+
 ## The pipeline
 
 ```
-RawContent ──normalize──▶ Markdown ──parse──▶ Block[] (kind + char offsets)
-          ──chunk──▶ Chunk[] (section-grouped, token-budgeted, anchored)
-          ──contextualize + map──▶ ResolvedContext[]  ─▶ SessionContext ─▶ query.parts[]
+ native (preferred):  Office object model ──native builders──▶ Block[] (kind + host locator)
+ string (fallback):   text/HTML ──normalize──▶ Markdown ──parse──▶ Block[] (kind + char offsets)
+                      ──chunk──▶ Chunk[] (section-grouped, token-budgeted, anchored)
+                      ──contextualize + map──▶ ResolvedContext[] ─▶ SessionContext ─▶ query.parts[]
 ```
 
-- **`RawContent`** — what a bridge hands in: `{ sourceId, text, format: markdown|plain|html, title?,
-  surface?, indexedDocumentName? }`.
-- **`Block`** — a structural unit (`heading|paragraph|list|table|code|quote`) with `start`/`end`
-  **char offsets** into the source — the basis for anchors.
-- **`Chunk`** — token-budgeted text + `ChunkMeta`: `sectionPath` breadcrumb, `kinds`, char range,
-  `tokensEstimate`, and an **`Anchor`** (`matchText` + `contextHint` = section path + `locator` =
-  `chars:start-end`). Tables are never split; oversized blocks are recursively split with overlap.
-- **`ResolvedContext`** — attach-ready: a contextualized `text/markdown` part per chunk (carrying the
-  anchor + token estimate on its `ref`), **or** a single `indexed-document` reference when
-  `preferReference` + `indexedDocumentName` are set (the reference-over-inline policy).
+- **`NativeContent`** (native) — `{ sourceId, title?, surface?, indexedDocumentName?, blocks: Block[] }`,
+  where each `Block` carries a host `locator` (`cc:42`, `range:Sheet1!A1:D9`, `slide:4`). Built with the
+  `native.{heading,paragraph,table,listBlock,quote,code,slide}` helpers. → `processNative` / `toContextNative`.
+- **`RawContent`** (fallback) — `{ sourceId, text, format: markdown|plain|html, … }`. → `processContent` / `toContext`.
+- **`Block`** — a structural unit (`heading|paragraph|list|table|code|quote`); offsets `start`/`end`
+  (string path) **or** a native `locator` (object-model path); `data` holds the raw `StructuredData`
+  for native tables.
+- **`Chunk`** — token-budgeted text + `ChunkMeta`: `sectionPath` breadcrumb, `kinds`, optional char
+  range, `tokensEstimate`, and an **`Anchor`** (`matchText` + `contextHint` = section path + `locator`
+  = the native handle, else `chars:start-end`). Tables/native structured blocks are never split.
+- **`ResolvedContext`** — attach-ready: a contextualized `text/markdown` part per chunk, **or** a single
+  `indexed-document` reference when `preferReference` + `indexedDocumentName` are set.
 
 ## The interplay (why this composes)
 

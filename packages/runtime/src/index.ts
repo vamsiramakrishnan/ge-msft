@@ -5,6 +5,13 @@
 export type { DocBridge, AuthClient, UserIdentity } from './bridge.js';
 export { AssistSession, type AssistSessionOptions } from './assist-session.js';
 export {
+  ContextModel,
+  BRIEF_REF_ID,
+  type CommitMode,
+  type CommitHint,
+  type ContextBrief,
+} from './context-model.js';
+export {
   Orchestrator,
   type OrchestratorHandlers,
   type OrchestratorOptions,

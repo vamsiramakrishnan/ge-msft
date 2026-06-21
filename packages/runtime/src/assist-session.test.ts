@@ -143,4 +143,93 @@ describe('AssistSession — the reusable loop', () => {
     session.detach('word:selection');
     expect(session.context.size).toBe(0);
   });
+
+  it('resumes a prior session id (cross-surface / reopen)', () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit, resumeSessionId: 'sess_prior' });
+    expect(session.sessionId).toBe('sess_prior');
+  });
+});
+
+/** A fetch that records every streamAssist request body, returning a minimal valid stream. */
+function recordingFetch(): { fetch: typeof fetch; bodies: Array<Record<string, unknown>> } {
+  const bodies: Array<Record<string, unknown>> = [];
+  const chunk = {
+    sessionInfo: { session: 'sess_1' },
+    answer: { state: 'SUCCEEDED', replies: [{ groundedContent: { content: { text: 'ok' } } }] },
+  };
+  const fetchImpl = vi.fn(async (_url: string, init?: { body?: string }) => {
+    bodies.push(JSON.parse(init?.body ?? '{}') as Record<string, unknown>);
+    return new Response(streamOf([JSON.stringify([chunk])]), { status: 200 });
+  });
+  return { fetch: fetchImpl as unknown as typeof fetch, bodies };
+}
+
+/** Pull the text parts out of a recorded streamAssist body. */
+function partTexts(body: Record<string, unknown>): string[] {
+  const query = body.query as { parts?: Array<{ text?: string }> } | undefined;
+  return (query?.parts ?? []).map((p) => p.text ?? '').filter(Boolean);
+}
+
+describe('AssistSession — event-fed context model (construct → commit)', () => {
+  it('folds a constructed brief into the next ask, then marks it resident (not re-sent)', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    // An event constructs context (a comment landed) — no model call yet.
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'local',
+      commentId: 'k1',
+      text: 'reconcile with SOW',
+    });
+    expect(bodies).toHaveLength(0); // fold is lazy — nothing sent
+    expect(session.model.hasPending).toBe(true);
+
+    // The first real question carries the brief.
+    await collect(session.ask('what changed?'));
+    expect(bodies).toHaveLength(1);
+    expect(partTexts(bodies[0]!).some((t) => t.includes('reconcile with SOW'))).toBe(true);
+    expect(session.model.hasPending).toBe(false); // now resident in the session
+
+    // The next question does NOT re-send the already-committed brief.
+    await collect(session.ask('and now?'));
+    expect(bodies).toHaveLength(2);
+    expect(partTexts(bodies[1]!).some((t) => t.includes('reconcile with SOW'))).toBe(false);
+  });
+
+  it('primes immediately at a checkpoint (meeting-ended), sending a context-only turn', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.ingest({ type: 'meeting-ended', id: 'mtg-9' });
+
+    expect(bodies).toHaveLength(1); // primed now, before any user question
+    expect(partTexts(bodies[0]!).some((t) => t.includes('mtg-9'))).toBe(true);
+    expect(session.model.hasPending).toBe(false);
+    expect(session.sessionId).toBe('sess_1'); // captured from the prime turn
+  });
+
+  it('ignores remote events — never narrates coauthor edits back into context', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'remote',
+      commentId: 'k9',
+      text: 'a coauthor note',
+    });
+    expect(session.model.hasPending).toBe(false);
+    expect(bodies).toHaveLength(0);
+  });
 });

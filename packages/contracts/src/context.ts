@@ -37,6 +37,7 @@ export const ContextKindSchema = z.enum([
   'indexed-document', // a doc already in a connected data store (cited by name)
   'drive-document', // a Google Drive document reference
   'file', // an opaque rendered file (OOXML/PDF) for multimodal grounding
+  'brief', // a constructed working-context brief (event-fed deltas committed to the session)
 ]);
 export type ContextKind = z.infer<typeof ContextKindSchema>;
 

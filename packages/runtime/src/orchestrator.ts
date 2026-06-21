@@ -9,6 +9,12 @@ import type { DocBridge } from './bridge.js';
  * here. Start/stop is idempotent and unsubscribes cleanly.
  */
 export interface OrchestratorHandlers {
+  /**
+   * Every host event (after debouncing) — the context path. Wire this to
+   * `AssistSession.ingest` so events *construct* the working-context brief without running the
+   * assistant. Fires for all events, independent of whether any trigger matches.
+   */
+  onContext?(event: HostEvent): void;
   /** An ambient suggestion to render (non-intrusive). */
   onSuggest?(outcome: { title: string; detail?: string; query?: string }): void;
   /** A grounded query the app should run (e.g. via AssistSession.ask). */
@@ -56,6 +62,8 @@ export class Orchestrator {
   }
 
   private async route(event: HostEvent): Promise<void> {
+    // Context path first: every event constructs the working brief (cheap, no model call).
+    this.handlers.onContext?.(event);
     for (const outcome of await this.registry.dispatch(event)) {
       if (outcome.kind === 'suggest') {
         this.handlers.onSuggest?.({

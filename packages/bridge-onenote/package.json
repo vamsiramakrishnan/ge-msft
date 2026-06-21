@@ -1,0 +1,13 @@
+{
+  "name": "@ge/bridge-onenote",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OneNote page synthesis (web-only, legacy manifest)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  }
+}

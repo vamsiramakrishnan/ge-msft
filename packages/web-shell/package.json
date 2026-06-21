@@ -1,0 +1,13 @@
+{
+  "name": "@ge/web-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Surface-agnostic web app: panel, UnitComposer, AuthClient, StreamClient, ProvenanceStore",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  }
+}

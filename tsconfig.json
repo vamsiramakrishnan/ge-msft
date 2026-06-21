@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/web-shell" },
+    { "path": "packages/bridge-word" },
+    { "path": "packages/bridge-excel" },
+    { "path": "packages/bridge-powerpoint" },
+    { "path": "packages/bridge-onenote" },
+    { "path": "packages/teams" },
+    { "path": "services/gateway" }
+  ]
+}

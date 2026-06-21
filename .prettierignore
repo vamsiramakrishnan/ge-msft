@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+coverage
+package-lock.json
+
+# Provided spec + content (authoritative source — do not reformat)
+docs
+manifests
+*.md
+.claude/settings.json

@@ -13,13 +13,14 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "echo \"Run a specific workspace, e.g. npm run dev -w services/gateway\"",
-    "typecheck": "tsc --build --noEmit || tsc -p tsconfig.base.json --noEmit",
-    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/office-js": "^1.0.377",
     "@typescript-eslint/eslint-plugin": "^7.13.0",
     "@typescript-eslint/parser": "^7.13.0",
     "eslint": "^8.57.0",

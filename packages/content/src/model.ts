@@ -1,35 +1,60 @@
 import type { Anchor, ResolvedContext, Surface } from '@ge/contracts';
 
 /**
- * The content-processing model. Pipeline (inspired by markitdown/Docling →
- * LangChain recursive + structure-aware splitting → LlamaIndex parent/child →
- * Anthropic contextual retrieval):
+ * The content-processing model. Two ways in, one pipeline:
  *
- *   RawContent → normalize to Markdown → Block[] (structure + char offsets)
- *             → Chunk[] (token-budgeted, section-aware, with write-back anchors)
- *             → contextualized ResolvedContext[] (ready for query.parts[]).
+ *   (native, preferred)  Office object model → Block[] → Chunk[] → ResolvedContext[]
+ *   (string fallback)    text/HTML → Markdown → Block[] → Chunk[] → ResolvedContext[]
+ *
+ * The Office host already exposes structure (Word paragraphs/tables/content-controls,
+ * Excel ranges, PowerPoint slides) — so bridges build `Block[]` directly and skip the
+ * Markdown regex reparse. The string path is only for sources that genuinely arrive as
+ * a blob of text/HTML (e.g. an Outlook message body). This is NOT RAG: no embeddings,
+ * no vector store, no retrieval — the engine grounds; we only normalize + label what we
+ * attach as `query.parts[]`.
  */
 
-/** What a bridge hands in: extracted host/estate content + where it came from. */
-export interface RawContent {
-  sourceId: string; // stable id for this source (e.g. "word:body", "sp:contract.docx")
-  text: string;
-  format: 'markdown' | 'plain' | 'html';
+/** Native structured data (e.g. an Excel range): the Office model, not re-parsed text. */
+export interface StructuredData {
+  columns: string[];
+  rows: (string | number)[][];
+}
+
+/** Identity + provenance of a source the content came from. */
+export interface SourceMeta {
+  sourceId: string; // stable id (e.g. "word:body", "xl:Sheet1!A1:D9", "sp:contract.docx")
   title?: string;
   surface?: Surface;
   /** If the source is already indexed in a connected data store, its VAIS doc name. */
   indexedDocumentName?: string;
 }
 
+/** What a bridge hands in when it only has a string (Outlook body, plain text). */
+export interface RawContent extends SourceMeta {
+  text: string;
+  format: 'markdown' | 'plain' | 'html';
+}
+
+/** What a bridge hands in when it has native structure (Word/Excel/PowerPoint object model). */
+export interface NativeContent extends SourceMeta {
+  blocks: Block[];
+}
+
 export type BlockKind = 'heading' | 'paragraph' | 'list' | 'table' | 'code' | 'quote';
 
-/** A structural unit of the normalized Markdown, with char offsets into the source. */
+/**
+ * A structural unit. From the string path it carries char offsets (`start`/`end`); from
+ * the native path it carries a host `locator` (content-control id, range address, slide
+ * index) — whichever the source can provide for write-back.
+ */
 export interface Block {
   kind: BlockKind;
-  level?: number; // heading level 1..6
-  text: string;
-  start: number; // inclusive char offset
-  end: number; // exclusive char offset
+  level?: number; // heading level 1..6 (or PowerPoint: derived)
+  text: string; // the block as Markdown (tables already GFM)
+  start?: number; // char offset (string path)
+  end?: number;
+  locator?: string; // native host handle, e.g. "cc:42", "range:Sheet1!A1:D9", "slide:4"
+  data?: StructuredData; // for kind 'table' from the native path
 }
 
 export interface ChunkMeta {
@@ -37,11 +62,11 @@ export interface ChunkMeta {
   sourceTitle?: string;
   surface?: Surface;
   sectionPath: string[]; // heading breadcrumb, e.g. ["5. Service Levels", "5.2 Availability"]
-  kinds: BlockKind[]; // which block kinds the chunk contains
-  charStart: number;
-  charEnd: number;
+  kinds: BlockKind[];
+  charStart?: number;
+  charEnd?: number;
   tokensEstimate: number;
-  anchor: Anchor; // content anchor for write-back
+  anchor: Anchor; // content anchor (+ native locator) for write-back
 }
 
 export interface Chunk {
@@ -52,7 +77,6 @@ export interface Chunk {
 }
 
 export interface ProcessedContent {
-  markdown: string;
   blocks: Block[];
   chunks: Chunk[];
 }

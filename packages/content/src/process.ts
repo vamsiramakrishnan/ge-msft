@@ -1,55 +1,84 @@
-import type { ContextKind, ResolvedContext } from '@ge/contracts';
-import type { Chunk, ProcessedContent, RawContent, ToContextOptions } from './model.js';
+import type { ContextKind, ResolvedContext, Surface } from '@ge/contracts';
+import type {
+  Chunk,
+  NativeContent,
+  ProcessedContent,
+  RawContent,
+  SourceMeta,
+  ToContextOptions,
+} from './model.js';
 import { toMarkdown } from './normalize.js';
 import { parseMarkdownBlocks } from './markdown.js';
 import { chunkBlocks } from './chunk.js';
 import { contextualizeChunk } from './contextualize.js';
 
 /**
- * The full pipeline: RawContent → Markdown → Block[] → Chunk[].
- * Bridges call this on extracted host/estate content; the chunks then become
- * attach-ready context (see `toContext`).
+ * Native path (preferred): bridges that read the Office object model pass `Block[]`
+ * directly — no Markdown round-trip, native locators preserved.
+ */
+export function processNative(
+  native: NativeContent,
+  opts: ToContextOptions = {},
+): ProcessedContent {
+  const chunks = chunkBlocks(native.blocks, native, opts);
+  return { blocks: native.blocks, chunks };
+}
+
+/**
+ * String path (fallback): for sources that arrive as text/HTML (e.g. an Outlook body).
+ * Normalize to Markdown, then parse into blocks with char offsets.
  */
 export function processContent(raw: RawContent, opts: ToContextOptions = {}): ProcessedContent {
   const markdown = toMarkdown(raw);
   const blocks = parseMarkdownBlocks(markdown);
   const chunks = chunkBlocks(blocks, raw, opts);
-  return { markdown, blocks, chunks };
+  return { blocks, chunks };
+}
+
+/** Native content → attach-ready `ResolvedContext[]`. */
+export function toContextNative(
+  native: NativeContent,
+  opts: ToContextOptions = {},
+): ResolvedContext[] {
+  const ref = referenceOnly(native, opts);
+  if (ref) return ref;
+  return processNative(native, opts).chunks.map((c) => chunkToContext(c, native.surface));
+}
+
+/** String content → attach-ready `ResolvedContext[]`. */
+export function toContext(raw: RawContent, opts: ToContextOptions = {}): ResolvedContext[] {
+  const ref = referenceOnly(raw, opts);
+  if (ref) return ref;
+  return processContent(raw, opts).chunks.map((c) => chunkToContext(c, raw.surface));
 }
 
 /**
- * Turn processed content into `ResolvedContext[]` ready to attach to a session.
- *
  * Reference-over-inline: when the source is already indexed in a connected data store and
- * `preferReference` is set, emit a single `indexed-document` reference (ACL-preserving,
- * citations resolve) instead of inlining the chunks. Otherwise emit one contextualized
- * text part per chunk, each carrying its anchor + token estimate for write-back + budgeting.
+ * the caller prefers it, emit a single `indexed-document` reference (ACL-preserving,
+ * citations resolve) instead of inlining content.
  */
-export function toContext(raw: RawContent, opts: ToContextOptions = {}): ResolvedContext[] {
-  if (opts.preferReference && raw.indexedDocumentName) {
-    return [
-      {
-        ref: {
-          id: raw.sourceId,
-          kind: 'indexed-document',
-          surface: raw.surface ?? 'word',
-          title: raw.title ?? raw.sourceId,
-        },
-        value: {
-          as: 'indexed-document',
-          documentName: raw.indexedDocumentName,
-          ...(raw.title ? { title: raw.title } : {}),
-        },
+function referenceOnly(meta: SourceMeta, opts: ToContextOptions): ResolvedContext[] | null {
+  if (!opts.preferReference || !meta.indexedDocumentName) return null;
+  return [
+    {
+      ref: {
+        id: meta.sourceId,
+        kind: 'indexed-document',
+        surface: meta.surface ?? 'word',
+        title: meta.title ?? meta.sourceId,
       },
-    ];
-  }
-  return processContent(raw, opts).chunks.map((chunk) => chunkToContext(chunk, raw.surface));
+      value: {
+        as: 'indexed-document',
+        documentName: meta.indexedDocumentName,
+        ...(meta.title ? { title: meta.title } : {}),
+      },
+    },
+  ];
 }
 
-function chunkToContext(chunk: Chunk, surface?: RawContent['surface']): ResolvedContext {
+function chunkToContext(chunk: Chunk, surface?: Surface): ResolvedContext {
   const kind: ContextKind = chunk.meta.kinds.includes('table') ? 'table' : 'paragraph';
   const title = chunk.meta.sectionPath.at(-1) ?? chunk.meta.sourceTitle ?? chunk.meta.sourceId;
-  const text = contextualizeChunk(chunk);
   return {
     ref: {
       id: chunk.id,
@@ -60,6 +89,6 @@ function chunkToContext(chunk: Chunk, surface?: RawContent['surface']): Resolved
       tokensEstimate: chunk.meta.tokensEstimate,
       anchor: chunk.meta.anchor,
     },
-    value: { as: 'text', text, mimeType: 'text/markdown' },
+    value: { as: 'text', text: contextualizeChunk(chunk), mimeType: 'text/markdown' },
   };
 }

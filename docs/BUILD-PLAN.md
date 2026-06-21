@@ -1,5 +1,15 @@
 # Build Plan
 
+> **⚠️ Superseded in part — read `STATUS.md` for the current state.** This plan was written for the
+> original **gateway-based** three-tier design. The project has since pivoted to **client-direct**
+> (`ADR-0001`): no gateway, identity federated in the browser (WIF), Gemini Enterprise called
+> directly, agents/Model Armor are engine config. The gateway tasks below (0.3–0.9, 1.2, the
+> `services/*` work) are **obsolete** and intentionally not done; their intent is delivered
+> client-side instead. What *is* built — the surface-agnostic core, the foundational retrieval
+> clients, the Word/Excel/Outlook/Teams bridges, the event engine, and the web-shell core — is
+> inventoried in `STATUS.md` and `CAPABILITY-MAP.md`. Treat those two as the source of truth for
+> status; treat the per-surface ACs and mockups below as still-useful acceptance targets.
+
 The executable checklist for this project. Work top to bottom, one task at a time. Use `/plan` at the start of each phase. After finishing a task: run typecheck + tests + lint, confirm the acceptance criteria, run `security-reviewer` if it touched auth/credentials/guardrails/provenance, then change its `[ ]` to `[x]` and commit.
 
 Each task lists the package(s) it touches and a verifiable acceptance criterion (AC).

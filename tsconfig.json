@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/contracts" },
     { "path": "packages/content" },
+    { "path": "packages/graph-client" },
     { "path": "packages/gemini-client" },
     { "path": "packages/runtime" },
     { "path": "packages/web-shell" },

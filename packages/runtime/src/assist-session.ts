@@ -72,6 +72,13 @@ export class AssistSession {
     this.context.remove(id);
   }
 
+  /** Attach one specific ref (resolve → add). Backs the context tray's attach-by-chip. */
+  async attachRef(ref: ContextRef): Promise<void> {
+    for (const resolved of await this.bridge.resolveContext(ref)) {
+      this.context.add(resolved);
+    }
+  }
+
   /**
    * Ask a grounded question. Auto-attaches the configured context kinds (once), streams
    * the answer, and records the session id, citations, and provenance as they arrive.

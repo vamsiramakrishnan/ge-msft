@@ -3,11 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Surface-agnostic web app: panel, UnitComposer, AuthClient, StreamClient, ProvenanceStore",
+  "description": "Surface-agnostic web app core: AuthClient (NAA), session composition, PanelController, ProvenanceStore",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "@ge/gemini-client": "*",
+    "@ge/runtime": "*",
+    "@ge/triggers": "*"
   }
 }

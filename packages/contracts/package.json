@@ -9,5 +9,8 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
   }
 }

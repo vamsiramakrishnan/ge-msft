@@ -13,6 +13,7 @@
   "dependencies": {
     "@ge/contracts": "*",
     "@ge/content": "*",
-    "@ge/runtime": "*"
+    "@ge/runtime": "*",
+    "@ge/triggers": "*"
   }
 }

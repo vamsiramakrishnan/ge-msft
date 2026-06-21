@@ -4,15 +4,14 @@
   "version": "0.0.0",
   "description": "Gemini Enterprise multi-surface add-in for Microsoft 365 (Word, Excel, PowerPoint, OneNote, Teams).",
   "workspaces": [
-    "packages/*",
-    "services/gateway"
+    "packages/*"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "echo \"Run a specific workspace, e.g. npm run dev -w services/gateway\"",
+    "dev": "echo \"Run a specific workspace, e.g. npm run dev -w packages/web-shell\"",
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",

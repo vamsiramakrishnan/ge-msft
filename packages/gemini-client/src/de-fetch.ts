@@ -6,7 +6,8 @@ export type FetchLike = typeof fetch;
  * POST a JSON body as the signed-in user and return the parsed JSON.
  * Mirrors StreamAssistClient.post: federated bearer token, and on a 401 (token
  * expired mid-cache) invalidate once and re-exchange before retrying.
- * Google credentials never leave the gateway/token source; the body is sent as data.
+ * No Google credential ever reaches the client — only the federated token from the
+ * TokenSource is used; the body is sent as data.
  */
 export async function postJson(
   url: string,

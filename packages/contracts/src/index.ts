@@ -1,7 +1,7 @@
 /**
- * @ge/contracts — the authoritative boundary between the gateway and the clients.
- * Implement against this exactly; every cross-boundary payload is parsed with its
- * Zod schema on receipt. See docs/CONTRACTS.md.
+ * @ge/contracts — the authoritative boundary between the surface-agnostic core and the
+ * per-surface bridges (and the shape of every Gemini Enterprise call). Implement against this
+ * exactly; every cross-boundary payload is parsed with its Zod schema on receipt. See docs/CONTRACTS.md.
  */
 export * from './intent.js';
 export * from './unit.js';

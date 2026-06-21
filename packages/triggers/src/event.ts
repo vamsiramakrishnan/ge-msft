@@ -60,3 +60,14 @@ export const CONTINUE: TriggerOutcome = { kind: 'continue' };
 export function eventOrigin(e: HostEvent): EventOrigin | undefined {
   return 'origin' in e ? e.origin : undefined;
 }
+
+/**
+ * Map a host's coauthoring `source` value (Word/Excel `EventSource`, the string `'Local'`/
+ * `'Remote'`, or anything) to our `EventOrigin`. Shared across surface bridges so the rule lives
+ * in one place: derive `'remote'` ONLY when the host explicitly says remote (case-insensitively);
+ * everything else — including a missing/unknown source — is `'local'`, so a genuine local edit is
+ * never mis-tagged as a coauthor's (which the registry would then drop).
+ */
+export function coauthorOrigin(source: unknown): EventOrigin {
+  return typeof source === 'string' && source.toLowerCase() === 'remote' ? 'remote' : 'local';
+}

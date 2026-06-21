@@ -1,4 +1,4 @@
-import type { EventOrigin, HostEvent } from '@ge/triggers';
+import { coauthorOrigin, type EventOrigin, type HostEvent } from '@ge/triggers';
 
 /**
  * Pure mappers from raw Excel event primitives into our `HostEvent` union — no Office.js
@@ -14,13 +14,11 @@ import type { EventOrigin, HostEvent } from '@ge/triggers';
 export type ExcelEventSourceLike = string | undefined;
 
 /**
- * Map Excel's coauthoring source enum to our `EventOrigin`. Excel reports `source` as the
- * `Excel.EventSource` string enum (`"Local"` / `"Remote"`). We derive `'remote'` only when
- * the host explicitly says remote (case-insensitively); everything else — including a
- * missing source — defaults to `'local'`, so we never mis-tag a local edit as a coauthor's.
+ * Map Excel's coauthoring source (`Excel.EventSource` string enum `"Local"`/`"Remote"`) to our
+ * `EventOrigin`. Thin surface-named wrapper over the shared `coauthorOrigin` rule.
  */
 export function deriveOrigin(source: ExcelEventSourceLike): EventOrigin {
-  return typeof source === 'string' && source.toLowerCase() === 'remote' ? 'remote' : 'local';
+  return coauthorOrigin(source);
 }
 
 /** Build a `selection-changed` HostEvent. Selection has no coauthor source → always local. */

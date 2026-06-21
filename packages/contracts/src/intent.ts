@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 /**
- * The verbs the gateway routes. `assist` is grounded chat over the unit
- * (StreamAssist); the rest dispatch to specialist A2A agents.
+ * The verbs the assistant handles. `assist` is grounded chat over the unit
+ * (streamAssist); the rest map to specialist agents the engine routes to.
  */
 export const IntentSchema = z.enum([
   'assist', // grounded chat over the unit (StreamAssist)

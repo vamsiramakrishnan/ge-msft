@@ -29,4 +29,7 @@ export {
   type ContextChip,
   type Suggestion,
   type Proposal,
+  type PendingWrite,
+  type RunStep,
 } from './controller.js';
+export { renderCommandLine } from './render-command.js';

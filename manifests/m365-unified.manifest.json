@@ -19,7 +19,7 @@
 
   "webApplicationInfo": {
     "id": "REPLACE_ENTRA_CLIENT_ID",
-    "resource": "api://REPLACE_GATEWAY_DOMAIN/REPLACE_ENTRA_CLIENT_ID"
+    "resource": "api://REPLACE_WEB_SHELL_DOMAIN/REPLACE_ENTRA_CLIENT_ID"
   },
   "authorization": {
     "permissions": {
@@ -28,7 +28,7 @@
       ]
     }
   },
-  "validDomains": ["REPLACE_GATEWAY_DOMAIN", "REPLACE_WEB_SHELL_DOMAIN"],
+  "validDomains": ["REPLACE_WEB_SHELL_DOMAIN", "login.microsoftonline.com"],
 
   "staticTabs": [
     {
@@ -65,7 +65,14 @@
 
   "extensions": [
     {
-      "requirements": { "scopes": ["mail", "workbook", "document", "presentation"] },
+      "requirements": {
+        "scopes": ["mail", "workbook", "document", "presentation"],
+        "capabilities": [
+          { "name": "Mailbox", "minVersion": "1.12" },
+          { "name": "WordApi", "minVersion": "1.3" },
+          { "name": "ExcelApi", "minVersion": "1.7" }
+        ]
+      },
       "runtimes": [
         {
           "id": "taskpane_runtime",
@@ -73,6 +80,19 @@
           "code": { "page": "https://REPLACE_WEB_SHELL_DOMAIN/taskpane.html" },
           "lifetime": "short",
           "actions": [{ "id": "openPanel", "type": "openPage", "view": "Gemini" }]
+        },
+        {
+          "id": "commands_runtime",
+          "type": "general",
+          "code": {
+            "page": "https://REPLACE_WEB_SHELL_DOMAIN/commands.html",
+            "script": "https://REPLACE_WEB_SHELL_DOMAIN/assets/commands.js"
+          },
+          "lifetime": "short",
+          "actions": [
+            { "id": "openGemini", "type": "executeFunction" },
+            { "id": "onMessageSend", "type": "executeFunction" }
+          ]
         }
       ],
       "ribbons": [
@@ -91,11 +111,29 @@
                       "type": "button",
                       "label": "Open Gemini",
                       "actionId": "openPanel",
-                      "icons": [{ "size": 16, "url": "icon-16.png" }, { "size": 32, "url": "icon-32.png" }]
+                      "icons": [
+                        { "size": 16, "url": "icon-16.png" },
+                        { "size": 32, "url": "icon-32.png" }
+                      ]
                     }
                   ]
                 }
               ]
+            }
+          ]
+        }
+      ],
+      "autoRunEvents": [
+        {
+          "requirements": {
+            "capabilities": [{ "name": "Mailbox", "minVersion": "1.12" }],
+            "scopes": ["mail"]
+          },
+          "events": [
+            {
+              "type": "messageSending",
+              "actionId": "onMessageSend",
+              "options": { "sendMode": "softBlock" }
             }
           ]
         }

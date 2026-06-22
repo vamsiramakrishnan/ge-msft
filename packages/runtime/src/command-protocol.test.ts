@@ -49,6 +49,74 @@ describe('compileCommand', () => {
     });
   });
 
+  it('compiles `comment` → add-comment with a cell range target (Excel)', () => {
+    const c = compileCommand(
+      { verb: 'comment', selector: 'Sales!A16', text: 'anomalous spike' },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'add-comment',
+        surface: 'excel',
+        params: { target: { range: 'Sales!A16' }, text: 'anomalous spike' },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `comment` → add-comment with a matchText anchor (Word)', () => {
+    const c = compileCommand(
+      { verb: 'comment', selector: 'the SLA is 99.5%', text: 'needs a source' },
+      { surface: 'word', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'add-comment',
+        surface: 'word',
+        params: { target: { matchText: 'the SLA is 99.5%' }, text: 'needs a source' },
+      },
+    });
+  });
+
+  it('compiles `format` → format-cells with typed format params', () => {
+    const c = compileCommand(
+      {
+        verb: 'format',
+        range: 'Sales!A16:C16',
+        props: { bold: 'true', italic: 'false', fill: '#FFF2CC', numberFormat: '$#,##0.00' },
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'format-cells',
+        surface: 'excel',
+        params: {
+          target: { range: 'Sales!A16:C16' },
+          format: { bold: true, italic: false, fill: '#FFF2CC', numberFormat: '$#,##0.00' },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('ignores unknown format keys but errors when NO recognized prop is present', () => {
+    const ok = compileCommand(
+      { verb: 'format', range: 'A1', props: { bold: 'true', wibble: 'x' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(ok).toMatchObject({ kind: 'write', request: { params: { format: { bold: true } } } });
+
+    const bad = compileCommand(
+      { verb: 'format', range: 'A1', props: { wibble: 'x' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(bad).toMatchObject({ error: expect.stringContaining('recognized property') });
+  });
+
   it('compiles reads to read intents', () => {
     expect(compileCommand({ verb: 'outline' }, { surface: 'excel', mintChangeId: mint })).toEqual({
       kind: 'read',

@@ -12,7 +12,12 @@ export {
   headingLevel,
   type WordElement,
 } from './capture.js';
-export { planTrackedChange, chooseAnchorIndex, type TrackedChangePlan } from './actuate-plan.js';
+export {
+  planTrackedChange,
+  chooseAnchorIndex,
+  formatSources,
+  type TrackedChangePlan,
+} from './actuate-plan.js';
 export {
   originFromWordSource,
   selectionChangedEvent,

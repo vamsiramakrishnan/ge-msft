@@ -11,6 +11,7 @@ import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
 import type { DocStateSnapshot } from '@ge/contracts';
 import { AssistSession, DOC_STATE_REF_ID, READ_REF_PREFIX } from './assist-session.js';
+import type { CommandLoopEvent } from './assist-session.js';
 import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
 
@@ -692,5 +693,136 @@ describe('AssistSession — event-fed context model (construct → commit)', () 
     expect(last.some((t) => t.includes('second note'))).toBe(true);
     expect(last.some((t) => t.includes('first note'))).toBe(false);
     expect(session.model.hasPending).toBe(false);
+  });
+});
+
+/* ───────────────────────── ADR-0005 composition in the loop ───────────────── */
+
+/** An Excel-like bridge whose `readRange` returns a GFM table (the shape Excel reads produce). */
+class ComposeBridge implements DocBridge {
+  readonly surface = 'excel' as const;
+  readRangeCalls: string[] = [];
+  getCapabilities(): CapabilityManifest {
+    return {
+      surface: 'excel',
+      contextKinds: ['range'],
+      actuations: [
+        { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
+      ],
+    };
+  }
+  listContext(): Promise<ContextRef[]> {
+    return Promise.resolve([]);
+  }
+  resolveContext(): Promise<ResolvedContext[]> {
+    return Promise.resolve([]);
+  }
+  actuate(request: ActuationRequest): Promise<ActuationResult> {
+    return Promise.resolve({ ok: true, changeId: request.changeId, kind: request.kind });
+  }
+  readRange(a1: string): Promise<ResolvedContext[]> {
+    this.readRangeCalls.push(a1);
+    const gfm = '| region | amount |\n| --- | --- |\n| East | 100 |\n| West | 250 |\n| East | 50 |';
+    return Promise.resolve([
+      {
+        ref: { id: `xl:${a1}`, kind: 'range', surface: 'excel', title: a1, live: false },
+        value: { as: 'text', text: gfm, mimeType: 'text/markdown' },
+      },
+    ]);
+  }
+}
+
+/**
+ * A streamAssist fetch scripted per call: each element is the text the model "emits" that turn.
+ * The runtime feeds the previous turn's ```result``` block back, so a multi-turn composition test
+ * can assert the evaluated Value arrives in the next turn's query.
+ */
+function scriptedFetch(turns: string[]): {
+  fetch: typeof fetch;
+  bodies: Array<Record<string, unknown>>;
+} {
+  const bodies: Array<Record<string, unknown>> = [];
+  let call = 0;
+  const fetchImpl = vi.fn(async (_url: string, init?: { body?: string }) => {
+    bodies.push(JSON.parse(init?.body ?? '{}') as Record<string, unknown>);
+    const text = turns[Math.min(call, turns.length - 1)] ?? '```cmd\ndone\n```';
+    call += 1;
+    const chunk = {
+      sessionInfo: { session: 'sess_1' },
+      answer: { state: 'SUCCEEDED', replies: [{ groundedContent: { content: { text } } }] },
+    };
+    return new Response(streamOf([JSON.stringify([chunk])]), { status: 200 });
+  });
+  return { fetch: fetchImpl as unknown as typeof fetch, bodies };
+}
+
+async function collectLoop(
+  gen: AsyncGenerator<SseEvent | CommandLoopEvent>,
+): Promise<Array<SseEvent | CommandLoopEvent>> {
+  const out: Array<SseEvent | CommandLoopEvent> = [];
+  for await (const e of gen) out.push(e);
+  return out;
+}
+
+describe('AssistSession.runCommands — ADR-0005 composition (pure)', () => {
+  it('evaluates a read|filter|sum pipeline and feeds the Value back in the next turn', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\nread Sales!A1:B5 | filter region=East | sum amount\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('total East'));
+
+    // The pipeline evaluated to East amounts 100 + 50 = 150.
+    const exprEvent = events.find((e) => e.type === 'expr-result') as
+      | Extract<CommandLoopEvent, { type: 'expr-result' }>
+      | undefined;
+    expect(exprEvent?.result).toEqual({ kind: 'number', value: 150 });
+
+    // Turn 2's query carried the rendered value back in the ```result``` block.
+    const turn2 = (bodies[1]!.query as { text?: string }).text ?? '';
+    expect(turn2).toContain('150');
+  });
+
+  it('persists a $var binding across turns within the loop', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nlet $t = read Sales!A1:B5\n```',
+      '```cmd\n$t | count\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('count rows'));
+
+    const exprEvents = events.filter((e) => e.type === 'expr-result') as Array<
+      Extract<CommandLoopEvent, { type: 'expr-result' }>
+    >;
+    // The second expression resolved the $var bound in the first turn → 3 rows.
+    expect(exprEvents[1]?.result).toEqual({ kind: 'number', value: 3 });
+  });
+
+  it('rejects a pipe-into-effect with the Phase-1 corrective (no write)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nread Sales!A1:B5 | set Sales!F2 =1\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('try to write'));
+    const exprEvent = events.find((e) => e.type === 'expr-result') as
+      | Extract<CommandLoopEvent, { type: 'expr-result' }>
+      | undefined;
+    expect(exprEvent?.result).toMatchObject({
+      error: expect.stringContaining("can't be composed"),
+    });
+    // No write-result event — composition never actuated.
+    expect(events.some((e) => e.type === 'write-result')).toBe(false);
   });
 });

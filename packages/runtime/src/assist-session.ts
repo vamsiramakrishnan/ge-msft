@@ -14,7 +14,14 @@ import type {
   SseEvent,
   UnitDescriptor,
 } from '@ge/contracts';
-import { asChangeId, isCommandParseError, parseCommandBlock } from '@ge/contracts';
+import {
+  asChangeId,
+  isCommandParseError,
+  isProgramExpr,
+  parseProgramBlock,
+  type ParsedExpr,
+  type PipeSource,
+} from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
@@ -26,6 +33,7 @@ import {
   type CompiledCommand,
   type ReadIntent,
 } from './command-protocol.js';
+import { evalExpr, renderValue, type RunRead, type Value } from './compose.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 
 /**
@@ -86,6 +94,8 @@ export type CommandLoopEvent =
   | { type: 'turn-start'; turn: number }
   /** A parsed command and how it compiled (read intent / write request / control / error). */
   | { type: 'command'; turn: number; command: ParsedCommand; compiled: CompiledCommand }
+  /** A composed read-expression (ADR-0005) evaluated to a Value (or a corrective error). */
+  | { type: 'expr-result'; turn: number; expr: ParsedExpr; result: Value | { error: string } }
   /** One read executed and its (host-content) result, carried as data. */
   | { type: 'read-result'; turn: number; intentLabel: string; result: unknown }
   /** One write gated + actuated (or blocked). */
@@ -170,6 +180,11 @@ export class AssistSession {
   private lastProvenance: ProvenancePayload | undefined;
   private readonly citations: SourceRef[] = [];
   private readonly compaction: Required<CompactionOptions>;
+  /**
+   * ADR-0005 binding environment for composed read-expressions (`let $x = …`). One Map for the
+   * whole {@link runCommands} loop so `$vars` persist across turns within a task.
+   */
+  private readonly composeEnv = new Map<string, Value>();
 
   constructor(
     private readonly bridge: DocBridge,
@@ -456,6 +471,10 @@ export class AssistSession {
     const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     const capabilities = await this.bridge.getCapabilities();
 
+    // Fresh ADR-0005 binding env per task: `$vars` persist across turns WITHIN this loop, but a
+    // later independent runCommands() call must not read a binding it never computed.
+    this.composeEnv.clear();
+
     let query = await this.firstCommandTurn(capabilities, task);
     let answer = '';
     let pendingNoFenceReprompt = false;
@@ -471,7 +490,7 @@ export class AssistSession {
       }
       answer += turnText;
 
-      const { found, commands } = parseCommandBlock(turnText);
+      const { found, entries } = parseProgramBlock(turnText);
 
       // No fenced block → re-prompt ONCE (not an error). A second consecutive no-fence ends the loop.
       if (!found) {
@@ -490,22 +509,31 @@ export class AssistSession {
       let writesThisTurn = 0;
       const results: unknown[] = [];
       let done = false;
-      if (commands.length > maxCommands) {
+      if (entries.length > maxCommands) {
         yield {
           type: 'capped',
           turn,
-          reason: `command block truncated to ${maxCommands} (got ${commands.length})`,
+          reason: `command block truncated to ${maxCommands} (got ${entries.length})`,
         };
         results.push({
           error: `too many commands in one block; only the first ${maxCommands} ran`,
         });
       }
-      for (const command of commands.slice(0, maxCommands)) {
-        if (isCommandParseError(command)) {
-          // A corrective parse error feeds straight back; the model self-corrects next turn.
-          results.push({ error: command.error });
+      for (const entry of entries.slice(0, maxCommands)) {
+        // ADR-0005 composed read-expression: evaluate to a Value (pure — no gate/approval), feed
+        // the rendered value back as the result. `$vars` persist in `composeEnv` across turns.
+        if (isProgramExpr(entry)) {
+          const result = await this.evalExpression(entry);
+          results.push('error' in result ? result : { value: renderValue(result) });
+          yield { type: 'expr-result', turn, expr: entry, result };
           continue;
         }
+        if (isCommandParseError(entry)) {
+          // A corrective parse error feeds straight back; the model self-corrects next turn.
+          results.push({ error: entry.error });
+          continue;
+        }
+        const command = entry;
         const compiled = compileCommand(command, {
           surface: this.bridge.surface,
           mintChangeId: () => asChangeId(crypto.randomUUID()),
@@ -619,6 +647,40 @@ export class AssistSession {
       }
       yield event;
     }
+  }
+
+  /**
+   * Evaluate one ADR-0005 read-expression (pipeline / `let`) to a `Value` (or a corrective
+   * `{ error }`). The source reads dispatch through the existing ADR-0003 read path (so they count
+   * toward the same read-many batching and are PURE — no gate/approval); the binding env persists
+   * across the loop's turns. Wrapped defensively: a failed eval becomes a corrective result, never
+   * a thrown loop.
+   */
+  private async evalExpression(expr: ParsedExpr): Promise<Value | { error: string }> {
+    try {
+      return await evalExpr(expr, this.composeEnv, this.composeRunRead());
+    } catch (err) {
+      return { error: `evaluation failed: ${errMsg(err)}` };
+    }
+  }
+
+  /**
+   * The `RunRead` the evaluator uses to reach the host for a pipeline source. Maps a `PipeSource`
+   * onto the same `ReadIntent` dispatch as the simple `read`/`search`/`outline` verbs, then returns
+   * the read's TEXT (Excel reads are GFM tables → parsed into a table Value by `evalExpr`; Word
+   * reads are free text). The read result is host content — data, never instructions.
+   */
+  private composeRunRead(): RunRead {
+    return async (source: Exclude<PipeSource, { src: 'var' }>): Promise<string> => {
+      const intent: ReadIntent =
+        source.src === 'outline'
+          ? { read: 'outline' }
+          : source.src === 'read'
+            ? { read: 'range', selector: source.selector }
+            : { read: 'search', text: source.text };
+      const { result } = await this.runReadIntent(intent);
+      return readResultToText(result);
+    };
   }
 
   /**
@@ -800,6 +862,31 @@ function readsToData(reads: ResolvedContext[]): unknown {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Flatten a {@link AssistSession.runReadIntent} result into the raw TEXT the evaluator parses
+ * (ADR-0005). `runReadIntent` returns either a string (outline / whole-document `renderDocState`),
+ * the `readsToData` array of `{ title, text }` slices (Excel ranges are GFM tables; Word slices are
+ * free text), or a corrective `{ error }`. We join the slices' text so the evaluator can
+ * `parseTable` it; an error surfaces as a sentinel line that no table parse will match (the
+ * pipeline then degrades to a text Value / transform error, never a write).
+ */
+function readResultToText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    return result
+      .map((r) => {
+        if (r && typeof r === 'object' && 'text' in r && typeof r.text === 'string') return r.text;
+        return '';
+      })
+      .filter((t) => t !== '')
+      .join('\n\n');
+  }
+  if (result && typeof result === 'object' && 'error' in result) {
+    return `read error: ${String((result as { error: unknown }).error)}`;
+  }
+  return '';
 }
 
 /**

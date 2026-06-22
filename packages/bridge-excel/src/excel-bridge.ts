@@ -8,6 +8,7 @@ import type {
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
+import { isSet } from './capabilities-runtime.js';
 import { rangeToContext, selectionValuesToContext } from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
 import { planWriteCells } from './actuate-plan.js';
@@ -114,13 +115,17 @@ export class ExcelBridge implements DocBridge {
       const workbook = ctx.workbook;
       const sheets = workbook.worksheets;
 
-      // Each registration is isolated in its own try/catch: the `if (event)` truthiness check is
-      // effectively always true on the Office.js proxy, so on an older requirement set `.add()`
-      // can THROW. Sharing one try would let an earlier unsupported event abort the whole run and
-      // prevent later handlers from attaching. `handles` only gains a remover on a successful add.
+      // PRIMARY gate is the requirement-set check (`isSet`), NOT property truthiness: every
+      // `onX` member is a getter that is always truthy on the Office.js proxy even when the
+      // host's active set lacks the event, so `if (sheets.onChanged)` gates nothing and `.add()`
+      // then THROWS on an older host. We gate each event on its confirmed ExcelApi version
+      // (mapped from node_modules/@types/office-js/index.d.ts) so unsupported events simply aren't
+      // registered — no throw. The per-handler try/catch stays as belt-and-suspenders, and each
+      // registration is isolated so one failure can't abort the others or the whole run.
 
       // selection-changed — workbook-wide; args carry only `address` (no coauthor source).
-      if (sheets.onSelectionChanged) {
+      // `WorksheetCollection.onSelectionChanged` → ExcelApi 1.9 (typings l.37666).
+      if (isSet('ExcelApi', '1.9')) {
         try {
           handles.push(
             sheets.onSelectionChanged.add(async (args) => {
@@ -133,7 +138,8 @@ export class ExcelBridge implements DocBridge {
       }
 
       // document-changed — workbook-wide edits; map the coauthoring source to origin.
-      if (sheets.onChanged) {
+      // `WorksheetCollection.onChanged` → ExcelApi 1.9 (typings l.37567).
+      if (isSet('ExcelApi', '1.9')) {
         try {
           handles.push(
             sheets.onChanged.add(async (args) => {
@@ -147,8 +153,9 @@ export class ExcelBridge implements DocBridge {
 
       // comment-added — one HostEvent per added comment id. `args.source` gives the
       // coauthoring origin (a teammate's comment is remote); fall back to 'local'.
+      // `CommentCollection.onAdded` → ExcelApi 1.12 (typings l.55031).
       const comments = workbook.comments;
-      if (comments && comments.onAdded) {
+      if (isSet('ExcelApi', '1.12')) {
         try {
           handles.push(
             comments.onAdded.add(async (args) => {
@@ -210,9 +217,11 @@ export class ExcelBridge implements DocBridge {
           ? ctx.workbook.worksheets.getItem(sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
-      range.load('address');
-      await ctx.sync();
+      // Single round-trip: queue the write and the address read together. The write doesn't
+      // depend on reading anything back first (the target address is supplied by the plan), so
+      // there's no read-before-write ordering constraint forcing a second sync.
       range.values = plan.values as unknown[][];
+      range.load('address');
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
@@ -232,6 +241,8 @@ export class ExcelBridge implements DocBridge {
     return Excel.run(async (ctx) => {
       const comments = ctx.workbook.comments;
       comments.load('items/id');
+      // First sync is required: we must read back the comment ids to locate the target proxy
+      // before the second (write) sync replies on it — a genuine read-then-write dependency.
       await ctx.sync();
       const comment = comments.items.find((c) => c.id === commentId);
       if (!comment) {

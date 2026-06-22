@@ -10,6 +10,7 @@ import type {
 import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
 import { AssistSession } from './assist-session.js';
+import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
 
 /** A fake Word-like bridge: a selection that resolves to one text chunk, and a recording actuator. */
@@ -241,6 +242,128 @@ describe('AssistSession — the reusable loop', () => {
     await collect(session.ask('q2'));
     expect(partTexts(bodies[bodies.length - 1]!).some((t) => t.includes('note one'))).toBe(true);
     expect(session.model.hasPending).toBe(false);
+  });
+});
+
+/** A text context part with an id and a body sized to roughly `tokens` estimate (4 chars/token). */
+function textCtx(id: string, tokens = 50): ResolvedContext {
+  return {
+    ref: { id, kind: 'paragraph', surface: 'word', title: id, live: false },
+    value: { as: 'text', text: 'x '.repeat(tokens), mimeType: 'text/markdown' },
+  };
+}
+
+/** A grounding-anchor context part (named indexed document) — never evicted by compaction. */
+function docCtx(id: string): ResolvedContext {
+  return {
+    ref: { id, kind: 'indexed-document', surface: 'word', title: id, live: false },
+    value: { as: 'indexed-document', documentName: `projects/x/documents/${id}`, title: id },
+  };
+}
+
+const ids = (s: AssistSession): string[] => s.context.list().map((c) => c.ref.id);
+
+describe('AssistSession — bounded-history compaction (ADR-0003 §5)', () => {
+  it('is a no-op while the resident set is under threshold', () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      compaction: { maxParts: 10, maxTokens: 100_000, keepRecent: 2 },
+    });
+    for (let i = 0; i < 5; i++) session.context.add(textCtx(`p${i}`, 5));
+    expect(session.compact()).toBe(0);
+    expect(session.context.size).toBe(5);
+  });
+
+  it('evicts oldest entries down to the maxParts budget', () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      compaction: { maxParts: 4, maxTokens: 1_000_000, keepRecent: 2 },
+    });
+    for (let i = 0; i < 8; i++) session.context.add(textCtx(`p${i}`, 5));
+    const evicted = session.compact();
+    expect(evicted).toBe(4);
+    expect(session.context.size).toBe(4);
+    // Oldest (p0..p3) gone; newest kept.
+    expect(ids(session)).toEqual(['p4', 'p5', 'p6', 'p7']);
+  });
+
+  it('preserves grounding anchors, the most recent turns, and the pending brief', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      compaction: { maxParts: 3, maxTokens: 1_000_000, keepRecent: 2 },
+    });
+
+    // A grounding anchor first (oldest by insertion), then many evictable text parts.
+    session.context.add(docCtx('grounding-doc'));
+    for (let i = 0; i < 6; i++) session.context.add(textCtx(`p${i}`, 5));
+
+    // Construct a pending brief and fold it (stages BRIEF_REF_ID into the resident set).
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'local',
+      commentId: 'k1',
+      text: 'pending note',
+    });
+    await session.commit('fold');
+    expect(session.context.list().some((c) => c.ref.id === BRIEF_REF_ID)).toBe(true);
+
+    session.compact();
+    const kept = ids(session);
+    // Anchor survives despite being the oldest entry.
+    expect(kept).toContain('grounding-doc');
+    // The pending brief survives (never dropped uncommitted).
+    expect(kept).toContain(BRIEF_REF_ID);
+    // The most recent text part survives (keepRecent window); older ones evicted.
+    expect(kept).toContain('p5');
+    expect(kept).not.toContain('p0');
+
+    // A turn still streams and records citations after compaction.
+    await collect(session.ask('q'));
+    expect(session.sessionId).toBe('sess_1');
+    expect(bodies.length).toBeGreaterThan(0);
+    // The pending note rode this turn and is now resident.
+    expect(session.model.hasPending).toBe(false);
+  });
+
+  it('evicts to the maxTokens budget while keeping anchors + recent', () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      compaction: { maxParts: 1000, maxTokens: 120, keepRecent: 2 },
+    });
+    session.context.add(docCtx('anchor'));
+    for (let i = 0; i < 6; i++) session.context.add(textCtx(`p${i}`, 50)); // ~50 tokens each
+    const evicted = session.compact();
+    expect(evicted).toBeGreaterThan(0);
+    expect(ids(session)).toContain('anchor'); // anchor preserved
+    expect(ids(session)).toContain('p5'); // most-recent preserved
+    expect(ids(session)).toContain('p4');
+  });
+
+  it('compact() runs inside ask() so an over-budget session is bounded before streaming', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      compaction: { maxParts: 3, maxTokens: 1_000_000, keepRecent: 2 },
+    });
+    for (let i = 0; i < 8; i++) session.context.add(textCtx(`p${i}`, 5));
+
+    await collect(session.ask('q'));
+    expect(session.context.size).toBeLessThanOrEqual(3);
+    // The streamed body carried only the bounded set (3 context parts + the query part), not all 8.
+    const parts = (bodies[0]!.query as { parts?: unknown[] }).parts ?? [];
+    expect(parts.length).toBeLessThanOrEqual(4);
   });
 });
 

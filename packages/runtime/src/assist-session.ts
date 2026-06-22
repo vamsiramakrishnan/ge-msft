@@ -6,15 +6,40 @@ import type {
   ContextKind,
   ContextRef,
   ProvenancePayload,
+  ResolvedContext,
   SessionId,
   SourceRef,
   SseEvent,
   UnitDescriptor,
 } from '@ge/contracts';
+import { estimateTokens } from '@ge/content';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
+
+/**
+ * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
+ * Long working sessions accrete attached context (selections, comments, prior briefs) turn
+ * over turn; left unbounded, every turn re-ships the whole set as `query.parts[]`. Compaction
+ * evicts the oldest low-value entries down to budget while preserving the grounding anchors,
+ * the most recent turns, and anything still pending. A no-op until a threshold is exceeded.
+ */
+export interface CompactionOptions {
+  /** Compact once the resident set exceeds this many context parts. */
+  maxParts?: number;
+  /** Compact once the resident set's estimated tokens exceed this. */
+  maxTokens?: number;
+  /** Always retain at least this many of the most-recently-attached entries (recent turns). */
+  keepRecent?: number;
+}
+
+/** Defaults: generous enough to be inert in normal use; trip only on genuinely long sessions. */
+const DEFAULT_COMPACTION: Required<CompactionOptions> = {
+  maxParts: 64,
+  maxTokens: 24_000,
+  keepRecent: 8,
+};
 
 /**
  * The surface-agnostic assist loop — the analog of Claude's add-in runtime, but grounded
@@ -33,7 +58,16 @@ export interface AssistSessionOptions {
   triggers?: TriggerRegistry;
   /** Resume a prior session (persisted in host metadata) — the constructed context survives. */
   resumeSessionId?: SessionId;
+  /** Bounded-history compaction of the resident context set (ADR-0003 §5). Defaults applied. */
+  compaction?: CompactionOptions;
 }
+
+/**
+ * Grounding anchors — named references the engine resolves against connected data stores or
+ * Drive, and person references. These are the cheap, high-value handles the unit is built on;
+ * they are never evicted by compaction (preserving them is the whole point of grounding).
+ */
+const GROUNDING_VALUE_KINDS = new Set(['indexed-document', 'drive-document', 'person']);
 
 /** What a `prime` turn asks of the engine: absorb the working context, don't act on it. */
 const PRIME_INSTRUCTION =
@@ -46,6 +80,7 @@ export class AssistSession {
   private session: SessionId | undefined;
   private lastProvenance: ProvenancePayload | undefined;
   private readonly citations: SourceRef[] = [];
+  private readonly compaction: Required<CompactionOptions>;
 
   constructor(
     private readonly bridge: DocBridge,
@@ -54,6 +89,7 @@ export class AssistSession {
   ) {
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
+    this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
   }
 
   /** Pull attachable context from the bridge and add it to the live session set. */
@@ -89,6 +125,10 @@ export class AssistSession {
     if (this.options.autoAttach && this.context.size === 0) {
       await this.attachContext(this.options.autoAttach);
     }
+    // Bound the resident set before it goes on the wire. Threshold-guarded inside, so this is a
+    // no-op until the session is genuinely large. Runs before the brief fold so a freshly folded
+    // pending brief is never a compaction target.
+    this.compact();
     // Fold any constructed-but-uncommitted brief so it rides this turn (the lazy commit path).
     // Capture the exact version folded: only notes up to here are on the wire, so only these may
     // be marked resident — notes that arrive mid-stream stay pending for the next turn.
@@ -126,6 +166,55 @@ export class AssistSession {
       // Always unstage the brief part: on success it is resident; on failure it re-folds next turn.
       this.context.remove(BRIEF_REF_ID);
     }
+  }
+
+  /**
+   * Bound the resident context set (ADR-0003 §5). When the attached set exceeds the configured
+   * `maxParts`/`maxTokens` threshold, evict the **oldest, lowest-value** entries down to budget
+   * while preserving, unconditionally:
+   *   (a) grounding anchors — `indexed-document` / `drive-document` / `person` references (the
+   *       unit's cheap, high-value handles), so grounding never degrades;
+   *   (b) the most recent `keepRecent` turns — the newest entries by attach order; and
+   *   (c) anything still pending — the constructed brief part (never dropped uncommitted).
+   *
+   * The policy is deliberately simple: oldest-first eviction of evictable (non-preserved) text
+   * entries until the set is at or under budget — no similarity/summarisation scheme. Idempotent
+   * and threshold-guarded, so it is a no-op until the session is actually large. Returns the
+   * number of entries evicted (0 when under threshold), for tests/telemetry.
+   */
+  compact(): number {
+    const entries = this.context.list();
+    if (entries.length === 0) return 0;
+
+    const totalTokens = (set: ResolvedContext[]): number =>
+      set.reduce((sum, c) => sum + tokensOf(c), 0);
+
+    // Under both thresholds → nothing to do.
+    const overParts = entries.length > this.compaction.maxParts;
+    const overTokens = totalTokens(entries) > this.compaction.maxTokens;
+    if (!overParts && !overTokens) return 0;
+
+    // Partition into preserved (never evicted) and evictable. `list()` is insertion-ordered, so
+    // the last `keepRecent` entries are "the most recent turns"; everything in GROUNDING_VALUE_KINDS
+    // is an anchor; the pending brief part is preserved by id.
+    const recentCutoff = entries.length - this.compaction.keepRecent;
+    const isPreserved = (c: ResolvedContext, index: number): boolean =>
+      c.ref.id === BRIEF_REF_ID || GROUNDING_VALUE_KINDS.has(c.value.as) || index >= recentCutoff;
+
+    // Oldest evictable first (insertion order). Drop until at/under budget, or until none left.
+    const evictable = entries
+      .map((c, index) => ({ c, index }))
+      .filter(({ c, index }) => !isPreserved(c, index));
+
+    let evicted = 0;
+    for (const { c } of evictable) {
+      const remaining = entries.length - evicted;
+      const tokens = totalTokens(this.context.list());
+      if (remaining <= this.compaction.maxParts && tokens <= this.compaction.maxTokens) break;
+      this.context.remove(c.ref.id);
+      evicted++;
+    }
+    return evicted;
   }
 
   /**
@@ -233,4 +322,13 @@ export class AssistSession {
         return { kind: 'word' };
     }
   }
+}
+
+/**
+ * The estimated token cost of one resident context part, for compaction budgeting. Only `text`
+ * values carry inline body; named references (`indexed-document`/`drive-document`/`person`) are
+ * cheap handles whose cost is negligible — count them as a small fixed overhead.
+ */
+function tokensOf(ctx: ResolvedContext): number {
+  return ctx.value.as === 'text' ? estimateTokens(ctx.value.text) : 1;
 }

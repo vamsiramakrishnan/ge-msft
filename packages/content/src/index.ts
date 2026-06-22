@@ -18,6 +18,11 @@ export { toMarkdown, htmlToMarkdown } from './normalize.js';
 export { parseMarkdownBlocks, tableToMarkdown } from './markdown.js';
 export { chunkBlocks, splitText } from './chunk.js';
 export { contextualizeChunk } from './contextualize.js';
+export {
+  buildDocStateSnapshot,
+  renderDocState,
+  type BuildDocStateInput,
+} from './doc-state-builder.js';
 export { processContent, processNative, toContext, toContextNative } from './process.js';
 export {
   recommendStrategy,

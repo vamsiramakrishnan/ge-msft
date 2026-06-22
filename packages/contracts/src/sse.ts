@@ -16,6 +16,23 @@ export const SseEventSchema = z.discriminatedUnion('type', [
     sources: z.array(SourceRefSchema),
   }),
   z.object({ type: z.literal('citation'), source: SourceRefSchema }),
+  // A grounded claim span. `start`/`end` are JS string (UTF-16) character indices
+  // into the accumulated answer text, so a UI can `answerText.slice(start, end)`.
+  z.object({
+    type: z.literal('grounding-support'),
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+    score: z.number().optional(),
+    sources: z.array(SourceRefSchema),
+  }),
+  // Outcome of a customer policy check (Model Armor / banned phrases).
+  z.object({
+    type: z.literal('policy'),
+    verdict: z.enum(['allow', 'block']),
+    reason: z.string().optional(),
+  }),
+  // Suggested follow-up questions emitted at the end of a turn.
+  z.object({ type: z.literal('related-questions'), questions: z.array(z.string()) }),
   z.object({ type: z.literal('provenance'), payload: ProvenancePayloadSchema }), // sent before 'done'
   z.object({ type: z.literal('error'), code: z.string(), message: z.string() }),
   z.object({ type: z.literal('done') }),

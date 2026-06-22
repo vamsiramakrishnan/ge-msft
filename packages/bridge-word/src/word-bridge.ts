@@ -8,6 +8,7 @@ import type {
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { WORD_CAPABILITIES } from './capabilities.js';
+import { isSet } from './capabilities-runtime.js';
 import {
   headingLevel,
   wordDocumentToContext,
@@ -120,6 +121,10 @@ export class WordBridge implements DocBridge {
       ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
       const results = ctx.document.body.search(plan.matchText!, { matchCase: false });
       results.load('items/text');
+      // First sync is required: the anchor index is chosen from the *read-back* match texts
+      // before the second (write) sync inserts on the chosen range — a read-then-write
+      // dependency, and the load-bearing re-resolve that degrades a drifted finding to a panel
+      // item rather than editing the wrong range.
       await ctx.sync();
 
       const idx = chooseAnchorIndex(
@@ -240,15 +245,22 @@ export class WordBridge implements DocBridge {
         emit(documentChangedEvent(originFromWordSource(args.source)));
         return Promise.resolve();
       };
-      for (const handlers of [
-        doc.onParagraphChanged,
-        doc.onParagraphAdded,
-        doc.onParagraphDeleted,
-      ]) {
-        try {
-          removers.push(handlers.add(onDocChange));
-        } catch {
-          // This paragraph event isn't in the active requirement set — skip it.
+      // PRIMARY gate is the requirement-set check, NOT property truthiness: `onParagraph*` are
+      // always-truthy getters on the Office.js proxy, so a truthiness check gates nothing and
+      // `.add()` THROWS on a host below the supporting set. All three paragraph events share one
+      // requirement set: `Document.onParagraphAdded/Changed/Deleted` → WordApi 1.6 (typings
+      // l.102835 / l.102844 / l.102853). The per-handler try/catch stays as belt-and-suspenders.
+      if (isSet('WordApi', '1.6')) {
+        for (const handlers of [
+          doc.onParagraphChanged,
+          doc.onParagraphAdded,
+          doc.onParagraphDeleted,
+        ]) {
+          try {
+            removers.push(handlers.add(onDocChange));
+          } catch {
+            // This paragraph event isn't in the active requirement set — skip it.
+          }
         }
       }
 

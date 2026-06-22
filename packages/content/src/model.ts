@@ -88,6 +88,8 @@ export interface ChunkOptions {
   overlapTokens?: number;
   /** Start a new chunk at headings of this level or shallower. Default 2. */
   sectionBreakLevel?: number;
+  /** BCP-47 locale for Unicode sentence/word/grapheme segmentation. Default 'en'. */
+  locale?: string;
 }
 
 export interface ToContextOptions extends ChunkOptions {

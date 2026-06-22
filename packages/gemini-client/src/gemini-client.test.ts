@@ -10,6 +10,7 @@ import { contentHash } from './hash.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { WifTokenClient } from './wif.js';
 import { StreamAssistClient, buildStreamAssistRequest } from './stream-assist.js';
+import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 
 const ASSISTANT = {
   project: 'proj',
@@ -277,6 +278,139 @@ describe('StreamAssistClient', () => {
     expect(events[0]).toMatchObject({ type: 'error', code: 'http_403' });
   });
 
+  it('emits grounding-support events with byte→char-converted spans', async () => {
+    // Answer text: "café costs €5." — multibyte: é=2B, €=3B. The grounded claim
+    // "café" is bytes 0..5; "€5" is bytes (after "café costs ") computed below.
+    const answer = 'café costs €5.';
+    // byte offsets: c0 a1 f2 é(3-4,2B) ' '5 c6 o7 s8 t9 s10 ' '11 €(12-14,3B) 5=15 .=16 → 17B total.
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: { text: answer },
+              textGroundingMetadata: {
+                references: [{ documentMetadata: { title: 'Menu', uri: 'https://x/menu' } }],
+                groundingSupports: [
+                  {
+                    startIndex: '0',
+                    endIndex: '5',
+                    groundingScore: 0.91,
+                    sources: [{ referenceIndex: 0 }],
+                  },
+                  { startIndex: '12', endIndex: '17', sources: [{ referenceIndex: 0 }] },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    const supports = events.filter(
+      (e): e is Extract<SseEvent, { type: 'grounding-support' }> => e.type === 'grounding-support',
+    );
+    expect(supports).toHaveLength(2);
+    expect(answer.slice(supports[0]!.start, supports[0]!.end)).toBe('café');
+    expect(supports[0]!.score).toBe(0.91);
+    expect(supports[0]!.sources[0]).toMatchObject({ title: 'Menu', uri: 'https://x/menu' });
+    expect(answer.slice(supports[1]!.start, supports[1]!.end)).toBe('€5.');
+  });
+
+  it('emits a policy event (not only assist_failed) on a BLOCK verdict', async () => {
+    const chunk = {
+      answer: {
+        state: 'FAILED',
+        customerPolicyEnforcementResult: {
+          verdict: 'BLOCK',
+          policyResults: [
+            { modelArmorEnforcementResult: { modelArmorViolation: 'PROMPT_INJECTION' } },
+          ],
+        },
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    const policy = events.find(
+      (e): e is Extract<SseEvent, { type: 'policy' }> => e.type === 'policy',
+    );
+    expect(policy?.verdict).toBe('block');
+    expect(policy?.reason).toMatch(/content policy/i);
+    // The reason must NOT echo the raw violation / banned phrase back to the user.
+    expect(policy?.reason).not.toContain('PROMPT_INJECTION');
+    // A policy block must not also surface the generic assist_failed error.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'done')).toBe(true);
+  });
+
+  it('suppresses answer tokens, citations, and provenance once a turn is BLOCKED', async () => {
+    // BLOCK arrives in the first frame; a later frame still carries answer text that
+    // Model Armor blocked — none of it may reach the user or provenance.
+    const blockFrame = {
+      answer: {
+        state: 'IN_PROGRESS',
+        customerPolicyEnforcementResult: { verdict: 'BLOCK', policyResults: [] },
+      },
+    };
+    const leakFrame = {
+      answer: {
+        state: 'FAILED',
+        replies: [
+          {
+            groundedContent: {
+              content: { text: 'SENSITIVE BLOCKED TEXT' },
+              textGroundingMetadata: {
+                references: [{ documentMetadata: { title: 'Secret', uri: 'https://x/secret' } }],
+              },
+            },
+          },
+        ],
+        relatedQuestions: ['leak?'],
+      },
+    };
+    const f = vi.fn(
+      async () =>
+        new Response(streamOf([JSON.stringify([blockFrame, leakFrame])]), { status: 200 }),
+    );
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    expect(events.some((e) => e.type === 'token')).toBe(false);
+    expect(events.some((e) => e.type === 'citation')).toBe(false);
+    expect(events.some((e) => e.type === 'provenance')).toBe(false);
+    expect(events.some((e) => e.type === 'related-questions')).toBe(false);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.filter((e) => e.type === 'policy')).toHaveLength(1);
+    expect(events[events.length - 1]!.type).toBe('done');
+  });
+
+  it('emits related-questions once at the end of the turn', async () => {
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [{ groundedContent: { content: { text: 'Answer.' } } }],
+        relatedQuestions: ['What about cost?', 'Any alternatives?'],
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    const related = events.filter(
+      (e): e is Extract<SseEvent, { type: 'related-questions' }> => e.type === 'related-questions',
+    );
+    expect(related).toHaveLength(1);
+    expect(related[0]!.questions).toEqual(['What about cost?', 'Any alternatives?']);
+    // Ordered after content, before done.
+    expect(events[events.length - 1]!.type).toBe('done');
+  });
+
   it('retries once after a 401 by invalidating the token', async () => {
     const ok = new Response(streamOf([JSON.stringify([chunk2])]), { status: 200 });
     const f = vi
@@ -293,6 +427,46 @@ describe('StreamAssistClient', () => {
     expect(inval).toHaveBeenCalledOnce();
     expect(f).toHaveBeenCalledTimes(2);
     expect(events.some((e) => e.type === 'done')).toBe(true);
+  });
+});
+
+describe('ByteOffsetMapper (UTF-8 byte → UTF-16 char)', () => {
+  it('maps multi-byte (accent, emoji, CJK) byte offsets to char indices', () => {
+    // "café ☕ 日本" — UTF-8 byte widths: c a f =1 each, é=2, space=1, ☕=3,
+    // space=1, 日=3, 本=3. Cumulative byte boundaries: 0,1,2,3,5,6,9,10,13,16.
+    const text = 'café ☕ 日本';
+    const m = new ByteOffsetMapper(text);
+    expect(m.byteLength).toBe(16);
+    // "café" spans bytes 0..5 → chars 0..4.
+    expect(byteOffsetToCharIndex(m, 0, 5)).toEqual({ start: 0, end: 4 });
+    expect(text.slice(0, 4)).toBe('café');
+    // "☕" spans bytes 6..9 → chars 5..6.
+    expect(byteOffsetToCharIndex(m, 6, 9)).toEqual({ start: 5, end: 6 });
+    expect(text.slice(5, 6)).toBe('☕');
+    // "日本" spans bytes 10..16 → chars 7..9.
+    expect(byteOffsetToCharIndex(m, 10, 16)).toEqual({ start: 7, end: 9 });
+    expect(text.slice(7, 9)).toBe('日本');
+  });
+
+  it('handles astral emoji (surrogate pairs) — 4 UTF-8 bytes, 2 UTF-16 units', () => {
+    const text = 'a😀b'; // a=1B/1u, 😀=4B/2u, b=1B/1u
+    const m = new ByteOffsetMapper(text);
+    expect(m.byteLength).toBe(6);
+    // emoji spans bytes 1..5 → chars 1..3 (two UTF-16 code units).
+    expect(byteOffsetToCharIndex(m, 1, 5)).toEqual({ start: 1, end: 3 });
+    expect(text.slice(1, 3)).toBe('😀');
+  });
+
+  it('clamps out-of-range and rejects degenerate spans', () => {
+    const m = new ByteOffsetMapper('abc');
+    expect(byteOffsetToCharIndex(m, 0, 99)).toEqual({ start: 0, end: 3 });
+    expect(byteOffsetToCharIndex(m, 2, 2)).toBeUndefined();
+    expect(byteOffsetToCharIndex(m, undefined, 3)).toBeUndefined();
+  });
+
+  it('accepts int64 byte indices delivered as strings', () => {
+    const m = new ByteOffsetMapper('héllo'); // h=1,é=2,l=1,l=1,o=1 → bytes 0,1,3,4,5,6
+    expect(byteOffsetToCharIndex(m, '0', '3')).toEqual({ start: 0, end: 2 });
   });
 });
 

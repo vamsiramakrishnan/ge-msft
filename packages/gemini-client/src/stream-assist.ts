@@ -6,9 +6,15 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { GeminiClientConfig, streamAssistUrl } from './config.js';
-import { DeStreamAssistResponseSchema } from './de-types.js';
+import {
+  DeStreamAssistResponseSchema,
+  type DeCitationSource,
+  type DeGroundingSupport,
+  type DeReference,
+} from './de-types.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { contentHash } from './hash.js';
+import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
@@ -62,6 +68,9 @@ export class StreamAssistClient {
     const citations = new Map<string, SourceRef>();
     let session: string | undefined = opts.session;
     const invokedSkills: string[] = [];
+    const relatedQuestions: string[] = [];
+    const emittedSupports = new Set<string>();
+    let policyBlocked = false;
 
     for await (const chunk of parseJsonArrayStream(res.body)) {
       const resp = DeStreamAssistResponseSchema.safeParse(chunk);
@@ -73,8 +82,24 @@ export class StreamAssistClient {
         if (name && !invokedSkills.includes(name)) invokedSkills.push(name);
       }
 
+      // A policy block arrives as a structured verdict, not a generic failure;
+      // surface it once with a graceful message. Once blocked we suppress *all*
+      // answer output for the turn — Model Armor can block the generated answer,
+      // and the offending text may ride along in this or a later frame's replies,
+      // so we must not stream, cite, ground, or hash any of it through.
+      const policy = data.answer?.customerPolicyEnforcementResult;
+      if (!policyBlocked && policy?.verdict?.toUpperCase() === 'BLOCK') {
+        policyBlocked = true;
+        yield { type: 'policy', verdict: 'block', reason: policyReason() };
+      }
+      if (policyBlocked) continue;
+
       if (data.answer?.state === 'FAILED') {
         yield { type: 'error', code: 'assist_failed', message: 'The assistant could not answer.' };
+      }
+
+      for (const q of data.answer?.relatedQuestions ?? []) {
+        if (q && !relatedQuestions.includes(q)) relatedQuestions.push(q);
       }
 
       for (const reply of data.answer?.replies ?? []) {
@@ -84,7 +109,8 @@ export class StreamAssistClient {
           accumulated += text;
           yield { type: 'token', text };
         }
-        for (const ref of gc?.textGroundingMetadata?.references ?? []) {
+        const references = gc?.textGroundingMetadata?.references ?? [];
+        for (const ref of references) {
           const dm = ref.documentMetadata;
           if (!dm) continue;
           const source: SourceRef = {
@@ -98,7 +124,40 @@ export class StreamAssistClient {
             yield { type: 'citation', source };
           }
         }
+        // Grounding supports carry byte spans into the answer text; convert them
+        // against the accumulated answer so far and emit precise claim highlights.
+        const supports = gc?.textGroundingMetadata?.groundingSupports ?? [];
+        if (supports.length > 0) {
+          const mapper = new ByteOffsetMapper(accumulated);
+          for (const support of supports) {
+            const span = byteOffsetToCharIndex(mapper, support.startIndex, support.endIndex);
+            if (!span) continue;
+            const dedupeKey = `${span.start}:${span.end}`;
+            if (emittedSupports.has(dedupeKey)) continue;
+            emittedSupports.add(dedupeKey);
+            yield {
+              type: 'grounding-support',
+              start: span.start,
+              end: span.end,
+              ...(typeof support.groundingScore === 'number'
+                ? { score: support.groundingScore }
+                : {}),
+              sources: resolveSupportSources(support, references),
+            };
+          }
+        }
       }
+    }
+
+    // A blocked turn produced no usable answer; do not emit related questions or a
+    // provenance record over suppressed content. End the stream cleanly.
+    if (policyBlocked) {
+      yield { type: 'done' };
+      return;
+    }
+
+    if (relatedQuestions.length > 0) {
+      yield { type: 'related-questions', questions: relatedQuestions };
     }
 
     const payload: ProvenancePayload = {
@@ -138,6 +197,55 @@ export class StreamAssistClient {
     }
     return res;
   }
+}
+
+/** Map a citation source (possibly an index into `references[]`) to a SourceRef. */
+function citationSourceToRef(
+  source: DeCitationSource,
+  references: readonly DeReference[],
+): SourceRef | undefined {
+  // Prefer an index into the reply's references[], then inline metadata.
+  const byIndex =
+    typeof source.referenceIndex === 'number' ? references[source.referenceIndex] : undefined;
+  const dm = byIndex?.documentMetadata ?? source.documentMetadata;
+  const title = source.title ?? dm?.title ?? source.uri ?? dm?.uri ?? dm?.domain;
+  const uri = source.uri ?? dm?.uri;
+  const locator = dm?.pageIdentifier;
+  if (!title && !uri) return undefined;
+  return {
+    title: title ?? uri ?? 'Source',
+    ...(uri ? { uri } : {}),
+    ...(locator ? { locator } : {}),
+  };
+}
+
+/** Resolve and de-duplicate the SourceRefs backing a single grounding support. */
+function resolveSupportSources(
+  support: DeGroundingSupport,
+  references: readonly DeReference[],
+): SourceRef[] {
+  const out: SourceRef[] = [];
+  const seen = new Set<string>();
+  for (const src of support.sources ?? []) {
+    const ref = citationSourceToRef(src, references);
+    if (!ref) continue;
+    const key = ref.uri ?? `${ref.title}#${ref.locator ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ref);
+  }
+  return out;
+}
+
+/**
+ * A generic, non-revealing reason for a policy block. We deliberately do NOT echo
+ * the matched banned phrases, the Model Armor violation code, or the developer-facing
+ * error string back to the user — those describe the blocked/sensitive content (or the
+ * org's policy configuration) and belong only in server-side audit logs, never in the
+ * client stream.
+ */
+function policyReason(): string {
+  return 'This response was blocked by your organization’s content policy.';
 }
 
 function agentId(cfg: GeminiClientConfig, skills: string[]): string {

@@ -4,6 +4,9 @@ import { estimateTokens } from './tokens.js';
 
 const DEFAULTS = { maxTokens: 400, overlapTokens: 40, sectionBreakLevel: 2 } as const;
 
+/** Default locale for Unicode segmentation. Configurable per call so it can be tuned later. */
+const DEFAULT_LOCALE = 'en';
+
 /**
  * Structure-aware chunker. Groups blocks under their heading breadcrumb, packs them up
  * to a soft token budget, starts a fresh chunk at section boundaries, and never splits a
@@ -48,7 +51,7 @@ export function chunkBlocks(blocks: Block[], meta: SourceMeta, opts: ChunkOption
       flush();
       const path = sectionPath();
       const base = block.start ?? 0;
-      for (const piece of splitText(block.text, o.maxTokens, o.overlapTokens, base)) {
+      for (const piece of splitText(block.text, o.maxTokens, o.overlapTokens, base, o.locale)) {
         const part: Block = {
           kind: block.kind,
           text: piece.text,
@@ -128,8 +131,9 @@ export function splitText(
   maxTokens: number,
   overlapTokens: number,
   baseOffset: number,
+  locale: string = DEFAULT_LOCALE,
 ): { text: string; start: number; end: number }[] {
-  const units = segment(text);
+  const units = segment(text, locale);
   const out: { text: string; start: number; end: number }[] = [];
   let buf: typeof units = [];
   const bufTokens = (): number => estimateTokens(buf.map((u) => u.text).join(''));
@@ -158,7 +162,7 @@ export function splitText(
     if (estimateTokens(u.text) > maxTokens) {
       flush();
       buf = [];
-      for (const w of wordWrap(u, maxTokens))
+      for (const w of wordWrap(u, maxTokens, locale))
         out.push({ text: w.text, start: baseOffset + w.start, end: baseOffset + w.end });
       continue;
     }
@@ -184,8 +188,41 @@ interface Unit {
   end: number;
 }
 
-function segment(text: string): Unit[] {
+/** Lazily-built, memoized segmenters keyed by `granularity|locale`. */
+const segmenterCache = new Map<string, Intl.Segmenter>();
+
+function getSegmenter(
+  granularity: Intl.SegmenterOptions['granularity'],
+  locale: string,
+): Intl.Segmenter {
+  const key = `${granularity}|${locale}`;
+  let seg = segmenterCache.get(key);
+  if (!seg) {
+    // Don't hard-fail on an odd/unknown locale — Intl falls back to a default; if even
+    // construction throws (malformed tag), retry with the library default.
+    try {
+      seg = new Intl.Segmenter(locale, { granularity });
+    } catch {
+      seg = new Intl.Segmenter(DEFAULT_LOCALE, { granularity });
+    }
+    segmenterCache.set(key, seg);
+  }
+  return seg;
+}
+
+/**
+ * Split text into sentence-granularity units with correct UTF-16 offsets.
+ *
+ * Paragraph boundaries (`\n\n`) are structural and kept as hard splits so a chunk never
+ * straddles them; within each paragraph we use `Intl.Segmenter(locale, { granularity:
+ * 'sentence' })` — which segments correctly across scripts (CJK, Thai, etc.) where a regex
+ * `.!?`-based splitter fails. Each segment carries its `index` (UTF-16 offset) through as
+ * the absolute char offset, preserving the baseOffset discipline downstream.
+ */
+function segment(text: string, locale: string): Unit[] {
   const units: Unit[] = [];
+  const sentenceSeg = getSegmenter('sentence', locale);
+  // Walk paragraphs first; `paraRe` matches a run up to (and including) a blank-line break.
   const paraRe = /[^\n]*(?:\n(?!\n)[^\n]*)*(?:\n\n+|$)/g;
   let m: RegExpExecArray | null;
   while ((m = paraRe.exec(text)) !== null) {
@@ -194,42 +231,50 @@ function segment(text: string): Unit[] {
       continue;
     }
     const paraStart = m.index;
-    const sentRe = /[^.!?]*[.!?]+[\s)"']*|\S[^.!?]*$/g;
-    let s: RegExpExecArray | null;
+    const para = m[0];
     let any = false;
-    while ((s = sentRe.exec(m[0])) !== null) {
-      if (s[0].trim().length === 0) continue;
+    for (const { segment: s, index } of sentenceSeg.segment(para)) {
+      if (s.trim().length === 0) continue;
       any = true;
-      units.push({
-        text: s[0],
-        start: paraStart + s.index,
-        end: paraStart + s.index + s[0].length,
-      });
+      units.push({ text: s, start: paraStart + index, end: paraStart + index + s.length });
     }
-    if (!any) units.push({ text: m[0], start: paraStart, end: paraStart + m[0].length });
+    if (!any) units.push({ text: para, start: paraStart, end: paraStart + para.length });
   }
   return units;
 }
 
-function wordWrap(u: Unit, maxTokens: number): { text: string; start: number; end: number }[] {
+/**
+ * Wrap an over-budget sentence at word boundaries using `Intl.Segmenter(locale, {
+ * granularity: 'word' })` (replaces a `/(\s+)/` split, which is wrong for space-free
+ * scripts). A single "word-like" segment that alone exceeds the budget — a long URL,
+ * base64 blob, or a boundary-free CJK run — is hard-split on grapheme clusters so we never
+ * cut a surrogate pair or combining mark. Offsets stay absolute (anchored at `u.start`).
+ */
+function wordWrap(
+  u: Unit,
+  maxTokens: number,
+  locale: string,
+): { text: string; start: number; end: number }[] {
   const out: { text: string; start: number; end: number }[] = [];
-  const words = u.text.split(/(\s+)/);
+  const wordSeg = getSegmenter('word', locale);
   let buf = '';
   let start = u.start;
   let cursor = u.start;
   const push = (): void => {
-    if (buf.trim().length === 0) return;
+    if (buf.trim().length === 0) {
+      // Discard buffered pure-whitespace but still advance `start` past it.
+      buf = '';
+      start = cursor;
+      return;
+    }
     out.push({ text: buf.trim(), start, end: cursor });
     buf = '';
     start = cursor;
   };
-  for (const w of words) {
-    // A single "word" that alone exceeds the budget (long URL/base64, or whitespace-free
-    // CJK text) won't be broken by buffer-flush alone — hard-split it by character so each
-    // slice stays within budget. Carry char offsets through so anchors stay valid.
+  for (const { segment: w } of wordSeg.segment(u.text)) {
     if (estimateTokens(w) > maxTokens) {
       push();
-      for (const slice of hardSplit(w, cursor, maxTokens)) out.push(slice);
+      for (const slice of graphemeSplit(w, cursor, maxTokens, locale)) out.push(slice);
       cursor += w.length;
       start = cursor;
       continue;
@@ -243,34 +288,40 @@ function wordWrap(u: Unit, maxTokens: number): { text: string; start: number; en
 }
 
 /**
- * Split a whitespace-free run into budget-sized character slices. Estimates the per-slice
- * char count from the token budget and the run's own token density, then bisects down until
- * each slice is within budget. Offsets are absolute (anchored at `offset`).
+ * Hard-split a boundary-free run into budget-sized slices on *grapheme cluster* boundaries
+ * via `Intl.Segmenter(locale, { granularity: 'grapheme' })`. This guarantees we never split
+ * a surrogate pair (e.g. an emoji) or a base + combining-mark sequence. We greedily pack
+ * graphemes up to the token budget; a single grapheme that alone exceeds the budget is
+ * emitted on its own (we never subdivide one). Offsets are absolute (anchored at `offset`).
  */
-function hardSplit(
-  word: string,
+function graphemeSplit(
+  run: string,
   offset: number,
   maxTokens: number,
+  locale: string,
 ): { text: string; start: number; end: number }[] {
   const out: { text: string; start: number; end: number }[] = [];
-  const tokens = estimateTokens(word);
-  if (tokens <= maxTokens || word.length <= 1) {
-    out.push({ text: word, start: offset, end: offset + word.length });
+  if (estimateTokens(run) <= maxTokens) {
+    out.push({ text: run, start: offset, end: offset + run.length });
     return out;
   }
-  // Conservative initial slice length, then shrink any slice still over budget.
-  let sliceLen = Math.max(1, Math.floor((word.length * maxTokens) / tokens));
-  let pos = 0;
-  while (pos < word.length) {
-    let len = Math.min(sliceLen, word.length - pos);
-    while (len > 1 && estimateTokens(word.slice(pos, pos + len)) > maxTokens) {
-      len = Math.floor(len / 2);
-    }
-    if (len < 1) len = 1;
-    out.push({ text: word.slice(pos, pos + len), start: offset + pos, end: offset + pos + len });
-    sliceLen = len;
-    pos += len;
+  const graphemeSeg = getSegmenter('grapheme', locale);
+  let buf = '';
+  let bufStart = offset;
+  let cursor = offset;
+  const flush = (): void => {
+    if (buf.length === 0) return;
+    out.push({ text: buf, start: bufStart, end: cursor });
+    buf = '';
+    bufStart = cursor;
+  };
+  for (const { segment: g } of graphemeSeg.segment(run)) {
+    // Adding this grapheme would overflow — flush what we have first (unless empty).
+    if (buf.length > 0 && estimateTokens(buf + g) > maxTokens) flush();
+    buf += g;
+    cursor += g.length;
   }
+  flush();
   return out;
 }
 

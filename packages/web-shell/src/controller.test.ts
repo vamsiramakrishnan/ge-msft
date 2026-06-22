@@ -54,13 +54,24 @@ class FakeAssist implements AssistLike {
     this.gate = { promise, release };
     return release;
   }
-  async *ask(query: string): AsyncGenerator<SseEvent> {
+  async *ask(query: string, opts?: { signal?: AbortSignal }): AsyncGenerator<SseEvent> {
     this.asked.push(query);
     const script = this.scriptFor.shift() ?? this.script;
     const gate = this.gate;
     this.gate = undefined;
     for (const ev of script) {
-      if (gate && ev.type === 'done') await gate.promise;
+      if (gate && ev.type === 'done') {
+        // While held open, an abort should interrupt the turn the way a cancelled fetch would:
+        // reject the iteration with an AbortError instead of emitting the final events.
+        const signal = opts?.signal;
+        if (signal?.aborted) throw abortError();
+        await Promise.race([
+          gate.promise,
+          new Promise<never>((_, reject) => {
+            signal?.addEventListener('abort', () => reject(abortError()), { once: true });
+          }),
+        ]);
+      }
       yield ev;
     }
   }
@@ -80,6 +91,12 @@ class FakeAssist implements AssistLike {
 
 function lister(refs: ContextRef[]): ContextLister {
   return { listContext: () => Promise.resolve(refs) };
+}
+
+function abortError(): Error {
+  const e = new Error('The operation was aborted.');
+  e.name = 'AbortError';
+  return e;
 }
 
 describe('PanelController — context tray', () => {
@@ -140,6 +157,62 @@ describe('PanelController — ask / stream', () => {
     const c = new PanelController(assist, lister([]));
     await c.send('hi');
     expect(c.getState().messages[1]?.error).toBe('boom');
+  });
+
+  it('cancel() aborts an in-flight turn: message marked cancelled (not error), busy clears', async () => {
+    const assist = new FakeAssist();
+    assist.script = [{ type: 'token', text: 'partial' }, { type: 'done' }];
+    const c = new PanelController(assist, lister([]));
+
+    // Hold the turn open after the token so it is still streaming when we cancel.
+    assist.hold();
+    const turn = c.send('explain');
+    expect(c.getState().busy).toBe(true);
+
+    c.cancel();
+    await turn;
+
+    const reply = c.getState().messages[1];
+    expect(reply?.text).toBe('partial'); // the partial answer is kept
+    expect(reply?.cancelled).toBe(true);
+    expect(reply?.error).toBeUndefined(); // cancellation is not a red error
+    expect(reply?.streaming).toBe(false);
+    expect(c.getState().busy).toBe(false);
+  });
+
+  it('cancel() is a clean no-op when idle or after the turn settles', async () => {
+    const assist = new FakeAssist();
+    const c = new PanelController(assist, lister([]));
+    expect(() => c.cancel()).not.toThrow(); // idle
+
+    await c.send('hi');
+    expect(c.getState().messages[1]?.cancelled).toBeUndefined();
+    expect(() => c.cancel()).not.toThrow(); // after settle, no live controller
+    expect(c.getState().messages[1]?.cancelled).toBeUndefined();
+  });
+
+  it('a queued automate still runs after the current turn is cancelled', async () => {
+    const assist = new FakeAssist();
+    assist.scriptFor = [
+      [{ type: 'token', text: 'a-reply' }, { type: 'done' }],
+      [{ type: 'token', text: 'b-reply' }, { type: 'done' }],
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    assist.hold();
+    const first = c.send('a');
+    expect(c.getState().busy).toBe(true);
+
+    // Queue a follow-up, then cancel the current turn: the queued one should drain.
+    c.onAutomate('b');
+    c.cancel();
+    await first;
+    await new Promise((r) => setTimeout(r, 0)); // let the scheduled drain settle
+
+    expect(assist.asked).toEqual(['a', 'b']);
+    expect(c.getState().busy).toBe(false);
+    expect(c.getState().messages[1]?.cancelled).toBe(true); // 'a' was cancelled
+    expect(c.getState().messages.map((m) => m.text)).toEqual(['a', 'a-reply', 'b', 'b-reply']);
   });
 });
 

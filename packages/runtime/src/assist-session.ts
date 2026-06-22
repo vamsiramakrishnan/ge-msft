@@ -83,7 +83,7 @@ export class AssistSession {
    * Ask a grounded question. Auto-attaches the configured context kinds (once), streams
    * the answer, and records the session id, citations, and provenance as they arrive.
    */
-  async *ask(query: string): AsyncGenerator<SseEvent> {
+  async *ask(query: string, opts: { signal?: AbortSignal } = {}): AsyncGenerator<SseEvent> {
     if (this.options.autoAttach && this.context.size === 0) {
       await this.attachContext(this.options.autoAttach);
     }
@@ -107,6 +107,7 @@ export class AssistSession {
       for await (const event of this.client.stream(req, {
         session: this.session,
         context: this.context.list(),
+        ...(opts.signal ? { signal: opts.signal } : {}),
       })) {
         if (event.type === 'citation') this.citations.push(event.source);
         if (event.type === 'provenance') {
@@ -141,7 +142,7 @@ export class AssistSession {
    *  • `prime` — send it now as a context-only turn so it is resident before the user asks.
    * Both are no-ops when nothing is pending.
    */
-  async commit(mode: CommitMode): Promise<void> {
+  async commit(mode: CommitMode, opts: { signal?: AbortSignal } = {}): Promise<void> {
     const brief = this.model.pendingBrief();
     if (!brief) return;
     if (mode === 'fold') {
@@ -156,6 +157,7 @@ export class AssistSession {
     for await (const event of this.client.stream(req, {
       session: this.session,
       context: brief.entries,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })) {
       if (event.type === 'provenance') this.session = event.payload.sessionId ?? this.session;
     }

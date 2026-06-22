@@ -14,6 +14,7 @@ import {
 } from './de-types.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { contentHash } from './hash.js';
+import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 
@@ -44,6 +45,12 @@ export class StreamAssistClient {
     private readonly tokens: TokenSource,
     private readonly config: GeminiClientConfig,
     private readonly fetchImpl: FetchLike = fetch,
+    /**
+     * Backoff policy for the *initial* POST only. A mid-stream failure is not safely
+     * retriable (partial answer already consumed), so retries never cross the stream
+     * boundary. Pass {} to opt out of any backoff.
+     */
+    private readonly retryOpts: RetryOptions = {},
   ) {}
 
   async *stream(req: AssistRequest, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {
@@ -165,7 +172,7 @@ export class StreamAssistClient {
       identity: this.config.identity ?? 'unknown',
       timestamp: new Date().toISOString(),
       sources: [...citations.values()],
-      contentHash: contentHash(accumulated),
+      contentHash: await contentHash(accumulated),
       ...(session ? { sessionId: session } : {}),
     };
     yield { type: 'provenance', payload };
@@ -179,7 +186,7 @@ export class StreamAssistClient {
     );
     const send = async (): Promise<Response> => {
       const token = await this.tokens.getAccessToken();
-      return this.fetchImpl(url, {
+      const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -188,12 +195,33 @@ export class StreamAssistClient {
         body,
         signal: opts.signal,
       });
+      // Translate transient HTTP statuses into a throw so withRetry can back off; a
+      // 401 is *not* transient — it has its own invalidate-and-retry-once below — so
+      // we never let it ride the backoff path.
+      if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
+        throw new HttpError(res.status, `streamAssist failed (${res.status})`);
+      }
+      return res;
     };
-    let res = await send();
-    // On 401 the federated token likely expired mid-cache; re-exchange once.
+
+    // Backoff applies to the pre-stream POST only; once we return a Response the caller
+    // consumes the body, after which a failure can no longer be safely retried.
+    let res: Response;
+    try {
+      res = await withRetry(send, this.retryOpts);
+    } catch (err) {
+      // Exhausted/non-retriable transient → surface a real (non-2xx, no body) Response
+      // so stream()'s existing `!res.ok` branch maps it to an http_<status> error.
+      if (err instanceof HttpError) return new Response(null, { status: err.status });
+      throw err; // a genuine network throw — stream() catches it as a network error.
+    }
+    // On 401 the federated token likely expired mid-cache; re-exchange once (distinct
+    // from backoff — we do not retry a 401 via jittered retries).
     if (res.status === 401 && this.tokens.invalidate) {
       this.tokens.invalidate();
-      res = await send();
+      res = await send().catch((err) =>
+        err instanceof HttpError ? new Response(null, { status: err.status }) : Promise.reject(err),
+      );
     }
     return res;
   }

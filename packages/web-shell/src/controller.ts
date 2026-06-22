@@ -19,7 +19,7 @@ export interface AssistLike {
   readonly context: { size: number };
   attachRef(ref: ContextRef): Promise<void>;
   detach(id: string): void;
-  ask(query: string): AsyncGenerator<SseEvent>;
+  ask(query: string, opts?: { signal?: AbortSignal }): AsyncGenerator<SseEvent>;
   apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
@@ -41,6 +41,8 @@ export interface ChatMessage {
   streaming?: boolean;
   sources?: SourceRef[];
   error?: string;
+  /** The turn was cancelled by the user mid-stream (distinct from a stream `error`). */
+  cancelled?: boolean;
 }
 
 export interface ContextChip {
@@ -100,6 +102,8 @@ export class PanelController {
   private seq = 0;
   /** Single-slot queue (latest wins): a turn requested while another is streaming. */
   private pendingQuery: string | undefined;
+  /** Aborts the in-flight turn's network/stream; cleared when the turn settles. */
+  private inflight: AbortController | undefined;
 
   constructor(
     private readonly session: AssistLike,
@@ -178,9 +182,11 @@ export class PanelController {
       suggestions: [],
     });
 
+    const controller = new AbortController();
+    this.inflight = controller;
     const sources: SourceRef[] = [];
     try {
-      for await (const ev of this.session.ask(q)) {
+      for await (const ev of this.session.ask(q, { signal: controller.signal })) {
         switch (ev.type) {
           case 'token':
             this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
@@ -200,8 +206,21 @@ export class PanelController {
         }
       }
     } catch (err) {
-      this.patchMessage(reply.id, () => ({ error: errorText(err) }));
+      // A user cancellation surfaces as an AbortError (or the signal flips aborted); mark it as a
+      // cancelled turn rather than a red error — the partial answer stays, just no longer streaming.
+      if (controller.signal.aborted || isAbortError(err)) {
+        this.patchMessage(reply.id, () => ({ cancelled: true }));
+        // A cancelled turn never fully landed, so it carries no provenance worth stamping onto a
+        // later write. Provenance arrives only at end-of-stream today, so this is belt-and-braces:
+        // drop any value from this turn so applyProposal can't stamp a write with a half-landed turn.
+        this.lastProvenance = undefined;
+      } else {
+        this.patchMessage(reply.id, () => ({ error: errorText(err) }));
+      }
     } finally {
+      // Clear the stored controller so a later cancel() after settle is a clean no-op (only if it is
+      // still ours — a queued turn that already replaced it must keep its own controller).
+      if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false });
       // Drain a queued turn, if any. Clearing the slot first avoids re-enqueueing it; the call
@@ -212,6 +231,16 @@ export class PanelController {
         void this.send(next);
       }
     }
+  }
+
+  /**
+   * Cancel the in-flight turn's network/stream. No-op when idle. A queued turn (pendingQuery) still
+   * drains afterwards — cancelling the current ask should run the one the user lined up behind it,
+   * not discard it. Office.js host writes already under way are not aborted (not abortable); this
+   * targets the assist stream only.
+   */
+  cancel(): void {
+    this.inflight?.abort();
   }
 
   // ---- actuation review ---------------------------------------------------
@@ -308,4 +337,9 @@ export class PanelController {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** A fetch aborted via AbortSignal rejects with a DOMException/Error named 'AbortError'. */
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
 }

@@ -64,10 +64,15 @@ describe('config', () => {
 });
 
 describe('contentHash', () => {
-  it('is deterministic and sensitive to content', () => {
-    expect(contentHash('abc')).toBe(contentHash('abc'));
-    expect(contentHash('abc')).not.toBe(contentHash('abd'));
-    expect(contentHash('')).toMatch(/^[0-9a-f]{8}$/);
+  it('returns a stable sha256-prefixed hex, sensitive to content', async () => {
+    expect(await contentHash('abc')).toBe(await contentHash('abc'));
+    expect(await contentHash('abc')).not.toBe(await contentHash('abd'));
+    expect(await contentHash('')).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+  it('matches the known SHA-256 vector for "abc"', async () => {
+    expect(await contentHash('abc')).toBe(
+      'sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
   });
 });
 

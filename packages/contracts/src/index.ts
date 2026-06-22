@@ -12,5 +12,6 @@ export * from './request.js';
 export * from './sse.js';
 export * from './anchor.js';
 export * from './context.js';
+export * from './doc-state.js';
 export * from './estate.js';
 export * from './capability.js';

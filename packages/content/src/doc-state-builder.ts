@@ -83,12 +83,22 @@ export interface BuildDocStateInput {
 }
 
 /**
+ * Strip a leading Markdown heading marker (`## `). Native heading blocks store their text with the
+ * marker (e.g. `native.heading` → `"# Service Levels"`); the outline carries clean text so the
+ * renderer's own `#`.repeat(level) isn't doubled, and the anchor `matchText` matches the host's
+ * real heading text (`body.search` searches document text, which has no `#`).
+ */
+function stripHeadingMarker(text: string): string {
+  return text.replace(/^\s{0,3}#{1,6}\s+/, '');
+}
+
+/**
  * Map a heading block's `locator`/`text` to a content `Anchor` for re-finding it. The
- * `matchText` is whitespace-normalised (so it matches what `body.search` sees) and clipped on a
- * code-point boundary.
+ * `matchText` is marker-stripped + whitespace-normalised (so it matches what `body.search` sees)
+ * and clipped on a code-point boundary.
  */
 function headingAnchor(block: Block): Anchor {
-  const matchText = clip(oneLine(block.text), ANCHOR_PREFIX_CHARS);
+  const matchText = clip(oneLine(stripHeadingMarker(block.text)), ANCHOR_PREFIX_CHARS);
   const anchor: Anchor = { matchText };
   if (block.locator !== undefined) anchor.locator = block.locator;
   return anchor;
@@ -111,16 +121,17 @@ export function buildDocStateSnapshot(input: BuildDocStateInput): DocStateSnapsh
 
   for (const block of input.blocks) {
     if (block.kind === 'heading') {
+      const headingText = stripHeadingMarker(block.text);
       const entry: DocStateOutlineEntry = {
         level: block.level ?? 0,
-        text: block.text,
+        text: headingText,
         anchor: headingAnchor(block),
       };
       outlineAll.push(entry);
       inventoryAll.push({
         kind: 'paragraph',
         id: block.locator ?? `heading:${outlineAll.length}`,
-        title: clip(block.text, ANCHOR_PREFIX_CHARS),
+        title: clip(headingText, ANCHOR_PREFIX_CHARS),
       });
       continue;
     }

@@ -52,6 +52,21 @@ describe('buildDocStateSnapshot', () => {
     expect(DocStateSnapshotSchema.parse(snap)).toEqual(snap);
   });
 
+  it('strips the native Markdown heading marker so outline text + anchor are clean', () => {
+    // native.heading stores "# Service Levels"; the outline must carry clean text (the renderer
+    // re-adds #) and the anchor matchText must match the host's real heading ("Service Levels").
+    const snap = buildDocStateSnapshot({
+      surface: 'word',
+      version: 1,
+      blocks: [{ kind: 'heading', level: 2, text: '## Service Levels', locator: 'cc:1' }],
+      now: FIXED_NOW,
+    });
+    expect(snap.outline[0]?.text).toBe('Service Levels');
+    expect(snap.outline[0]?.anchor?.matchText).toBe('Service Levels');
+    expect(renderDocState(snap)).toContain('## "Service Levels"');
+    expect(renderDocState(snap)).not.toContain('"## Service Levels"');
+  });
+
   it('derives slide inventory from slide-located blocks', () => {
     const slides: Block[] = [
       { kind: 'paragraph', text: 'Title slide', locator: 'slide:1' },

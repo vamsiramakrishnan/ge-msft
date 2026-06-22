@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SessionIdSchema } from './brand.js';
 import { SourceRefSchema } from './finding.js';
 
 /**
@@ -12,6 +13,6 @@ export const ProvenancePayloadSchema = z.object({
   timestamp: z.string(), // ISO 8601
   sources: z.array(SourceRefSchema),
   contentHash: z.string(), // hash of the generated/edited content
-  sessionId: z.string().optional(), // StreamAssist session, for resume
+  sessionId: SessionIdSchema.optional(), // StreamAssist session, for resume
 });
 export type ProvenancePayload = z.infer<typeof ProvenancePayloadSchema>;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResolvedContextSchema } from '@ge/contracts';
+import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
 import { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
 import { planWriteCells } from './actuate-plan.js';
 
@@ -49,7 +49,7 @@ describe('excel capture (pure)', () => {
 describe('excel actuation planning (pure)', () => {
   it('extracts address + values for write-cells', () => {
     const plan = planWriteCells({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'write-cells',
       surface: 'excel',
       params: {
@@ -71,7 +71,7 @@ describe('excel actuation planning (pure)', () => {
 
   it('defaults values to [] and omits address when absent', () => {
     const plan = planWriteCells({
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'write-cells',
       surface: 'excel',
       params: {},

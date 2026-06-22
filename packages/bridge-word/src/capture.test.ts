@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResolvedContextSchema } from '@ge/contracts';
+import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
 import {
   headingLevel,
   wordDocumentToContext,
@@ -55,7 +55,7 @@ describe('word capture (pure)', () => {
 describe('word actuation planning (pure)', () => {
   it('plans a content-anchored tracked change', () => {
     const plan = planTrackedChange({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'tracked-change',
       surface: 'word',
       params: {

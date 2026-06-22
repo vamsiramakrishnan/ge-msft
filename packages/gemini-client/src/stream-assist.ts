@@ -5,6 +5,7 @@ import type {
   SourceRef,
   SseEvent,
 } from '@ge/contracts';
+import { asSessionId } from '@ge/contracts';
 import { GeminiClientConfig, streamAssistUrl } from './config.js';
 import {
   DeStreamAssistResponseSchema,
@@ -173,7 +174,7 @@ export class StreamAssistClient {
       timestamp: new Date().toISOString(),
       sources: [...citations.values()],
       contentHash: await contentHash(accumulated),
-      ...(session ? { sessionId: session } : {}),
+      ...(session ? { sessionId: asSessionId(session) } : {}),
     };
     yield { type: 'provenance', payload };
     yield { type: 'done' };

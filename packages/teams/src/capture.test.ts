@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResolvedContextSchema } from '@ge/contracts';
+import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
 import { transcriptToContext } from './capture.js';
 import { planPostMessage } from './actuate-plan.js';
 
@@ -45,7 +45,7 @@ describe('teams capture (pure)', () => {
 describe('teams actuation planning (pure)', () => {
   it('builds a post plan from params.text', () => {
     const plan = planPostMessage({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'post-message',
       surface: 'teams',
       params: { text: 'Action items: 1) raise SLA, 2) draft addendum.' },
@@ -55,7 +55,7 @@ describe('teams actuation planning (pure)', () => {
 
   it('threads an Adaptive Card payload through params.html', () => {
     const plan = planPostMessage({
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'post-message',
       surface: 'teams',
       params: { text: 'Summary', html: '<card>...</card>' },
@@ -65,7 +65,7 @@ describe('teams actuation planning (pure)', () => {
 
   it('falls back to empty text when nothing is provided', () => {
     const plan = planPostMessage({
-      changeId: 'c3',
+      changeId: asChangeId('c3'),
       kind: 'post-message',
       surface: 'teams',
       params: {},

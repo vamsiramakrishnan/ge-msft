@@ -2,12 +2,14 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  ChangeId,
   ContextKind,
   ContextRef,
   ProvenancePayload,
   SourceRef,
   SseEvent,
 } from '@ge/contracts';
+import { asChangeId } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
 
@@ -23,7 +25,7 @@ export interface AssistLike {
   apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
-    changeId: string,
+    changeId: ChangeId,
   ): Promise<ActuationResult>;
   ingest(event: HostEvent): Promise<void>;
   readonly sessionId?: string;
@@ -61,7 +63,7 @@ export interface Suggestion {
 }
 
 export interface Proposal {
-  changeId: string;
+  changeId: ChangeId;
   kind: ActuationRequest['kind'];
   params: ActuationParams;
   label: string;
@@ -247,13 +249,19 @@ export class PanelController {
 
   /** Stage a reviewable, reversible change for the user to confirm. */
   propose(kind: ActuationRequest['kind'], params: ActuationParams, label: string): Proposal {
-    const proposal: Proposal = { changeId: this.id('c'), kind, params, label, status: 'pending' };
+    const proposal: Proposal = {
+      changeId: asChangeId(this.id('c')),
+      kind,
+      params,
+      label,
+      status: 'pending',
+    };
     this.set({ proposals: [...this.state.proposals, proposal] });
     return proposal;
   }
 
   /** Apply a staged proposal through the session (gate → bridge), recording the outcome. */
-  async applyProposal(changeId: string): Promise<void> {
+  async applyProposal(changeId: ChangeId): Promise<void> {
     const proposal = this.state.proposals.find((p) => p.changeId === changeId);
     if (!proposal || proposal.status !== 'pending') return;
 
@@ -316,7 +324,7 @@ export class PanelController {
     this.set({ chips: this.state.chips.map((c) => (c.id === id ? { ...c, ...patch } : c)) });
   }
 
-  private setProposal(changeId: string, patch: Partial<Proposal>): void {
+  private setProposal(changeId: ChangeId, patch: Partial<Proposal>): void {
     this.set({
       proposals: this.state.proposals.map((p) =>
         p.changeId === changeId ? { ...p, ...patch } : p,

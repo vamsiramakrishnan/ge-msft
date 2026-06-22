@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { asChangeId } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { TeamsBridge, type TeamsJsLike } from './teams-bridge.js';
 
@@ -32,7 +33,7 @@ describe('TeamsBridge actuate (post-message)', () => {
   it('rejects an unsupported kind', async () => {
     const bridge = new TeamsBridge();
     const res = await bridge.actuate({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'insert-text',
       surface: 'teams',
       params: { text: 'x' },
@@ -44,7 +45,7 @@ describe('TeamsBridge actuate (post-message)', () => {
   it('errors when post-message has no content', async () => {
     const bridge = new TeamsBridge();
     const res = await bridge.actuate({
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'post-message',
       surface: 'teams',
       params: {},
@@ -56,7 +57,7 @@ describe('TeamsBridge actuate (post-message)', () => {
   it('degrades to a panel item when no host compose path exists', async () => {
     const bridge = new TeamsBridge();
     const res = await bridge.actuate({
-      changeId: 'c3',
+      changeId: asChangeId('c3'),
       kind: 'post-message',
       surface: 'teams',
       params: { text: 'Action items.' },
@@ -73,7 +74,7 @@ describe('TeamsBridge actuate (post-message)', () => {
     };
     const bridge = new TeamsBridge({ teams });
     const res = await bridge.actuate({
-      changeId: 'c4',
+      changeId: asChangeId('c4'),
       kind: 'post-message',
       surface: 'teams',
       params: { text: 'Summary', html: '<card/>' },

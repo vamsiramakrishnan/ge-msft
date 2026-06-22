@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ActuationResult, ProvenancePayload } from '@ge/contracts';
+import { asChangeId } from '@ge/contracts';
 import { ProvenanceStore } from './provenance-store.js';
 
 const prov: ProvenancePayload = {
@@ -15,20 +16,20 @@ describe('ProvenanceStore', () => {
     const store = new ProvenanceStore(() => '2026-06-21T12:00:00.000Z');
     const result: ActuationResult = {
       ok: true,
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'tracked-change',
       location: 'para:3',
     };
     const rec = store.record(result, prov);
     expect(rec).toMatchObject({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'tracked-change',
       ok: true,
       location: 'para:3',
       at: '2026-06-21T12:00:00.000Z',
     });
     expect(rec.provenance?.identity).toBe('v.k@acme');
-    expect(store.get('c1')).toBe(rec);
+    expect(store.get(asChangeId('c1'))).toBe(rec);
     expect(store.size).toBe(1);
   });
 
@@ -36,7 +37,7 @@ describe('ProvenanceStore', () => {
     const store = new ProvenanceStore();
     const result: ActuationResult = {
       ok: false,
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'tracked-change',
       degraded: true,
       error: { code: 'anchor_drift', message: 'gone' },
@@ -50,10 +51,10 @@ describe('ProvenanceStore', () => {
 
   it('lists records and overwrites by changeId', () => {
     const store = new ProvenanceStore();
-    store.record({ ok: true, changeId: 'c1', kind: 'write-cells' });
+    store.record({ ok: true, changeId: asChangeId('c1'), kind: 'write-cells' });
     store.record({
       ok: false,
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'write-cells',
       error: { code: 'x', message: 'y' },
     });

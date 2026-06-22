@@ -1,4 +1,5 @@
 import type { ContextKind, UnitDescriptor } from '@ge/contracts';
+import { asSessionId } from '@ge/contracts';
 import type { AssistantPath, WifConfig } from '@ge/gemini-client';
 import { StreamAssistClient, WifTokenClient } from '@ge/gemini-client';
 import { AssistSession } from '@ge/runtime';
@@ -60,7 +61,7 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     unit,
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
-    ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
+    ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),
   });
 
   return { session, tokens, client };

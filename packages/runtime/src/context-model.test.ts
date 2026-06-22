@@ -1,17 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import type { ActuationRequest, ActuationResult } from '@ge/contracts';
+import { asChangeId } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { BRIEF_REF_ID, ContextModel } from './context-model.js';
 
 const req: ActuationRequest = {
-  changeId: 'c1',
+  changeId: asChangeId('c1'),
   kind: 'tracked-change',
   surface: 'word',
   params: { text: 'x' },
 };
 const okResult: ActuationResult = {
   ok: true,
-  changeId: 'c1',
+  changeId: asChangeId('c1'),
   kind: 'tracked-change',
   location: 'para:3',
 };
@@ -62,13 +63,13 @@ describe('ContextModel — constructs the working-context brief from events', ()
     });
     const failed: ActuationResult = {
       ok: false,
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'write-cells',
       error: { code: 'anchor_drift', message: 'gone' },
     };
     m.observe({
       type: 'post-actuation',
-      request: { ...req, changeId: 'c2', kind: 'write-cells' },
+      request: { ...req, changeId: asChangeId('c2'), kind: 'write-cells' },
       result: failed,
     });
     const text = textOf(m);

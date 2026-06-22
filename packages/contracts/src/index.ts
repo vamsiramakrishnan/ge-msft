@@ -3,6 +3,7 @@
  * per-surface bridges (and the shape of every Gemini Enterprise call). Implement against this
  * exactly; every cross-boundary payload is parsed with its Zod schema on receipt. See docs/CONTRACTS.md.
  */
+export * from './brand.js';
 export * from './intent.js';
 export * from './unit.js';
 export * from './finding.js';

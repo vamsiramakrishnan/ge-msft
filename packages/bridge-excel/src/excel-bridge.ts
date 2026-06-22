@@ -20,7 +20,14 @@ import {
   usedRangeToBlocks,
 } from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
-import { formatSourceComment, planWriteCells, splitFormulaGrid } from './actuate-plan.js';
+import {
+  formatSourceComment,
+  planAddComment,
+  planFormatCells,
+  planWriteCells,
+  splitFormulaGrid,
+} from './actuate-plan.js';
+import { provenanceRecord } from './provenance-record.js';
 
 /**
  * The Excel `DocBridge`. The ONLY place Office.js (`Excel.run`) is touched. Reads via the
@@ -188,6 +195,10 @@ export class ExcelBridge implements DocBridge {
     switch (req.kind) {
       case 'write-cells':
         return this.applyWriteCells(req);
+      case 'format-cells':
+        return this.applyFormatCells(req);
+      case 'add-comment':
+        return this.applyAddComment(req);
       case 'comment-reply':
         return this.applyCommentReply(req);
       default:
@@ -339,7 +350,7 @@ export class ExcelBridge implements DocBridge {
     // ADR-0003 element 4: prefer provenance.sources, fall back to params.sources, for the
     // human-visible citation comment layered on top of durable provenance metadata.
     const sources = req.provenance?.sources ?? req.params.sources ?? [];
-    return Excel.run(async (ctx) => {
+    const result = await Excel.run(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(target);
       const sheet =
         sheetName !== undefined
@@ -379,6 +390,106 @@ export class ExcelBridge implements DocBridge {
 
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
+    // Durable provenance (BUILD-PLAN 1.6): persist the record after the reversible write lands.
+    // Best-effort, feature-detected, never fails the write (mirrors the citation-comment path).
+    if (result.ok) this.persistProvenance(req);
+    return result;
+  }
+
+  private async applyFormatCells(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planFormatCells(req);
+    if (!plan.address) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'format-cells needs target.range' },
+      };
+    }
+    if (!plan.hasOps) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_format',
+          message: 'format-cells needs at least one params.format field',
+        },
+      };
+    }
+    const result = await Excel.run(async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const range = sheet.getRange(rangeAddress);
+      // Each facet maps to one `range.format.*` write, applied only when present in the plan. All
+      // four are ExcelApi 1.1 (typings: `RangeFont.bold` l.42865, `.italic` l.42879,
+      // `RangeFill.color` l.42619, `Range.numberFormat` l.38249, `Range.format` l.38092), so no
+      // per-facet requirement-set gate is needed beyond the host running Excel at all.
+      if (plan.bold !== undefined) range.format.font.bold = plan.bold;
+      if (plan.italic !== undefined) range.format.font.italic = plan.italic;
+      if (plan.fill !== undefined) range.format.fill.color = plan.fill;
+      if (plan.numberFormat !== undefined) {
+        // `numberFormat` is a per-cell grid; a single code broadcasts across the whole range.
+        range.numberFormat = [[plan.numberFormat]];
+      }
+      range.load('address');
+      await ctx.sync();
+      return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
+    });
+    if (result.ok) this.persistProvenance(req);
+    return result;
+  }
+
+  private async applyAddComment(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planAddComment(req);
+    if (!plan.hasTarget || !plan.address) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'add-comment needs target.range' },
+      };
+    }
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'add-comment needs params.text' },
+      };
+    }
+    // `CommentCollection.add(cellAddress: string, content: string)` → ExcelApi 1.10 (typings
+    // l.54943). Gate on it so an older host degrades rather than throwing. The add must target a
+    // single cell, so we anchor on the first cell of `target.range` (read its full address back).
+    if (!isSet('ExcelApi', '1.10')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'unsupported', message: 'This host cannot add comments (ExcelApi < 1.10).' },
+      };
+    }
+    const result = await Excel.run(async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const anchor = sheet.getRange(rangeAddress).getCell(0, 0);
+      anchor.load('address');
+      // Read the anchor cell's full address back before attaching: `comments.add` needs the
+      // sheet-qualified address of a single cell.
+      await ctx.sync();
+      ctx.workbook.comments.add(anchor.address, plan.text);
+      await ctx.sync();
+      return { ok: true, changeId: req.changeId, kind: req.kind, location: anchor.address };
+    });
+    if (result.ok) this.persistProvenance(req);
+    return result;
   }
 
   private async applyCommentReply(req: ActuationRequest): Promise<ActuationResult> {
@@ -392,7 +503,7 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'no_comment', message: 'comment-reply needs target.commentId' },
       };
     }
-    return Excel.run(async (ctx) => {
+    const result = await Excel.run(async (ctx) => {
       const comments = ctx.workbook.comments;
       comments.load('items/id');
       // First sync is required: we must read back the comment ids to locate the target proxy
@@ -413,7 +524,43 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
     });
+    if (result.ok) this.persistProvenance(req);
+    return result;
   }
+
+  /**
+   * Durable provenance persistence (BUILD-PLAN 1.6 security follow-up). After a reversible write
+   * lands, stamp the {@link provenanceRecord} into the workbook's durable settings bag keyed by
+   * `changeId`, so the write stays provenanced across save/reopen. Excel has no `customXmlParts`,
+   * so we use `Office.context.document.settings` (workbook-persisted) carrying the JSON record.
+   *
+   * Best-effort and feature-detected, exactly like the citation-comment path: a missing
+   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it), and any
+   * settings/Office failure is swallowed. The reversible write already succeeded; provenance is
+   * additive metadata, not the system of record, so a persistence failure must not fail the write.
+   */
+  private persistProvenance(req: ActuationRequest): void {
+    if (!req.provenance) return; // no provenance to persist — actuation still succeeded.
+    try {
+      const settings = (
+        globalThis as {
+          Office?: { context?: { document?: { settings?: OfficeSettingsLike } } };
+        }
+      ).Office?.context?.document?.settings;
+      if (!settings) return; // no settings bag (older host / harness) — skip silently.
+      const record = provenanceRecord(req.changeId, req.provenance);
+      settings.set(record.key, record.json);
+      settings.saveAsync();
+    } catch {
+      // Settings unavailable / host quirk — the reversible write already landed, so log-and-continue.
+    }
+  }
+}
+
+/** The minimal slice of `Office.context.document.settings` the bridge persists provenance through. */
+interface OfficeSettingsLike {
+  set(name: string, value: unknown): void;
+  saveAsync(callback?: (result: unknown) => void): void;
 }
 
 /** A NamedItem.formula is an A1 reference like "=Sheet1!$A$1:$D$9"; drop the leading `=`. */

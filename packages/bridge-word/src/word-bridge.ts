@@ -17,7 +17,13 @@ import {
   wordDocumentToContext,
   wordSelectionToContext,
 } from './capture.js';
-import { chooseAnchorIndex, formatSources, planTrackedChange } from './actuate-plan.js';
+import {
+  chooseAnchorIndex,
+  formatSources,
+  planAddComment,
+  planTrackedChange,
+} from './actuate-plan.js';
+import { provenanceRecord } from './provenance-record.js';
 import {
   commentAddedEvent,
   documentChangedEvent,
@@ -117,6 +123,8 @@ export class WordBridge implements DocBridge {
     switch (req.kind) {
       case 'tracked-change':
         return this.applyTrackedChange(req);
+      case 'add-comment':
+        return this.applyAddComment(req);
       case 'comment-reply':
         return this.applyCommentReply(req);
       default:
@@ -169,12 +177,58 @@ export class WordBridge implements DocBridge {
     if (sources.length > 0) {
       await this.host.addComment(plan.matchText, false, formatSources(sources));
     }
+    // Durable provenance (BUILD-PLAN 1.6): stamp the record after the reversible change lands.
+    await this.persistProvenance(req);
     return {
       ok: true,
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
     };
+  }
+
+  /**
+   * ADR-0004 `comment` verb on Word: add a NEW content-anchored comment. Reuses the port's
+   * `addComment` (content-anchored via `body.search`, re-resolved at apply-time), so a drifted
+   * anchor degrades to a panel item (`ok:false, degraded:true, anchor_drift`) — the same discipline
+   * as a tracked change — rather than landing the comment on the wrong range. `changeId` is
+   * propagated, never re-minted.
+   */
+  private async applyAddComment(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planAddComment(req);
+    if (!plan.matchText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'add-comment needs target.matchText' },
+      };
+    }
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'add-comment needs params.text' },
+      };
+    }
+    const outcome = await this.host.addComment(plan.matchText, false, plan.text);
+    if (!outcome.ok) {
+      // Anchor gone (or comments unsupported): degrade to a panel item, never a broken comment —
+      // the same content-anchoring discipline as a drifted tracked change.
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'anchor_drift',
+          message: 'The matched text is no longer in the document.',
+        },
+      };
+    }
+    await this.persistProvenance(req);
+    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'comment' };
   }
 
   private async applyCommentReply(req: ActuationRequest): Promise<ActuationResult> {
@@ -202,7 +256,25 @@ export class WordBridge implements DocBridge {
         error: { code: 'comment_gone', message: 'The comment no longer exists.' },
       };
     }
+    await this.persistProvenance(req);
     return { ok: true, changeId: req.changeId, kind: req.kind, location: outcome.location };
+  }
+
+  /**
+   * Durable provenance persistence (BUILD-PLAN 1.6 security follow-up). After a reversible write
+   * lands, stamp the {@link provenanceRecord} into the document's durable metadata keyed by
+   * `changeId`, so the write stays provenanced across save/reopen. Word's durable metadata is a
+   * custom XML part (`customXmlParts.add`), so we persist the record's OOXML form via the port.
+   *
+   * Best-effort and feature-detected, exactly like the citation-comment path: a missing
+   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it), and the
+   * port swallows any host failure. The reversible write already succeeded; provenance is additive
+   * metadata, not the system of record, so a persistence failure must not fail the write.
+   */
+  private async persistProvenance(req: ActuationRequest): Promise<void> {
+    if (!req.provenance) return; // no provenance to persist — actuation still succeeded.
+    const record = provenanceRecord(req.changeId, req.provenance);
+    await this.host.persistProvenance(record.xml);
   }
 
   /**

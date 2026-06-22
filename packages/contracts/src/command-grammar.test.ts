@@ -13,7 +13,11 @@ import {
 const excelManifest: CapabilityManifest = {
   surface: 'excel',
   contextKinds: ['range', 'sheet'],
-  actuations: [{ kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true }],
+  actuations: [
+    { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
+    { kind: 'add-comment', surface: 'excel', title: 'Add comment', reversible: true },
+    { kind: 'format-cells', surface: 'excel', title: 'Format cells', reversible: true },
+  ],
 };
 
 const wordManifest: CapabilityManifest = {
@@ -21,12 +25,18 @@ const wordManifest: CapabilityManifest = {
   contextKinds: ['selection', 'document'],
   actuations: [
     { kind: 'tracked-change', surface: 'word', title: 'Insert tracked change', reversible: true },
+    { kind: 'add-comment', surface: 'word', title: 'Add comment', reversible: true },
   ],
 };
 
 describe('command-grammar — verb map', () => {
   it('maps write verbs to actuation kinds', () => {
-    expect(WRITE_VERB_TO_KIND).toEqual({ set: 'write-cells', suggest: 'tracked-change' });
+    expect(WRITE_VERB_TO_KIND).toEqual({
+      set: 'write-cells',
+      suggest: 'tracked-change',
+      comment: 'add-comment',
+      format: 'format-cells',
+    });
   });
 });
 
@@ -134,6 +144,81 @@ describe('command-grammar — suggest quoting (embedded quotes, escapes, separat
   });
 });
 
+describe('command-grammar — comment (dual form: Excel bare cell + Word quoted anchor)', () => {
+  it('parses the Excel form: bare cell selector + quoted comment body', () => {
+    expect(parseCommandLine('comment Sales!A16 "anomalous spike vs Q3"')).toEqual({
+      verb: 'comment',
+      selector: 'Sales!A16',
+      text: 'anomalous spike vs Q3',
+    });
+  });
+
+  it('parses the Word form: two quoted strings (anchor + comment)', () => {
+    expect(parseCommandLine('comment "the SLA is 99.5%" "needs a source"')).toEqual({
+      verb: 'comment',
+      selector: 'the SLA is 99.5%',
+      text: 'needs a source',
+    });
+  });
+
+  it('honors embedded escaped quotes/backslashes in either quoted part', () => {
+    expect(parseCommandLine('comment "say \\"hi\\"" "re: the \\"hi\\" claim"')).toEqual({
+      verb: 'comment',
+      selector: 'say "hi"',
+      text: 're: the "hi" claim',
+    });
+    expect(parseCommandLine('comment A1 "a\\\\b path"')).toEqual({
+      verb: 'comment',
+      selector: 'A1',
+      text: 'a\\b path',
+    });
+  });
+
+  it('errors when the comment body is missing or the line is malformed', () => {
+    expect(parseCommandLine('comment Sales!A16')).toMatchObject({
+      error: expect.stringContaining('comment'),
+    });
+    expect(parseCommandLine('comment "anchor only"')).toMatchObject({
+      error: expect.stringContaining('comment'),
+    });
+    expect(parseCommandLine('comment')).toMatchObject({
+      error: expect.stringContaining('comment'),
+    });
+  });
+});
+
+describe('command-grammar — format (k=v pairs, values with # $ , . %)', () => {
+  it('parses a range + multiple key=value pairs', () => {
+    expect(
+      parseCommandLine('format Sales!A16:C16 bold=true fill=#FFF2CC numberFormat=$#,##0.00'),
+    ).toEqual({
+      verb: 'format',
+      range: 'Sales!A16:C16',
+      props: { bold: 'true', fill: '#FFF2CC', numberFormat: '$#,##0.00' },
+    });
+  });
+
+  it('splits each pair on the FIRST = only (values may contain =)', () => {
+    expect(parseCommandLine('format A1 numberFormat=0.0%;=0')).toEqual({
+      verb: 'format',
+      range: 'A1',
+      props: { numberFormat: '0.0%;=0' },
+    });
+  });
+
+  it('errors on a format with no props or a bare key (no =)', () => {
+    expect(parseCommandLine('format Sales!A16:C16')).toMatchObject({
+      error: expect.stringContaining('key=value'),
+    });
+    expect(parseCommandLine('format')).toMatchObject({
+      error: expect.stringContaining('key=value'),
+    });
+    expect(parseCommandLine('format A1 bold')).toMatchObject({
+      error: expect.stringContaining('key=value'),
+    });
+  });
+});
+
 describe('command-grammar — corrective errors + did-you-mean', () => {
   it('suggests the nearest verb for a typo', () => {
     expect(parseCommandLine('sett A1 5')).toMatchObject({
@@ -221,6 +306,35 @@ describe('command-grammar — capability scoping', () => {
     expect(read?.usage).toBe('read');
   });
 
+  it('Excel advertises comment (cell form) and format when add-comment/format-cells are present', () => {
+    const specs = grammarFor(excelManifest);
+    const verbs = specs.map((v) => v.verb);
+    expect(verbs).toContain('comment');
+    expect(verbs).toContain('format');
+    expect(specs.find((v) => v.verb === 'comment')?.usage).toBe('comment <cell> "text"');
+    expect(specs.find((v) => v.verb === 'format')?.usage).toBe('format <range> k=v ...');
+  });
+
+  it('Word advertises comment (quoted-anchor form) but NOT format (no format-cells)', () => {
+    const specs = grammarFor(wordManifest);
+    const verbs = specs.map((v) => v.verb);
+    expect(verbs).toContain('comment');
+    expect(verbs).not.toContain('format');
+    expect(specs.find((v) => v.verb === 'comment')?.usage).toBe('comment "anchor" "text"');
+  });
+
+  it('a manifest without add-comment/format-cells does NOT advertise comment/format', () => {
+    const plainExcel: CapabilityManifest = {
+      surface: 'excel',
+      contextKinds: ['range'],
+      actuations: [{ kind: 'write-cells', surface: 'excel', title: 'Write', reversible: true }],
+    };
+    const verbs = grammarFor(plainExcel).map((v) => v.verb);
+    expect(verbs).toContain('set');
+    expect(verbs).not.toContain('comment');
+    expect(verbs).not.toContain('format');
+  });
+
   it('always advertises read/control verbs regardless of actuations', () => {
     const noWrite: CapabilityManifest = {
       surface: 'powerpoint',
@@ -242,6 +356,8 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('search foo'),
       parseCommandLine('set A1 =1+1'),
       parseCommandLine('suggest "a" => "b"'),
+      parseCommandLine('comment A1 "note"'),
+      parseCommandLine('format A1 bold=true'),
       parseCommandLine('done'),
       parseCommandLine('help'),
     ]) {

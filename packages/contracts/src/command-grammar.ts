@@ -16,9 +16,7 @@ import type { ActuationKind, CapabilityManifest } from './capability.js';
  * corrective error (`unknown verb "writ" — did you mean "write"? (run help)`) the model
  * self-corrects on the next turn.
  *
- * SCOPE (this slice): `outline · read · search · set · suggest · done · help`.
- * DEFERRED: `comment` (→ `add-comment`) and `format` (→ the "(proposed)" `format-cells`)
- * need new bridge actuations; their seams are marked below so they slot in cleanly.
+ * SCOPE: `outline · read · search · set · suggest · comment · format · done · help`.
  */
 
 /** Read verbs (Layer-B host reads, ADR-0003). Always advertised; never gated. */
@@ -30,17 +28,14 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
 /**
  * Write verbs → the `ActuationKind` (ADR-0002) they compile to. A write verb is advertised
  * for a surface ONLY when the surface's `CapabilityManifest.actuations[]` includes its mapped
- * kind (so `set` shows for Excel's `write-cells`, `suggest` for Word's `tracked-change`).
- *
- * DEFERRED seam: when the `add-comment` and "(proposed)" `format-cells` actuations land, add
- *   `comment: 'add-comment'` and `format: 'format-cells'` here — and nowhere else. The parser,
- *   the advertisement, and the runtime compiler all derive from this single map.
+ * kind (so `set` shows for Excel's `write-cells`, `suggest` for Word's `tracked-change`). The
+ * parser, the advertisement, and the runtime compiler all derive from this single map.
  */
 export const WRITE_VERB_TO_KIND = {
   set: 'write-cells',
   suggest: 'tracked-change',
-  // comment: 'add-comment',   // deferred — needs the add-comment bridge actuation
-  // format: 'format-cells',   // deferred — needs the (proposed) format-cells actuation
+  comment: 'add-comment',
+  format: 'format-cells',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -67,6 +62,8 @@ export type ParsedCommand =
   | { verb: 'search'; text: string }
   | { verb: 'set'; cell: string; value: string }
   | { verb: 'suggest'; oldText: string; newText: string }
+  | { verb: 'comment'; selector: string; text: string }
+  | { verb: 'format'; range: string; props: Record<string, string> }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -76,6 +73,8 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('search'), text: z.string() }),
   z.object({ verb: z.literal('set'), cell: z.string(), value: z.string() }),
   z.object({ verb: z.literal('suggest'), oldText: z.string(), newText: z.string() }),
+  z.object({ verb: z.literal('comment'), selector: z.string(), text: z.string() }),
+  z.object({ verb: z.literal('format'), range: z.string(), props: z.record(z.string()) }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -116,6 +115,10 @@ export function extractCommandBlock(modelText: string): string | null {
  *     (may contain spaces and commas, e.g. `=SUM(A1, A2)`) — never re-split.
  *   • `suggest "old" => "new"` — two double-quoted strings (with `\"`/`\\` escapes),
  *     separated by `=>` (surrounding spaces tolerated; `->` also accepted).
+ *   • `comment <selector> "text"` — surface-portable: a bare selector (Excel cell) OR a
+ *     quoted anchor (Word content anchor) for the first arg, then a quoted comment body.
+ *   • `format <range> k=v k=v ...` — first token is the range; the rest are `key=value`
+ *     pairs (split on the FIRST `=`; values may contain `# $ , . %`, no quotes needed).
  *   • `read`/`search` — the remainder is the selector / search text (verbatim).
  *   • `outline`/`done`/`help` — no args.
  * An unknown/garbled verb yields a did-you-mean against the advertised verbs.
@@ -171,6 +174,16 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return parsed;
     }
 
+    case 'comment': {
+      const parsed = parseComment(rest);
+      return parsed;
+    }
+
+    case 'format': {
+      const parsed = parseFormat(rest);
+      return parsed;
+    }
+
     default:
       return { error: unknownVerbError(verb) };
   }
@@ -202,6 +215,78 @@ function parseSuggest(rest: string): ParsedCommand | CommandParseError {
 
   if (first.value === '') return { error: 'suggest old text cannot be empty' };
   return { verb: 'suggest', oldText: first.value, newText: second.value };
+}
+
+/**
+ * `comment <selector> "text"` — surface-portable across Excel (cell selector) and Word (content
+ * anchor). The first argument is EITHER a bare, unquoted selector (e.g. `Sales!A16`) OR a quoted
+ * anchor string (Word, supporting `\"`/`\\` escapes); the second argument is the quoted comment
+ * body. The selector goes in `selector`, the body in `text`.
+ */
+function parseComment(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'comment needs a selector/anchor and a quoted comment — usage: comment <cell> "text"  OR  comment "anchor" "text"';
+
+  // Skip leading whitespace.
+  let i = 0;
+  while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  if (i >= rest.length) return { error: usage };
+
+  // First arg: a quoted anchor (Word) or a bare selector token (Excel).
+  let selector: string;
+  if (rest[i] === '"') {
+    const anchor = scanQuoted(rest, i);
+    if (!anchor) return { error: usage };
+    selector = anchor.value;
+    i = anchor.end;
+  } else {
+    const sp = rest.slice(i).search(/\s/);
+    if (sp === -1) return { error: usage }; // selector but no comment body
+    selector = rest.slice(i, i + sp);
+    i += sp;
+  }
+
+  // Separator whitespace, then the quoted comment body.
+  while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  const body = scanQuoted(rest, i);
+  if (!body) return { error: usage };
+
+  // Anything after the closing quote (other than whitespace) is malformed.
+  if (rest.slice(body.end).trim() !== '') return { error: usage };
+
+  if (selector === '') return { error: usage };
+  return { verb: 'comment', selector, text: body.value };
+}
+
+/**
+ * `format <range> k=v k=v ...` — first token is the A1/NamedRange; the rest are `key=value`
+ * pairs, each split on the FIRST `=` only so values may carry `# $ , . %` unquoted
+ * (e.g. `fill=#FFF2CC numberFormat=$#,##0.00 bold=true`). A format with no range or no props is
+ * a corrective error.
+ */
+function parseFormat(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'format needs a range and at least one key=value — usage: format <range> k=v ...';
+  const tokens = rest.split(/\s+/).filter((t) => t !== '');
+  if (tokens.length === 0) return { error: usage };
+
+  const range = tokens[0]!;
+  const pairs = tokens.slice(1);
+  if (pairs.length === 0) return { error: usage };
+
+  const props: Record<string, string> = {};
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    if (eq <= 0) {
+      return {
+        error: `format expects key=value pairs — got "${pair}" (usage: format <range> k=v)`,
+      };
+    }
+    const key = pair.slice(0, eq);
+    const value = pair.slice(eq + 1);
+    props[key] = value;
+  }
+
+  return { verb: 'format', range, props };
 }
 
 /**
@@ -293,7 +378,7 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   const kinds = new Set(manifest.actuations.map((a) => a.kind));
   for (const [verb, kind] of Object.entries(WRITE_VERB_TO_KIND) as [WriteVerb, ActuationKind][]) {
     if (!kinds.has(kind)) continue;
-    specs.push(writeVerbSpec(verb));
+    specs.push(writeVerbSpec(verb, isExcelLike));
   }
 
   specs.push(
@@ -303,8 +388,12 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   return specs;
 }
 
-/** The usage/hint for a write verb. Kept beside WRITE_VERB_TO_KIND so deferred verbs slot in. */
-function writeVerbSpec(verb: WriteVerb): VerbSpec {
+/**
+ * The usage/hint for a write verb, surface-aware where the selector differs. `comment` reads a
+ * bare cell on Excel and a quoted content anchor on Word; `format` is Excel-only (gated by the
+ * `format-cells` actuation, which only Excel advertises). Kept beside WRITE_VERB_TO_KIND.
+ */
+function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
   switch (verb) {
     case 'set':
       return {
@@ -317,6 +406,24 @@ function writeVerbSpec(verb: WriteVerb): VerbSpec {
         verb: 'suggest',
         usage: 'suggest "old text" => "new text"',
         hint: 'propose a tracked change anchored on the exact existing text',
+      };
+    case 'comment':
+      return isExcelLike
+        ? {
+            verb: 'comment',
+            usage: 'comment <cell> "text"',
+            hint: 'comment on a cell, e.g. comment Sales!A16 "anomalous spike"',
+          }
+        : {
+            verb: 'comment',
+            usage: 'comment "anchor" "text"',
+            hint: 'comment anchored on the exact existing text',
+          };
+    case 'format':
+      return {
+        verb: 'format',
+        usage: 'format <range> k=v ...',
+        hint: 'format a range, e.g. format Sales!A16:C16 bold=true fill=#FFF2CC numberFormat=$#,##0.00',
       };
   }
 }

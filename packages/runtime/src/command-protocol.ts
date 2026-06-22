@@ -44,14 +44,12 @@ export function isCompileError(c: CompiledCommand): c is { error: string } {
  *
  *   set <cell> <value>          → write-cells   { target:{ range:cell }, cells:[[value]] }
  *   suggest "old" => "new"      → tracked-change { target:{ matchText:oldText }, text:newText }
+ *   comment <sel> "text"        → add-comment   { target:{ range|matchText }, text }  (per surface)
+ *   format <range> k=v ...      → format-cells  { target:{ range }, format:{…} }
  *   outline                     → read outline  (captureDocState)
  *   read <selector>             → read range    (readRange / whole-doc)
  *   search <text>               → read search   (searchDocument)
  *   done / help                 → control
- *
- * DEFERRED seam: `comment` (→ `add-comment` + a `target`/`text` param) and `format`
- * (→ the "(proposed)" `format-cells` + a format param) slot in here as two more `case`s once
- * those bridge actuations exist; their verb→kind entries live in `WRITE_VERB_TO_KIND`.
  */
 export function compileCommand(
   cmd: ParsedCommand,
@@ -78,7 +76,62 @@ export function compileCommand(
         target: { matchText: cmd.oldText },
         text: cmd.newText,
       });
+    case 'comment':
+      // Surface-portable target: Excel anchors a comment by cell range; Word (and other
+      // content surfaces) anchor by content (matchText, re-resolved via body.search).
+      return compileWrite(WRITE_VERB_TO_KIND.comment, ctx, {
+        target: ctx.surface === 'excel' ? { range: cmd.selector } : { matchText: cmd.selector },
+        text: cmd.text,
+      });
+    case 'format': {
+      const format = formatFromProps(cmd.props);
+      if (!format) {
+        return {
+          error: `format has no recognized property — supported: bold, italic, fill, numberFormat`,
+        };
+      }
+      return compileWrite(WRITE_VERB_TO_KIND.format, ctx, {
+        target: { range: cmd.range },
+        format,
+      });
+    }
   }
+}
+
+/** Recognized format-cells props. */
+type FormatParams = NonNullable<ActuationRequest['params']['format']>;
+
+/**
+ * Convert the parser's raw `key=value` strings into typed `format` params: `bold`/`italic` →
+ * boolean (`"true"`/`"false"`), `fill`/`numberFormat` → string. Unknown keys are ignored;
+ * returns `undefined` when NO recognized prop is present (→ a corrective error upstream).
+ */
+function formatFromProps(props: Record<string, string>): FormatParams | undefined {
+  const format: FormatParams = {};
+  let recognized = false;
+  for (const [key, value] of Object.entries(props)) {
+    switch (key) {
+      case 'bold':
+        format.bold = value === 'true';
+        recognized = true;
+        break;
+      case 'italic':
+        format.italic = value === 'true';
+        recognized = true;
+        break;
+      case 'fill':
+        format.fill = value;
+        recognized = true;
+        break;
+      case 'numberFormat':
+        format.numberFormat = value;
+        recognized = true;
+        break;
+      default:
+        break; // ignore unknown keys
+    }
+  }
+  return recognized ? format : undefined;
 }
 
 /** Build + Zod-validate an `ActuationRequest` for a write verb. */

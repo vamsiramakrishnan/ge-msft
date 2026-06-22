@@ -20,8 +20,10 @@ export const ActuationKindSchema = z.enum([
   'tracked-change', // Word: insert/replace as a tracked change
   'insert-ooxml', // Word/PPT: insert rich OOXML
   'fill-content-control', // Word: populate a named content control
+  'add-comment', // Word/Excel: add a new content/cell-anchored comment (ADR-0004 `comment` verb)
   'comment-reply', // Word/Excel/PPT: reply to (and optionally resolve) a comment
   'write-cells', // Excel: write values/formulas to a range
+  'format-cells', // Excel: apply formatting (bold/fill/numberFormat) to a range (ADR-0004 `format`)
   'set-entity-card', // Excel: attach a linked-entity card to a cell
   'insert-slide', // PowerPoint: add a slide
   'set-speaker-notes', // PowerPoint: set a slide's speaker notes
@@ -63,6 +65,15 @@ export const ActuationParamsSchema = z.object({
     })
     .optional(),
   cells: z.array(z.array(z.string())).optional(), // write-cells
+  /** format-cells: host-native formatting applied to `target.range` (ADR-0004 `format` verb). */
+  format: z
+    .object({
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
+      fill: z.string().optional(), // background color, e.g. "#FFF2CC"
+      numberFormat: z.string().optional(), // e.g. "$#,##0.00"
+    })
+    .optional(),
   slide: z
     .object({ title: z.string(), bullets: z.array(z.string()), notes: z.string().optional() })
     .optional(),

@@ -2,9 +2,11 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  CapabilityManifest,
   ChangeId,
   ContextKind,
   ContextRef,
+  ParsedCommand,
   ProvenancePayload,
   ResolvedContext,
   SessionId,
@@ -12,10 +14,18 @@ import type {
   SseEvent,
   UnitDescriptor,
 } from '@ge/contracts';
+import { asChangeId, isCommandParseError, parseCommandBlock } from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
+import {
+  compileCommand,
+  isCompileError,
+  renderGrammarPrompt,
+  type CompiledCommand,
+  type ReadIntent,
+} from './command-protocol.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 
 /**
@@ -60,6 +70,54 @@ export interface ContextLoopOptions {
 
 /** Default lazy-read bound: enough to be useful, small enough to stay token-cheap. */
 const DEFAULT_MAX_READS = 4;
+
+/** Default turn bound for the command loop (ADR-0004 §3). */
+const DEFAULT_MAX_TURNS = 12;
+/** Per-turn ceilings so an injected mega-block can't fan out into unbounded host work (ADR-0004). */
+const DEFAULT_MAX_COMMANDS_PER_TURN = 32;
+const DEFAULT_MAX_WRITES_PER_TURN = 8;
+
+/**
+ * A small, typed event stream for the command loop (ADR-0004) so the panel can show steps. These
+ * are distinct from `SseEvent`s (which still flow for tokens/citations/provenance via `runCommands`);
+ * `CommandLoopEvent`s narrate the loop's own read-many/write-one mechanics.
+ */
+export type CommandLoopEvent =
+  | { type: 'turn-start'; turn: number }
+  /** A parsed command and how it compiled (read intent / write request / control / error). */
+  | { type: 'command'; turn: number; command: ParsedCommand; compiled: CompiledCommand }
+  /** One read executed and its (host-content) result, carried as data. */
+  | { type: 'read-result'; turn: number; intentLabel: string; result: unknown }
+  /** One write gated + actuated (or blocked). */
+  | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
+  /** A turn produced no ```cmd fence — the loop re-prompts once. */
+  | { type: 'no-fence'; turn: number }
+  /** A per-turn command/write ceiling was hit; extra commands in the block were refused. */
+  | { type: 'capped'; turn: number; reason: string }
+  /** The model emitted `done`; the loop stops. `answer` is the final accumulated text. */
+  | { type: 'done'; turn: number; answer: string }
+  /** The loop hit `maxTurns` without `done`. */
+  | { type: 'exhausted'; turns: number; answer: string };
+
+/** Options for {@link AssistSession.runCommands}. */
+export interface RunCommandsOptions {
+  /** Bound on model turns (default {@link DEFAULT_MAX_TURNS}). */
+  maxTurns?: number;
+  signal?: AbortSignal;
+  /**
+   * Per-write human-in-the-loop approval — the confirmation the `DocBridge` contract ("never
+   * called without user confirmation") and ADR-0004 require. The loop calls this for EVERY compiled
+   * write before actuating and proceeds only on `true`. **Fail-closed:** with no approver, every
+   * model-emitted write is blocked (the model gets a corrective `unapproved` result and the loop
+   * continues with reads). The UI passes an approver that renders the command verbatim as an
+   * approval card and resolves with the user's decision; the trigger gate then runs as a second line.
+   */
+  approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>;
+  /** Max commands run per model turn (default 32); the rest of the block is refused. */
+  maxCommandsPerTurn?: number;
+  /** Max writes actuated per model turn (default 8); extra writes are blocked. */
+  maxWritesPerTurn?: number;
+}
 
 /** Stable id of the ephemeral ambient `<doc_state>` part, so it replaces (never duplicates). */
 export const DOC_STATE_REF_ID = 'ctx:doc-state';
@@ -372,6 +430,304 @@ export class AssistSession {
     return result;
   }
 
+  /**
+   * Drive the bounded, model-driven command loop (ADR-0004). The model expresses reads/writes
+   * as flat command lines inside a ```cmd block; this method parses → compiles → executes them
+   * and feeds outcomes back as a ```result block on the next turn, all within ONE streamAssist
+   * `session`. Distinct from {@link ask} (which is left unchanged): `ask` is plain grounded chat.
+   *
+   * Loop policy (ADR-0004 §3):
+   *   • Turn 1 = `renderGrammarPrompt(capabilities)` + the ambient `<doc_state>` + the task.
+   *   • **Read-many:** execute all read commands in a turn and collect their results.
+   *   • **Write-one:** compile each write to an `ActuationRequest` and run it through the
+   *     actuation gate ONE AT A TIME via {@link apply} (per-write approval; `DocBridge.actuate`
+   *     is never called without confirmation).
+   *   • A turn with no ```cmd fence is a re-prompt, not an error.
+   *   • `done` stops the loop and yields the final answer; `maxTurns` bounds it.
+   *
+   * SSE events (tokens/citations/provenance) flow as in `ask()`; `CommandLoopEvent`s narrate the
+   * loop. Bridge/gate calls are wrapped defensively — a failed command becomes a corrective
+   * result, never a thrown loop.
+   */
+  async *runCommands(
+    task: string,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
+    const capabilities = await this.bridge.getCapabilities();
+
+    let query = await this.firstCommandTurn(capabilities, task);
+    let answer = '';
+    let pendingNoFenceReprompt = false;
+
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      yield { type: 'turn-start', turn };
+
+      // Stream this turn; accumulate the answer text and record citations/provenance as ask() does.
+      let turnText = '';
+      for await (const event of this.streamTurn(query, opts.signal)) {
+        if (event.type === 'token') turnText += event.text;
+        yield event;
+      }
+      answer += turnText;
+
+      const { found, commands } = parseCommandBlock(turnText);
+
+      // No fenced block → re-prompt ONCE (not an error). A second consecutive no-fence ends the loop.
+      if (!found) {
+        yield { type: 'no-fence', turn };
+        if (pendingNoFenceReprompt) break;
+        pendingNoFenceReprompt = true;
+        query =
+          'No ```cmd block found. Reply with EXACTLY one ```cmd block, or `done` if finished.';
+        continue;
+      }
+      pendingNoFenceReprompt = false;
+
+      // Compile + execute. Read-many (batch), write-one (serialized, approved + gated, capped).
+      const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
+      const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
+      let writesThisTurn = 0;
+      const results: unknown[] = [];
+      let done = false;
+      if (commands.length > maxCommands) {
+        yield {
+          type: 'capped',
+          turn,
+          reason: `command block truncated to ${maxCommands} (got ${commands.length})`,
+        };
+        results.push({
+          error: `too many commands in one block; only the first ${maxCommands} ran`,
+        });
+      }
+      for (const command of commands.slice(0, maxCommands)) {
+        if (isCommandParseError(command)) {
+          // A corrective parse error feeds straight back; the model self-corrects next turn.
+          results.push({ error: command.error });
+          continue;
+        }
+        const compiled = compileCommand(command, {
+          surface: this.bridge.surface,
+          mintChangeId: () => asChangeId(crypto.randomUUID()),
+        });
+        yield { type: 'command', turn, command, compiled };
+
+        if (isCompileError(compiled)) {
+          results.push({ error: compiled.error });
+          continue;
+        }
+        if (compiled.kind === 'control') {
+          if (compiled.verb === 'done') {
+            done = true;
+            break;
+          }
+          // `help` re-advertises the grammar.
+          results.push({ help: renderGrammarPrompt(capabilities) });
+          continue;
+        }
+        if (compiled.kind === 'read') {
+          const { label, result } = await this.runReadIntent(compiled.intent);
+          results.push(result);
+          yield { type: 'read-result', turn, intentLabel: label, result };
+          continue;
+        }
+        // write — fail-closed approval + gate, one at a time, capped per turn.
+        if (writesThisTurn >= maxWrites) {
+          const capped: ActuationResult = {
+            ok: false,
+            changeId: compiled.request.changeId,
+            kind: compiled.request.kind,
+            error: { code: 'write_cap', message: `write cap (${maxWrites}/turn) reached` },
+          };
+          results.push(capped);
+          yield { type: 'capped', turn, reason: `write cap ${maxWrites}/turn` };
+          yield { type: 'write-result', turn, changeId: compiled.request.changeId, result: capped };
+          continue;
+        }
+        writesThisTurn += 1;
+        const result = await this.applyRequest(compiled.request, opts.approveWrite);
+        results.push(result);
+        yield { type: 'write-result', turn, changeId: compiled.request.changeId, result };
+      }
+
+      if (done) {
+        yield { type: 'done', turn, answer };
+        return;
+      }
+
+      // Feed all outcomes back as a ```result block + a fresh <doc_state> for the next turn.
+      query = await this.nextCommandTurn(results);
+    }
+
+    yield { type: 'exhausted', turns: maxTurns, answer };
+  }
+
+  /** Build turn 1: protocol preamble + ambient `<doc_state>` + the task. */
+  private async firstCommandTurn(capabilities: CapabilityManifest, task: string): Promise<string> {
+    const protocol = renderGrammarPrompt(capabilities);
+    const docState = await this.renderAmbientDocState();
+    const parts = [protocol];
+    if (docState) parts.push(docState);
+    parts.push(`TASK:\n${task}`, 'Begin.');
+    return parts.join('\n\n');
+  }
+
+  /** Build a follow-up turn: the ```result block (JSON) + a fresh `<doc_state>`. */
+  private async nextCommandTurn(results: unknown[]): Promise<string> {
+    const resultBlock = '```result\n' + JSON.stringify(results) + '\n```';
+    const docState = await this.renderAmbientDocState();
+    return docState
+      ? `${resultBlock}\n\n${docState}\n\n(Continue. Next command?)`
+      : `${resultBlock}\n\n(Continue. Next command?)`;
+  }
+
+  /** Capture + render the ambient `<doc_state>` for a command turn, defensively (skip on failure). */
+  private async renderAmbientDocState(): Promise<string | undefined> {
+    if (!this.docStateEnabled || !this.bridge.captureDocState) return undefined;
+    try {
+      const snapshot = await this.bridge.captureDocState();
+      return snapshot ? renderDocState(snapshot) : undefined;
+    } catch (err) {
+      console.warn(
+        '[assist] captureDocState failed; skipping <doc_state> for this command turn',
+        err,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Stream one command-loop turn through the engine within the resident `session`, recording the
+   * session id, citations, and provenance exactly as {@link ask} does. No ephemeral context-loop
+   * parts are injected here — the loop carries its own `<doc_state>`/result blocks in the query.
+   */
+  private async *streamTurn(query: string, signal?: AbortSignal): AsyncGenerator<SseEvent> {
+    const req = {
+      intent: 'assist' as const,
+      query,
+      unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
+    };
+    for await (const event of this.client.stream(req, {
+      session: this.session,
+      context: this.context.list(),
+      ...(signal ? { signal } : {}),
+    })) {
+      if (event.type === 'citation') this.citations.push(event.source);
+      if (event.type === 'provenance') {
+        this.lastProvenance = event.payload;
+        this.session = event.payload.sessionId ?? this.session;
+      }
+      yield event;
+    }
+  }
+
+  /**
+   * Dispatch a compiled `ReadIntent` to the bridge (ADR-0003 Layer-B). Defensive: a missing
+   * capability or a thrown read becomes a corrective `{ error }` result, never a thrown loop.
+   */
+  private async runReadIntent(intent: ReadIntent): Promise<{ label: string; result: unknown }> {
+    try {
+      switch (intent.read) {
+        case 'outline': {
+          if (!this.bridge.captureDocState)
+            return { label: 'outline', result: { error: 'outline not supported here' } };
+          const snapshot = await this.bridge.captureDocState();
+          return {
+            label: 'outline',
+            result: snapshot ? renderDocState(snapshot) : { outline: null },
+          };
+        }
+        case 'range': {
+          // Empty selector ⇒ whole document (Word's `read`): fall back to searchDocument-less capture.
+          if (intent.selector.trim() === '') {
+            if (!this.bridge.captureDocState) {
+              return { label: 'read', result: { error: 'whole-document read not supported here' } };
+            }
+            const snapshot = await this.bridge.captureDocState();
+            return {
+              label: 'read',
+              result: snapshot ? renderDocState(snapshot) : { document: null },
+            };
+          }
+          if (!this.bridge.readRange) {
+            return {
+              label: `read ${intent.selector}`,
+              result: { error: 'addressable read not supported here' },
+            };
+          }
+          const reads = await this.bridge.readRange(intent.selector);
+          return { label: `read ${intent.selector}`, result: readsToData(reads) };
+        }
+        case 'search': {
+          if (!this.bridge.searchDocument)
+            return {
+              label: `search ${intent.text}`,
+              result: { error: 'search not supported here' },
+            };
+          const reads = await this.bridge.searchDocument(intent.text);
+          return { label: `search ${intent.text}`, result: readsToData(reads) };
+        }
+      }
+    } catch (err) {
+      return { label: 'read', result: { error: `read failed: ${errMsg(err)}` } };
+    }
+  }
+
+  /**
+   * Apply one compiled write request through the actuation gate (ADR-0004 write-one). Reuses the
+   * gate/audit path of {@link apply} but takes a fully-built request (provenance is stamped from the
+   * last turn). Wrapped defensively: a thrown gate/actuate becomes a corrective error result.
+   */
+  private async applyRequest(
+    request: ActuationRequest,
+    approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
+  ): Promise<ActuationResult> {
+    // Provenance is bound to the turn that emitted this command: `lastProvenance` is set during
+    // this turn's stream (in streamTurn), immediately before the command executes. Durable
+    // persistence of the payload is the bridge's job (BUILD-PLAN 1.6, deferred).
+    const stamped: ActuationRequest = {
+      ...request,
+      ...(this.lastProvenance ? { provenance: this.lastProvenance } : {}),
+    };
+    // Fail-closed human-in-the-loop: a model-emitted write (its text shaped by untrusted document
+    // content) is NEVER actuated without explicit per-write approval. No approver ⇒ blocked, per the
+    // DocBridge "never called without user confirmation" contract. The trigger gate runs after, as a
+    // second, independent line of defense.
+    const approved = approveWrite ? await approveWrite(stamped) : false;
+    if (!approved) {
+      return {
+        ok: false,
+        changeId: stamped.changeId,
+        kind: stamped.kind,
+        error: { code: 'unapproved', message: 'write requires user approval (none granted)' },
+      };
+    }
+    try {
+      const triggers = this.options.triggers;
+      if (triggers) {
+        const gate = await triggers.gate({ type: 'pre-actuation', request: stamped });
+        if (gate.kind === 'block') {
+          return {
+            ok: false,
+            changeId: stamped.changeId,
+            kind: stamped.kind,
+            error: { code: 'blocked', message: gate.reason },
+          };
+        }
+      }
+      const result = await this.bridge.actuate(stamped);
+      if (triggers) void triggers.dispatch({ type: 'post-actuation', request: stamped, result });
+      return result;
+    } catch (err) {
+      return {
+        ok: false,
+        changeId: stamped.changeId,
+        kind: stamped.kind,
+        error: { code: 'actuate_failed', message: errMsg(err) },
+      };
+    }
+  }
+
   get sessionId(): SessionId | undefined {
     return this.session;
   }
@@ -427,6 +783,23 @@ export class AssistSession {
  */
 function tokensOf(ctx: ResolvedContext): number {
   return ctx.value.as === 'text' ? estimateTokens(ctx.value.text) : 1;
+}
+
+/**
+ * Flatten read results (host content) into the data fed back in a ```result block. Text values
+ * are returned verbatim (already framed as data by the loop's result envelope); named references
+ * surface their handle. Host content is data — never instructions.
+ */
+function readsToData(reads: ResolvedContext[]): unknown {
+  return reads.map((r) =>
+    r.value.as === 'text'
+      ? { title: r.ref.title, text: r.value.text }
+      : { title: r.ref.title, ref: r.value },
+  );
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**

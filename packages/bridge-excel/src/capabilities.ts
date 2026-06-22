@@ -18,6 +18,22 @@ export const EXCEL_CAPABILITIES: CapabilityManifest = {
       appliesTo: ['range'],
     },
     {
+      kind: 'format-cells',
+      surface: 'excel',
+      title: 'Format cells',
+      description: 'Apply bold/italic/fill/number-format to a worksheet range.',
+      reversible: true,
+      appliesTo: ['range'],
+    },
+    {
+      kind: 'add-comment',
+      surface: 'excel',
+      title: 'Add comment',
+      description: 'Attach a new comment to a cell.',
+      reversible: true,
+      appliesTo: ['range'],
+    },
+    {
       kind: 'comment-reply',
       surface: 'excel',
       title: 'Reply & resolve comment',

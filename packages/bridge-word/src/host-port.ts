@@ -110,6 +110,14 @@ export interface WordHost {
   addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }>;
 
   /**
+   * Persist a durable-provenance custom XML part carrying `xml` into the document (BUILD-PLAN 1.6).
+   * Word's durable metadata is OOXML custom XML, so the record lands as a `customXmlParts.add(xml)`
+   * part keyed by the write's `changeId`. Best-effort: returns `{ ok: false }` (never throws) when
+   * the API is unsupported, so a persistence failure can't fail the reversible write it accompanies.
+   */
+  persistProvenance(xml: string): Promise<{ ok: boolean }>;
+
+  /**
    * Register the host-event handlers (selection / paragraph edits / comments). Returns an
    * unsubscribe that removes every handler that attached. Never throws.
    */
@@ -227,6 +235,23 @@ export class OfficeWordHost implements WordHost {
       });
     } catch {
       // Host quirk / comments unavailable — best-effort, log-and-continue.
+      return { ok: false };
+    }
+  }
+
+  async persistProvenance(xml: string): Promise<{ ok: boolean }> {
+    // `CustomXmlPartCollection.add(xml)` → WordApi 1.4 (typings l.100826); the document's
+    // `customXmlParts` getter is `WordApiHiddenDocument 1.4` (l.102901). Gate on WordApi 1.4 and
+    // degrade silently on an older host so a missing provenance part never disturbs the write.
+    if (!isSet('WordApi', '1.4')) return { ok: false };
+    try {
+      return await Word.run(async (ctx) => {
+        ctx.document.customXmlParts.add(xml);
+        await ctx.sync();
+        return { ok: true };
+      });
+    } catch {
+      // Custom XML parts unavailable / host quirk — best-effort, log-and-continue.
       return { ok: false };
     }
   }

@@ -14,10 +14,13 @@ export {
 } from './capture.js';
 export {
   planTrackedChange,
+  planAddComment,
   chooseAnchorIndex,
   formatSources,
   type TrackedChangePlan,
+  type AddCommentPlan,
 } from './actuate-plan.js';
+export { provenanceRecord, provenanceKey, type ProvenanceRecord } from './provenance-record.js';
 export {
   originFromWordSource,
   selectionChangedEvent,

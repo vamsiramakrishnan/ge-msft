@@ -15,8 +15,13 @@ export {
 } from './events.js';
 export {
   planWriteCells,
+  planFormatCells,
+  planAddComment,
   splitFormulaGrid,
   formatSourceComment,
   type WriteCellsPlan,
+  type FormatCellsPlan,
+  type AddCommentPlan,
   type FormulaGrid,
 } from './actuate-plan.js';
+export { provenanceRecord, provenanceKey, type ProvenanceRecord } from './provenance-record.js';

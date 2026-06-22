@@ -22,6 +22,32 @@ export function planTrackedChange(req: ActuationRequest): TrackedChangePlan {
   };
 }
 
+/**
+ * Pure plan for an `add-comment` actuation (ADR-0004 `comment` verb on Word): a NEW comment whose
+ * body is `params.text`, anchored on `target.matchText` (+ `contextHint`) and re-resolved via
+ * `body.search` at apply-time — the same content-anchoring discipline as a tracked change, so a
+ * drifted anchor degrades rather than landing on the wrong range. The comment text is collapsed to
+ * a single line (model/host-derived → untrusted) so it can't forge structure; `hasText` lets the
+ * bridge reject an empty comment before touching the host.
+ */
+export interface AddCommentPlan {
+  matchText?: string;
+  contextHint?: string;
+  text: string;
+  hasText: boolean;
+}
+
+export function planAddComment(req: ActuationRequest): AddCommentPlan {
+  const p = req.params;
+  const text = oneLineSource(p.text ?? '');
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    text,
+    hasText: text.length > 0,
+  };
+}
+
 /** Collapse control chars + whitespace to one line so a source can't forge extra comment lines. */
 function oneLineSource(text: string): string {
   const stripped = Array.from(text, (ch) => {

@@ -25,6 +25,14 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
     },
     { kind: 'insert-ooxml', surface: 'word', title: 'Insert formatted content', reversible: true },
     {
+      kind: 'add-comment',
+      surface: 'word',
+      title: 'Add comment',
+      description: 'Attach a new comment anchored on the matched text.',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
       kind: 'comment-reply',
       surface: 'word',
       title: 'Reply & resolve comment',

@@ -20,6 +20,68 @@ export function planWriteCells(req: ActuationRequest): WriteCellsPlan {
 }
 
 /**
+ * Pure plan for a `format-cells` actuation (ADR-0004 Phase 3, the `format` verb). Located by an
+ * explicit `target.range`; the host applies ONLY the format facets that are present in
+ * `params.format` (each maps to a `range.format.*` write at apply-time), so an empty/absent
+ * `format` is a no-op the bridge rejects before touching the host. `hasOps` lets the bridge
+ * short-circuit. The fields mirror the {@link ActuationParams.format} schema 1:1; `undefined`
+ * means "leave this facet untouched".
+ */
+export interface FormatCellsPlan {
+  address?: string;
+  bold?: boolean;
+  italic?: boolean;
+  /** Background fill color, e.g. "#FFF2CC". */
+  fill?: string;
+  /** Excel number-format code, e.g. "$#,##0.00". */
+  numberFormat?: string;
+  /** True iff at least one format facet is set — the bridge degrades a no-op format. */
+  hasOps: boolean;
+}
+
+export function planFormatCells(req: ActuationRequest): FormatCellsPlan {
+  const p = req.params;
+  const f = p.format ?? {};
+  const hasOps =
+    f.bold !== undefined ||
+    f.italic !== undefined ||
+    f.fill !== undefined ||
+    f.numberFormat !== undefined;
+  return {
+    ...(p.target?.range ? { address: p.target.range } : {}),
+    ...(f.bold !== undefined ? { bold: f.bold } : {}),
+    ...(f.italic !== undefined ? { italic: f.italic } : {}),
+    ...(f.fill !== undefined ? { fill: f.fill } : {}),
+    ...(f.numberFormat !== undefined ? { numberFormat: f.numberFormat } : {}),
+    hasOps,
+  };
+}
+
+/**
+ * Pure plan for an `add-comment` actuation (ADR-0004 `comment` verb on Excel): a new cell-anchored
+ * comment whose body is `params.text`, attached to the anchor (first) cell of `target.range`.
+ * `text` is collapsed to a single line (a model/host-derived comment is untrusted) so it can't
+ * forge structure; `hasTarget`/`hasText` let the bridge reject a malformed request before the host.
+ */
+export interface AddCommentPlan {
+  address?: string;
+  text: string;
+  hasTarget: boolean;
+  hasText: boolean;
+}
+
+export function planAddComment(req: ActuationRequest): AddCommentPlan {
+  const range = req.params.target?.range;
+  const text = oneLineSource(req.params.text ?? '');
+  return {
+    ...(range ? { address: range } : {}),
+    text,
+    hasTarget: Boolean(range),
+    hasText: text.length > 0,
+  };
+}
+
+/**
  * The result of routing a written grid into formula vs. value cells (ADR-0003 element 3,
  * "formula-first writes"). Any cell whose string starts with `=` is an Excel formula the user
  * can inspect, so it goes into `formulas` (Excel evaluates it); everything else stays a literal

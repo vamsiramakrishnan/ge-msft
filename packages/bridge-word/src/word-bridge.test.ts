@@ -34,8 +34,12 @@ class FakeWordHost implements WordHost {
   readonly inserts: Array<{ query: string; matchCase: boolean; text: string; chosen: string }> = [];
   readonly replies: Array<{ commentId: string; reply: string; resolve: boolean }> = [];
   readonly addedComments: Array<{ query: string; matchCase: boolean; text: string }> = [];
+  /** Durable provenance XML parts persisted via the port (BUILD-PLAN 1.6). */
+  readonly persistedProvenance: string[] = [];
   /** When true, the next addComment reports failure (unsupported / anchor gone). */
   commentFails = false;
+  /** When true, persistProvenance reports failure (API unsupported). */
+  provenanceFails = false;
   lastHandlers?: WordHandlers;
   unsubscribed = false;
 
@@ -73,6 +77,12 @@ class FakeWordHost implements WordHost {
     return Promise.resolve({ ok: true });
   }
 
+  persistProvenance(xml: string): Promise<{ ok: boolean }> {
+    if (this.provenanceFails) return Promise.resolve({ ok: false });
+    this.persistedProvenance.push(xml);
+    return Promise.resolve({ ok: true });
+  }
+
   replyToComment(commentId: string, reply: string, resolve: boolean): Promise<CommentReplyOutcome> {
     if (!this.comments.has(commentId)) return Promise.resolve({ status: 'gone' });
     this.replies.push({ commentId, reply, resolve });
@@ -90,6 +100,18 @@ class FakeWordHost implements WordHost {
 function trackedChange(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'tracked-change', surface: 'word', params };
 }
+
+function addComment(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'add-comment', surface: 'word', params };
+}
+
+const PROVENANCE: ActuationRequest['provenance'] = {
+  agentId: 'review@v1',
+  identity: 'v.k@acme',
+  timestamp: '2026-06-22T00:00:00Z',
+  contentHash: 'h',
+  sources: [{ title: 'SLA Policy' }],
+};
 
 describe('WordBridge orchestration (against a fake host)', () => {
   describe('listContext', () => {
@@ -350,6 +372,124 @@ describe('WordBridge orchestration (against a fake host)', () => {
         params: { text: 'done' },
       });
       expect(res).toMatchObject({ ok: false, error: { code: 'no_comment' } });
+    });
+  });
+
+  describe('actuate add-comment (ADR-0004)', () => {
+    it('adds a content-anchored comment on a hit and returns ok with the same changeId', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(
+        addComment({ target: { matchText: '99.5%' }, text: 'Unsourced claim' }, 'chg-9'),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-9'),
+        kind: 'add-comment',
+        location: 'comment',
+      });
+      expect(host.addedComments).toEqual([
+        { query: '99.5%', matchCase: false, text: 'Unsourced claim' },
+      ]);
+    });
+
+    it('degrades to a panel item (anchor_drift) when the anchor is gone', async () => {
+      const host = new FakeWordHost();
+      host.commentFails = true; // simulate the anchor text no longer present
+      const res = await new WordBridge(host).actuate(
+        addComment({ target: { matchText: 'gone' }, text: 'note' }, 'chg-d'),
+      );
+      expect(res).toMatchObject({
+        ok: false,
+        changeId: asChangeId('chg-d'),
+        kind: 'add-comment',
+        degraded: true,
+        error: { code: 'anchor_drift' },
+      });
+    });
+
+    it('rejects an add-comment with no matchText anchor before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'addComment');
+      const res = await new WordBridge(host).actuate(addComment({ text: 'note' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_anchor' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('rejects an add-comment with empty text', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(
+        addComment({ target: { matchText: 'x' }, text: '   ' }),
+      );
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_text' } });
+    });
+  });
+
+  describe('durable provenance persistence (BUILD-PLAN 1.6)', () => {
+    it('persists a provenance custom-XML part after a successful tracked change', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      const res = await new WordBridge(host).actuate({
+        ...trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }, 'chg-prov'),
+        provenance: PROVENANCE,
+      });
+      expect(res.ok).toBe(true);
+      expect(host.persistedProvenance).toHaveLength(1);
+      expect(host.persistedProvenance[0]).toContain('key="ge:prov:chg-prov"');
+      expect(host.persistedProvenance[0]).toContain('agentId="review@v1"');
+    });
+
+    it('persists provenance after add-comment and comment-reply', async () => {
+      const host = new FakeWordHost();
+      host.comments.add('cmt-1');
+      const bridge = new WordBridge(host);
+      await bridge.actuate({
+        ...addComment({ target: { matchText: 'x' }, text: 'note' }, 'chg-a'),
+        provenance: PROVENANCE,
+      });
+      await bridge.actuate({
+        changeId: asChangeId('chg-r'),
+        kind: 'comment-reply',
+        surface: 'word',
+        params: { text: 'done', target: { commentId: 'cmt-1' } },
+        provenance: PROVENANCE,
+      });
+      expect(host.persistedProvenance.map((x) => x.match(/key="([^"]+)"/)?.[1])).toEqual([
+        'ge:prov:chg-a',
+        'ge:prov:chg-r',
+      ]);
+    });
+
+    it('skips persistence when the request carries no provenance', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      const res = await new WordBridge(host).actuate(
+        trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }),
+      );
+      expect(res.ok).toBe(true);
+      expect(host.persistedProvenance).toHaveLength(0);
+    });
+
+    it('does not persist provenance when the write degrades (drift)', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', []); // drift
+      const res = await new WordBridge(host).actuate({
+        ...trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }),
+        provenance: PROVENANCE,
+      });
+      expect(res.ok).toBe(false);
+      expect(host.persistedProvenance).toHaveLength(0);
+    });
+
+    it('still reports the write applied when provenance persistence fails (best-effort)', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      host.provenanceFails = true;
+      const res = await new WordBridge(host).actuate({
+        ...trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }),
+        provenance: PROVENANCE,
+      });
+      expect(res.ok).toBe(true);
+      expect(host.persistedProvenance).toHaveLength(0);
     });
   });
 

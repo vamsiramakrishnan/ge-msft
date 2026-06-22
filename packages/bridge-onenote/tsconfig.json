@@ -6,5 +6,10 @@
     "outDir": "dist"
   },
   "include": ["src"],
-  "references": [{ "path": "../contracts" }, { "path": "../web-shell" }]
+  "references": [
+    { "path": "../contracts" },
+    { "path": "../content" },
+    { "path": "../runtime" },
+    { "path": "../triggers" }
+  ]
 }

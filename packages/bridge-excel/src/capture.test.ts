@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
-import { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
+import {
+  MAX_SEARCH_ROWS,
+  rangeToContext,
+  searchUsedRange,
+  selectionValuesToContext,
+  splitHeaderRows,
+  usedRangeToBlocks,
+} from './capture.js';
 import {
   formatSourceComment,
   isUnsafeFormula,
@@ -48,6 +55,79 @@ describe('excel capture (pure)', () => {
   it('selectionValuesToContext mirrors rangeToContext', () => {
     const ctx = selectionValuesToContext('Sheet1!A1:A2', [['Name'], ['Ada']]);
     expect(ctx.some((c) => c.ref.anchor?.locator === 'range:Sheet1!A1:A2')).toBe(true);
+  });
+});
+
+describe('excel doc-state blocks (pure, ADR-0003)', () => {
+  it('maps a used range to one anchored native table block', () => {
+    const blocks = usedRangeToBlocks('Sheet1!A1:B3', [
+      ['Region', 'Revenue'],
+      ['EMEA', '120'],
+      ['APAC', '90'],
+    ]);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.kind).toBe('table');
+    expect(blocks[0]?.locator).toBe('range:Sheet1!A1:B3');
+    expect(blocks[0]?.data).toEqual({
+      columns: ['Region', 'Revenue'],
+      rows: [
+        ['EMEA', '120'],
+        ['APAC', '90'],
+      ],
+    });
+  });
+
+  it('returns no blocks for an empty grid', () => {
+    expect(usedRangeToBlocks('Sheet1!A1', [])).toHaveLength(0);
+  });
+});
+
+describe('excel searchUsedRange (pure, ADR-0003 lazy read)', () => {
+  const grid = [
+    ['Region', 'Revenue'],
+    ['EMEA', '120'],
+    ['APAC', '90'],
+    ['emea-west', '45'],
+  ];
+
+  it('returns matching rows (case-insensitive) with the header preserved, as anchored context', () => {
+    const ctx = searchUsedRange('Sheet1!A1:B4', grid, 'emea');
+    expect(ctx.length).toBeGreaterThan(0);
+    const table = ctx.find((c) => c.value.as === 'text' && c.value.text.includes('|'));
+    expect(table).toBeDefined();
+    if (table && table.value.as === 'text') {
+      // Header + the two EMEA rows, not APAC.
+      expect(table.value.text).toContain('Region');
+      expect(table.value.text).toContain('EMEA');
+      expect(table.value.text).toContain('emea-west');
+      expect(table.value.text).not.toContain('APAC');
+    }
+    expect(ctx.some((c) => c.ref.anchor?.locator === 'range:Sheet1!A1:B4')).toBe(true);
+  });
+
+  it('matches on any cell, not just the first column', () => {
+    const ctx = searchUsedRange('Sheet1!A1:B4', grid, '120');
+    const table = ctx.find((c) => c.value.as === 'text');
+    expect(table).toBeDefined();
+    if (table && table.value.as === 'text') expect(table.value.text).toContain('EMEA');
+  });
+
+  it('returns [] for an empty query, no header, or no match', () => {
+    expect(searchUsedRange('Sheet1!A1:B4', grid, '   ')).toEqual([]);
+    expect(searchUsedRange('Sheet1!A1', [], 'x')).toEqual([]);
+    expect(searchUsedRange('Sheet1!A1:B4', grid, 'nonexistent')).toEqual([]);
+  });
+
+  it('bounds the number of matched rows', () => {
+    const many = [['H'], ...Array.from({ length: 50 }, () => ['hit'])];
+    const ctx = searchUsedRange('Sheet1!A1:A51', many, 'hit');
+    const table = ctx.find((c) => c.value.as === 'text');
+    expect(table).toBeDefined();
+    if (table && table.value.as === 'text') {
+      // Header + at most MAX_SEARCH_ROWS data rows.
+      const dataRows = table.value.text.split('\n').filter((l) => l.includes('hit')).length;
+      expect(dataRows).toBeLessThanOrEqual(MAX_SEARCH_ROWS);
+    }
   });
 });
 

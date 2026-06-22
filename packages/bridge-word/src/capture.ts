@@ -6,6 +6,13 @@ import {
   type NativeContent,
   type ToContextOptions,
 } from '@ge/content';
+import type { WordParagraph } from './host-port.js';
+
+/** A re-resolved search hit at the host boundary: the matched text + a short surrounding hint. */
+export interface WordSearchHit {
+  readonly text: string;
+  readonly contextHint?: string;
+}
 
 /**
  * Pure mapping from Word's native object model into grounding-ready context — no Office.js
@@ -74,4 +81,55 @@ export function wordSelectionToContext(text: string): ResolvedContext[] {
 export function headingLevel(styleBuiltIn: string): number {
   const m = /Heading\s*(\d)/i.exec(styleBuiltIn);
   return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Map read-back body paragraphs (text + built-in style) to {@link WordElement}s — headings carry
+ * their derived level — exactly as `WordBridge.resolveContext` does. Shared so the `<doc_state>`
+ * snapshot's blocks come from the same native mapping as grounding context (ADR-0003).
+ */
+export function paragraphsToElements(paras: readonly WordParagraph[]): WordElement[] {
+  return paras.map((p) => {
+    const level = headingLevel(p.styleBuiltIn);
+    return level > 0
+      ? { kind: 'heading' as const, text: p.text, level }
+      : { kind: 'paragraph' as const, text: p.text };
+  });
+}
+
+/** Body paragraphs → `Block[]` for `buildDocStateSnapshot` (headings get levels + locators). */
+export function paragraphsToBlocks(paras: readonly WordParagraph[]): Block[] {
+  return wordElementsToBlocks(paragraphsToElements(paras));
+}
+
+/**
+ * Map bounded, re-resolved `body.search` hits to content-anchored {@link ResolvedContext} — one
+ * live text part per hit, anchored by the matched text (the contextHint is folded into the part
+ * text as a surrounding cue). Re-resolution happens at the host; this is the pure shaping step.
+ * Empty input → `[]`.
+ */
+export function searchHitsToContext(
+  query: string,
+  hits: readonly WordSearchHit[],
+): ResolvedContext[] {
+  const out: ResolvedContext[] = [];
+  for (const hit of hits) {
+    const text = hit.text.trim();
+    if (!text) continue;
+    const body =
+      hit.contextHint && hit.contextHint.trim() ? `${text}\n\n…${hit.contextHint.trim()}` : text;
+    out.push({
+      ref: {
+        id: 'word:search',
+        kind: 'selection',
+        surface: 'word',
+        title: `Match: ${query}`.slice(0, 80),
+        preview: text.slice(0, 120),
+        live: true,
+        anchor: { matchText: text.slice(0, 120) },
+      },
+      value: { as: 'text', text: body, mimeType: 'text/markdown' },
+    });
+  }
+  return out;
 }

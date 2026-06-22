@@ -3,16 +3,19 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot } from '@ge/content';
 import { WORD_CAPABILITIES } from './capabilities.js';
 import {
-  headingLevel,
+  paragraphsToBlocks,
+  paragraphsToElements,
+  searchHitsToContext,
   wordDocumentToContext,
   wordSelectionToContext,
-  type WordElement,
 } from './capture.js';
 import { chooseAnchorIndex, formatSources, planTrackedChange } from './actuate-plan.js';
 import {
@@ -33,6 +36,9 @@ import { OfficeWordHost, type WordHost } from './host-port.js';
  */
 export class WordBridge implements DocBridge {
   readonly surface = 'word' as const;
+
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
 
   constructor(private readonly host: WordHost = new OfficeWordHost()) {}
 
@@ -73,13 +79,38 @@ export class WordBridge implements DocBridge {
     }
     // Whole document → paragraphs (with style for heading levels) → native blocks → chunks.
     const paras = await this.host.readParagraphs();
-    const elements: WordElement[] = paras.map((p) => {
-      const level = headingLevel(p.styleBuiltIn);
-      return level > 0
-        ? { kind: 'heading' as const, text: p.text, level }
-        : { kind: 'paragraph' as const, text: p.text };
+    return wordDocumentToContext('word:document', undefined, paragraphsToElements(paras));
+  }
+
+  /**
+   * ADR-0003 Layer B element 1: an ambient structural snapshot of the document. Reads the body
+   * paragraphs (one batched host call), maps them to `Block[]` via the same native path as
+   * `resolveContext` (headings keep their levels + locators, so the snapshot outline matches the
+   * document), and builds the surface-agnostic snapshot. Version increments per capture. Comments
+   * are omitted (no cheap port read); the runtime renders + wraps this as untrusted data.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    const paras = await this.host.readParagraphs();
+    if (paras.length === 0) return undefined;
+    this.docStateVersion += 1;
+    return buildDocStateSnapshot({
+      surface: 'word',
+      version: this.docStateVersion,
+      blocks: paragraphsToBlocks(paras),
     });
-    return wordDocumentToContext('word:document', undefined, elements);
+  }
+
+  /**
+   * ADR-0003 Layer B element 2: lazily read the document slices relevant to `query` instead of
+   * pre-chunking the whole body. Re-resolves the matches at call-time via the port's content-
+   * anchored `body.search` (per the anchoring discipline), and maps the bounded hits to live,
+   * content-anchored `ResolvedContext`. Empty query or no hits → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const hits = await this.host.searchText(q, false);
+    return searchHitsToContext(q, hits);
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {

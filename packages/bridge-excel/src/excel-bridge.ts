@@ -3,13 +3,22 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateNamedRange,
+  DocStateSelection,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot } from '@ge/content';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
-import { rangeToContext, selectionValuesToContext } from './capture.js';
+import {
+  rangeToContext,
+  searchUsedRange,
+  selectionValuesToContext,
+  usedRangeToBlocks,
+} from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
 import { formatSourceComment, planWriteCells, splitFormulaGrid } from './actuate-plan.js';
 
@@ -22,6 +31,9 @@ import { formatSourceComment, planWriteCells, splitFormulaGrid } from './actuate
  */
 export class ExcelBridge implements DocBridge {
   readonly surface = 'excel' as const;
+
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
 
   getCapabilities(): CapabilityManifest {
     return EXCEL_CAPABILITIES;
@@ -74,6 +86,101 @@ export class ExcelBridge implements DocBridge {
       used.load('address,values');
       await ctx.sync();
       return rangeToContext(used.address, used.values as string[][]);
+    });
+  }
+
+  /**
+   * ADR-0003 Layer B element 1: an ambient structural snapshot of the workbook. Reads the active
+   * sheet's used range (a table block via the shared `usedRangeToBlocks`), the current selection,
+   * and the workbook's named ranges — each Office API gated on its requirement set so an older host
+   * yields a partial-but-valid snapshot (we set only what we can read). Pure mapping lives in
+   * `capture.ts`; this is thin host wiring (no port seam on Excel, like the rest of the bridge).
+   * Version increments per capture.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    // `getUsedRangeOrNullObject` → ExcelApi 1.4 (typings l.37235): degrades on an empty sheet
+    // instead of throwing. On an older host (<1.4) fall back to `getUsedRange` (1.1).
+    const hasNullObj = isSet('ExcelApi', '1.4');
+    // `workbook.names` is ExcelApi 1.1, but `NamedItem.formula` (the A1 reference text) is 1.7;
+    // gate the named-ranges read on 1.7 so we only emit a name when we can give its range.
+    const wantNames = isSet('ExcelApi', '1.7');
+
+    const captured = await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      sheet.load('name');
+      const used = hasNullObj ? sheet.getUsedRangeOrNullObject() : sheet.getUsedRange();
+      used.load('address,values,isNullObject');
+
+      const sel = ctx.workbook.getSelectedRange();
+      sel.load('address,values');
+
+      const names = ctx.workbook.names;
+      if (wantNames) names.load('items/name,items/type,items/formula');
+
+      await ctx.sync();
+
+      const usedEmpty = hasNullObj && (used as { isNullObject?: boolean }).isNullObject === true;
+      const usedAddress = usedEmpty ? '' : used.address;
+      const usedValues = usedEmpty ? [] : (used.values as string[][]);
+      const selValues = sel.values as string[][];
+
+      const namedRanges: DocStateNamedRange[] = wantNames
+        ? names.items
+            .filter((n) => n.type === 'Range' && typeof n.formula === 'string')
+            .map((n) => ({ name: n.name, range: stripLeadingEquals(String(n.formula)) }))
+        : [];
+
+      return {
+        title: sheet.name,
+        usedAddress,
+        usedValues,
+        selAddress: sel.address,
+        selValues,
+        namedRanges,
+      };
+    });
+
+    const blocks = captured.usedAddress
+      ? usedRangeToBlocks(captured.usedAddress, captured.usedValues)
+      : [];
+
+    this.docStateVersion += 1;
+    const selection = hasContent(captured.selValues)
+      ? ({
+          kind: 'range',
+          title: captured.selAddress,
+          preview: previewOf(captured.selValues),
+        } satisfies DocStateSelection)
+      : undefined;
+
+    return buildDocStateSnapshot({
+      surface: 'excel',
+      version: this.docStateVersion,
+      title: captured.title,
+      blocks,
+      ...(selection ? { selection } : {}),
+      ...(captured.namedRanges.length > 0 ? { namedRanges: captured.namedRanges } : {}),
+    });
+  }
+
+  /**
+   * ADR-0003 Layer B element 2: lazily read the workbook rows relevant to `query` instead of
+   * pre-chunking the used range. Reads the active sheet's used range, then matches rows
+   * (case-insensitive substring) and shapes them — header preserved — into content via the pure
+   * `searchUsedRange`. Bounded; empty query / no used range / no match → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    if (!q) return [];
+    return Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      const used = isSet('ExcelApi', '1.4')
+        ? sheet.getUsedRangeOrNullObject()
+        : sheet.getUsedRange();
+      used.load('address,values,isNullObject');
+      await ctx.sync();
+      if ((used as { isNullObject?: boolean }).isNullObject === true) return [];
+      return searchUsedRange(used.address, used.values as string[][], q);
     });
   }
 
@@ -307,6 +414,11 @@ export class ExcelBridge implements DocBridge {
       return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
     });
   }
+}
+
+/** A NamedItem.formula is an A1 reference like "=Sheet1!$A$1:$D$9"; drop the leading `=`. */
+function stripLeadingEquals(formula: string): string {
+  return formula.startsWith('=') ? formula.slice(1) : formula;
 }
 
 /** True if any cell in the grid carries a non-empty value. */

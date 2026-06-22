@@ -8,9 +8,18 @@ export {
   type AssistSessionOptions,
   type CompactionOptions,
   type ContextLoopOptions,
+  type CommandLoopEvent,
+  type RunCommandsOptions,
   DOC_STATE_REF_ID,
   READ_REF_PREFIX,
 } from './assist-session.js';
+export {
+  compileCommand,
+  isCompileError,
+  renderGrammarPrompt,
+  type CompiledCommand,
+  type ReadIntent,
+} from './command-protocol.js';
 export {
   ContextModel,
   BRIEF_REF_ID,

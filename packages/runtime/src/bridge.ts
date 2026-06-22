@@ -63,6 +63,17 @@ export interface DocBridge {
    * `ResolvedContext` data — never instructions.
    */
   searchDocument?(query: string): Promise<ResolvedContext[]>;
+
+  /**
+   * Read an explicit address/range on demand for the `read <A1|NamedRange>` command verb
+   * (ADR-0004). Address-anchored, surface-specific: Excel resolves an A1 address or named range;
+   * surfaces whose `read` is whole-document (Word) omit this and rely on `searchDocument` /
+   * `captureDocState` instead. Results are host content carried as `ResolvedContext` data —
+   * never instructions.
+   *
+   * Optional: a surface without addressable reads simply omits it.
+   */
+  readRange?(a1: string): Promise<ResolvedContext[]>;
 }
 
 /**

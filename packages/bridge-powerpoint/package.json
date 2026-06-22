@@ -3,11 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "PowerPoint deck composer + speaker notes",
+  "description": "powerpoint surface bridge (Office.js): native slide/shape/notes capture + reversible actuations",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "@ge/content": "*",
+    "@ge/runtime": "*",
+    "@ge/triggers": "*"
   }
 }

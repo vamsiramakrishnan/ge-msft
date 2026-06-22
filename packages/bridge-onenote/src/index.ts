@@ -1,2 +1,17 @@
-// OneNote page synthesis (web-only, legacy manifest) — placeholder; implemented per docs/BUILD-PLAN.md
-export {};
+/**
+ * @ge/bridge-onenote — the OneNote DocBridge (web-only, legacy XML manifest). Native context
+ * capture (active page title + outline rich text) + citation-tagged page synthesis
+ * (`append-page`). Implements @ge/runtime's DocBridge, so it plugs into the shared AssistSession
+ * loop unchanged.
+ */
+export { OneNoteBridge } from './onenote-bridge.js';
+export { ONENOTE_CAPABILITIES } from './capabilities.js';
+export { pageElementToBlocks, pageToContext, type PageElement } from './capture.js';
+export {
+  escapeHtml,
+  citationTag,
+  partToHtml,
+  buildPageHtml,
+  type SynthesisPart,
+} from './synthesis.js';
+export { planAppendPage, type AppendPagePlan } from './actuate-plan.js';

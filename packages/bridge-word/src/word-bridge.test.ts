@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { WordBridge } from './word-bridge.js';
+import { DocStateSnapshotSchema } from '@ge/contracts';
+import type { WordSearchHit } from './capture.js';
 import type {
   ChooseHit,
   CommentReplyOutcome,
@@ -23,6 +25,8 @@ class FakeWordHost implements WordHost {
   paragraphs: WordParagraph[] = [];
   /** Body "search index": query → the hit texts the host would read back. */
   searchHits = new Map<string, string[]>();
+  /** Lazy-read search index for `searchText` (ADR-0003): query → re-resolved hits. */
+  textHits = new Map<string, WordSearchHit[]>();
   /** Comment ids that currently exist. */
   comments = new Set<string>();
 
@@ -43,6 +47,10 @@ class FakeWordHost implements WordHost {
   }
   readParagraphs(): Promise<WordParagraph[]> {
     return Promise.resolve(this.paragraphs);
+  }
+
+  searchText(query: string, _matchCase: boolean): Promise<WordSearchHit[]> {
+    return Promise.resolve(this.textHits.get(query) ?? []);
   }
 
   applyTrackedChange(
@@ -355,6 +363,76 @@ describe('WordBridge orchestration (against a fake host)', () => {
         params: { cells: [['1']] },
       });
       expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    });
+  });
+
+  describe('captureDocState (ADR-0003)', () => {
+    it('builds a snapshot whose outline matches the headings, and bumps version each capture', async () => {
+      const host = new FakeWordHost();
+      host.paragraphs = [
+        { text: 'Service Levels', styleBuiltIn: 'Heading1' },
+        { text: 'The services are available 99.5% of the time.', styleBuiltIn: 'Normal' },
+        { text: 'Availability', styleBuiltIn: 'Heading2' },
+      ];
+      const bridge = new WordBridge(host);
+
+      const first = await bridge.captureDocState();
+      expect(first).toBeDefined();
+      if (!first) return;
+      expect(() => DocStateSnapshotSchema.parse(first)).not.toThrow();
+      expect(first.surface).toBe('word');
+      expect(first.version).toBe(1);
+      // The outline comes from the same native heading blocks as resolveContext; the builder
+      // strips the Markdown `#` marker so the text is clean (the renderer re-adds it by level).
+      expect(first.outline.map((o) => o.text)).toEqual(['Service Levels', 'Availability']);
+      expect(first.outline.map((o) => o.level)).toEqual([1, 2]);
+      // Headings are content-anchored for re-finding.
+      expect(first.outline[0]?.anchor?.matchText).toContain('Service Levels');
+
+      const second = await bridge.captureDocState();
+      expect(second?.version).toBe(2);
+    });
+
+    it('returns undefined for an empty document', async () => {
+      const host = new FakeWordHost();
+      host.paragraphs = [];
+      expect(await new WordBridge(host).captureDocState()).toBeUndefined();
+    });
+  });
+
+  describe('searchDocument (ADR-0003 lazy read)', () => {
+    it('maps bounded, content-anchored hits to live ResolvedContext', async () => {
+      const host = new FakeWordHost();
+      host.textHits.set('99.5%', [
+        {
+          text: 'available 99.5% of the time',
+          contextHint: 'Section 5: available 99.5% of the time.',
+        },
+        { text: 'uptime 99.5%' },
+      ]);
+      const ctx = await new WordBridge(host).searchDocument('99.5%');
+
+      expect(ctx).toHaveLength(2);
+      expect(ctx[0]).toMatchObject({
+        ref: { kind: 'selection', surface: 'word', live: true },
+        value: { as: 'text' },
+      });
+      // Content-anchored by the matched text.
+      expect(ctx[0]?.ref.anchor?.matchText).toContain('99.5%');
+      // The contextHint is folded into the part body so the model sees the surrounding cue.
+      if (ctx[0]?.value.as === 'text') expect(ctx[0].value.text).toContain('Section 5');
+    });
+
+    it('returns [] for an empty query without touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'searchText');
+      expect(await new WordBridge(host).searchDocument('  ')).toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('returns [] when there are no hits', async () => {
+      const host = new FakeWordHost();
+      expect(await new WordBridge(host).searchDocument('absent')).toEqual([]);
     });
   });
 

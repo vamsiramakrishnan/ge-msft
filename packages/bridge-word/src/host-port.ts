@@ -1,4 +1,5 @@
 import { isSet } from './capabilities-runtime.js';
+import type { WordSearchHit } from './capture.js';
 
 /**
  * The narrow **host port** the {@link WordBridge} drives. It captures ONLY the Word host
@@ -15,6 +16,9 @@ import { isSet } from './capabilities-runtime.js';
  * callback and inserts on the chosen hit inside the same batch — so the search→insert
  * read-then-write dependency is preserved while the choice stays testable in the bridge.
  */
+
+/** Cap lazy `search_document` reads so a frequent term can't blow the per-turn budget. */
+const MAX_SEARCH_HITS = 8;
 
 /** A paragraph read from the document body (text + the built-in style name for heading level). */
 export interface WordParagraph {
@@ -72,6 +76,14 @@ export interface WordHost {
 
   /** Non-empty body paragraphs with their built-in style (for heading-level derivation). */
   readParagraphs(): Promise<WordParagraph[]>;
+
+  /**
+   * Lazily read the body for `query` (ADR-0003 `search_document`): re-resolve the matches at
+   * call-time via `body.search`, returning a bounded set of hits — each the matched text plus a
+   * short surrounding-paragraph hint. Content-anchored (no stored offsets). Never throws; an
+   * unsupported host / no hits yields `[]`.
+   */
+  searchText(query: string, matchCase: boolean): Promise<WordSearchHit[]>;
 
   /**
    * Turn on tracked changes, search the body for `query`, let `choose` pick a read-back hit, and
@@ -138,6 +150,36 @@ export class OfficeWordHost implements WordHost {
         .filter((p) => p.text.trim().length > 0)
         .map((p) => ({ text: p.text, styleBuiltIn: String(p.styleBuiltIn) }));
     });
+  }
+
+  async searchText(query: string, matchCase: boolean): Promise<WordSearchHit[]> {
+    const q = query.trim();
+    if (!q) return [];
+    try {
+      return await Word.run(async (ctx) => {
+        const results = ctx.document.body.search(q, { matchCase });
+        // Load the match text plus its surrounding paragraph (the short contextHint). `body.search`
+        // → WordApi 1.1; reading a result's `paragraphs` is broadly available, but we guard the
+        // whole batch in try/catch so an older/quirky host degrades to `[]` rather than throwing.
+        results.load('items/text');
+        const paras = results.items.map((r) => r.paragraphs.getFirstOrNullObject());
+        for (const p of paras) p.load('text');
+        await ctx.sync();
+
+        return results.items.slice(0, MAX_SEARCH_HITS).map((r, i) => {
+          const para = paras[i];
+          const paraText = para && !para.isNullObject ? para.text : undefined;
+          const hint =
+            paraText !== undefined && paraText.trim() && paraText.trim() !== r.text.trim()
+              ? paraText
+              : undefined;
+          return hint !== undefined ? { text: r.text, contextHint: hint } : { text: r.text };
+        });
+      });
+    } catch {
+      // Search unavailable / host quirk — lazy read degrades to nothing, never throws.
+      return [];
+    }
   }
 
   async applyTrackedChange(

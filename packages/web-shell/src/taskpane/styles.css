@@ -382,6 +382,62 @@ body {
   cursor: default;
 }
 
+/* command-loop approval card */
+.card.approval .cmd {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: #f6f8fa;
+  border: 1px solid var(--pl);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* command-loop transcript */
+.run-steps {
+  list-style: none;
+  margin: 0 16px 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.run-step .step-kind {
+  flex: none;
+  min-width: 84px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted, #5f6368);
+}
+.run-step .step-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-word;
+}
+.run-step.step-error .step-text {
+  color: #b3261e;
+}
+
+/* composer mode toggle */
+.comp-mode {
+  margin-bottom: 8px;
+}
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 /* error */
 .panel-error {
   margin: 0 16px;

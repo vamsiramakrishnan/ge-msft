@@ -6,6 +6,8 @@ import { ContextTray } from './ContextTray.js';
 import { MessageThread } from './MessageThread.js';
 import { Composer } from './Composer.js';
 import { ProposalCard } from './ProposalCard.js';
+import { RunSteps } from './RunSteps.js';
+import { WriteApprovalCard } from './WriteApprovalCard.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -77,6 +79,14 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
 
       <MessageThread messages={state.messages} />
 
+      <RunSteps steps={state.steps} />
+
+      <WriteApprovalCard
+        pending={state.pendingWrite}
+        onApprove={() => controller.approvePendingWrite()}
+        onReject={() => controller.rejectPendingWrite()}
+      />
+
       <ProposalCard
         proposals={state.proposals}
         onApply={(id: ChangeId) => void controller.applyProposal(id)}
@@ -91,6 +101,7 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
       <Composer
         busy={state.busy}
         onSend={(q) => void controller.send(q)}
+        onRun={(t) => void controller.runCommands(t)}
         onCancel={() => controller.cancel()}
         placeholder={SURFACE_PLACEHOLDER[surface]}
       />

@@ -10,8 +10,10 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
+import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
 import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
+import { renderCommandLine } from './render-command.js';
 
 /**
  * The subset of `AssistSession` the panel drives. `AssistSession` satisfies this structurally,
@@ -27,6 +29,12 @@ export interface AssistLike {
     params: ActuationParams,
     changeId: ChangeId,
   ): Promise<ActuationResult>;
+  /**
+   * The ADR-0004 read-many/write-one command loop. Streams `SseEvent`s (tokens/citations) plus
+   * `CommandLoopEvent`s (loop mechanics); calls `opts.approveWrite` for EVERY compiled write and
+   * actuates only on `true` (fail-closed).
+   */
+  runCommands(task: string, opts?: RunCommandsOptions): AsyncGenerator<SseEvent | CommandLoopEvent>;
   ingest(event: HostEvent): Promise<void>;
   readonly sessionId?: string;
 }
@@ -71,12 +79,45 @@ export interface Proposal {
   detail?: string;
 }
 
+/**
+ * A pending write awaiting the user's per-write decision — the fail-closed human-in-the-loop of
+ * ADR-0004's command loop. `command` is the verbatim CLI line (`set Sales!F2 =C2-D2`) the approval
+ * card renders; the `runCommands` `approveWrite` callback awaits the user's Accept/Reject here.
+ */
+export interface PendingWrite {
+  changeId: ChangeId;
+  kind: ActuationRequest['kind'];
+  /** The verbatim command line shown on the approval card. */
+  command: string;
+}
+
+/** One narrated step of the command loop, surfaced so the user can see the loop's progress. */
+export interface RunStep {
+  id: string;
+  /** Mirrors the `CommandLoopEvent.type` (plus a synthetic `error` for run failures). */
+  kind:
+    | 'turn-start'
+    | 'command'
+    | 'read-result'
+    | 'write-result'
+    | 'no-fence'
+    | 'capped'
+    | 'done'
+    | 'exhausted'
+    | 'error';
+  text: string;
+}
+
 export interface PanelState {
   messages: ChatMessage[];
   chips: ContextChip[];
   suggestions: Suggestion[];
   proposals: Proposal[];
   changes: ChangeRecord[];
+  /** The command-loop transcript (ADR-0004 read-many/write-one steps). */
+  steps: RunStep[];
+  /** The single write awaiting approval, if the loop is currently gated on the user. */
+  pendingWrite?: PendingWrite;
   busy: boolean;
   error?: string;
 }
@@ -87,6 +128,7 @@ const EMPTY_STATE: PanelState = {
   suggestions: [],
   proposals: [],
   changes: [],
+  steps: [],
   busy: false,
 };
 
@@ -106,6 +148,12 @@ export class PanelController {
   private pendingQuery: string | undefined;
   /** Aborts the in-flight turn's network/stream; cleared when the turn settles. */
   private inflight: AbortController | undefined;
+  /**
+   * Resolves the `approveWrite` promise the command loop is awaiting. Set while a `pendingWrite` is
+   * staged; `approvePendingWrite()`/`rejectPendingWrite()` call it. Fail-closed: if the loop is
+   * abandoned (cancel/teardown) without a decision, we resolve `false` so no write actuates.
+   */
+  private resolvePendingWrite: ((approved: boolean) => void) | undefined;
 
   constructor(
     private readonly session: AssistLike,
@@ -243,6 +291,156 @@ export class PanelController {
    */
   cancel(): void {
     this.inflight?.abort();
+    // A loop gated on the user when cancelled must release fail-closed (reject the pending write),
+    // so the loop's `approveWrite` resolves `false` and no write actuates after the abort.
+    this.settlePendingWrite(false);
+  }
+
+  // ---- command loop (ADR-0004) --------------------------------------------
+
+  /**
+   * Drive the ADR-0004 read-many/write-one command loop with UI-backed, per-write approval. Streams
+   * the grounded answer (tokens/citations) into an assistant message exactly like `send()`, while
+   * narrating the loop's mechanics as `steps`. EVERY model-emitted write is staged as a
+   * `pendingWrite` and actuates only after the user calls `approvePendingWrite()` — the fail-closed
+   * human-in-the-loop. `send()`/`ask()` stay intact and untouched.
+   */
+  async runCommands(task: string): Promise<void> {
+    const t = task.trim();
+    if (!t) return;
+    if (this.state.busy) {
+      this.pendingQuery = t;
+      return;
+    }
+
+    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
+    const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
+    this.set({
+      messages: [...this.state.messages, userMsg, reply],
+      busy: true,
+      error: undefined,
+      suggestions: [],
+      steps: [],
+    });
+
+    const controller = new AbortController();
+    this.inflight = controller;
+    const sources: SourceRef[] = [];
+
+    // The approver: stage the compiled request as a pending write and await the user's decision.
+    const approveWrite = (request: ActuationRequest): Promise<boolean> =>
+      new Promise<boolean>((resolve) => {
+        // Defensive: if a prior decision is somehow still open, release it false first.
+        this.settlePendingWrite(false);
+        this.resolvePendingWrite = resolve;
+        this.set({
+          pendingWrite: {
+            changeId: request.changeId,
+            kind: request.kind,
+            command: renderCommandLine(request),
+          },
+        });
+      });
+
+    try {
+      for await (const ev of this.session.runCommands(t, {
+        signal: controller.signal,
+        approveWrite,
+      })) {
+        switch (ev.type) {
+          case 'token':
+            this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
+            break;
+          case 'citation':
+            sources.push(ev.source);
+            this.patchMessage(reply.id, () => ({ sources: [...sources] }));
+            break;
+          case 'provenance':
+            this.lastProvenance = ev.payload;
+            break;
+          case 'error':
+            // `SseEvent` error (stream-level), distinct from a CommandLoopEvent.
+            this.patchMessage(reply.id, () => ({ error: ev.message }));
+            this.addStep('error', ev.message);
+            break;
+          case 'turn-start':
+            this.addStep('turn-start', `Turn ${ev.turn}`);
+            break;
+          case 'command':
+            this.addStep('command', commandStepText(ev));
+            break;
+          case 'read-result':
+            this.addStep('read-result', `read ${ev.intentLabel}`);
+            break;
+          case 'write-result':
+            this.addStep('write-result', writeStepText(ev));
+            // The decision has been consumed by the loop; clear the staged pending write.
+            this.clearPendingWrite();
+            break;
+          case 'no-fence':
+            this.addStep('no-fence', `Turn ${ev.turn}: no command block — re-prompting`);
+            break;
+          case 'capped':
+            this.addStep('capped', ev.reason);
+            break;
+          case 'done':
+            this.addStep('done', 'Done');
+            break;
+          case 'exhausted':
+            this.addStep('exhausted', `Stopped after ${ev.turns} turns`);
+            break;
+          default:
+            break;
+        }
+      }
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) {
+        this.patchMessage(reply.id, () => ({ cancelled: true }));
+        this.lastProvenance = undefined;
+      } else {
+        this.patchMessage(reply.id, () => ({ error: errorText(err) }));
+        this.addStep('error', errorText(err));
+      }
+    } finally {
+      // Any write still gated when the loop ends releases fail-closed.
+      this.settlePendingWrite(false);
+      if (this.inflight === controller) this.inflight = undefined;
+      this.patchMessage(reply.id, () => ({ streaming: false }));
+      this.set({ busy: false, changes: this.store.list() });
+      const next = this.pendingQuery;
+      if (next !== undefined) {
+        this.pendingQuery = undefined;
+        void this.send(next);
+      }
+    }
+  }
+
+  /** Approve the staged write — resolves the loop's `approveWrite` with `true` so it actuates. */
+  approvePendingWrite(): void {
+    this.settlePendingWrite(true);
+  }
+
+  /** Reject the staged write — resolves the loop's `approveWrite` with `false`; nothing actuates. */
+  rejectPendingWrite(): void {
+    this.settlePendingWrite(false);
+  }
+
+  /** Resolve the awaited decision (if any) and stop showing the approval card. */
+  private settlePendingWrite(approved: boolean): void {
+    const resolve = this.resolvePendingWrite;
+    if (!resolve) return;
+    this.resolvePendingWrite = undefined;
+    // On reject, drop the card now; on approve, keep it until the `write-result` narrates outcome.
+    if (!approved) this.clearPendingWrite();
+    resolve(approved);
+  }
+
+  private clearPendingWrite(): void {
+    if (this.state.pendingWrite) this.set({ pendingWrite: undefined });
+  }
+
+  private addStep(kind: RunStep['kind'], text: string): void {
+    this.set({ steps: [...this.state.steps, { id: this.id('step'), kind, text }] });
   }
 
   // ---- actuation review ---------------------------------------------------
@@ -345,6 +543,19 @@ export class PanelController {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** A one-line label for a `command` loop step: the parsed verb (or the corrective parse error). */
+function commandStepText(ev: Extract<CommandLoopEvent, { type: 'command' }>): string {
+  if ('error' in ev.compiled) return `error: ${ev.compiled.error}`;
+  return ev.command.verb;
+}
+
+/** A one-line label for a `write-result` loop step: the write kind + its outcome. */
+function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>): string {
+  const r = ev.result;
+  const outcome = r.ok ? (r.degraded ? 'degraded' : 'applied') : (r.error?.code ?? 'failed');
+  return `${r.kind} — ${outcome}`;
 }
 
 /** A fetch aborted via AbortSignal rejects with a DOMException/Error named 'AbortError'. */

@@ -8,6 +8,7 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
+import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
 import { PanelController, type AssistLike, type ContextLister } from './controller.js';
 
@@ -17,6 +18,18 @@ const ref = (id: string, title: string): ContextRef => ({
   surface: 'word',
   title,
   preview: title,
+});
+
+/** A scripted command-loop step: yield an event, or trigger an approval round-trip for a write. */
+type CommandAction = { event: SseEvent | CommandLoopEvent } | { approve: ActuationRequest };
+
+const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
+
+const writeReq = (changeId: string): ActuationRequest => ({
+  changeId: asChangeId(changeId),
+  kind: 'write-cells',
+  surface: 'excel',
+  params: { target: { range: 'Sales!F2' }, cells: [['=C2-D2']] },
 });
 
 /** A fake AssistSession: scripts the SSE stream and records attaches/applies/ingests. */
@@ -84,6 +97,42 @@ class FakeAssist implements AssistLike {
   ): Promise<ActuationResult> {
     this.applied.push({ kind, changeId });
     return Promise.resolve({ ...this.applyResult, changeId, kind });
+  }
+
+  /**
+   * A scripted command loop. `commandScript` is a list of "actions": plain SSE/loop events are
+   * yielded as-is; an `{ approve: request }` action calls `opts.approveWrite(request)` and then
+   * yields a `write-result` reflecting the decision (approved → ok; rejected → blocked). This lets
+   * a test assert the controller stages a pending write and gates actuation on the user's decision.
+   */
+  commandScript: CommandAction[] = [];
+  runTasks: string[] = [];
+  approveCalls: ActuationRequest[] = [];
+  approveResults: boolean[] = [];
+  async *runCommands(
+    task: string,
+    opts?: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    this.runTasks.push(task);
+    for (const action of this.commandScript) {
+      if ('approve' in action) {
+        const request = action.approve;
+        this.approveCalls.push(request);
+        const approved = opts?.approveWrite ? await opts.approveWrite(request) : false;
+        this.approveResults.push(approved);
+        const result: ActuationResult = approved
+          ? { ok: true, changeId: request.changeId, kind: request.kind, location: 'A1' }
+          : {
+              ok: false,
+              changeId: request.changeId,
+              kind: request.kind,
+              error: { code: 'unapproved', message: 'rejected' },
+            };
+        yield { type: 'write-result', turn: 1, changeId: request.changeId, result };
+      } else {
+        yield action.event;
+      }
+    }
   }
   ingest(event: HostEvent): Promise<void> {
     this.ingested.push(event);
@@ -318,3 +367,102 @@ describe('PanelController — event-driven inputs', () => {
     expect(c.getState().messages.map((m) => m.text)).toEqual(['a', 'a-reply', 'b', 'b-reply']);
   });
 });
+
+describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => {
+  it('reduces loop events into steps and streams the answer text', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'turn-start', turn: 1 }),
+      ev({
+        type: 'command',
+        turn: 1,
+        command: { verb: 'read', selector: 'Sales!C2:C7' },
+        compiled: { kind: 'read', intent: { read: 'range', selector: 'Sales!C2:C7' } },
+      }),
+      ev({ type: 'read-result', turn: 1, intentLabel: 'Sales!C2:C7', result: [1, 2] }),
+      ev({ type: 'token', text: 'The margin ' }),
+      ev({ type: 'token', text: 'is 12%.' }),
+      ev({ type: 'done', turn: 1, answer: 'The margin is 12%.' }),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('compute the margin');
+
+    expect(assist.runTasks).toEqual(['compute the margin']);
+    const reply = c.getState().messages[1];
+    expect(reply?.text).toBe('The margin is 12%.');
+    expect(reply?.streaming).toBe(false);
+    expect(c.getState().busy).toBe(false);
+    expect(c.getState().steps.map((s) => s.kind)).toEqual([
+      'turn-start',
+      'command',
+      'read-result',
+      'done',
+    ]);
+    expect(c.getState().pendingWrite).toBeUndefined();
+  });
+
+  it('stages a write as pending and actuates only after approvePendingWrite() (resolves true)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [ev({ type: 'turn-start', turn: 1 }), { approve: writeReq('w-1') }];
+    const c = new PanelController(assist, lister([]));
+
+    // Don't await: the loop blocks on the pending-write decision.
+    const run = c.runCommands('set the formula');
+    await tick();
+
+    // The write is staged verbatim and nothing has actuated yet.
+    const pending = c.getState().pendingWrite;
+    expect(pending?.command).toBe('set Sales!F2 =C2-D2');
+    expect(pending?.changeId).toBe(asChangeId('w-1'));
+    expect(assist.approveResults).toEqual([]); // decision not made yet
+    expect(c.getState().busy).toBe(true);
+
+    c.approvePendingWrite();
+    await run;
+
+    expect(assist.approveResults).toEqual([true]); // approveWrite resolved true → actuates
+    expect(c.getState().pendingWrite).toBeUndefined(); // cleared on write-result
+    const writeStep = c.getState().steps.find((s) => s.kind === 'write-result');
+    expect(writeStep?.text).toBe('write-cells — applied');
+    expect(c.getState().busy).toBe(false);
+  });
+
+  it('rejectPendingWrite() resolves false: the write is blocked and the card clears', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [{ approve: writeReq('w-2') }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('set the formula');
+    await tick();
+    expect(c.getState().pendingWrite?.command).toBe('set Sales!F2 =C2-D2');
+
+    c.rejectPendingWrite();
+    await run;
+
+    expect(assist.approveResults).toEqual([false]); // approveWrite resolved false → blocked
+    expect(c.getState().pendingWrite).toBeUndefined();
+    const writeStep = c.getState().steps.find((s) => s.kind === 'write-result');
+    expect(writeStep?.text).toBe('write-cells — unapproved');
+  });
+
+  it('cancel() while gated on a write releases fail-closed (rejects the pending write)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [{ approve: writeReq('w-3') }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('set the formula');
+    await tick();
+    expect(c.getState().pendingWrite).toBeDefined();
+
+    c.cancel();
+    await run;
+
+    expect(assist.approveResults).toEqual([false]); // cancel released the gate as a rejection
+    expect(c.getState().pendingWrite).toBeUndefined();
+  });
+});
+
+function tick(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
+}

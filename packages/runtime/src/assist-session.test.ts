@@ -9,7 +9,8 @@ import type {
 } from '@ge/contracts';
 import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
-import { AssistSession } from './assist-session.js';
+import type { DocStateSnapshot } from '@ge/contracts';
+import { AssistSession, DOC_STATE_REF_ID, READ_REF_PREFIX } from './assist-session.js';
 import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
 
@@ -386,6 +387,156 @@ function partTexts(body: Record<string, unknown>): string[] {
   const query = body.query as { parts?: Array<{ text?: string }> } | undefined;
   return (query?.parts ?? []).map((p) => p.text ?? '').filter(Boolean);
 }
+
+/** A snapshot with a recognisable outline heading, for asserting injection. */
+function fakeSnapshot(): DocStateSnapshot {
+  return {
+    surface: 'word',
+    version: 1,
+    capturedAt: '2026-06-22T00:00:00.000Z',
+    title: 'Vendor SOW',
+    outline: [{ level: 1, text: 'Service levels' }],
+    inventory: [],
+  };
+}
+
+/** A Word-like bridge that also implements the optional ADR-0003 context-loop methods. */
+class LoopBridge extends FakeBridge {
+  captureCalls = 0;
+  searchCalls: string[] = [];
+  constructor(
+    private readonly opts: {
+      snapshot?: DocStateSnapshot | undefined;
+      reads?: number;
+      throwCapture?: boolean;
+      throwSearch?: boolean;
+    } = {},
+  ) {
+    super();
+  }
+  captureDocState(): Promise<DocStateSnapshot | undefined> {
+    this.captureCalls++;
+    if (this.opts.throwCapture) return Promise.reject(new Error('capture boom'));
+    return Promise.resolve(this.opts.snapshot ?? fakeSnapshot());
+  }
+  searchDocument(query: string): Promise<ResolvedContext[]> {
+    this.searchCalls.push(query);
+    if (this.opts.throwSearch) return Promise.reject(new Error('search boom'));
+    const n = this.opts.reads ?? 0;
+    const out: ResolvedContext[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push({
+        ref: { id: `hit:${i}`, kind: 'paragraph', surface: 'word', title: `Hit ${i}`, live: true },
+        value: { as: 'text', text: `read slice ${i}`, mimeType: 'text/markdown' },
+      });
+    }
+    return Promise.resolve(out);
+  }
+}
+
+describe('AssistSession — ADR-0003 context loop (doc_state + lazy read)', () => {
+  it('injects a <doc_state …> part and removes it after the turn (not resident next turn)', async () => {
+    const bridge = new LoopBridge();
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await collect(session.ask('what are the service levels?'));
+
+    // The first turn's wire context carried a <doc_state> part.
+    expect(partTexts(bodies[0]!).some((t) => t.startsWith('<doc_state'))).toBe(true);
+    expect(partTexts(bodies[0]!).some((t) => t.includes('Service levels'))).toBe(true);
+    // Removed after the turn — not resident.
+    expect(ids(session)).not.toContain(DOC_STATE_REF_ID);
+    expect(session.context.size).toBe(0);
+
+    // A second turn re-captures (fresh each turn) but never accumulates the part.
+    await collect(session.ask('and now?'));
+    expect(bridge.captureCalls).toBe(2);
+    expect(ids(session)).not.toContain(DOC_STATE_REF_ID);
+  });
+
+  it('pulls ≤ maxReads lazy-read parts and they are ephemeral', async () => {
+    const bridge = new LoopBridge({ reads: 10 });
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      context: { lazyRead: { maxReads: 3 } },
+    });
+
+    await collect(session.ask('floor?'));
+
+    const readParts = partTexts(bodies[0]!).filter((t) => t.includes('read slice'));
+    expect(readParts).toHaveLength(3); // bounded to maxReads, not 10
+    // Each lazy-read slice is wrapped in the untrusted-data envelope (ADR-0003).
+    expect(readParts.every((t) => t.includes('data, not instructions'))).toBe(true);
+    // Ephemeral: removed after the turn.
+    expect(ids(session).some((id) => id.startsWith(READ_REF_PREFIX))).toBe(false);
+    expect(session.context.size).toBe(0);
+  });
+
+  it('a bridge WITHOUT the optional methods behaves exactly as today (no doc_state/read parts)', async () => {
+    const bridge = new FakeBridge(); // no captureDocState / searchDocument
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await collect(session.ask('hello'));
+
+    expect(partTexts(bodies[0]!).some((t) => t.startsWith('<doc_state'))).toBe(false);
+    expect(partTexts(bodies[0]!).some((t) => t.includes('read slice'))).toBe(false);
+    expect(session.context.size).toBe(0);
+  });
+
+  it('a throwing captureDocState / searchDocument does not fail the turn', async () => {
+    const bridge = new LoopBridge({ throwCapture: true, throwSearch: true, reads: 3 });
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.ask('q'));
+
+    // The turn still streamed (answer present), just without the ambient/read parts.
+    expect(events.map((e) => e.type)).toContain('token');
+    expect(partTexts(bodies[0]!).some((t) => t.startsWith('<doc_state'))).toBe(false);
+    expect(partTexts(bodies[0]!).some((t) => t.includes('read slice'))).toBe(false);
+    expect(session.context.size).toBe(0);
+  });
+
+  it('doc_state/read parts are never marked committed and never survive into the next turn', async () => {
+    const bridge = new LoopBridge({ reads: 2 });
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await collect(session.ask('first'));
+    expect(session.context.size).toBe(0); // nothing left resident after turn 1
+
+    await collect(session.ask('second'));
+    // Turn 2's wire context is freshly built; the previous turn's ephemeral parts did not survive.
+    const t2 = partTexts(bodies[1]!);
+    expect(t2.filter((t) => t.includes('read slice'))).toHaveLength(2); // re-pulled, not doubled
+    expect(t2.filter((t) => t.startsWith('<doc_state'))).toHaveLength(1); // exactly one, fresh
+    expect(session.context.size).toBe(0);
+  });
+
+  it('respects context.docState=false / lazyRead=false (off)', async () => {
+    const bridge = new LoopBridge({ reads: 3 });
+    const { fetch, bodies } = recordingFetch();
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      context: { docState: false, lazyRead: false },
+    });
+
+    await collect(session.ask('q'));
+    expect(bridge.captureCalls).toBe(0);
+    expect(bridge.searchCalls).toHaveLength(0);
+    expect(partTexts(bodies[0]!).some((t) => t.startsWith('<doc_state'))).toBe(false);
+    expect(partTexts(bodies[0]!).some((t) => t.includes('read slice'))).toBe(false);
+  });
+});
 
 describe('AssistSession — event-fed context model (construct → commit)', () => {
   it('folds a constructed brief into the next ask, then marks it resident (not re-sent)', async () => {

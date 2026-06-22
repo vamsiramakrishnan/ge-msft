@@ -3,6 +3,7 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
   Surface,
 } from '@ge/contracts';
@@ -41,6 +42,27 @@ export interface DocBridge {
    * Returns an unsubscribe handle.
    */
   watch?(emit: (event: HostEvent) => void): Unsubscribe;
+
+  /**
+   * Capture a compact structural snapshot of the active document for the ambient `<doc_state>`
+   * (ADR-0003, Layer B element 1) — outline, inventory, selection, named ranges, comments. The
+   * runtime injects the rendered snapshot as an ephemeral, per-turn data part, refreshed each
+   * turn so the model always knows the document's *shape* without reading the whole file.
+   *
+   * Optional: a surface that has no meaningful structural snapshot simply omits it (the turn
+   * still streams, just without the ambient part). Returns `undefined` when nothing to report.
+   */
+  captureDocState?(): Promise<DocStateSnapshot | undefined>;
+
+  /**
+   * Lazily read the working-document slices relevant to a query (ADR-0003, Layer B element 2):
+   * content-anchored reads pulled on demand instead of pre-chunking the whole document. The
+   * runtime calls this per turn (bounded), attaching the results as ephemeral data parts.
+   *
+   * Optional: a surface without lazy read simply omits it. Results are host content carried as
+   * `ResolvedContext` data — never instructions.
+   */
+  searchDocument?(query: string): Promise<ResolvedContext[]>;
 }
 
 /**

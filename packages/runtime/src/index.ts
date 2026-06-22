@@ -3,7 +3,11 @@
  * (Word/Excel/Outlook/…) plugs into it. See docs/CAPABILITY-MAP.md and ADR-0002.
  */
 export type { DocBridge, AuthClient, UserIdentity } from './bridge.js';
-export { AssistSession, type AssistSessionOptions } from './assist-session.js';
+export {
+  AssistSession,
+  type AssistSessionOptions,
+  type CompactionOptions,
+} from './assist-session.js';
 export {
   ContextModel,
   BRIEF_REF_ID,

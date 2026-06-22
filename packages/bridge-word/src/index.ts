@@ -19,3 +19,14 @@ export {
   documentChangedEvent,
   commentAddedEvent,
 } from './events.js';
+export { OfficeWordHost } from './host-port.js';
+export type {
+  WordHost,
+  WordHandlers,
+  WordParagraph,
+  WordEditArgs,
+  WordCommentArgs,
+  ChooseHit,
+  TrackedChangeOutcome,
+  CommentReplyOutcome,
+} from './host-port.js';

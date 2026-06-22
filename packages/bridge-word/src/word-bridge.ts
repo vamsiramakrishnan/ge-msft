@@ -8,7 +8,6 @@ import type {
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { WORD_CAPABILITIES } from './capabilities.js';
-import { isSet } from './capabilities-runtime.js';
 import {
   headingLevel,
   wordDocumentToContext,
@@ -22,73 +21,65 @@ import {
   originFromWordSource,
   selectionChangedEvent,
 } from './events.js';
+import { OfficeWordHost, type WordHost } from './host-port.js';
 
 /**
- * The Word `DocBridge`. The ONLY place Office.js (`Word.run`) is touched. Reads via the
- * native object model (selection, paragraphs, styles), writes via **tracked changes anchored
- * by content** (`body.search`, re-resolved at apply-time → degrade if drifted). Pure mapping
- * lives in `capture.ts` / `actuate-plan.ts` (unit-tested); this file is the host wiring.
+ * The Word `DocBridge`. All Office.js access goes through the injectable {@link WordHost} port
+ * (the real {@link OfficeWordHost} adapter by default), so this file holds the *orchestration*:
+ * mapping reads into context, choosing the tracked-change anchor, degrading a drifted finding to
+ * a panel item, and translating host outcomes into {@link ActuationResult}. That decision logic
+ * is now host-free, so it's unit-testable against a fake host. Pure mapping still lives in
+ * `capture.ts` / `actuate-plan.ts` / `events.ts`; the `Word.run` batching lives in the port.
  */
 export class WordBridge implements DocBridge {
   readonly surface = 'word' as const;
+
+  constructor(private readonly host: WordHost = new OfficeWordHost()) {}
 
   getCapabilities(): CapabilityManifest {
     return WORD_CAPABILITIES;
   }
 
   async listContext(): Promise<ContextRef[]> {
-    return Word.run(async (ctx) => {
-      const sel = ctx.document.getSelection();
-      sel.load('text');
-      const body = ctx.document.body;
-      body.load('text');
-      await ctx.sync();
-      const refs: ContextRef[] = [];
-      if (sel.text.trim()) {
-        refs.push({
-          id: 'word:selection',
-          kind: 'selection',
-          surface: 'word',
-          title: 'Selection',
-          preview: sel.text.slice(0, 120),
-          live: true,
-        });
-      }
+    const [selText, bodyText] = await Promise.all([
+      this.host.readSelectionText(),
+      this.host.readBodyText(),
+    ]);
+    const refs: ContextRef[] = [];
+    if (selText.trim()) {
       refs.push({
-        id: 'word:document',
-        kind: 'document',
+        id: 'word:selection',
+        kind: 'selection',
         surface: 'word',
-        title: 'Whole document',
-        preview: body.text.slice(0, 120),
+        title: 'Selection',
+        preview: selText.slice(0, 120),
+        live: true,
       });
-      return refs;
+    }
+    refs.push({
+      id: 'word:document',
+      kind: 'document',
+      surface: 'word',
+      title: 'Whole document',
+      preview: bodyText.slice(0, 120),
     });
+    return refs;
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
     if (ref.kind === 'selection') {
-      return Word.run(async (ctx) => {
-        const sel = ctx.document.getSelection();
-        sel.load('text');
-        await ctx.sync();
-        return wordSelectionToContext(sel.text);
-      });
+      const text = await this.host.readSelectionText();
+      return wordSelectionToContext(text);
     }
     // Whole document → paragraphs (with style for heading levels) → native blocks → chunks.
-    return Word.run(async (ctx) => {
-      const paras = ctx.document.body.paragraphs;
-      paras.load('items/text,items/styleBuiltIn');
-      await ctx.sync();
-      const elements: WordElement[] = paras.items
-        .filter((p) => p.text.trim().length > 0)
-        .map((p) => {
-          const level = headingLevel(String(p.styleBuiltIn));
-          return level > 0
-            ? { kind: 'heading' as const, text: p.text, level }
-            : { kind: 'paragraph' as const, text: p.text };
-        });
-      return wordDocumentToContext('word:document', undefined, elements);
+    const paras = await this.host.readParagraphs();
+    const elements: WordElement[] = paras.map((p) => {
+      const level = headingLevel(p.styleBuiltIn);
+      return level > 0
+        ? { kind: 'heading' as const, text: p.text, level }
+        : { kind: 'paragraph' as const, text: p.text };
     });
+    return wordDocumentToContext('word:document', undefined, elements);
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
@@ -117,38 +108,34 @@ export class WordBridge implements DocBridge {
         error: { code: 'no_anchor', message: 'tracked-change needs target.matchText' },
       };
     }
-    return Word.run(async (ctx) => {
-      ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-      const results = ctx.document.body.search(plan.matchText!, { matchCase: false });
-      results.load('items/text');
-      // First sync is required: the anchor index is chosen from the *read-back* match texts
-      // before the second (write) sync inserts on the chosen range — a read-then-write
-      // dependency, and the load-bearing re-resolve that degrades a drifted finding to a panel
-      // item rather than editing the wrong range.
-      await ctx.sync();
-
-      const idx = chooseAnchorIndex(
-        results.items.map((r) => r.text),
-        plan.contextHint,
-      );
-      const range = idx >= 0 ? results.items[idx] : undefined;
-      if (!range) {
-        // Anchor drift: degrade to a panel item rather than render a broken edit.
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          degraded: true,
-          error: {
-            code: 'anchor_drift',
-            message: 'The matched text is no longer in the document.',
-          },
-        };
-      }
-      range.insertText(plan.text, Word.InsertLocation.replace);
-      await ctx.sync();
-      return { ok: true, changeId: req.changeId, kind: req.kind, location: 'tracked-change' };
-    });
+    // The decision — which read-back hit to write on, and degrade to a panel item when none
+    // match — lives here (host-free, hence testable). The port runs the search→insert batch and
+    // calls back into `chooseAnchorIndex` with the live hit texts, re-resolving at apply-time.
+    const outcome = await this.host.applyTrackedChange(
+      plan.matchText,
+      { matchCase: false },
+      plan.text,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      // Anchor drift: degrade to a panel item rather than render a broken edit.
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'anchor_drift',
+          message: 'The matched text is no longer in the document.',
+        },
+      };
+    }
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+    };
   }
 
   private async applyCommentReply(req: ActuationRequest): Promise<ActuationResult> {
@@ -162,171 +149,37 @@ export class WordBridge implements DocBridge {
         error: { code: 'no_comment', message: 'comment-reply needs target.commentId' },
       };
     }
-    return Word.run(async (ctx) => {
-      const comments = ctx.document.body.getComments();
-      comments.load('items/id');
-      await ctx.sync();
-      const comment = comments.items.find((c) => c.id === commentId);
-      if (!comment) {
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          degraded: true,
-          error: { code: 'comment_gone', message: 'The comment no longer exists.' },
-        };
-      }
-      comment.reply(reply);
-      if (req.params.resolveComment) comment.resolved = true;
-      await ctx.sync();
-      return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
-    });
+    const outcome = await this.host.replyToComment(
+      commentId,
+      reply,
+      req.params.resolveComment ?? false,
+    );
+    if (outcome.status === 'gone') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'comment_gone', message: 'The comment no longer exists.' },
+      };
+    }
+    return { ok: true, changeId: req.changeId, kind: req.kind, location: outcome.location };
   }
 
   /**
-   * Stream Word host events into the trigger engine. Each registration is defensive: not every
-   * event exists on every Word requirement set, so a failed/absent registration simply means we
-   * never emit that event — it never throws. Coauthor (remote) edits are tagged so the registry
-   * drops them by default. Returns an `Unsubscribe` that removes *every* handler we added.
-   *
-   * Confirmed against node_modules/@types/office-js/index.d.ts:
-   *   - Office selection: `Office.EventType.DocumentSelectionChanged` (l.645) +
-   *     add/removeHandlerAsync (l.3875 / l.3965). No coauthor source → origin always 'local'.
-   *   - Word edits: `Document.onParagraphChanged` (l.102848) / `onParagraphAdded` (l.102839) /
-   *     `onParagraphDeleted` (l.102857); args carry `source: Word.EventSource` (l.118797 etc.).
-   *   - `Word.EventSource` enum 'Local' | 'Remote' (l.118481). Word `EventHandlers.add` returns an
-   *     `EventHandlerResult` whose `.remove()` (l.25582) must run inside a `Word.run` + sync.
-   *   - The Word `Document` type in this typings version has NO `onCommentAdded`, so comments are
-   *     feature-detected at runtime and skipped when absent.
+   * Stream Word host events into the trigger engine. The port owns the defensive Office.js
+   * registration/teardown (requirement-set gating, single removal path, coauthor source); this
+   * method maps the raw handler primitives into {@link HostEvent}s via the pure `events.ts`
+   * builders and tags each with its `origin`. Returns the port's `Unsubscribe`.
    */
   watch(emit: (event: HostEvent) => void): Unsubscribe {
-    // --- Selection (Office host event; no coauthor source → local) ---
-    // Registered synchronously; its removal is folded into the single settled teardown path below
-    // so there is exactly one owner of teardown (no second, racing removal path).
-    let onSelection: (() => void) | undefined;
-    try {
-      const handler = (): void => {
-        emit(selectionChangedEvent());
-      };
-      Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, handler);
-      onSelection = handler;
-    } catch {
-      // Selection observation unavailable on this host — simply don't emit it.
-    }
-
-    const removeSelection = (): void => {
-      if (!onSelection) return;
-      try {
-        Office.context.document.removeHandlerAsync(Office.EventType.DocumentSelectionChanged, {
-          handler: onSelection,
-        });
-      } catch {
-        // best-effort: removal may fail if the host already tore the handler down.
-      } finally {
-        onSelection = undefined;
-      }
-    };
-
-    // --- Document edits + comments (Word object-model events; carry coauthor source) ---
-    // Registration runs async inside Word.run; the returned EventHandlerResults are collected so
-    // the unsubscribe can remove them (also inside a Word.run, per the typings' note).
-    const removers: Array<{ remove(): void }> = [];
-    let unsubscribed = false;
-
-    // Mirror the Excel bridge: capture the registration promise and have the teardown chain off
-    // it. The single removal path lives in that settled `.then`, so handlers committed on the host
-    // after a synchronous unsubscribe are still removed exactly once — no leak, no double-splice.
-    const registration = Word.run(async (ctx) => {
-      const doc = ctx.document;
-
-      const onDocChange = (args: {
-        source: Word.EventSource | 'Local' | 'Remote';
-      }): Promise<void> => {
-        emit(documentChangedEvent(originFromWordSource(args.source)));
-        return Promise.resolve();
-      };
-      // PRIMARY gate is the requirement-set check, NOT property truthiness: `onParagraph*` are
-      // always-truthy getters on the Office.js proxy, so a truthiness check gates nothing and
-      // `.add()` THROWS on a host below the supporting set. All three paragraph events share one
-      // requirement set: `Document.onParagraphAdded/Changed/Deleted` → WordApi 1.6 (typings
-      // l.102835 / l.102844 / l.102853). The per-handler try/catch stays as belt-and-suspenders.
-      if (isSet('WordApi', '1.6')) {
-        for (const handlers of [
-          doc.onParagraphChanged,
-          doc.onParagraphAdded,
-          doc.onParagraphDeleted,
-        ]) {
-          try {
-            removers.push(handlers.add(onDocChange));
-          } catch {
-            // This paragraph event isn't in the active requirement set — skip it.
-          }
-        }
-      }
-
-      // Comments: not present in every Word typings/requirement set. Feature-detect off `unknown`.
-      const maybeComment = (doc as unknown as Record<string, unknown>).onCommentAdded;
-      if (isCommentHandlers(maybeComment)) {
-        const onComment = (args: {
-          source?: Word.EventSource | 'Local' | 'Remote';
-          commentId?: string;
-          id?: string;
-          ids?: string[];
-        }): Promise<void> => {
-          const commentId = args.commentId ?? args.id ?? args.ids?.[0];
-          if (commentId) {
-            emit(commentAddedEvent(originFromWordSource(args.source), commentId));
-          }
-          return Promise.resolve();
-        };
-        try {
-          removers.push(maybeComment.add(onComment));
-        } catch {
-          // Comment events unavailable — skip.
-        }
-      }
-
-      await ctx.sync();
-    }).catch(() => {
-      // Word.run failed (no host / unsupported) — nothing registered, nothing to clean up.
+    return this.host.registerHandlers({
+      onSelectionChanged: () => emit(selectionChangedEvent()),
+      onDocumentChanged: (args) => emit(documentChangedEvent(originFromWordSource(args.source))),
+      onCommentAdded: (args) => {
+        const commentId = args.commentId ?? args.id ?? args.ids?.[0];
+        if (commentId) emit(commentAddedEvent(originFromWordSource(args.source), commentId));
+      },
     });
-
-    return () => {
-      if (unsubscribed) return; // idempotent: only the first call performs teardown.
-      unsubscribed = true;
-      removeSelection();
-      // Single removal path: wait for registration to settle, then drain the removers once.
-      void registration.then(() => this.removeWordHandlers(removers.splice(0)));
-    };
   }
-
-  /** Remove Word object-model event handlers; per the typings, `.remove()` runs inside a sync batch. */
-  private async removeWordHandlers(handlers: Array<{ remove(): void }>): Promise<void> {
-    try {
-      await Word.run(async (ctx) => {
-        for (const h of handlers) {
-          try {
-            h.remove();
-          } catch {
-            // individual handler may already be gone
-          }
-        }
-        await ctx.sync();
-      });
-    } catch {
-      // best-effort teardown
-    }
-  }
-}
-
-/** Narrow an `unknown` document member to something with an `add()` we can register on. */
-function isCommentHandlers(
-  value: unknown,
-): value is { add(handler: (args: never) => Promise<void>): { remove(): void } } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'add' in value &&
-    typeof (value as { add: unknown }).add === 'function'
-  );
 }

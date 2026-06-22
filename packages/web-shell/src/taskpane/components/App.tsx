@@ -1,0 +1,99 @@
+import { useEffect } from 'react';
+import type { Surface, ChangeId } from '@ge/contracts';
+import type { PanelController } from '../../controller.js';
+import { usePanelState } from '../usePanelState.js';
+import { ContextTray } from './ContextTray.js';
+import { MessageThread } from './MessageThread.js';
+import { Composer } from './Composer.js';
+import { ProposalCard } from './ProposalCard.js';
+
+export interface AppProps {
+  controller: PanelController;
+  surface: Surface;
+  agentLabel?: string;
+}
+
+const SURFACE_PLACEHOLDER: Readonly<Record<string, string>> = {
+  word: 'Ask about the selection…',
+  excel: 'Ask about this range…',
+  outlook: 'Ask about this email…',
+  teams: 'Ask about this meeting…',
+};
+
+/**
+ * The task pane. A thin React view over `PanelController` state: header (agent identity), context
+ * tray (attach/detach chips), streamed grounded thread with citations, proposal-review cards, and
+ * the composer (send / cancel). No host or network code here — the controller owns all of that.
+ */
+export function App({ controller, surface, agentLabel }: AppProps): JSX.Element {
+  const state = usePanelState(controller);
+
+  // Load the attachable-context chips once on mount.
+  useEffect(() => {
+    void controller.refreshContext();
+  }, [controller]);
+
+  const onToggle = (id: string, attach: boolean): void => {
+    if (attach) void controller.attach(id);
+    else controller.detach(id);
+  };
+
+  return (
+    <div className="panel">
+      <header className="ph">
+        <div className="pht">
+          <div className="av" aria-hidden="true" />
+          <div>
+            <div className="pn">Gemini Enterprise</div>
+            <div className="pss">{agentLabel ?? 'Grounded on your research unit'}</div>
+          </div>
+        </div>
+      </header>
+
+      <ContextTray
+        chips={state.chips}
+        onToggle={onToggle}
+        onRefresh={() => void controller.refreshContext()}
+      />
+
+      {state.suggestions.length > 0 && (
+        <div className="suggestions" aria-label="Suggestions">
+          {state.suggestions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className="suggestion"
+              onClick={() => {
+                if (s.query) controller.onAutomate(s.query);
+                controller.dismissSuggestion(s.id);
+              }}
+            >
+              <span className="s-title">{s.title}</span>
+              {s.detail && <span className="s-detail">{s.detail}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <MessageThread messages={state.messages} />
+
+      <ProposalCard
+        proposals={state.proposals}
+        onApply={(id: ChangeId) => void controller.applyProposal(id)}
+      />
+
+      {state.error && (
+        <div className="panel-error" role="alert">
+          {state.error}
+        </div>
+      )}
+
+      <Composer
+        busy={state.busy}
+        onSend={(q) => void controller.send(q)}
+        onCancel={() => controller.cancel()}
+        placeholder={SURFACE_PLACEHOLDER[surface]}
+      />
+    </div>
+  );
+}

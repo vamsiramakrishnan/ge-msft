@@ -6,6 +6,12 @@
     { "path": "../contracts" },
     { "path": "../gemini-client" },
     { "path": "../runtime" },
-    { "path": "../triggers" }
+    { "path": "../triggers" },
+    { "path": "../bridge-word" },
+    { "path": "../bridge-excel" },
+    { "path": "../bridge-outlook" },
+    { "path": "../bridge-powerpoint" },
+    { "path": "../bridge-onenote" },
+    { "path": "../teams" }
   ]
 }

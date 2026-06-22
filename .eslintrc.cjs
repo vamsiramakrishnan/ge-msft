@@ -20,7 +20,15 @@ module.exports = {
     'react-hooks/exhaustive-deps': 'warn',
     'no-console': 'off',
   },
-  ignorePatterns: ['node_modules', 'dist', 'build', 'coverage', '*.cjs', 'vitest.config.ts'],
+  ignorePatterns: [
+    'node_modules',
+    'dist',
+    'dist-web',
+    'build',
+    'coverage',
+    '*.cjs',
+    'vitest.config.ts',
+  ],
   overrides: [
     {
       files: ['**/*.test.ts', '**/*.test.tsx'],

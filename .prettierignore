@@ -13,3 +13,6 @@ manifests
 
 # Vendored API schema slices (generated from Google's discovery doc)
 packages/*/vendor
+
+# Exploratory probe harnesses (authored artifacts — kept verbatim, not reformatted)
+scripts

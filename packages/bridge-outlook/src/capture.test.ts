@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResolvedContextSchema } from '@ge/contracts';
+import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
 import { mailItemToContext } from './capture.js';
 import { planReply } from './actuate-plan.js';
 
@@ -47,7 +47,7 @@ describe('outlook capture (pure)', () => {
 describe('outlook actuation planning (pure)', () => {
   it('extracts body/to/subject from params.mail', () => {
     const plan = planReply({
-      changeId: 'c1',
+      changeId: asChangeId('c1'),
       kind: 'reply-mail',
       surface: 'outlook',
       params: {
@@ -67,7 +67,7 @@ describe('outlook actuation planning (pure)', () => {
 
   it('falls back to params.text for the body', () => {
     const plan = planReply({
-      changeId: 'c2',
+      changeId: asChangeId('c2'),
       kind: 'reply-mail',
       surface: 'outlook',
       params: { text: 'Thanks, will follow up.' },

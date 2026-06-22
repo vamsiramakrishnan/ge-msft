@@ -1,4 +1,4 @@
-import type { ActuationResult, ProvenancePayload } from '@ge/contracts';
+import type { ActuationResult, ChangeId, ProvenancePayload } from '@ge/contracts';
 
 /**
  * The panel's view-model of what the agent has changed — the "traceable + reversible" surface.
@@ -6,7 +6,7 @@ import type { ActuationResult, ProvenancePayload } from '@ge/contracts';
  * in-session record the UI lists so the user can see who/what/why and undo.
  */
 export interface ChangeRecord {
-  changeId: string;
+  changeId: ChangeId;
   kind: ActuationResult['kind'];
   ok: boolean;
   location?: string;
@@ -18,7 +18,7 @@ export interface ChangeRecord {
 }
 
 export class ProvenanceStore {
-  private readonly records = new Map<string, ChangeRecord>();
+  private readonly records = new Map<ChangeId, ChangeRecord>();
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
@@ -38,7 +38,7 @@ export class ProvenanceStore {
     return rec;
   }
 
-  get(changeId: string): ChangeRecord | undefined {
+  get(changeId: ChangeId): ChangeRecord | undefined {
     return this.records.get(changeId);
   }
 

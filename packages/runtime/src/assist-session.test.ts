@@ -7,6 +7,7 @@ import type {
   ResolvedContext,
   SseEvent,
 } from '@ge/contracts';
+import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
 import { AssistSession } from './assist-session.js';
 import type { DocBridge } from './bridge.js';
@@ -120,7 +121,7 @@ describe('AssistSession — the reusable loop', () => {
     const result = await session.apply(
       'tracked-change',
       { text: 'The SLA is 99.9%.', target: { matchText: 'The SLA is 99.5%.' } },
-      'change-1',
+      asChangeId('change-1'),
     );
 
     expect(result.ok).toBe(true);
@@ -147,7 +148,10 @@ describe('AssistSession — the reusable loop', () => {
   it('resumes a prior session id (cross-surface / reopen)', () => {
     const bridge = new FakeBridge();
     const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
-    const session = new AssistSession(bridge, client, { unit, resumeSessionId: 'sess_prior' });
+    const session = new AssistSession(bridge, client, {
+      unit,
+      resumeSessionId: asSessionId('sess_prior'),
+    });
     expect(session.sessionId).toBe('sess_prior');
   });
 

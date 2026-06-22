@@ -2,9 +2,11 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  ChangeId,
   ContextKind,
   ContextRef,
   ProvenancePayload,
+  SessionId,
   SourceRef,
   SseEvent,
   UnitDescriptor,
@@ -30,7 +32,7 @@ export interface AssistSessionOptions {
   /** Optional trigger registry: gates every write (pre-actuation) and audits it (post-actuation). */
   triggers?: TriggerRegistry;
   /** Resume a prior session (persisted in host metadata) — the constructed context survives. */
-  resumeSessionId?: string;
+  resumeSessionId?: SessionId;
 }
 
 /** What a `prime` turn asks of the engine: absorb the working context, don't act on it. */
@@ -41,7 +43,7 @@ export class AssistSession {
   readonly context = new SessionContext();
   /** The event-fed constructor of the working-context brief (see context-model.ts). */
   readonly model: ContextModel;
-  private session: string | undefined;
+  private session: SessionId | undefined;
   private lastProvenance: ProvenancePayload | undefined;
   private readonly citations: SourceRef[] = [];
 
@@ -173,7 +175,7 @@ export class AssistSession {
   async apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
-    changeId: string,
+    changeId: ChangeId,
   ): Promise<ActuationResult> {
     const request: ActuationRequest = {
       changeId,
@@ -204,7 +206,7 @@ export class AssistSession {
     return result;
   }
 
-  get sessionId(): string | undefined {
+  get sessionId(): SessionId | undefined {
     return this.session;
   }
 

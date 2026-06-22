@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ChangeIdSchema } from './brand.js';
 import { ContextKindSchema, SurfaceSchema } from './context.js';
 import { SourceRefSchema } from './finding.js';
 import { ProvenancePayloadSchema } from './provenance.js';
@@ -78,7 +79,7 @@ export const ActuationParamsSchema = z.object({
 export type ActuationParams = z.infer<typeof ActuationParamsSchema>;
 
 export const ActuationRequestSchema = z.object({
-  changeId: z.string(), // client-generated; makes the write idempotent
+  changeId: ChangeIdSchema, // client-generated; makes the write idempotent
   kind: ActuationKindSchema,
   surface: SurfaceSchema,
   params: ActuationParamsSchema,
@@ -88,7 +89,7 @@ export type ActuationRequest = z.infer<typeof ActuationRequestSchema>;
 
 export const ActuationResultSchema = z.object({
   ok: z.boolean(),
-  changeId: z.string(),
+  changeId: ChangeIdSchema,
   kind: ActuationKindSchema,
   location: z.string().optional(), // where it landed (range, slide #, comment id, draft id)
   degraded: z.boolean().optional(), // e.g. anchor drifted → applied as a panel item

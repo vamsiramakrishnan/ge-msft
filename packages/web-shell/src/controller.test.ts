@@ -3,9 +3,11 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  ChangeId,
   ContextRef,
   SseEvent,
 } from '@ge/contracts';
+import { asChangeId } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { PanelController, type AssistLike, type ContextLister } from './controller.js';
 
@@ -27,7 +29,7 @@ class FakeAssist implements AssistLike {
   script: SseEvent[] = [{ type: 'token', text: 'hi' }, { type: 'done' }];
   applyResult: ActuationResult = {
     ok: true,
-    changeId: '',
+    changeId: asChangeId(''),
     kind: 'tracked-change',
     location: 'para:3',
   };
@@ -78,7 +80,7 @@ class FakeAssist implements AssistLike {
   apply(
     kind: ActuationRequest['kind'],
     _params: ActuationParams,
-    changeId: string,
+    changeId: ChangeId,
   ): Promise<ActuationResult> {
     this.applied.push({ kind, changeId });
     return Promise.resolve({ ...this.applyResult, changeId, kind });
@@ -255,7 +257,7 @@ describe('PanelController — actuation review', () => {
     const assist = new FakeAssist();
     assist.applyResult = {
       ok: false,
-      changeId: '',
+      changeId: asChangeId(''),
       kind: 'tracked-change',
       error: { code: 'blocked', message: 'Not grounded.' },
     };

@@ -6,6 +6,7 @@ import type {
   ContextRef,
   ResolvedContext,
 } from '@ge/contracts';
+import { asChangeId } from '@ge/contracts';
 import { TriggerRegistry, type HostEvent, type Scheduler } from '@ge/triggers';
 import { StreamAssistClient } from '@ge/gemini-client';
 import { Orchestrator } from './orchestrator.js';
@@ -108,7 +109,7 @@ describe('AssistSession actuation gate (PreToolUse analog)', () => {
     });
     const session = new AssistSession(bridge, dummyClient, { unit, triggers: reg });
 
-    const result = await session.apply('tracked-change', { text: 'x' }, 'c1');
+    const result = await session.apply('tracked-change', { text: 'x' }, asChangeId('c1'));
     expect(result).toMatchObject({
       ok: false,
       error: { code: 'blocked', message: 'Not grounded.' },
@@ -123,7 +124,7 @@ describe('AssistSession actuation gate (PreToolUse analog)', () => {
     reg.register({ id: 'audit', on: 'post-actuation', handle: audit });
     const session = new AssistSession(bridge, dummyClient, { unit, triggers: reg });
 
-    const result = await session.apply('tracked-change', { text: 'ok' }, 'c2');
+    const result = await session.apply('tracked-change', { text: 'ok' }, asChangeId('c2'));
     expect(result.ok).toBe(true);
     expect(bridge.applied).toHaveLength(1);
     await tick();

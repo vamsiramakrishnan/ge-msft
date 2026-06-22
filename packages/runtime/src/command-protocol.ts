@@ -9,6 +9,7 @@ import {
   type ParsedCommand,
   type Surface,
 } from '@ge/contracts';
+import { TRANSFORM_USAGE } from './compose.js';
 
 /**
  * ADR-0004 — the runtime side of the command protocol: compile a `ParsedCommand` (the model's
@@ -167,6 +168,8 @@ export function renderGrammarPrompt(manifest: CapabilityManifest): string {
   const lines = specs.map((s) => `  ${s.usage.padEnd(width)}  -> ${s.hint}`);
   const surfaceNoun = surfaceNoun_(manifest.surface);
 
+  const transformLines = Object.values(TRANSFORM_USAGE).map((u) => `  ${u}`);
+
   return [
     `You are a grounded agent operating inside the user's open ${surfaceNoun} via a command line.`,
     `You CANNOT see content until you read it. Never invent values, and anchor every edit on`,
@@ -176,6 +179,16 @@ export function renderGrammarPrompt(manifest: CapabilityManifest): string {
     `COMMANDS — one per line. You MAY batch several READ-ONLY commands in one block, but emit`,
     `each WRITE command on its own line:`,
     ...lines,
+    ``,
+    `COMPOSITION (read-only) — pipe a read through pure transforms to compute a value, and bind`,
+    `intermediate values with let. Composition NEVER writes: it is for analysis. To CHANGE the`,
+    `document, emit a standalone write command above (set/suggest/comment/format) — you cannot`,
+    `pipe into a write yet.`,
+    `  read <selector> | filter <col><op><val> | sum <col>   -> compute over a read`,
+    `  let $x = read <selector> | filter <col>=<val>          -> bind a value; reuse it as $x`,
+    `  $x | count                                              -> a $var can be a pipeline source`,
+    `  transforms:`,
+    ...transformLines,
     ``,
     `PROTOCOL:`,
     `- To act, reply with EXACTLY one fenced \`\`\`cmd block of command line(s), then STOP.`,

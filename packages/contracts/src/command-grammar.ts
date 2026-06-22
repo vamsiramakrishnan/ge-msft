@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import type { ActuationKind, CapabilityManifest } from './capability.js';
+import {
+  isExpressionLine,
+  parseExpressionLine,
+  type ExprParseError,
+  type ParsedExpr,
+} from './expr-grammar.js';
 
 /**
  * ADR-0004 — the command-line protocol grammar (the single source of truth).
@@ -294,7 +300,7 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
  * Honors `\"` (literal quote) and `\\` (literal backslash). Returns the unescaped value and
  * the index just past the closing quote, or `null` if there is no well-formed quoted string.
  */
-function scanQuoted(s: string, start: number): { value: string; end: number } | null {
+export function scanQuoted(s: string, start: number): { value: string; end: number } | null {
   if (s[start] !== '"') return null;
   let value = '';
   let i = start + 1;
@@ -345,6 +351,50 @@ export function parseCommandBlock(modelText: string): {
   }
   return { found: true, commands };
 }
+
+/* ───────────────────────────── program parsing (ADR-0005) ───────────────── */
+
+/**
+ * One entry in a parsed program block: a simple ADR-0004 command, an ADR-0005 expression
+ * (pipeline / `let`), or a corrective parse error from either layer. The runtime loop dispatches
+ * on `kind` (expression) vs `verb` (command) vs `error`.
+ */
+export type ProgramEntry = ParsedCommand | ParsedExpr | CommandParseError;
+
+export function isProgramExpr(entry: ProgramEntry): entry is ParsedExpr {
+  return 'kind' in entry && (entry.kind === 'pipeline' || entry.kind === 'let');
+}
+
+export function isProgramCommand(entry: ProgramEntry): entry is ParsedCommand {
+  return 'verb' in entry;
+}
+
+/**
+ * Parse the whole model reply as an ADR-0005 *program*: extract the ```cmd fence, then for each
+ * non-blank, non-comment line route to the expression parser (when the line `isExpressionLine` —
+ * a top-level `|` or a leading `let`) or to the unchanged ADR-0004 command parser otherwise.
+ *
+ * This is a superset of {@link parseCommandBlock}: every line that is NOT an expression parses
+ * EXACTLY as before, so all ADR-0004 behavior is preserved. `found` is false when there is no
+ * fence (the runtime re-prompts).
+ */
+export function parseProgramBlock(modelText: string): {
+  found: boolean;
+  entries: ProgramEntry[];
+} {
+  const block = extractCommandBlock(modelText);
+  if (block === null) return { found: false, entries: [] };
+
+  const entries: ProgramEntry[] = [];
+  for (const raw of block.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    entries.push(isExpressionLine(line) ? parseExpressionLine(line) : parseCommandLine(line));
+  }
+  return { found: true, entries };
+}
+
+export type { ExprParseError };
 
 /* ───────────────────────── capability-scoped advertisement ─────────────── */
 

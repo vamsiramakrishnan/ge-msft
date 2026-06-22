@@ -21,6 +21,19 @@ export {
   type ReadIntent,
 } from './command-protocol.js';
 export {
+  TRANSFORMS,
+  TRANSFORM_NAMES,
+  TRANSFORM_USAGE,
+  parseTable,
+  renderValue,
+  evalExpr,
+  isEvalError,
+  type Value,
+  type EvalError,
+  type Transform,
+  type RunRead,
+} from './compose.js';
+export {
   ContextModel,
   BRIEF_REF_ID,
   type CommitMode,

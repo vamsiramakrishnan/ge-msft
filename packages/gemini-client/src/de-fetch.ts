@@ -1,4 +1,5 @@
 import type { TokenSource } from './stream-assist.js';
+import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
 
 export type FetchLike = typeof fetch;
 
@@ -8,6 +9,11 @@ export type FetchLike = typeof fetch;
  * expired mid-cache) invalidate once and re-exchange before retrying.
  * No Google credential ever reaches the client — only the federated token from the
  * TokenSource is used; the body is sent as data.
+ *
+ * These calls are idempotent reads, so we wrap the send in exponential backoff (full
+ * jitter) for transient failures — network throws and HTTP 429/5xx. The existing
+ * 401→invalidate→retry-once stays a *distinct* concern: a 401 is handled by re-exchanging
+ * the token once and never rides the backoff path.
  */
 export async function postJson(
   url: string,
@@ -15,6 +21,7 @@ export async function postJson(
   tokens: TokenSource,
   fetchImpl: FetchLike,
   signal?: AbortSignal,
+  retryOpts: RetryOptions = {},
 ): Promise<unknown> {
   const payload = JSON.stringify(body);
   const send = async (): Promise<Response> => {
@@ -30,7 +37,31 @@ export async function postJson(
     });
   };
 
-  let res = await send();
+  // Transient-only backoff around the send; a 401 is excluded so it can take the
+  // dedicated re-exchange path below rather than being retried with jitter. We keep the
+  // last Response so an exhausted-but-still-transient outcome flows into the unified
+  // error formatting below instead of throwing a bare HttpError.
+  let lastRes: Response | undefined;
+  const sendWithBackoff = async (): Promise<Response> => {
+    const res = await send();
+    lastRes = res;
+    if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
+      throw new HttpError(res.status, `request failed (${res.status})`);
+    }
+    return res;
+  };
+
+  let res: Response;
+  try {
+    res = await withRetry(sendWithBackoff, retryOpts);
+  } catch (err) {
+    if (err instanceof HttpError && lastRes) {
+      res = lastRes; // exhausted transient → fall through to the shared error formatting.
+    } else {
+      throw err; // genuine network/transport throw → propagate unchanged.
+    }
+  }
+
   if (res.status === 401 && tokens.invalidate) {
     tokens.invalidate();
     res = await send();

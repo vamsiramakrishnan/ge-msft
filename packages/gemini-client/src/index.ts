@@ -15,6 +15,15 @@ export * from './ranking.js';
 export { postJson, type FetchLike } from './de-fetch.js';
 export { parseJsonArrayStream } from './json-stream.js';
 export { contentHash } from './hash.js';
+export {
+  withRetry,
+  backoffDelay,
+  defaultIsRetriable,
+  HttpError,
+  CircuitBreaker,
+  type RetryOptions,
+  type CircuitState,
+} from './retry.js';
 export type { DeStreamAssistResponse } from './de-types.js';
 export type {
   DeSearchResponse,

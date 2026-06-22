@@ -150,6 +150,94 @@ describe('AssistSession — the reusable loop', () => {
     const session = new AssistSession(bridge, client, { unit, resumeSessionId: 'sess_prior' });
     expect(session.sessionId).toBe('sess_prior');
   });
+
+  it('threads the abort signal through to the transport fetch', async () => {
+    const bridge = new FakeBridge();
+    let seenSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
+      seenSignal = init?.signal;
+      return new Response(
+        streamOf([
+          JSON.stringify([
+            {
+              sessionInfo: { session: 'sess_1' },
+              answer: {
+                state: 'SUCCEEDED',
+                replies: [{ groundedContent: { content: { text: 'ok' } } }],
+              },
+            },
+          ]),
+        ]),
+        { status: 200 },
+      );
+    });
+    const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
+    const session = new AssistSession(bridge, client, { unit });
+    const ac = new AbortController();
+
+    await collect(session.ask('q', { signal: ac.signal }));
+    expect(seenSignal).toBe(ac.signal);
+  });
+
+  it('does NOT mark the folded brief resident when the turn is aborted mid-stream (re-folds next turn)', async () => {
+    const bridge = new FakeBridge();
+    const bodies: Array<Record<string, unknown>> = [];
+    let call = 0;
+    const fetchImpl = vi.fn(
+      async (_url: string, init?: { body?: string; signal?: AbortSignal }) => {
+        bodies.push(JSON.parse(init?.body ?? '{}') as Record<string, unknown>);
+        call += 1;
+        // First turn: the body iteration rejects with an AbortError (as an aborted fetch would).
+        const body =
+          call === 1
+            ? new ReadableStream<Uint8Array>({
+                pull() {
+                  const e = new Error('The operation was aborted.');
+                  e.name = 'AbortError';
+                  throw e;
+                },
+              })
+            : streamOf([
+                JSON.stringify([
+                  {
+                    sessionInfo: { session: 'sess_1' },
+                    answer: {
+                      state: 'SUCCEEDED',
+                      replies: [{ groundedContent: { content: { text: 'ok' } } }],
+                    },
+                  },
+                ]),
+              ]);
+        return new Response(body, { status: 200 });
+      },
+    );
+    const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.ingest({
+      type: 'comment-added',
+      surface: 'word',
+      origin: 'local',
+      commentId: 'k1',
+      text: 'note one',
+    });
+
+    const ac = new AbortController();
+    // The aborted turn's AbortError propagates out of the generator (like any mid-stream throw),
+    // and the brief must stay pending — an aborted turn did not fully land.
+    await expect(
+      (async () => {
+        for await (const _ of session.ask('q1', { signal: ac.signal })) void _;
+      })(),
+    ).rejects.toThrow(/aborted/i);
+    expect(session.model.hasPending).toBe(true); // not marked resident
+    expect(session.context.size).toBe(0); // brief part unstaged in finally
+
+    // The next turn re-folds the note and only now marks it resident.
+    await collect(session.ask('q2'));
+    expect(partTexts(bodies[bodies.length - 1]!).some((t) => t.includes('note one'))).toBe(true);
+    expect(session.model.hasPending).toBe(false);
+  });
 });
 
 /** A fetch that records every streamAssist request body, returning a minimal valid stream. */

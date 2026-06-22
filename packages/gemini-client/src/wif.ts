@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
 
 /**
  * Workforce Identity Federation token exchange, run in the browser/webview.
@@ -57,6 +58,8 @@ export class WifTokenClient {
     private readonly config: WifConfig,
     private readonly fetchImpl: FetchLike = fetch,
     private readonly now: () => number = Date.now,
+    /** Backoff policy for transient STS failures (network / 429 / 5xx). */
+    private readonly retryOpts: RetryOptions = {},
   ) {}
 
   private audience(): string {
@@ -101,11 +104,24 @@ export class WifTokenClient {
       body.options = JSON.stringify({ userProject: this.config.userProject });
     }
 
-    const res = await this.fetchImpl(this.config.stsEndpoint ?? STS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    // Transient STS failures (network / 429 / 5xx) get exponential backoff with full
+    // jitter. A non-transient status (e.g. 400 bad audience) throws on the first try.
+    const res = await withRetry(async () => {
+      const r = await this.fetchImpl(this.config.stsEndpoint ?? STS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok && defaultIsRetriable(new HttpError(r.status, ''))) {
+        // Surface a retriable HttpError but format the secret-free detail eagerly so the
+        // body is read on the response we actually have.
+        throw new HttpError(
+          r.status,
+          `WIF token exchange failed (${r.status}): ${await safeText(r)}`,
+        );
+      }
+      return r;
+    }, this.retryOpts);
     if (!res.ok) {
       const detail = await safeText(res);
       throw new Error(`WIF token exchange failed (${res.status}): ${detail}`);

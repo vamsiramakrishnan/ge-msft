@@ -7,6 +7,9 @@ export {
   AssistSession,
   type AssistSessionOptions,
   type CompactionOptions,
+  type ContextLoopOptions,
+  DOC_STATE_REF_ID,
+  READ_REF_PREFIX,
 } from './assist-session.js';
 export {
   ContextModel,

@@ -13,4 +13,10 @@ export {
   commentAdded,
   type ExcelEventSourceLike,
 } from './events.js';
-export { planWriteCells, type WriteCellsPlan } from './actuate-plan.js';
+export {
+  planWriteCells,
+  splitFormulaGrid,
+  formatSourceComment,
+  type WriteCellsPlan,
+  type FormulaGrid,
+} from './actuate-plan.js';

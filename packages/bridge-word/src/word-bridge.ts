@@ -14,7 +14,7 @@ import {
   wordSelectionToContext,
   type WordElement,
 } from './capture.js';
-import { chooseAnchorIndex, planTrackedChange } from './actuate-plan.js';
+import { chooseAnchorIndex, formatSources, planTrackedChange } from './actuate-plan.js';
 import {
   commentAddedEvent,
   documentChangedEvent,
@@ -129,6 +129,14 @@ export class WordBridge implements DocBridge {
           message: 'The matched text is no longer in the document.',
         },
       };
+    }
+    // ADR-0003 comments-as-citations: after a successful (non-degraded) tracked change, drop a
+    // Word comment carrying the citation, anchored on the same content. Prefer provenance.sources,
+    // fall back to params.sources. Best-effort — a comment failure must NOT un-apply or fail the
+    // change, so we await it but ignore its outcome.
+    const sources = req.provenance?.sources ?? req.params.sources ?? [];
+    if (sources.length > 0) {
+      await this.host.addComment(plan.matchText, false, formatSources(sources));
     }
     return {
       ok: true,

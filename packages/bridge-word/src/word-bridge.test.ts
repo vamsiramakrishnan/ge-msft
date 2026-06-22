@@ -29,6 +29,9 @@ class FakeWordHost implements WordHost {
   // Recorded effects, for assertions.
   readonly inserts: Array<{ query: string; matchCase: boolean; text: string; chosen: string }> = [];
   readonly replies: Array<{ commentId: string; reply: string; resolve: boolean }> = [];
+  readonly addedComments: Array<{ query: string; matchCase: boolean; text: string }> = [];
+  /** When true, the next addComment reports failure (unsupported / anchor gone). */
+  commentFails = false;
   lastHandlers?: WordHandlers;
   unsubscribed = false;
 
@@ -54,6 +57,12 @@ class FakeWordHost implements WordHost {
     if (chosen === undefined) return Promise.resolve({ status: 'drift' });
     this.inserts.push({ query, matchCase: opts.matchCase, text, chosen });
     return Promise.resolve({ status: 'applied', location: 'tracked-change' });
+  }
+
+  addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }> {
+    if (this.commentFails) return Promise.resolve({ ok: false });
+    this.addedComments.push({ query, matchCase, text });
+    return Promise.resolve({ ok: true });
   }
 
   replyToComment(commentId: string, reply: string, resolve: boolean): Promise<CommentReplyOutcome> {
@@ -202,6 +211,95 @@ describe('WordBridge orchestration (against a fake host)', () => {
       const res = await new WordBridge(host).actuate(trackedChange({ text: 'x' }));
       expect(res).toMatchObject({ ok: false, error: { code: 'no_anchor' } });
       expect(insertSpy).not.toHaveBeenCalled();
+    });
+
+    it('adds a citation comment (formatted from sources) after a successful change', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      const req = trackedChange({
+        text: '99.9%',
+        target: { matchText: '99.5%' },
+        sources: [{ title: 'SLA Policy', uri: 'https://acme/sla' }, { title: 'Uptime Memo' }],
+      });
+      const res = await new WordBridge(host).actuate(req);
+
+      expect(res.ok).toBe(true);
+      expect(host.addedComments).toEqual([
+        {
+          query: '99.5%',
+          matchCase: false,
+          text: 'SLA Policy (https://acme/sla)\nUptime Memo',
+        },
+      ]);
+    });
+
+    it('prefers provenance.sources over params.sources for the citation', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('SLA', ['the SLA']);
+      const res = await new WordBridge(host).actuate({
+        changeId: asChangeId('chg-p'),
+        kind: 'tracked-change',
+        surface: 'word',
+        params: {
+          text: 'service level',
+          target: { matchText: 'SLA' },
+          sources: [{ title: 'Fallback' }],
+        },
+        provenance: {
+          agentId: 'review@v1',
+          identity: 'v.k@acme',
+          timestamp: '2026-06-22T00:00:00Z',
+          contentHash: 'h',
+          sources: [{ title: 'Preferred', uri: 'https://acme/preferred' }],
+        },
+      });
+      expect(res.ok).toBe(true);
+      expect(host.addedComments[0]?.text).toBe('Preferred (https://acme/preferred)');
+    });
+
+    it('still reports the change applied when adding the comment fails (best-effort)', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      host.commentFails = true;
+      const res = await new WordBridge(host).actuate(
+        trackedChange({
+          text: '99.9%',
+          target: { matchText: '99.5%' },
+          sources: [{ title: 'SLA Policy' }],
+        }),
+      );
+      // The change is applied even though the comment could not be attached.
+      expect(res.ok).toBe(true);
+      expect(host.inserts).toHaveLength(1);
+      expect(host.addedComments).toHaveLength(0);
+    });
+
+    it('adds no comment when there are no sources', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      const commentSpy = vi.spyOn(host, 'addComment');
+      const res = await new WordBridge(host).actuate(
+        trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }),
+      );
+      expect(res.ok).toBe(true);
+      expect(commentSpy).not.toHaveBeenCalled();
+      expect(host.addedComments).toHaveLength(0);
+    });
+
+    it('adds no comment when the change degrades (drift)', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', []); // drift
+      const commentSpy = vi.spyOn(host, 'addComment');
+      const res = await new WordBridge(host).actuate(
+        trackedChange({
+          text: '99.9%',
+          target: { matchText: '99.5%' },
+          sources: [{ title: 'SLA Policy' }],
+        }),
+      );
+      expect(res.ok).toBe(false);
+      expect(res.error?.code).toBe('anchor_drift');
+      expect(commentSpy).not.toHaveBeenCalled();
     });
   });
 

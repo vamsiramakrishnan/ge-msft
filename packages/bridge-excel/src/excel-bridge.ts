@@ -11,7 +11,7 @@ import { EXCEL_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
 import { rangeToContext, selectionValuesToContext } from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
-import { planWriteCells } from './actuate-plan.js';
+import { formatSourceComment, planWriteCells, splitFormulaGrid } from './actuate-plan.js';
 
 /**
  * The Excel `DocBridge`. The ONLY place Office.js (`Excel.run`) is touched. Reads via the
@@ -210,6 +210,28 @@ export class ExcelBridge implements DocBridge {
       };
     }
     const target = plan.address;
+    // ADR-0003 element 3: route any `=`-prefixed cell into a formula grid so Excel evaluates an
+    // inspectable, auditable formula rather than an opaque literal. Pure split (unit-tested);
+    // the host write path is chosen from `hasFormulas` so non-formula writes are unchanged.
+    const grid = splitFormulaGrid(plan.values);
+    // Security gate (ADR-0003 §untrusted boundary): cell text is model/host-derived, so a
+    // formula flagged as active-content (WEBSERVICE/DDE/external-ref/…) must never be evaluated.
+    // Degrade the whole write rather than promote untrusted data into an executable instruction.
+    if (grid.rejected.length > 0) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsafe_formula',
+          message: `Refusing to evaluate ${grid.rejected.length} formula(s) flagged as unsafe (web/data/DDE/external reference).`,
+        },
+      };
+    }
+    // ADR-0003 element 4: prefer provenance.sources, fall back to params.sources, for the
+    // human-visible citation comment layered on top of durable provenance metadata.
+    const sources = req.provenance?.sources ?? req.params.sources ?? [];
     return Excel.run(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(target);
       const sheet =
@@ -220,9 +242,34 @@ export class ExcelBridge implements DocBridge {
       // Single round-trip: queue the write and the address read together. The write doesn't
       // depend on reading anything back first (the target address is supplied by the plan), so
       // there's no read-before-write ordering constraint forcing a second sync.
-      range.values = plan.values as unknown[][];
+      if (grid.hasFormulas) {
+        // Excel evaluates these; `null` cells in the formula grid are the literal cells, which
+        // we set via `values` so both grids land in one batch without overwriting each other.
+        range.formulas = grid.formulas as unknown[][];
+        range.values = grid.values as unknown[][];
+      } else {
+        range.values = plan.values as unknown[][];
+      }
       range.load('address');
       await ctx.sync();
+
+      // Best-effort source comment on the anchor (first) cell. Feature-detected on ExcelApi 1.10
+      // (`CommentCollection.add(string, string)`); skipped silently on older hosts so it never
+      // fails the reversible, provenanced write. `comments.add` needs the full address (with
+      // sheet name), so we read back the anchor cell's address before attaching.
+      if (sources.length > 0 && isSet('ExcelApi', '1.10')) {
+        try {
+          const anchor = range.getCell(0, 0);
+          anchor.load('address');
+          await ctx.sync();
+          ctx.workbook.comments.add(anchor.address, formatSourceComment(sources));
+          await ctx.sync();
+        } catch {
+          // Comment attach failed (unsupported / host quirk) — the write already landed; the
+          // citation comment is additive, not the system of record, so we log-and-continue.
+        }
+      }
+
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
   }

@@ -89,6 +89,15 @@ export interface WordHost {
   replyToComment(commentId: string, reply: string, resolve: boolean): Promise<CommentReplyOutcome>;
 
   /**
+   * Attach a Word comment carrying `text` to the range matching `query` (re-resolved at
+   * apply-time, like {@link applyTrackedChange}). Used for ADR-0003 comments-as-citations after a
+   * tracked change applies. Best-effort: returns `{ ok: false }` (never throws) when the comments
+   * API is unsupported or the anchor text is gone — the caller must NOT treat that as failing the
+   * underlying change.
+   */
+  addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }>;
+
+  /**
    * Register the host-event handlers (selection / paragraph edits / comments). Returns an
    * unsubscribe that removes every handler that attached. Never throws.
    */
@@ -155,6 +164,29 @@ export class OfficeWordHost implements WordHost {
       await ctx.sync();
       return { status: 'applied', location: 'tracked-change' };
     });
+  }
+
+  async addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }> {
+    // Feature-detect the comments API by requirement set, NOT property truthiness:
+    // `Range.insertComment` → WordApi 1.4 (typings l.108627). On an older host we skip silently
+    // so a missing citation comment never disturbs the already-applied tracked change.
+    if (!isSet('WordApi', '1.4')) return { ok: false };
+    try {
+      return await Word.run(async (ctx) => {
+        const results = ctx.document.body.search(query, { matchCase });
+        results.load('items');
+        // Re-resolve the anchor at apply-time: the comment lands on the live range, or nowhere.
+        await ctx.sync();
+        const range = results.items[0];
+        if (!range) return { ok: false };
+        range.insertComment(text);
+        await ctx.sync();
+        return { ok: true };
+      });
+    } catch {
+      // Host quirk / comments unavailable — best-effort, log-and-continue.
+      return { ok: false };
+    }
   }
 
   async replyToComment(

@@ -81,6 +81,36 @@ describe('Excel full-stack integration', () => {
     expect(summary?.values[1]?.[1]).toBe('550');
   });
 
+  it('a composed read over a NAMED range resolves through getItemOrNullObject + load/sync', async () => {
+    sim = installFakeExcel();
+    // `SalesTable` (a seeded named range = Sales!A1:D7) is read via the named-range path
+    // (names.getItemOrNullObject(name).getRange()), which the fake must register so its load/sync
+    // resolves — otherwise reading the range metadata would throw. Same East sum (300 + 250 = 550).
+    ui = mountStack({
+      surface: 'excel',
+      client: scriptedClient([
+        '```cmd\nlet $east = read SalesTable | filter region=East\nset Summary!B2 = ($east | sum revenue)\n```',
+        '```cmd\ndone\n```',
+      ]),
+    });
+    await ui!.flush();
+
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('total East revenue from the named table');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    expect(ui!.container.querySelector('.plan-approval .cmd')?.textContent).toContain('550');
+
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    await ui!.flush();
+
+    const summary = sim.snapshot().sheets.find((s) => s.name === 'Summary');
+    expect(summary?.values[1]?.[1]).toBe('550');
+  });
+
   it('a plan with set + comment renders the real effect-set; approving mutates the host', async () => {
     sim = installFakeExcel();
     ui = mountStack({

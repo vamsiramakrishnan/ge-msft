@@ -119,6 +119,50 @@ describe('fake-excel fidelity', () => {
     expect(isNull).toBe(true);
   });
 
+  it('a named range resolves through getItemOrNullObject + load/sync; values stay lazy (budget bound)', async () => {
+    // A huge named range (26 × 1000 = 26,000 cells, well over MAX_READ_CELLS) the bridge would
+    // reject at the budget check. The fake must (a) register the named-range's getRange so its
+    // load/sync resolves, and (b) NOT materialize the value grid until `.values` is loaded — so the
+    // bridge's two-sync read bound (load metadata → check → only THEN load values) runs cheaply.
+    const sim = installFakeExcel(
+      excelSeed({
+        sheets: [{ name: 'Sales', origin: 'A1', values: [['region', 'rev']] }],
+        namedRanges: [{ name: 'BigBlock', range: 'Sales!A1:Z1000' }],
+      }),
+    );
+    restore = sim.restore;
+    const Excel = host<ExcelLike>('Excel');
+
+    const out = await Excel.run(async (ctx) => {
+      const names = ctx.workbook as unknown as {
+        workbook?: never;
+        names: { getItemOrNullObject(n: string): { getRange(): ExcelRange } };
+      };
+      const range = names.names.getItemOrNullObject('BigBlock').getRange();
+      // First sync: cheap span metadata only — must NOT throw and must NOT need the value grid.
+      range.load('address,rowCount,columnCount,isNullObject');
+      await ctx.sync();
+      const overBudget = range.rowCount * range.columnCount > 10_000;
+      // The two-sync bound: `.values` is only readable once loaded — reading it now would throw.
+      let threwBeforeLoad = false;
+      try {
+        void range.values;
+      } catch {
+        threwBeforeLoad = true;
+      }
+      return {
+        rowCount: range.rowCount,
+        columnCount: range.columnCount,
+        overBudget,
+        threwBeforeLoad,
+      };
+    });
+    expect(out.rowCount).toBe(1000);
+    expect(out.columnCount).toBe(26);
+    expect(out.overBudget).toBe(true);
+    expect(out.threwBeforeLoad).toBe(true);
+  });
+
   it('isSet() reads the seeded requirement set off the installed Office global', async () => {
     const sim = installFakeExcel(undefined, { ExcelApi: 9 });
     restore = sim.restore;

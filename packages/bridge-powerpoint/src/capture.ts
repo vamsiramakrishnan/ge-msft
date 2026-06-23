@@ -77,3 +77,52 @@ export function slidesToContext(
 export function selectedSlideToContext(slide: SlideElement): ResolvedContext[] {
   return slidesToContext(`pp:slide:${slide.slideId ?? slide.index}`, undefined, [slide]);
 }
+
+/**
+ * Captured slides → the `Block[]` the surface-agnostic `buildDocStateSnapshot` consumes for the
+ * `<doc_state>` outline/inventory (ADR-0003 Layer B element 1). Reuses {@link slideElementsToBlocks}
+ * so the snapshot's slide inventory comes from the SAME native mapping as grounding context — each
+ * slide's title becomes a `slide:<id>` heading the builder lists under `inventory`.
+ */
+export function slideElementsToDocStateBlocks(slides: SlideElement[]): Block[] {
+  return slideElementsToBlocks(slides);
+}
+
+/** Cap on slides scanned/returned by a lazy `searchDocument` so a common term can't blow the budget. */
+export const MAX_SEARCH_SLIDES = 8;
+
+/**
+ * Scan captured slides for `query` (case-insensitive substring over the title + body lines) and
+ * return the matching slides as context via {@link slidesToContext}, bounded to the first
+ * {@link MAX_SEARCH_SLIDES} matches. Pure: the host read happens in the bridge; this is the match +
+ * shaping step. Empty query / no match → `[]`.
+ */
+export function searchSlides(slides: SlideElement[], query: string): ResolvedContext[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const matched: SlideElement[] = [];
+  for (const slide of slides) {
+    const haystack = [slide.title, ...slide.body].join('\n').toLowerCase();
+    if (haystack.includes(needle)) {
+      matched.push(slide);
+      if (matched.length >= MAX_SEARCH_SLIDES) break;
+    }
+  }
+  if (matched.length === 0) return [];
+  return slidesToContext('pp:search', undefined, matched);
+}
+
+/**
+ * Parse a `read <selector>` slide address into a zero-based slide index, or `undefined` when it
+ * isn't an addressable slide reference. Accepts `slide:N` / `slide N` (1-based, human-facing) and a
+ * bare 1-based `N`. Conservative: anything else (a name, a range, junk) → `undefined`, so the bridge
+ * degrades to `[]` rather than guessing. Pure + exported so the addressing is unit-testable.
+ */
+export function parseSlideSelector(selector: string): number | undefined {
+  const trimmed = selector.trim().toLowerCase();
+  const m = /^(?:slide[\s:]*)?(\d{1,4})$/.exec(trimmed);
+  if (!m) return undefined;
+  const oneBased = Number(m[1]);
+  if (!Number.isInteger(oneBased) || oneBased < 1) return undefined;
+  return oneBased - 1;
+}

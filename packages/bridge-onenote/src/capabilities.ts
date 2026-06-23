@@ -8,10 +8,12 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const ONENOTE_CAPABILITIES: CapabilityManifest = {
   surface: 'onenote',
   contextKinds: ['page', 'document'],
-  // No addressable read verbs: OneNote reads the active page via the universal
-  // `listContext`/`resolveContext` port, but ships no `outline`/`read`/`search` read port today
-  // (no `captureDocState`/`readRange`/`searchDocument`). ADR-0006 closure: advertise nothing.
-  reads: [],
+  // Read verbs OneNote serves (ADR-0006 closure): `outline` via `captureDocState` (active-page
+  // title + paragraph outline), whole-page `read` (the runtime's empty-selector read → the same
+  // `captureDocState`, since a OneNote page has no addressable sub-range), and `search` via
+  // `searchDocument` (page-paragraph scan). OneNote is web-only with a narrow API, so the
+  // "document" is the active page. Context attach (`listContext`/`resolveContext`) is separate.
+  reads: ['outline', 'read', 'search'],
   actuations: [
     {
       kind: 'append-page',

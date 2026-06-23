@@ -4,20 +4,33 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot } from '@ge/content';
 import { POWERPOINT_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
 import {
+  parseSlideSelector,
+  searchSlides,
   selectedSlideToContext,
   shapesToSlideText,
+  slideElementsToDocStateBlocks,
   slidesToContext,
   type SlideElement,
 } from './capture.js';
 import { planInsertSlide } from './actuate-plan.js';
 import { documentChanged, selectionChanged } from './events.js';
+
+/**
+ * Upper bound on slides materialized by a single read port (`captureDocState`/`searchDocument`/
+ * `readRange`). A deck can be large; reading every shape's text across the Office.js bridge is
+ * O(slides × shapes) syncs, so we cap the scan to keep a per-turn read bounded (ADR-0006 — every
+ * read is bounded). A deck over this is read as its first {@link MAX_READ_SLIDES} slides.
+ */
+export const MAX_READ_SLIDES = 60;
 
 /**
  * The PowerPoint `DocBridge`. The ONLY place Office.js (`PowerPoint.run`) is touched. Reads via
@@ -99,6 +112,80 @@ export class PowerPointBridge implements DocBridge {
         elements.push(await readSlide(ctx, slide));
       }
       return slidesToContext('pp:deck', 'Whole deck', elements);
+    });
+  }
+
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
+
+  /**
+   * ADR-0003 Layer B element 1 / ADR-0006 `outline` read: an ambient structural snapshot of the
+   * deck — a slide inventory (per-slide title + body) read from the native object model and mapped
+   * through the same `native.slide()` blocks grounding context uses. Bounded to
+   * {@link MAX_READ_SLIDES} slides; the snapshot's `inventory` lists each slide. Reading the deck
+   * needs `TextRange.text` (PowerPointApi 1.4) — on an older host we yield `undefined` (the runtime
+   * just streams without the ambient part). Empty deck → `undefined`. Version increments per capture.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    if (!isSet('PowerPointApi', '1.4')) return undefined;
+    const slides = await this.readAllSlides();
+    if (slides.length === 0) return undefined;
+    this.docStateVersion += 1;
+    return buildDocStateSnapshot({
+      surface: 'powerpoint',
+      version: this.docStateVersion,
+      blocks: slideElementsToDocStateBlocks(slides),
+    });
+  }
+
+  /**
+   * ADR-0006 `search` read: scan the deck's slide text for `query` and return matching slides as
+   * `ResolvedContext` data (never instructions), bounded by `searchSlides`. Reads via the native
+   * model (gated on PowerPointApi 1.4); empty query / older host / no match → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    if (!q || !isSet('PowerPointApi', '1.4')) return [];
+    const slides = await this.readAllSlides();
+    return searchSlides(slides, q);
+  }
+
+  /**
+   * ADR-0006 addressable `read <slide:N>` verb: resolve a slide selector (`slide:N` / `slide N` /
+   * bare 1-based `N`) to that single slide's text as `ResolvedContext` data. Unaddressable selectors
+   * (a name, junk) / out-of-range index / older host / empty deck → `[]` — the bridge degrades rather
+   * than guessing. Reads via the native model (gated on PowerPointApi 1.4); the read is one slide, so
+   * it is inherently bounded.
+   */
+  async readRange(selector: string): Promise<ResolvedContext[]> {
+    const index = parseSlideSelector(selector);
+    if (index === undefined || !isSet('PowerPointApi', '1.4')) return [];
+    return PowerPoint.run(async (ctx) => {
+      const slides = ctx.presentation.slides;
+      slides.load('items/id,items/index');
+      await ctx.sync();
+      const slide = slides.items[index];
+      if (!slide) return [];
+      const element = await readSlide(ctx, slide);
+      return selectedSlideToContext(element);
+    });
+  }
+
+  /**
+   * Read up to {@link MAX_READ_SLIDES} slides of the deck into pure {@link SlideElement}s — the
+   * shared host read behind `captureDocState`/`searchDocument`. Bounded so a huge deck can't blow
+   * the per-turn budget; read-only (loads shape text, writes nothing).
+   */
+  private async readAllSlides(): Promise<SlideElement[]> {
+    return PowerPoint.run(async (ctx) => {
+      const slides = ctx.presentation.slides;
+      slides.load('items/id,items/index');
+      await ctx.sync();
+      const elements: SlideElement[] = [];
+      for (const slide of slides.items.slice(0, MAX_READ_SLIDES)) {
+        elements.push(await readSlide(ctx, slide));
+      }
+      return elements;
     });
   }
 

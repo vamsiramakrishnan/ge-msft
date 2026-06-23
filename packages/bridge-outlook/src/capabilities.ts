@@ -8,10 +8,12 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const OUTLOOK_CAPABILITIES: CapabilityManifest = {
   surface: 'outlook',
   contextKinds: ['mail-item', 'mail-thread', 'attachment'],
-  // No addressable read verbs: Outlook captures the active mail item via the universal
-  // `listContext`/`resolveContext` port, but has no `outline`/`read`/`search` read port today
-  // (no `captureDocState`/`readRange`/`searchDocument`). ADR-0006 closure: advertise nothing.
-  reads: [],
+  // Read verbs Outlook serves (ADR-0006 closure): whole-item `read` via `captureDocState` (a mail
+  // item has no addressable sub-range, so the "document" is the single active item — subject + from
+  // + leading body lines), and `search` via `searchDocument` (a body-line scan). No `outline`: a
+  // mail item has no heading structure to outline. Context attach (`listContext`/`resolveContext`)
+  // is separate and not a read verb.
+  reads: ['read', 'search'],
   actuations: [
     {
       kind: 'reply-mail',

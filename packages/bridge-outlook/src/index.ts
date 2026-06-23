@@ -6,7 +6,15 @@
  */
 export { OutlookBridge, HANDLED_ACTUATIONS } from './outlook-bridge.js';
 export { OUTLOOK_CAPABILITIES } from './capabilities.js';
-export { mailItemToContext, type MailItem } from './capture.js';
+export {
+  mailItemToContext,
+  mailItemToDocStateBlocks,
+  mailBodyToLines,
+  searchMailItem,
+  MAX_OUTLINE_LINES,
+  MAX_SEARCH_LINES,
+  type MailItem,
+} from './capture.js';
 export { planReply, type ReplyPlan } from './actuate-plan.js';
 export { composeEvent, receivedEvent, sendEvent, decideSend, type SendDecision } from './events.js';
 export {

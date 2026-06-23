@@ -10,10 +10,12 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const TEAMS_CAPABILITIES: CapabilityManifest = {
   surface: 'teams',
   contextKinds: ['transcript'],
-  // No addressable read verbs: Teams captures the transcript window via the universal
-  // `listContext`/`resolveContext` port, but has no `outline`/`read`/`search` read port today
-  // (no `captureDocState`/`readRange`/`searchDocument`). ADR-0006 closure: advertise nothing.
-  reads: [],
+  // Read verbs Teams serves (ADR-0006 closure): whole-transcript `read` via `captureDocState` (a
+  // transcript has no addressable sub-range, so the "document" is the captured window — meeting
+  // title + turn lines), and `search` via `searchDocument` (a transcript-line scan). No `outline`:
+  // a transcript has no heading structure. Context attach (`listContext`/`resolveContext`) is
+  // separate and not a read verb.
+  reads: ['read', 'search'],
   actuations: [
     {
       kind: 'post-message',

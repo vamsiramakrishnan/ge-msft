@@ -6,7 +6,14 @@
  */
 export { OneNoteBridge, HANDLED_ACTUATIONS } from './onenote-bridge.js';
 export { ONENOTE_CAPABILITIES } from './capabilities.js';
-export { pageElementToBlocks, pageToContext, type PageElement } from './capture.js';
+export {
+  pageElementToBlocks,
+  pageElementToDocStateBlocks,
+  pageToContext,
+  searchPage,
+  MAX_SEARCH_PARAGRAPHS,
+  type PageElement,
+} from './capture.js';
 export {
   escapeHtml,
   citationTag,

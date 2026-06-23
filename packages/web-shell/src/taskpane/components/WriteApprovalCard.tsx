@@ -20,11 +20,16 @@ export function WriteApprovalCard({
 }: WriteApprovalCardProps): JSX.Element | null {
   if (!pending) return null;
   return (
-    <section className="card status-pending approval" aria-label="Write approval required">
+    <section
+      className="card status-pending approval"
+      role="region"
+      aria-label="Write approval required"
+      aria-live="polite"
+    >
       <div className="card-top" aria-hidden="true" />
       <div className="card-in">
         <div className="cat">Approve write</div>
-        <pre className="cmd" aria-label="Command to approve">
+        <pre className="cmd" aria-label="Command to approve, shown verbatim">
           {pending.command}
         </pre>
         <div className="w">

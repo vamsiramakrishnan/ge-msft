@@ -27,18 +27,21 @@ export function PlanApprovalCard({
   return (
     <section
       className="card status-pending approval plan-approval"
+      role="region"
       aria-label="Plan approval required"
+      aria-live="polite"
     >
       <div className="card-top" aria-hidden="true" />
       <div className="card-in">
         <div className="cat">Approve plan</div>
-        <div className="plan-summary" aria-label="Plan summary">
-          {plan.summary}
+        <div className="plan-summary">
+          <span className="pin">{plan.summary}</span>
+          <span>to review before anything runs</span>
         </div>
-        <ol className="plan-effects" aria-label="Effects in this plan">
+        <ol className="plan-effects" aria-label={`Effects in this plan: ${plan.summary}`}>
           {plan.effects.map((effect) => (
             <li key={effect.request.changeId} className="plan-effect">
-              <pre className="cmd" aria-label="Effect command">
+              <pre className="cmd" aria-label="Effect command, shown verbatim">
                 {renderCommandLine(effect.request)}
               </pre>
             </li>

@@ -1,0 +1,120 @@
+/*
+ * Preview-harness chrome only — never shipped in the add-in. It frames the real panel at a typical
+ * task-pane width (360px) against a neutral backdrop, with a toolbar to switch surface and toggle
+ * cards. The panel itself is styled entirely by styles.css; nothing here leaks into the product.
+ */
+body {
+  background: #e9eaf0;
+}
+.preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+  min-height: 100vh;
+  padding: 28px;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+.preview-toolbar {
+  width: 240px;
+  flex: none;
+  position: sticky;
+  top: 28px;
+  background: #fff;
+  border: 1px solid #e6e4e1;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 6px 24px rgba(16, 18, 40, 0.08);
+}
+.preview-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 14px;
+}
+.preview-group {
+  margin-bottom: 16px;
+}
+.preview-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #646579;
+  margin-bottom: 8px;
+}
+.preview-surfaces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.preview-chip {
+  font: inherit;
+  font-size: 12px;
+  text-transform: capitalize;
+  border: 1px solid #ececf1;
+  background: #f7f7fb;
+  border-radius: 16px;
+  padding: 4px 11px;
+  cursor: pointer;
+}
+.preview-chip.on {
+  border-color: #b9a8f2;
+  background: #faf8ff;
+  color: #6d4ed1;
+  font-weight: 600;
+}
+.preview-toggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+.preview-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.preview-actions {
+  display: flex;
+  gap: 8px;
+}
+.preview-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #ececf1;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.preview-btn:hover {
+  background: #f7f7fb;
+}
+.preview-note {
+  font-size: 11px;
+  color: #646579;
+  line-height: 1.5;
+  margin: 4px 0 0;
+}
+.preview-stage {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+.preview-frame {
+  width: 360px;
+  height: 760px;
+  max-height: calc(100vh - 56px);
+  flex: none;
+  background: #fff;
+  border: 1px solid #d8d6d3;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(16, 18, 40, 0.16);
+}
+/* The panel uses height:100vh; inside the frame we want it to fill the frame instead. */
+.preview-frame .panel {
+  height: 100%;
+}

@@ -26,15 +26,23 @@ function Citation({ source }: { source: SourceRef }): JSX.Element {
   const body = (
     <>
       <span className="cite-d" aria-hidden="true" />
-      {label}
+      <span className="cite-label">{label}</span>
     </>
   );
   return href ? (
-    <a className="cite" href={href} target="_blank" rel="noreferrer noopener">
+    <a
+      className="cite"
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={`${label} — opens in a new tab`}
+    >
       {body}
     </a>
   ) : (
-    <span className="cite">{body}</span>
+    <span className="cite" title={label}>
+      {body}
+    </span>
   );
 }
 
@@ -55,7 +63,8 @@ function Message({ message }: { message: ChatMessage }): JSX.Element {
         )}
         {message.cancelled && <div className="muted small">Cancelled.</div>}
         {message.sources && message.sources.length > 0 && (
-          <div className="cites">
+          <div className="cites" aria-label="Citations">
+            <span className="cites-h eyebrow">Sources</span>
             {message.sources.map((s, i) => (
               <Citation key={`${s.title}-${i}`} source={s} />
             ))}

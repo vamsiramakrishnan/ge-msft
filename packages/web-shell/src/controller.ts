@@ -837,7 +837,9 @@ function commandStepText(ev: Extract<CommandLoopEvent, { type: 'command' }>): st
 function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>): string {
   const r = ev.result;
   const outcome = r.ok ? (r.degraded ? 'degraded' : 'applied') : (r.error?.code ?? 'failed');
-  return `${r.kind} — ${outcome}`;
+  // Observability: the change landed but its durable provenance dropped — make it visible, not silent.
+  const provenance = r.ok && r.provenanceDropped ? ' (⚠ provenance not recorded)' : '';
+  return `${r.kind} — ${outcome}${provenance}`;
 }
 
 /** A fetch aborted via AbortSignal rejects with a DOMException/Error named 'AbortError'. */

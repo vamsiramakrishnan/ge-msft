@@ -171,6 +171,35 @@ Replies to an existing comment by its host-opaque id. The first bare token is th
 
 The grammar advertises a read verb (`outline` / `read` / `search`) **only when it is present in `manifest.reads`** — a surface must never advertise a read it cannot serve. An **absent** `manifest.reads` advertises **no** reads. (Control verbs are always advertised; write verbs remain scoped by their advertised `ActuationKind` as above.)
 
+### Composition: pipelines, bindings, and effect-arg expressions (ADR-0005)
+
+On top of the flat command lines, the grammar has an **expression layer** (`packages/contracts/src/expr-grammar.ts`) — the model can *program* the document. A line is an **expression** (vs. an ADR-0004 simple command) iff it starts with `let ` **or** contains a top-level (unquoted, **unparenthesized**) pipe `|`. Everything else parses exactly as before.
+
+**Phase 1 — pure pipelines + bindings (read-only).** A pipeline is `<source> ( '|' <transform> )*`, where `<source>` is `read <selector>` | `search <text>` | `outline` | `$var`. Reads produce a typed `Value` (`table` | `number` | `text`); pure transforms (`filter`, `select`, `sum`, `avg`, `min`, `max`, `count`, `sort`, `head`, `tail` — `packages/runtime/src/compose.ts`) compose it. `let $name = <pipeline>` binds the resulting `Value` into the loop's env; `$vars` persist across turns **within one `runCommands` loop**. Pipelines are **pure** — they never write. A pipe into an effect (`read X | set …`) is rejected with a corrective; the parser is the structural boundary (`ParsedExpr` = `PipelineExpr | LetExpr`, validated by `ParsedExprSchema`), the runtime evaluator (`evalExpr`) owns transform meaning and the pure-only guard.
+
+**Phase 2 — effect-arg expressions + the gated plan.** An effect verb's value/text arg may be an **expression** evaluated against the binding env, so effects *consume* composed values (the keystone). The rule is deliberately unambiguous (total back-compat):
+
+> An effect arg is an **expression** iff it is exactly **`$var`** or a fully-parenthesized pipeline **`( <pipeline> )`** (an optional leading assignment `= ` is stripped first). Otherwise it is a **literal** — plain text or a `=formula` — exactly as ADR-0004.
+
+Applies to `set` (the value) and `comment` / `reply` (the text); `suggest` / `format` stay literal-only this wave. The parenthesized pipeline is parsed through the same pure pipeline path, so an effect-arg can read+compute but **can never smuggle a write** — a `$var | set …` inside the parens is rejected at eval time, never executed. The parse result carries an optional `valueExpr` / `textExpr: ParsedExpr` beside the verbatim literal:
+
+```ts
+// set Summary!B2 = ($anz | sum Revenue)
+{ verb: 'set', cell: 'Summary!B2', value: '= ($anz | sum Revenue)',
+  valueExpr: { kind: 'pipeline', source: { src: 'var', name: 'anz' },
+               stages: [{ name: 'sum', args: 'Revenue' }] } }
+// set Sales!F2 =SUM(A1, A2)  → a LITERAL (no valueExpr), unchanged from ADR-0004
+{ verb: 'set', cell: 'Sales!F2', value: '=SUM(A1, A2)' }
+```
+
+A turn's effects then form a **plan**, executed by `AssistSession.runCommands` (`packages/runtime/src/assist-session.ts`):
+
+1. **Type-check** each effect — its verb's mapped `ActuationKind` must be in `manifest.actuations`; referenced `$vars` must be bound; effect-arg expressions must parse. A failure → a corrective `{error}` for *that* entry; the valid rest still form the plan (never partial execution of a malformed effect).
+2. **Dry-run** — execute reads + pure (binding the env), then RESOLVE each effect: evaluate any expression arg via `evalExpr` to a `Value`, render to the concrete param, `compileCommand` → a Zod-validated `ActuationRequest`. **Dry-run actuates nothing.** A non-scalar (`table`) effect value is rejected (a write param is scalar). The resolved set is `PlanEffect[] = { request, command }[]` (`command` is the verbatim line, for the preview).
+3. **Plan approval (fail-closed)** — emit a `plan-preview` `CommandLoopEvent`, then call `opts.approvePlan?.(effects)` **once**. No approver ⇒ the whole plan is blocked (each effect → `plan_unapproved`); reject ⇒ all blocked; a thrown approver ⇒ fail closed. On approve, each effect is actuated through the **existing** gate + provenance (the plan approval supersedes the per-write prompt; the trigger gate still runs as the second line). The per-turn write cap is retained; `changeId` is minted once at dry-run and carried unchanged into execution.
+
+Back-compat: when `approvePlan` is absent but `approveWrite` is present, the loop falls back to ADR-0004 per-write approval (Track A). `RunCommandsOptions` gains `approvePlan?: (effects: PlanEffect[]) => boolean | Promise<boolean>`; both `PlanEffect` and the `plan-preview` event are exported from `@ge/runtime`.
+
 ### Capability closure
 
 `checkCapabilityClosure({ manifest, handledKinds, readPorts })` (`packages/contracts/src/capability-closure.ts`) is the single, pure definition of whether a surface's *advertised* capability set matches what it can actually *do*. It returns three disagreement sets:

@@ -19,8 +19,10 @@ import {
   isCommandParseError,
   isProgramExpr,
   parseProgramBlock,
+  WRITE_VERB_TO_KIND,
   type ParsedExpr,
   type PipeSource,
+  type WriteVerb,
 } from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
 import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
@@ -98,6 +100,12 @@ export type CommandLoopEvent =
   | { type: 'expr-result'; turn: number; expr: ParsedExpr; result: Value | { error: string } }
   /** One read executed and its (host-content) result, carried as data. */
   | { type: 'read-result'; turn: number; intentLabel: string; result: unknown }
+  /**
+   * ADR-0005 Phase 2 — the dry-run effect-set for THIS turn, previewed before the single
+   * plan-level approval. Emitted only when the turn produced at least one resolvable effect.
+   * Dry-run has actuated NOTHING at this point; the user approves/rejects the whole set.
+   */
+  | { type: 'plan-preview'; turn: number; effects: PlanEffect[] }
   /** One write gated + actuated (or blocked). */
   | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
   /** A turn produced no ```cmd fence — the loop re-prompts once. */
@@ -109,11 +117,35 @@ export type CommandLoopEvent =
   /** The loop hit `maxTurns` without `done`. */
   | { type: 'exhausted'; turns: number; answer: string };
 
+/**
+ * ADR-0005 Phase 2 — one resolved effect in a turn's PLAN: the dry-run-built, Zod-validated
+ * `ActuationRequest` ready to actuate, plus the verbatim command line (for the preview/approval
+ * card). Dry-run has resolved (evaluated any expression arg → rendered → compiled) but actuated
+ * nothing; the request lands only after the single plan-level approval.
+ */
+export interface PlanEffect {
+  /** The compiled, Zod-validated request — exactly what will be actuated on approval. */
+  request: ActuationRequest;
+  /** The verbatim command line the model emitted, for the human-auditable preview. */
+  command: string;
+}
+
 /** Options for {@link AssistSession.runCommands}. */
 export interface RunCommandsOptions {
   /** Bound on model turns (default {@link DEFAULT_MAX_TURNS}). */
   maxTurns?: number;
   signal?: AbortSignal;
+  /**
+   * ADR-0005 Phase 2 — ONE plan-level approval for a turn's whole dry-run effect-set. After the
+   * turn type-checks + dry-runs (resolving each effect to a Zod-valid `ActuationRequest` WITHOUT
+   * actuating), the loop emits a `plan-preview` and calls this once with the full `PlanEffect[]`.
+   * **Fail-closed:** with no approver the whole plan is blocked (each effect → a corrective
+   * `plan_unapproved` result; the loop continues). On `false` the whole plan is blocked; on `true`
+   * every effect is actuated through the existing gate + provenance (the plan approval supersedes
+   * the per-write {@link approveWrite}; the trigger gate still runs as the second line of defense).
+   * When present, this takes precedence over {@link approveWrite}.
+   */
+  approvePlan?: (effects: PlanEffect[]) => boolean | Promise<boolean>;
   /**
    * Per-write human-in-the-loop approval — the confirmation the `DocBridge` contract ("never
    * called without user confirmation") and ADR-0004 require. The loop calls this for EVERY compiled
@@ -121,6 +153,8 @@ export interface RunCommandsOptions {
    * model-emitted write is blocked (the model gets a corrective `unapproved` result and the loop
    * continues with reads). The UI passes an approver that renders the command verbatim as an
    * approval card and resolves with the user's decision; the trigger gate then runs as a second line.
+   *
+   * Back-compat (ADR-0004 Track A): used only when {@link approvePlan} is ABSENT.
    */
   approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>;
   /** Max commands run per model turn (default 32); the rest of the block is refused. */
@@ -185,6 +219,12 @@ export class AssistSession {
    * whole {@link runCommands} loop so `$vars` persist across turns within a task.
    */
   private readonly composeEnv = new Map<string, Value>();
+  /**
+   * The advertised actuation kinds for the active surface, captured at the start of a
+   * {@link runCommands} loop. The ADR-0005 Phase-2 type-check rejects an effect whose verb maps to
+   * a kind NOT in this set before the effect reaches the gate.
+   */
+  private capabilityKinds: ReadonlySet<ActuationRequest['kind']> = new Set();
 
   constructor(
     private readonly bridge: DocBridge,
@@ -470,6 +510,8 @@ export class AssistSession {
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     const capabilities = await this.bridge.getCapabilities();
+    // Capture the advertised actuation kinds for the ADR-0005 Phase-2 effect type-check.
+    this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
 
     // Fresh ADR-0005 binding env per task: `$vars` persist across turns WITHIN this loop, but a
     // later independent runCommands() call must not read a binding it never computed.
@@ -503,11 +545,18 @@ export class AssistSession {
       }
       pendingNoFenceReprompt = false;
 
-      // Compile + execute. Read-many (batch), write-one (serialized, approved + gated, capped).
+      // ADR-0005 Phase 2 — the turn's PLAN: type-check → dry-run (resolve, don't write) →
+      // preview → ONE plan-level approval → gated execution.
+      //
+      // Pass 1 (THIS loop): execute reads + pure (binding `$vars`, ADR-0005 Phase 1) inline, and
+      // DRY-RUN each effect — type-check it against the manifest, then evaluate any expression arg
+      // → render → compile to a Zod-valid `ActuationRequest`. Dry-run actuates NOTHING. Each effect
+      // reserves an ordered slot in `results` filled after the single approval (pass 2, below).
       const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
       const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
-      let writesThisTurn = 0;
       const results: unknown[] = [];
+      /** Effect slots: where in `results` each gated effect's outcome goes (filled post-approval). */
+      const planSlots: Array<{ index: number; effect: PlanEffect }> = [];
       let done = false;
       if (entries.length > maxCommands) {
         yield {
@@ -534,48 +583,72 @@ export class AssistSession {
           continue;
         }
         const command = entry;
-        const compiled = compileCommand(command, {
-          surface: this.bridge.surface,
-          mintChangeId: () => asChangeId(crypto.randomUUID()),
-        });
-        yield { type: 'command', turn, command, compiled };
 
-        if (isCompileError(compiled)) {
-          results.push({ error: compiled.error });
-          continue;
+        // Control + reads run inline (pure / non-actuating), exactly as ADR-0004.
+        if (command.verb === 'done') {
+          done = true;
+          break;
         }
-        if (compiled.kind === 'control') {
-          if (compiled.verb === 'done') {
-            done = true;
-            break;
-          }
-          // `help` re-advertises the grammar.
+        if (command.verb === 'help') {
           results.push({ help: renderGrammarPrompt(capabilities) });
           continue;
         }
-        if (compiled.kind === 'read') {
+        if (command.verb === 'outline' || command.verb === 'read' || command.verb === 'search') {
+          const compiled = compileCommand(command, {
+            surface: this.bridge.surface,
+            mintChangeId: () => asChangeId(crypto.randomUUID()),
+          });
+          yield { type: 'command', turn, command, compiled };
+          if (isCompileError(compiled) || compiled.kind !== 'read') {
+            results.push({ error: isCompileError(compiled) ? compiled.error : 'expected a read' });
+            continue;
+          }
           const { label, result } = await this.runReadIntent(compiled.intent);
           results.push(result);
           yield { type: 'read-result', turn, intentLabel: label, result };
           continue;
         }
-        // write — fail-closed approval + gate, one at a time, capped per turn.
-        if (writesThisTurn >= maxWrites) {
+
+        // EFFECT verb — type-check + dry-run (resolve, do NOT actuate). Reserve an ordered slot.
+        const slotIndex = results.length;
+        results.push(undefined); // placeholder, filled after approval (pass 2)
+
+        // Per-turn write cap: a capped effect never enters the plan (never reaches the gate).
+        if (planSlots.length >= maxWrites) {
           const capped: ActuationResult = {
             ok: false,
-            changeId: compiled.request.changeId,
-            kind: compiled.request.kind,
+            changeId: asChangeId(crypto.randomUUID()),
+            kind: WRITE_VERB_TO_KIND[command.verb],
             error: { code: 'write_cap', message: `write cap (${maxWrites}/turn) reached` },
           };
-          results.push(capped);
+          results[slotIndex] = capped;
           yield { type: 'capped', turn, reason: `write cap ${maxWrites}/turn` };
-          yield { type: 'write-result', turn, changeId: compiled.request.changeId, result: capped };
           continue;
         }
-        writesThisTurn += 1;
-        const result = await this.applyRequest(compiled.request, opts.approveWrite);
-        results.push(result);
-        yield { type: 'write-result', turn, changeId: compiled.request.changeId, result };
+
+        const resolved = await this.resolveEffect(command);
+        if ('error' in resolved) {
+          // A type error / unbound-$var / failed compile → a corrective result for THIS effect; the
+          // valid rest still form the plan (never a partially executed malformed effect).
+          results[slotIndex] = { error: resolved.error };
+          yield { type: 'command', turn, command, compiled: { error: resolved.error } };
+          continue;
+        }
+        yield {
+          type: 'command',
+          turn,
+          command,
+          compiled: { kind: 'write', request: resolved.request },
+        };
+        planSlots.push({ index: slotIndex, effect: resolved });
+      }
+
+      // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then
+      // execute each effect through the existing gate + provenance. Fail-closed throughout.
+      if (planSlots.length > 0) {
+        const effects = planSlots.map((s) => s.effect);
+        yield { type: 'plan-preview', turn, effects };
+        for await (const ev of this.executePlan(turn, planSlots, opts, results)) yield ev;
       }
 
       if (done) {
@@ -588,6 +661,155 @@ export class AssistSession {
     }
 
     yield { type: 'exhausted', turns: maxTurns, answer };
+  }
+
+  /**
+   * ADR-0005 Phase 2 — type-check + DRY-RUN one effect command into a {@link PlanEffect}, WITHOUT
+   * actuating. Type-check: the verb's mapped `ActuationKind` must be in the manifest's advertised
+   * `actuations` (an unsupported verb fails here, before the gate). Dry-run resolution: evaluate any
+   * effect-arg EXPRESSION (`set X = ($a | sum Y)` / `set X = $t`) via {@link evalExpr} against the
+   * binding env to a `Value`, render it to the concrete `value`/`text` param, then `compileCommand`
+   * → a Zod-validated `ActuationRequest`. The `changeId` is minted once here and carried unchanged
+   * into execution. An unbound `$var`, an expr parse/eval error, an unsupported verb, or a failed
+   * compile each yields a corrective `{ error }` — never a throw, never a write.
+   */
+  private async resolveEffect(
+    command: Extract<ParsedCommand, { verb: WriteVerb }>,
+  ): Promise<PlanEffect | { error: string }> {
+    try {
+      // Type-check: the verb must map to an advertised actuation kind for this surface.
+      const kind = WRITE_VERB_TO_KIND[command.verb];
+      const supported = new Set(this.capabilityKinds);
+      if (!supported.has(kind)) {
+        return { error: `verb "${command.verb}" (${kind}) is not supported on this surface` };
+      }
+
+      // Dry-run resolve any effect-arg expression to a concrete literal param (the keystone:
+      // effects consume composed values). Pure — `evalExpr` reaches reads/the env but NEVER writes.
+      const resolvedCommand = await this.resolveEffectArgs(command);
+      if ('error' in resolvedCommand) return resolvedCommand;
+
+      const compiled = compileCommand(resolvedCommand.command, {
+        surface: this.bridge.surface,
+        mintChangeId: () => asChangeId(crypto.randomUUID()),
+      });
+      if (isCompileError(compiled)) return { error: compiled.error };
+      if (compiled.kind !== 'write')
+        return { error: `"${command.verb}" did not compile to a write` };
+
+      return { request: compiled.request, command: renderCommandLine(command) };
+    } catch (err) {
+      return { error: `could not plan "${command.verb}": ${errMsg(err)}` };
+    }
+  }
+
+  /**
+   * Resolve an effect command's expression arg (if any) to a literal param. For `set`'s `valueExpr`
+   * and `comment`/`reply`'s `textExpr`, evaluate the `ParsedExpr` against the binding env (pure;
+   * `$var` lookups + reads, no writes) and render the resulting `Value` into the literal `value` /
+   * `text` field, stripping the `*Expr` so `compileCommand` sees a plain literal. A LITERAL arg
+   * (no `*Expr`) passes through unchanged (ADR-0004 back-compat). An eval error → a corrective.
+   */
+  private async resolveEffectArgs(
+    command: Extract<ParsedCommand, { verb: WriteVerb }>,
+  ): Promise<{ command: ParsedCommand } | { error: string }> {
+    if (command.verb === 'set' && command.valueExpr) {
+      const value = await this.evalEffectArg(command.valueExpr);
+      if ('error' in value) return value;
+      return { command: { verb: 'set', cell: command.cell, value: value.text } };
+    }
+    if (command.verb === 'comment' && command.textExpr) {
+      const text = await this.evalEffectArg(command.textExpr);
+      if ('error' in text) return text;
+      return { command: { verb: 'comment', selector: command.selector, text: text.text } };
+    }
+    if (command.verb === 'reply' && command.textExpr) {
+      const text = await this.evalEffectArg(command.textExpr);
+      if ('error' in text) return text;
+      return { command: { verb: 'reply', commentId: command.commentId, text: text.text } };
+    }
+    // Literal-only verbs (suggest/format) and literal args of set/comment/reply pass through.
+    return { command };
+  }
+
+  /**
+   * Evaluate one effect-arg expression to a rendered SCALAR literal (or a corrective error). A
+   * write param is a single value, so a `table` Value (a non-terminated pipeline, e.g.
+   * `set B2 = ($a | filter region=East)`) is rejected with a corrective directing the model to a
+   * scalar terminal (`sum`/`avg`/`count`/…) — never written as degenerate multi-line GFM in one cell.
+   */
+  private async evalEffectArg(expr: ParsedExpr): Promise<{ text: string } | { error: string }> {
+    const result = await this.evalExpression(expr);
+    if ('error' in result) return result;
+    if (result.kind === 'table') {
+      return {
+        error:
+          'effect value resolved to a table — terminate the pipeline in a scalar (sum/avg/min/max/count) before writing',
+      };
+    }
+    return { text: renderValue(result) };
+  }
+
+  /**
+   * ADR-0005 Phase 2 — the plan-level gate (pass 2). Take ONE approval for the whole dry-run
+   * effect-set, then execute each effect through the EXISTING gate + provenance, filling its result
+   * slot. **Fail-closed:** no `approvePlan` AND no `approveWrite` ⇒ the whole plan is blocked
+   * (`plan_unapproved` per effect); reject ⇒ all blocked; approve ⇒ each effect actuated (the plan
+   * approval supersedes per-write approval — `applyRequest` is called pre-approved so it does not
+   * double-prompt; the trigger gate still runs as the second line). When `approvePlan` is absent but
+   * `approveWrite` is present, fall back to ADR-0004 per-write approval (Track A unbroken).
+   */
+  private async *executePlan(
+    turn: number,
+    planSlots: Array<{ index: number; effect: PlanEffect }>,
+    opts: RunCommandsOptions,
+    results: unknown[],
+  ): AsyncGenerator<CommandLoopEvent> {
+    const effects = planSlots.map((s) => s.effect);
+
+    // Decide the plan-level disposition once. `approvePlan` is authoritative when present.
+    let planApproved: boolean | undefined;
+    if (opts.approvePlan) {
+      planApproved = await this.callApprovePlan(opts.approvePlan, effects);
+    } else if (!opts.approveWrite) {
+      // Neither approver ⇒ fail-closed: block the whole plan.
+      planApproved = false;
+    }
+    // else: no approvePlan but approveWrite present ⇒ fall back to per-write (planApproved stays
+    // undefined; each effect goes through applyRequest with approveWrite, ADR-0004 Track A).
+
+    for (const { index, effect } of planSlots) {
+      let result: ActuationResult;
+      if (planApproved === false) {
+        result = {
+          ok: false,
+          changeId: effect.request.changeId,
+          kind: effect.request.kind,
+          error: { code: 'plan_unapproved', message: 'plan requires approval (none granted)' },
+        };
+      } else if (planApproved === true) {
+        // Plan-approved: run the existing gate + provenance, pre-approved (no per-write re-prompt).
+        result = await this.applyRequest(effect.request, () => true);
+      } else {
+        // Per-write fallback (ADR-0004 Track A): approveWrite present, no approvePlan.
+        result = await this.applyRequest(effect.request, opts.approveWrite);
+      }
+      results[index] = result;
+      yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
+    }
+  }
+
+  /** Call the plan approver defensively — a thrown approver fails closed (treated as a reject). */
+  private async callApprovePlan(
+    approve: (effects: PlanEffect[]) => boolean | Promise<boolean>,
+    effects: PlanEffect[],
+  ): Promise<boolean> {
+    try {
+      return await approve(effects);
+    } catch (err) {
+      console.warn('[assist] approvePlan threw; failing closed (plan blocked)', err);
+      return false;
+    }
   }
 
   /** Build turn 1: protocol preamble + ambient `<doc_state>` + the task. */
@@ -862,6 +1084,58 @@ function readsToData(reads: ResolvedContext[]): unknown {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Render a parsed effect command back to a human-auditable command line for the plan preview /
+ * approval card (ADR-0005 Phase 2 + the ADR-0004 "approval card renders the command verbatim"
+ * legibility bonus). When an arg is an effect-arg EXPRESSION (`$var` / `( <pipeline> )`) the
+ * expression is rendered, not its (yet-unresolved) literal slot — so the card shows exactly what the
+ * model asked for, e.g. `set Summary!B2 = ($anz | sum Revenue)`.
+ */
+function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>): string {
+  switch (command.verb) {
+    case 'set': {
+      // The expression form is written with an assignment `=` (`set B2 = ($t | sum X)`); a literal
+      // is verbatim (`set F2 =SUM(A1,A2)` / `set B16 Total`).
+      const value = command.valueExpr ? `= ${renderExprArg(command.valueExpr)}` : command.value;
+      return `set ${command.cell} ${value}`;
+    }
+    case 'suggest':
+      return `suggest "${command.oldText}" => "${command.newText}"`;
+    case 'comment': {
+      const body = command.textExpr ? renderExprArg(command.textExpr) : `"${command.text}"`;
+      return `comment ${command.selector} ${body}`;
+    }
+    case 'reply': {
+      const body = command.textExpr ? renderExprArg(command.textExpr) : `"${command.text}"`;
+      return `reply ${command.commentId} ${body}`;
+    }
+    case 'format': {
+      const props = Object.entries(command.props)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(' ');
+      return `format ${command.range} ${props}`;
+    }
+  }
+}
+
+/** Render an effect-arg `ParsedExpr` back to its source form (`$var` or `( <pipeline> )`). */
+function renderExprArg(expr: ParsedExpr): string {
+  const pipeline = expr.kind === 'let' ? expr.pipeline : expr;
+  const src = pipeline.source;
+  const head =
+    src.src === 'var'
+      ? `$${src.name}`
+      : src.src === 'read'
+        ? `read ${src.selector}`
+        : src.src === 'search'
+          ? `search ${src.text}`
+          : 'outline';
+  const stages = pipeline.stages.map((s) => (s.args ? `${s.name} ${s.args}` : s.name));
+  const body = [head, ...stages].join(' | ');
+  // A bare `$var` with no stages stays bare; anything composed is parenthesized.
+  return src.src === 'var' && stages.length === 0 ? body : `(${body})`;
 }
 
 /**

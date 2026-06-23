@@ -1,6 +1,6 @@
 # ADR-0005 — A composable capability algebra for the assist loop
 
-**Status:** Accepted (2026-06-22) · refines ADR-0004 (command protocol); builds on ADR-0003 (context construction), ADR-0002 (capability model). Scope: the assist path (grounded `streamAssist`). A2A specialist agents unchanged.
+**Status:** Accepted (2026-06-22); Phases 1–2 implemented (2026-06-23) · refines ADR-0004 (command protocol); builds on ADR-0003 (context construction), ADR-0002 (capability model). Scope: the assist path (grounded `streamAssist`). A2A specialist agents unchanged.
 
 ## Context
 
@@ -76,10 +76,25 @@ code**.
   same way — composition moves the gate to *plan* granularity, it does not weaken it.
 
 ## Phased path
-1. **Pure value layer + pipes/bindings over reads** — `read | filter | sum` → a value; bind with
-   `let`. Almost entirely pure ⇒ low risk, immediate analytical power, no new effect surface.
-2. **Plan = composed effect-set + dry-run + one approval** — the executor batches reads and gates the
-   effect terminals; plan-level approval.
+1. **Pure value layer + pipes/bindings over reads** *(implemented)* — `read | filter | sum` → a
+   value; bind with `let`. Almost entirely pure ⇒ low risk, immediate analytical power, no new
+   effect surface. (`packages/contracts/src/expr-grammar.ts` parser; `packages/runtime/src/compose.ts`
+   value model + transform registry + evaluator; `AssistSession.runCommands` evaluates composed
+   read-expressions in the loop.)
+2. **Plan = composed effect-set + dry-run + one approval** *(implemented)* — a turn's effects form a
+   PLAN: type-check (verb's kind ∈ `manifest.actuations`, `$vars` bound, effect-arg expressions
+   parse) → dry-run (execute reads + pure, then RESOLVE each effect — evaluate any expression arg to
+   a `Value`, render it to the param, `compileCommand` → a Zod-validated `ActuationRequest` — **with
+   zero actuation**) → preview the effect-set (`plan-preview` event) → **one** plan-level approval
+   (`approvePlan`, fail-closed: no approver ⇒ the whole plan is blocked) → gated execution (each
+   effect through the existing gate + `isUnsafeFormula` + provenance; per-plan effect cap retained;
+   `changeId` minted once at dry-run). The **keystone connection**: an effect's value/text arg may
+   *consume* a composed value — `set Summary!B2 = ($anz | sum Revenue)`, `set B3 = $total`. The
+   expression layer stays pure — a `$var | set …` inside an arg is rejected, never executed. Plain
+   `ask()` and the ADR-0004 standalone-effect path (per-write `approveWrite`, Track A) are unchanged
+   and remain the fallback when `approvePlan` is absent.
+   (`packages/contracts/src/{expr-grammar,command-grammar}.ts`;
+   `packages/runtime/src/assist-session.ts` `resolveEffect`/`executePlan`/`PlanEffect`.)
 3. **Named skills** — define / call / store parameterized compositions; the compounding library.
 4. **Cross-surface compositions** — read Excel → write PowerPoint; the unit, programmable end-to-end.
 

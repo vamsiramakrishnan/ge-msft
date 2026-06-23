@@ -123,6 +123,80 @@ export function isExpressionLine(line: string): boolean {
   return findTopLevelPipes(trimmed).length > 0;
 }
 
+/* ───────────────────── effect-arg expressions (ADR-0005 Phase 2) ──────────── */
+
+/**
+ * ADR-0005 Phase 2 — an effect verb's value/text argument may be an EXPRESSION evaluated against
+ * the binding env, instead of a literal. The rule is deliberately unambiguous (so back-compat is
+ * total): an effect arg is an expression IFF it is *exactly*
+ *   • a bare `$var` (e.g. `set B3 = $total`), or
+ *   • a parenthesized pipeline `( <pipeline> )` (e.g. `set Summary!B2 = ($anz | sum Revenue)`).
+ * Anything else — plain text, a `=formula`, a value with stray parens — is a LITERAL exactly as
+ * ADR-0004. The expression's `$var` source is allowed (and is the keystone connection); the
+ * runtime evaluates it via {@link evalExpr} at dry-run, NEVER actuating during evaluation.
+ *
+ * The parenthesized form is parsed through the SAME pure {@link parsePipeline}/{@link parseSource}
+ * path as a top-level pipeline, so an effect arg can read+compute but can NEVER smuggle a write: a
+ * pipe INTO or out of an effect verb (`$x | set …`, `read X | set …`) is rejected with
+ * {@link EFFECT_COMPOSE_ERROR} by the existing pure-only guard. Returns `undefined` when the arg is
+ * a literal (the caller keeps the verbatim literal), or a `ParsedExpr` / `ExprParseError`.
+ */
+export function parseEffectArg(arg: string): ParsedExpr | ExprParseError | undefined {
+  // The model writes the expression form with an assignment `=`: `set B3 = $total`,
+  // `set B2 = ($a | sum X)`. Strip a leading `=` ONLY when it is followed by whitespace (the
+  // assignment form) so a literal `=formula` (`=SUM(A1,A2)`, `=C2-D2` — no space after `=`) is
+  // never mistaken for an expression. Comment/reply bodies have no `=`; they pass through unchanged.
+  let trimmed = arg.trim();
+  if (/^=\s/.test(trimmed)) trimmed = trimmed.slice(1).trim();
+
+  // Bare `$var` → a one-stage-less pipeline whose source is the binding.
+  if (isVarName(trimmed)) {
+    return { kind: 'pipeline', source: { src: 'var', name: stripDollar(trimmed) }, stages: [] };
+  }
+  // A fully-parenthesized pipeline `( … )`: the FIRST char is `(` and its matching close is the
+  // LAST char (so a literal that merely contains parens — `=SUM(A1, A2)` — is NOT an expression).
+  if (trimmed.startsWith('(')) {
+    const close = matchingParen(trimmed, 0);
+    // An unbalanced / non-terminal `(` is a malformed expression, NOT a literal — surface a
+    // corrective so the model fixes it, rather than silently writing the raw `(...` string.
+    if (close === -1 || close !== trimmed.length - 1) {
+      return { error: 'unbalanced ( ) in expression — wrap exactly one pipeline: ( <pipeline> )' };
+    }
+    const inner = trimmed.slice(1, close).trim();
+    if (inner === '') return { error: 'empty ( ) expression — put a pipeline inside the parens' };
+    return parsePipeline(inner);
+  }
+  return undefined; // a literal — caller keeps it verbatim (ADR-0004 back-compat)
+}
+
+/**
+ * Index of the `)` matching the `(` at `open`, honoring nested parens but ignoring parens inside a
+ * double-quoted span (so a quoted pipeline arg with a `)` doesn't mis-close). Returns -1 when there
+ * is no matching close.
+ */
+function matchingParen(s: string, open: number): number {
+  let depth = 0;
+  let i = open;
+  while (i < s.length) {
+    const ch = s[i]!;
+    if (ch === '"') {
+      const quoted = scanQuoted(s, i);
+      if (quoted) {
+        i = quoted.end;
+        continue;
+      }
+      return -1; // unterminated quote
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
 /* ───────────────────────────── parsing ───────────────────────────── */
 
 /** A parse error carries a CLI-style corrective message (same shape as the command parser's). */
@@ -240,12 +314,20 @@ function splitTopLevelPipes(text: string): string[] {
   return segments;
 }
 
-/** The indices of every top-level (unquoted) `|` in `text`. */
+/**
+ * The indices of every top-level (unquoted, unparenthesized) `|` in `text`. Pipes inside a
+ * double-quoted span (a quoted comment body) and inside a parenthesized span (an ADR-0005 Phase-2
+ * effect-arg expression, `set X = ($a | sum Y)`) are NOT top-level — so such a `set`/`comment` line
+ * is NOT classified as a standalone pipeline and routes to the ADR-0004 command parser, which then
+ * parses the parenthesized arg as an effect-arg expression.
+ */
 function findTopLevelPipes(text: string): number[] {
   const cuts: number[] = [];
+  let depth = 0;
   let i = 0;
   while (i < text.length) {
-    if (text[i] === '"') {
+    const ch = text[i]!;
+    if (ch === '"') {
       const quoted = scanQuoted(text, i);
       if (quoted) {
         i = quoted.end;
@@ -254,7 +336,9 @@ function findTopLevelPipes(text: string): number[] {
       // Unterminated quote: stop scanning for pipes inside it (treat the rest as literal).
       break;
     }
-    if (text[i] === '|') cuts.push(i);
+    if (ch === '(') depth++;
+    else if (ch === ')' && depth > 0) depth--;
+    else if (ch === '|' && depth === 0) cuts.push(i);
     i++;
   }
   return cuts;

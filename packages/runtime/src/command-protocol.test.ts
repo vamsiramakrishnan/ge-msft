@@ -430,10 +430,11 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     const bridge = new FakeExcelBridge();
     const { client } = fakeClient(['```cmd\nset A1 5\n```', '```cmd\ndone\n```']);
     const session = new AssistSession(bridge, client, { unit });
-    // No approveWrite passed → the loop must refuse the write (the DocBridge confirmation contract).
+    // No approvePlan AND no approveWrite → the ADR-0005 Phase-2 plan is blocked fail-closed (the
+    // DocBridge confirmation contract): the effect is refused and never actuated.
     const events = await collect(session.runCommands('write'));
     const write = loopEvents(events).find((e) => e.type === 'write-result');
-    expect(write).toMatchObject({ result: { ok: false, error: { code: 'unapproved' } } });
+    expect(write).toMatchObject({ result: { ok: false, error: { code: 'plan_unapproved' } } });
     expect(bridge.applied).toHaveLength(0);
   });
 

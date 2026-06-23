@@ -4,7 +4,7 @@
  * (`append-page`). Implements @ge/runtime's DocBridge, so it plugs into the shared AssistSession
  * loop unchanged.
  */
-export { OneNoteBridge } from './onenote-bridge.js';
+export { OneNoteBridge, HANDLED_ACTUATIONS } from './onenote-bridge.js';
 export { ONENOTE_CAPABILITIES } from './capabilities.js';
 export { pageElementToBlocks, pageToContext, type PageElement } from './capture.js';
 export {

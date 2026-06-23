@@ -3,7 +3,13 @@
  * range → table block) + address-anchored `write-cells` writes. Implements @ge/runtime's
  * DocBridge, so it plugs into the shared AssistSession loop unchanged.
  */
-export { ExcelBridge, parseAddress } from './excel-bridge.js';
+export {
+  ExcelBridge,
+  parseAddress,
+  isA1Address,
+  MAX_READ_CELLS,
+  HANDLED_ACTUATIONS,
+} from './excel-bridge.js';
 export { EXCEL_CAPABILITIES } from './capabilities.js';
 export { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
 export {

@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -27,6 +28,12 @@ import { planAppendPage } from './actuate-plan.js';
  *     `Paragraph.richText` → 1.1 (l.170835); `RichText.text` → 1.1 (l.171198).
  *   - `Section.addPage(title)` → 1.1 (l.170042); `Page.addOutline(left, top, html)` → 1.1 (l.170290).
  */
+/**
+ * The exact `ActuationKind`s {@link OneNoteBridge.actuate} handles (ADR-0006 closure source of
+ * truth). The conformance test asserts this equals the advertised manifest's actuation kinds.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['append-page'];
+
 export class OneNoteBridge implements DocBridge {
   readonly surface = 'onenote' as const;
 

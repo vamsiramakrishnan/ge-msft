@@ -8,6 +8,10 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
   surface: 'powerpoint',
   contextKinds: ['selection', 'slide', 'shape', 'document'],
+  // No addressable read verbs: PowerPoint has no `captureDocState`/`readRange`/`searchDocument`
+  // port today, so it advertises no `outline`/`read`/`search` (ADR-0006 closure). Context attach
+  // (`listContext`/`resolveContext`) is unaffected — that is the universal port, not a read verb.
+  reads: [],
   actuations: [
     {
       kind: 'insert-slide',
@@ -17,13 +21,8 @@ export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['slide'],
     },
-    {
-      kind: 'set-speaker-notes',
-      surface: 'powerpoint',
-      title: 'Set speaker notes',
-      description: "Replace the slide's speaker notes with grounded talking points.",
-      reversible: true,
-      appliesTo: ['slide'],
-    },
+    // NOTE: `set-speaker-notes` was advertised but its `actuate()` case ALWAYS degrades — this
+    // Office.js typings version has no `Slide.notes`/notesSlide write path. Un-advertised (ADR-0006
+    // phantom: advertised-but-never-actuates). Re-add once the host typings expose a notes writer.
   ],
 };

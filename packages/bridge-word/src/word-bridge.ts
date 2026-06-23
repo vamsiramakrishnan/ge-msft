@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -31,6 +32,18 @@ import {
   selectionChangedEvent,
 } from './events.js';
 import { OfficeWordHost, type WordHost } from './host-port.js';
+
+/**
+ * The exact `ActuationKind`s {@link WordBridge.actuate} handles — the SINGLE source of truth for
+ * what the switch dispatches, sitting beside it so the two can't drift. The conformance test
+ * (ADR-0006 closure) asserts `set(WORD_CAPABILITIES.actuations) === set(HANDLED_ACTUATIONS)`: a
+ * phantom (advertised-but-unhandled) or a silent handled-but-unadvertised kind fails the build.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
+  'tracked-change',
+  'add-comment',
+  'comment-reply',
+];
 
 /**
  * The Word `DocBridge`. All Office.js access goes through the injectable {@link WordHost} port

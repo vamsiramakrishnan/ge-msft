@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { ChatMessage } from '../../controller.js';
 import type { SourceRef } from '@ge/contracts';
 
@@ -20,28 +21,43 @@ function safeHttpUri(uri: string | undefined): string | undefined {
   }
 }
 
-function Citation({ source }: { source: SourceRef }): JSX.Element {
+/**
+ * A citation pill that opens a source-detail popover (title + uri + locator) so the user can drill
+ * into a grounding source without leaving the thread. The pill is a `button` controlling the detail;
+ * the detail's link is http(s)-only (untrusted source URIs are otherwise rendered inert), and any
+ * external link opens in a new tab. Keyboard-operable and labelled.
+ */
+function Citation({ source, id }: { source: SourceRef; id: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
   const label = source.locator ? `${source.title} · ${source.locator}` : source.title;
   const href = safeHttpUri(source.uri);
-  const body = (
-    <>
-      <span className="cite-d" aria-hidden="true" />
-      <span className="cite-label">{label}</span>
-    </>
-  );
-  return href ? (
-    <a
-      className="cite"
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      title={`${label} — opens in a new tab`}
-    >
-      {body}
-    </a>
-  ) : (
-    <span className="cite" title={label}>
-      {body}
+  const detailId = `cite-detail-${id}`;
+  return (
+    <span className="cite-wrap">
+      <button
+        type="button"
+        className="cite cite-btn"
+        aria-expanded={open}
+        aria-controls={detailId}
+        onClick={() => setOpen((v) => !v)}
+        title={label}
+      >
+        <span className="cite-d" aria-hidden="true" />
+        <span className="cite-label">{label}</span>
+      </button>
+      {open && (
+        <div id={detailId} className="cite-detail" role="group" aria-label={`Source: ${label}`}>
+          <div className="cite-detail-title">{source.title}</div>
+          {source.locator && <div className="cite-detail-loc muted small">{source.locator}</div>}
+          {href ? (
+            <a className="cite-detail-link" href={href} target="_blank" rel="noreferrer noopener">
+              {href}
+            </a>
+          ) : (
+            <div className="muted small">{source.uri ?? 'No link available for this source.'}</div>
+          )}
+        </div>
+      )}
     </span>
   );
 }
@@ -66,7 +82,7 @@ function Message({ message }: { message: ChatMessage }): JSX.Element {
           <div className="cites" aria-label="Citations">
             <span className="cites-h eyebrow">Sources</span>
             {message.sources.map((s, i) => (
-              <Citation key={`${s.title}-${i}`} source={s} />
+              <Citation key={`${s.title}-${i}`} source={s} id={`${message.id}-${i}`} />
             ))}
           </div>
         )}

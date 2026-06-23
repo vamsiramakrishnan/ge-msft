@@ -150,6 +150,10 @@ export const WRITE_VERB_TO_KIND = {
   comment: 'add-comment',     // Word/Excel/PPT
   format:  'format-cells',    // Excel
   reply:   'comment-reply',   // Word/Excel — ADR-0006
+  slide:   'insert-slide',    // PowerPoint — ADR-0006 CLI parity
+  page:    'append-page',     // OneNote   — ADR-0006 CLI parity
+  mail:    'reply-mail',      // Outlook   — ADR-0006 CLI parity
+  post:    'post-message',    // Teams     — ADR-0006 CLI parity
 } satisfies Record<string, ActuationKind>;
 ```
 
@@ -166,6 +170,47 @@ Replies to an existing comment by its host-opaque id. The first bare token is th
   params: { target: { commentId }, text },
 }
 ```
+
+### CLI parity verbs `slide` / `page` / `mail` / `post` (ADR-0006)
+
+These four verbs reach `ActuationKind`s the bridges already **handle and advertise** but that previously had no CLI verb (ADR-0006 closure gaps). Each is gated/approved + provenanced like every other effect (it flows through the Phase-2 plan), is Zod-valid (`ActuationRequestSchema`), and mints its `changeId` exactly once at compile time. All four are **literal-only** this wave (no effect-arg `*Expr`); args are quote-aware via `scanQuoted`.
+
+```
+slide "<title>" ["<bullet>" …]   → insert-slide   { params: { slide: { title, bullets[] } } }        (PowerPoint)
+page  "<title>" "<body>"          → append-page    { params: { target: { matchText: title }, text: body } }  (OneNote)
+mail  "<body>"                    → reply-mail     { params: { mail: { body } } }                       (Outlook)
+post  "<text>"                    → post-message   { params: { text } }                                 (Teams)
+```
+
+The param shapes match each bridge's `actuate()`/plan: PowerPoint composes a slide from `params.slide`, OneNote takes the page title from `target.matchText` and the body from `params.text`, Outlook builds the draft from `params.mail.body`, Teams stages a reviewable post from `params.text`. (`reply` is already the comment-reply verb, so the Outlook reply verb is `mail`.) Each verb is advertised for a surface only when its mapped kind is in `manifest.actuations[]`, exactly as the other write verbs.
+
+### Named skills: `def` / call (ADR-0005 Phase 3)
+
+A **skill** is a named, parameterized composition the model defines once and calls — the compounding library. This wave delivers **parameterized macros** (substitution only; no `for`/`each` iteration yet).
+
+**Definition** (`packages/contracts/src/skill-grammar.ts`):
+
+```
+def <name>(<p1> <p2> …):     ← opens a definition; params are plain or $-prefixed identifiers
+  <body line>                ← normal command / composition lines that may reference $p1 … $pN
+  …
+end                          ← terminates the body
+```
+
+`parseProgramBlock` groups a whole `def … end` block into ONE `ParsedSkillDef = { kind: 'skill-def', name, params[], body[] }` (body lines kept verbatim, blanks/comments skipped). A name that **shadows a built-in verb** is rejected (`def set(...)` → corrective); so are a duplicate param, a nested `def`, an unterminated `def` (no `end`), and a stray `end`. AST + Zod: `ParsedSkillDefSchema`, `ParsedSkillCallSchema`.
+
+**Call** — `<name> <arg1> <arg2> …` where `<name>` is a **registered** skill (positional, quote-aware args). `parseProgramBlock` takes the runtime's live skill-name set, so a line whose first token is a registered skill parses as a `ParsedSkillCall` rather than an unknown-verb error; an unregistered name still degrades to the ADR-0004 did-you-mean corrective (back-compat).
+
+**Runtime** (`packages/runtime/src/skill-registry.ts` + `assist-session.ts`):
+
+- A **`SkillRegistry`** holds definitions in an in-session `Map` (durable host-metadata persistence is a tracked follow-up). A `def` line **registers** the skill (no execution → a `skill-registered` confirmation result), validating name/params/body (undeclared `$param` references — other than body-local `let $x` bindings — are rejected at define time).
+- A **call** binds `args[i] → params[i]` (exact arity; mismatch / undefined name → corrective), **textually substitutes** each declared `$param` token in the body lines, and re-parses the expanded lines scoped to the registry. The expanded entries run through the **existing Phase-2 plan machinery** (type-check → dry-run → `plan-preview` → one `approvePlan` → gated execute). **A skill call is therefore just a plan: it introduces no new gate, no approval bypass, no effect that skips dry-run.** New `CommandLoopEvent`s: `skill-registered`, `skill-expanded`.
+
+**Safety** (substitution is textual into already-parsed-and-type-checked entries):
+
+- An argument may **not** contain a newline or a code fence (\`\`\`) — so a substituted arg can never inject a new command line or truncate the synthetic fence on re-parse. Only **whole declared-identifier** `$param` tokens are replaced (`$ab` never matches a `$a` binding).
+- Every effect among the expanded lines still flows through dry-run + `approvePlan` + the actuation gate; substitution changes *what* a line says, never *whether* it gates. Reject the plan ⇒ the whole expansion is blocked (nothing actuates).
+- **Bounded:** the per-turn command budget is decremented for *every* processed entry (including those a call expands into), so an expansion cannot exceed `maxCommandsPerTurn`; the per-plan write cap bounds effects; the skill body is capped (`maxBodyLines`); and skill-call nesting is depth-bounded (`MAX_SKILL_DEPTH`) so a self-/mutually-recursive skill terminates with a corrective rather than recursing unboundedly.
 
 ### Read-scoping by `manifest.reads` (ADR-0006)
 

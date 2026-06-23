@@ -13,6 +13,11 @@ export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'comment',
   'format',
   'reply',
+  // ADR-0006 CLI parity effect verbs (insert-slide / append-page / reply-mail / post-message).
+  'slide',
+  'page',
+  'mail',
+  'post',
 ]);
 
 /** The Phase-1 corrective when the model tries to compose an effect. */

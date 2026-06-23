@@ -18,10 +18,13 @@ import {
   asChangeId,
   isCommandParseError,
   isProgramExpr,
+  isProgramSkillCall,
+  isProgramSkillDef,
   parseProgramBlock,
   WRITE_VERB_TO_KIND,
   type ParsedExpr,
   type PipeSource,
+  type ProgramEntry,
   type WriteVerb,
 } from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
@@ -37,6 +40,7 @@ import {
 } from './command-protocol.js';
 import { evalExpr, renderValue, type RunRead, type Value } from './compose.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
+import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -98,6 +102,18 @@ export type CommandLoopEvent =
   | { type: 'command'; turn: number; command: ParsedCommand; compiled: CompiledCommand }
   /** A composed read-expression (ADR-0005) evaluated to a Value (or a corrective error). */
   | { type: 'expr-result'; turn: number; expr: ParsedExpr; result: Value | { error: string } }
+  /** ADR-0005 Phase 3 — a `def` registered a skill (no execution) or was rejected. */
+  | {
+      type: 'skill-registered';
+      turn: number;
+      name: string;
+      result: { ok: boolean; message: string };
+    }
+  /**
+   * ADR-0005 Phase 3 — a skill CALL expanded into its substituted body lines (which then run as
+   * part of THIS turn's plan), or was rejected (undefined name / arity / bad expansion).
+   */
+  | { type: 'skill-expanded'; turn: number; name: string; lines: string[] }
   /** One read executed and its (host-content) result, carried as data. */
   | { type: 'read-result'; turn: number; intentLabel: string; result: unknown }
   /**
@@ -129,6 +145,26 @@ export interface PlanEffect {
   /** The verbatim command line the model emitted, for the human-auditable preview. */
   command: string;
 }
+
+/**
+ * The mutable accumulator for ONE turn's plan as {@link AssistSession.processEntry} walks its
+ * entries (so a skill-call expansion can feed its own entries through the same logic, in order):
+ * the ordered `results` (one per processed entry/effect slot), the `planSlots` to gate after a
+ * single approval, the per-turn write cap, and the `done` flag.
+ */
+interface PlanState {
+  turn: number;
+  results: unknown[];
+  planSlots: Array<{ index: number; effect: PlanEffect }>;
+  maxWrites: number;
+  /** Per-turn command budget (ADR-0004): decremented for EVERY processed entry, including those a
+   * skill call expands into — so expansion can't exceed the cap (security finding). */
+  budget: number;
+  done: boolean;
+}
+
+/** Max nesting depth for skill-call expansion — bounds recursive/mutually-recursive skills. */
+const MAX_SKILL_DEPTH = 8;
 
 /** Options for {@link AssistSession.runCommands}. */
 export interface RunCommandsOptions {
@@ -219,6 +255,13 @@ export class AssistSession {
    * whole {@link runCommands} loop so `$vars` persist across turns within a task.
    */
   private readonly composeEnv = new Map<string, Value>();
+  /**
+   * ADR-0005 Phase 3 — the in-session skill registry. A `def` registers a parameterized
+   * composition; a call expands (binds args → params, substitutes `$param` tokens) into lines that
+   * re-parse and run through the SAME Phase-2 plan machinery. Lives across the {@link runCommands}
+   * loop's turns; durable host-metadata persistence is a follow-up.
+   */
+  private readonly skills = new SkillRegistry();
   /**
    * The advertised actuation kinds for the active surface, captured at the start of a
    * {@link runCommands} loop. The ADR-0005 Phase-2 type-check rejects an effect whose verb maps to
@@ -532,7 +575,9 @@ export class AssistSession {
       }
       answer += turnText;
 
-      const { found, entries } = parseProgramBlock(turnText);
+      // ADR-0005 Phase 3 — parse the block scoped to the live skill registry, so a line whose first
+      // token is a registered skill parses as a CALL (not an unknown verb) and `def … end` groups.
+      const { found, entries } = parseProgramBlock(turnText, this.skills.names());
 
       // No fenced block → re-prompt ONCE (not an error). A second consecutive no-fence ends the loop.
       if (!found) {
@@ -554,94 +599,32 @@ export class AssistSession {
       // reserves an ordered slot in `results` filled after the single approval (pass 2, below).
       const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
       const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
-      const results: unknown[] = [];
-      /** Effect slots: where in `results` each gated effect's outcome goes (filled post-approval). */
-      const planSlots: Array<{ index: number; effect: PlanEffect }> = [];
-      let done = false;
+      // `budget` is the per-turn command cap; `processEntry` decrements it for EVERY processed
+      // entry, including a skill call's expanded body — so expansion cannot exceed the cap.
+      const plan: PlanState = {
+        turn,
+        results: [],
+        planSlots: [],
+        maxWrites,
+        budget: maxCommands,
+        done: false,
+      };
       if (entries.length > maxCommands) {
         yield {
           type: 'capped',
           turn,
           reason: `command block truncated to ${maxCommands} (got ${entries.length})`,
         };
-        results.push({
+        plan.results.push({
           error: `too many commands in one block; only the first ${maxCommands} ran`,
         });
       }
-      for (const entry of entries.slice(0, maxCommands)) {
-        // ADR-0005 composed read-expression: evaluate to a Value (pure — no gate/approval), feed
-        // the rendered value back as the result. `$vars` persist in `composeEnv` across turns.
-        if (isProgramExpr(entry)) {
-          const result = await this.evalExpression(entry);
-          results.push('error' in result ? result : { value: renderValue(result) });
-          yield { type: 'expr-result', turn, expr: entry, result };
-          continue;
-        }
-        if (isCommandParseError(entry)) {
-          // A corrective parse error feeds straight back; the model self-corrects next turn.
-          results.push({ error: entry.error });
-          continue;
-        }
-        const command = entry;
-
-        // Control + reads run inline (pure / non-actuating), exactly as ADR-0004.
-        if (command.verb === 'done') {
-          done = true;
-          break;
-        }
-        if (command.verb === 'help') {
-          results.push({ help: renderGrammarPrompt(capabilities) });
-          continue;
-        }
-        if (command.verb === 'outline' || command.verb === 'read' || command.verb === 'search') {
-          const compiled = compileCommand(command, {
-            surface: this.bridge.surface,
-            mintChangeId: () => asChangeId(crypto.randomUUID()),
-          });
-          yield { type: 'command', turn, command, compiled };
-          if (isCompileError(compiled) || compiled.kind !== 'read') {
-            results.push({ error: isCompileError(compiled) ? compiled.error : 'expected a read' });
-            continue;
-          }
-          const { label, result } = await this.runReadIntent(compiled.intent);
-          results.push(result);
-          yield { type: 'read-result', turn, intentLabel: label, result };
-          continue;
-        }
-
-        // EFFECT verb — type-check + dry-run (resolve, do NOT actuate). Reserve an ordered slot.
-        const slotIndex = results.length;
-        results.push(undefined); // placeholder, filled after approval (pass 2)
-
-        // Per-turn write cap: a capped effect never enters the plan (never reaches the gate).
-        if (planSlots.length >= maxWrites) {
-          const capped: ActuationResult = {
-            ok: false,
-            changeId: asChangeId(crypto.randomUUID()),
-            kind: WRITE_VERB_TO_KIND[command.verb],
-            error: { code: 'write_cap', message: `write cap (${maxWrites}/turn) reached` },
-          };
-          results[slotIndex] = capped;
-          yield { type: 'capped', turn, reason: `write cap ${maxWrites}/turn` };
-          continue;
-        }
-
-        const resolved = await this.resolveEffect(command);
-        if ('error' in resolved) {
-          // A type error / unbound-$var / failed compile → a corrective result for THIS effect; the
-          // valid rest still form the plan (never a partially executed malformed effect).
-          results[slotIndex] = { error: resolved.error };
-          yield { type: 'command', turn, command, compiled: { error: resolved.error } };
-          continue;
-        }
-        yield {
-          type: 'command',
-          turn,
-          command,
-          compiled: { kind: 'write', request: resolved.request },
-        };
-        planSlots.push({ index: slotIndex, effect: resolved });
+      for (const entry of entries) {
+        if (plan.budget <= 0) break;
+        for await (const ev of this.processEntry(entry, plan, capabilities, 0)) yield ev;
+        if (plan.done) break;
       }
+      const { results, planSlots, done } = plan;
 
       // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then
       // execute each effect through the existing gate + provenance. Fail-closed throughout.
@@ -661,6 +644,160 @@ export class AssistSession {
     }
 
     yield { type: 'exhausted', turns: maxTurns, answer };
+  }
+
+  /**
+   * Process ONE program entry into the turn's {@link PlanState}, yielding the loop's narration
+   * events. Dispatch:
+   *   • expression (ADR-0005 Phase 1) → evaluate to a Value (pure; no gate), push the rendered result;
+   *   • parse error → a corrective result the model self-corrects against;
+   *   • `done`/`help` (control) → stop / echo the grammar;
+   *   • read verb → dispatch to the bridge, push the read result;
+   *   • effect verb → type-check + dry-run into a `planSlot` (gated AFTER the single plan approval);
+   *   • `skill-def` (ADR-0005 Phase 3) → REGISTER the skill (no execution → a confirmation result);
+   *   • `skill-call` → EXPAND (bind args → params, substitute `$param`), re-parse the expanded lines
+   *     scoped to the registry, and recursively process EACH expanded entry into the SAME plan — so
+   *     a skill call is just a plan: its effects flow through dry-run + approvePlan + the gate exactly
+   *     like inline effects, with NO new bypass.
+   *
+   * Defensive throughout: a bad expansion / undefined name / arity mismatch is a corrective result,
+   * never a thrown loop.
+   */
+  private async *processEntry(
+    entry: ProgramEntry,
+    plan: PlanState,
+    capabilities: CapabilityManifest,
+    depth: number,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const { turn } = plan;
+
+    // Per-turn command budget (ADR-0004): EVERY processed entry — top-level or expanded from a
+    // skill call — costs one unit, so a skill expansion can never exceed the per-turn cap. When the
+    // budget is exhausted the rest of the (expanded) entries are refused, never actuated.
+    if (plan.budget <= 0) {
+      plan.results.push({ error: 'per-turn command budget exhausted' });
+      yield { type: 'capped', turn, reason: 'command budget exhausted' };
+      return;
+    }
+    plan.budget -= 1;
+
+    // ADR-0005 Phase 3 — a `def` registers a skill (no execution). Confirmation result only.
+    if (isProgramSkillDef(entry)) {
+      const reg = this.skills.register(entry);
+      const message = reg.ok
+        ? `registered skill "${reg.name}"(${reg.params.map((p) => `$${p}`).join(' ')})${
+            reg.redefined ? ' (redefined)' : ''
+          }`
+        : reg.error;
+      plan.results.push(reg.ok ? { skill: message } : { error: message });
+      yield { type: 'skill-registered', turn, name: entry.name, result: { ok: reg.ok, message } };
+      return;
+    }
+
+    // ADR-0005 Phase 3 — a skill CALL expands into its substituted body lines, which then run as
+    // part of THIS turn's plan (re-parsed scoped to the registry so a body may call another skill).
+    if (isProgramSkillCall(entry)) {
+      // Bound nesting: a self-/mutually-recursive skill (`def loop(): loop end`) would otherwise
+      // expand forever (no effect ⇒ the write cap never trips). Refuse past MAX_SKILL_DEPTH with a
+      // corrective — never a thrown/stack-overflow loop. (The command budget bounds breadth.)
+      if (depth >= MAX_SKILL_DEPTH) {
+        plan.results.push({
+          error: `skill nesting too deep (>${MAX_SKILL_DEPTH}) calling "${entry.name}" — possible recursion`,
+        });
+        yield { type: 'skill-expanded', turn, name: entry.name, lines: [] };
+        return;
+      }
+      const expanded = this.skills.expand(entry);
+      if (!expanded.ok) {
+        plan.results.push({ error: expanded.error });
+        yield { type: 'skill-expanded', turn, name: entry.name, lines: [] };
+        return;
+      }
+      yield { type: 'skill-expanded', turn, name: entry.name, lines: expanded.lines };
+      const reparsed = reparseExpandedLines(expanded.lines, this.skills.names());
+      for (const sub of reparsed) {
+        if (plan.budget <= 0) break;
+        // A `def`/`call` inside an expansion would be a structural surprise; the parser already
+        // rejects a nested `def`, and a nested call re-parses as a call here (depth-bounded above).
+        // Each expanded entry flows through the SAME plan logic — effects still gate.
+        for await (const ev of this.processEntry(sub, plan, capabilities, depth + 1)) yield ev;
+        if (plan.done) return;
+      }
+      return;
+    }
+
+    // ADR-0005 composed read-expression: evaluate to a Value (pure — no gate/approval), feed the
+    // rendered value back as the result. `$vars` persist in `composeEnv` across turns.
+    if (isProgramExpr(entry)) {
+      const result = await this.evalExpression(entry);
+      plan.results.push('error' in result ? result : { value: renderValue(result) });
+      yield { type: 'expr-result', turn, expr: entry, result };
+      return;
+    }
+    if (isCommandParseError(entry)) {
+      // A corrective parse error feeds straight back; the model self-corrects next turn.
+      plan.results.push({ error: entry.error });
+      return;
+    }
+    const command = entry;
+
+    // Control + reads run inline (pure / non-actuating), exactly as ADR-0004.
+    if (command.verb === 'done') {
+      plan.done = true;
+      return;
+    }
+    if (command.verb === 'help') {
+      plan.results.push({ help: renderGrammarPrompt(capabilities) });
+      return;
+    }
+    if (command.verb === 'outline' || command.verb === 'read' || command.verb === 'search') {
+      const compiled = compileCommand(command, {
+        surface: this.bridge.surface,
+        mintChangeId: () => asChangeId(crypto.randomUUID()),
+      });
+      yield { type: 'command', turn, command, compiled };
+      if (isCompileError(compiled) || compiled.kind !== 'read') {
+        plan.results.push({ error: isCompileError(compiled) ? compiled.error : 'expected a read' });
+        return;
+      }
+      const { label, result } = await this.runReadIntent(compiled.intent);
+      plan.results.push(result);
+      yield { type: 'read-result', turn, intentLabel: label, result };
+      return;
+    }
+
+    // EFFECT verb — type-check + dry-run (resolve, do NOT actuate). Reserve an ordered slot.
+    const slotIndex = plan.results.length;
+    plan.results.push(undefined); // placeholder, filled after approval (pass 2)
+
+    // Per-turn write cap: a capped effect never enters the plan (never reaches the gate).
+    if (plan.planSlots.length >= plan.maxWrites) {
+      const capped: ActuationResult = {
+        ok: false,
+        changeId: asChangeId(crypto.randomUUID()),
+        kind: WRITE_VERB_TO_KIND[command.verb],
+        error: { code: 'write_cap', message: `write cap (${plan.maxWrites}/turn) reached` },
+      };
+      plan.results[slotIndex] = capped;
+      yield { type: 'capped', turn, reason: `write cap ${plan.maxWrites}/turn` };
+      return;
+    }
+
+    const resolved = await this.resolveEffect(command);
+    if ('error' in resolved) {
+      // A type error / unbound-$var / failed compile → a corrective result for THIS effect; the
+      // valid rest still form the plan (never a partially executed malformed effect).
+      plan.results[slotIndex] = { error: resolved.error };
+      yield { type: 'command', turn, command, compiled: { error: resolved.error } };
+      return;
+    }
+    yield {
+      type: 'command',
+      turn,
+      command,
+      compiled: { kind: 'write', request: resolved.request },
+    };
+    plan.planSlots.push({ index: slotIndex, effect: resolved });
   }
 
   /**
@@ -1117,6 +1254,16 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
         .join(' ');
       return `format ${command.range} ${props}`;
     }
+    case 'slide': {
+      const bullets = command.bullets.map((b) => `"${b}"`).join(' ');
+      return bullets ? `slide "${command.title}" ${bullets}` : `slide "${command.title}"`;
+    }
+    case 'page':
+      return `page "${command.title}" "${command.body}"`;
+    case 'mail':
+      return `mail "${command.body}"`;
+    case 'post':
+      return `post "${command.text}"`;
   }
 }
 

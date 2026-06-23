@@ -50,13 +50,15 @@ describe('checkCapabilityClosure (ADR-0006)', () => {
   });
 
   it('flags a gap: a handled kind reachable by no CLI write verb', () => {
-    // post-message is a handled effect but no write verb maps to it → a tracked gap, not a phantom.
+    // set-speaker-notes is a handled effect but no write verb maps to it → a tracked gap, not a
+    // phantom. (post-message/insert-slide/append-page/reply-mail are now reachable via the
+    // post/slide/page/mail verbs — ADR-0006 CLI parity — so they are no longer gaps.)
     const report = checkCapabilityClosure({
-      manifest: manifest(['post-message']),
-      handledKinds: ['post-message'],
+      manifest: manifest(['set-speaker-notes']),
+      handledKinds: ['set-speaker-notes'],
       readPorts: [],
     });
-    expect(report.gaps).toEqual(['post-message']);
+    expect(report.gaps).toEqual(['set-speaker-notes']);
     expect(report.phantoms).toEqual([]); // it IS advertised AND handled — not a phantom
   });
 

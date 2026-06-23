@@ -40,6 +40,10 @@ describe('command-grammar — verb map', () => {
       comment: 'add-comment',
       format: 'format-cells',
       reply: 'comment-reply',
+      slide: 'insert-slide',
+      page: 'append-page',
+      mail: 'reply-mail',
+      post: 'post-message',
     });
   });
 });
@@ -522,11 +526,66 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('comment A1 "note"'),
       parseCommandLine('format A1 bold=true'),
       parseCommandLine('reply {3f2a} "ok"'),
+      parseCommandLine('slide "Title" "b1" "b2"'),
+      parseCommandLine('page "Notes" "body"'),
+      parseCommandLine('mail "reply body"'),
+      parseCommandLine('post "hello team"'),
       parseCommandLine('done'),
       parseCommandLine('help'),
     ]) {
       expect(isCommandParseError(cmd)).toBe(false);
       expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
     }
+  });
+});
+
+describe('command-grammar — ADR-0006 CLI parity verbs (slide/page/mail/post)', () => {
+  it('slide: title + bullets (quote-aware)', () => {
+    expect(parseCommandLine('slide "Q3" "up 12%" "churn down"')).toEqual({
+      verb: 'slide',
+      title: 'Q3',
+      bullets: ['up 12%', 'churn down'],
+    });
+  });
+  it('slide: title only (zero bullets)', () => {
+    expect(parseCommandLine('slide "Just a title"')).toEqual({
+      verb: 'slide',
+      title: 'Just a title',
+      bullets: [],
+    });
+  });
+  it('slide: empty/missing title is corrective; a bare unquoted token is corrective', () => {
+    expect(isCommandParseError(parseCommandLine('slide ""'))).toBe(true);
+    expect(isCommandParseError(parseCommandLine('slide'))).toBe(true);
+    expect(isCommandParseError(parseCommandLine('slide bareToken'))).toBe(true);
+  });
+  it('page: title + body', () => {
+    expect(parseCommandLine('page "Meeting" "Decisions: ship"')).toEqual({
+      verb: 'page',
+      title: 'Meeting',
+      body: 'Decisions: ship',
+    });
+  });
+  it('page: needs exactly two quoted strings', () => {
+    expect(isCommandParseError(parseCommandLine('page "only title"'))).toBe(true);
+    expect(isCommandParseError(parseCommandLine('page "a" "b" "c"'))).toBe(true);
+  });
+  it('mail: a single quoted body', () => {
+    expect(parseCommandLine('mail "Thanks — confirming."')).toEqual({
+      verb: 'mail',
+      body: 'Thanks — confirming.',
+    });
+    expect(isCommandParseError(parseCommandLine('mail'))).toBe(true);
+    expect(isCommandParseError(parseCommandLine('mail ""'))).toBe(true);
+  });
+  it('post: a single quoted text', () => {
+    expect(parseCommandLine('post "summary of decisions"')).toEqual({
+      verb: 'post',
+      text: 'summary of decisions',
+    });
+    expect(isCommandParseError(parseCommandLine('post unquoted'))).toBe(true);
+  });
+  it('escapes are honored inside quoted args', () => {
+    expect(parseCommandLine('post "say \\"hi\\""')).toEqual({ verb: 'post', text: 'say "hi"' });
   });
 });

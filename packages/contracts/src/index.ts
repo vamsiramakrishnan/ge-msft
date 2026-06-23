@@ -18,3 +18,4 @@ export * from './capability.js';
 export * from './capability-closure.js';
 export * from './command-grammar.js';
 export * from './expr-grammar.js';
+export * from './skill-grammar.js';

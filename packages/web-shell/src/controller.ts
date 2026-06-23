@@ -29,6 +29,29 @@ export interface PlanEffect {
   request: ActuationRequest;
   /** The verbatim CLI line shown on the plan-approval card. */
   command: string;
+  /**
+   * Optional dry-run preview the runtime computes while planning (reads + pure transforms, no
+   * writes). Purely presentational: the plan-approval card expands an effect to show the resolved
+   * value and/or a before→after diff so the reviewer sees what the effect will produce before it
+   * runs. Absent for effects the dry-run could not resolve (e.g. a not-yet-readable target).
+   */
+  dryRun?: EffectDryRun;
+}
+
+/**
+ * The resolved preview of a single plan effect, produced by the runtime's no-write dry-run. View
+ * data only — it never gates or actuates; the plan-approval card renders it to make each effect's
+ * outcome legible before the user approves the whole plan.
+ */
+export interface EffectDryRun {
+  /** A short human label for the effect's target, e.g. "Sales!F2" or "“liability cap”". */
+  target?: string;
+  /** The resolved value the effect will write/insert, e.g. "=C2-D2" or "$184,000". */
+  resolved?: string;
+  /** The current value at the target before the effect, for a before→after preview. */
+  before?: string;
+  /** The value the target will hold after the effect, for a before→after preview. */
+  after?: string;
 }
 
 /**
@@ -127,6 +150,55 @@ export interface Proposal {
   label: string;
   status: 'pending' | 'applying' | 'applied' | 'blocked' | 'degraded' | 'failed';
   detail?: string;
+  /**
+   * Provenance of an applied write, surfaced for the drill-down (agent, identity, sources,
+   * timestamp). Presentational only — set when the turn that produced the write carried provenance.
+   */
+  provenance?: ProvenancePayload;
+  /**
+   * An optional Excel linked-entity card to render under a `write-cells`/`set-entity-card`
+   * proposal (mockup `2-excel.html`'s `◆ Northwind Cloud` card). View data only — enriched from the
+   * unit, never stored in the workbook.
+   */
+  entityCard?: EntityCard;
+}
+
+/**
+ * A read-only, presentational rendering of an Excel linked-entity card (the mockup's
+ * `◆ <entity>` expandable card). The bridge owns the real linked-entity write; this is just the
+ * panel's view of the enrichment loaded from the unit, never persisted into the file.
+ */
+export interface EntityCard {
+  title: string;
+  subtitle?: string;
+  rows: { key: string; value: string }[];
+  /** The "loaded from the unit · not stored in the workbook" footnote. */
+  footnote?: string;
+}
+
+/**
+ * An in-session skill (ADR-0005 `def`): a named, parameterized program the user can invoke, which
+ * expands into a reviewable plan. View-model only — the controller's `skills` presenter is
+ * READ-ONLY: it surfaces what was registered (the `def` confirmation) and lets the view preview a
+ * skill's plan via the existing fail-closed plan gate. It carries NO execution/gate logic of its
+ * own; invoking a skill still routes through `runCommands` and the plan-approval card.
+ */
+export interface Skill {
+  /** Skill name as registered via `def`, e.g. "flag-vendor-risk". */
+  name: string;
+  /** A one-line description of what the skill does. */
+  description?: string;
+  /** The declared parameters, in order, e.g. [{ name: "vendor", example: "Northwind" }]. */
+  params: SkillParam[];
+  /** True once the `def` registration was confirmed by the runtime (shows the "registered" badge). */
+  registered?: boolean;
+  /** The verbatim `def` line the runtime echoed back, shown as the registration confirmation. */
+  def?: string;
+}
+
+export interface SkillParam {
+  name: string;
+  example?: string;
 }
 
 /**
@@ -185,6 +257,12 @@ export interface PanelState {
   pendingWrite?: PendingWrite;
   /** The composed plan awaiting ONE plan-level approval, if the loop is gated on it (ADR-0005). */
   pendingPlan?: PendingPlan;
+  /**
+   * In-session skills (ADR-0005 `def`) registered for this surface, surfaced so the user can see
+   * what's invokable and preview a skill's plan. Optional/back-compat: absent means "no skills
+   * registered". READ-ONLY in the controller — populated by `registerSkills`, never gated here.
+   */
+  skills?: Skill[];
   busy: boolean;
   error?: string;
 }
@@ -633,6 +711,37 @@ export class PanelController {
     this.set({ suggestions: this.state.suggestions.filter((s) => s.id !== id) });
   }
 
+  // ---- skills (ADR-0005 `def`) — READ-ONLY presenters ---------------------
+
+  /**
+   * Surface the in-session skills registered for this surface (the `def` confirmations). Purely a
+   * view presenter: it records what is invokable so the panel can list it and preview a skill's
+   * plan. It adds NO execution or gate logic — invoking a skill still goes through `runCommands` and
+   * the fail-closed plan-approval card. Replaces the skills slice wholesale (latest registration
+   * wins), mirroring how the runtime re-emits the full `def` set.
+   */
+  registerSkills(skills: Skill[]): void {
+    this.set({ skills });
+  }
+
+  /** The currently-registered skills (read-only snapshot). */
+  listSkills(): Skill[] {
+    return this.state.skills ?? [];
+  }
+
+  /**
+   * Invoke a registered skill with bound argument values. This is a thin presenter over the EXISTING
+   * agentic command loop: it composes the skill call as a task line and routes it through
+   * `runCommands`, so the skill's plan still lands on the fail-closed plan-approval card and nothing
+   * actuates without explicit approval. It introduces no new gate of its own. No-op if the named
+   * skill is not registered.
+   */
+  async invokeSkill(name: string, args: Record<string, string> = {}): Promise<void> {
+    const skill = (this.state.skills ?? []).find((s) => s.name === name);
+    if (!skill) return;
+    await this.runCommands(renderSkillCall(skill, args));
+  }
+
   // ---- internals ----------------------------------------------------------
 
   private set(patch: Partial<PanelState>): void {
@@ -665,6 +774,19 @@ export class PanelController {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Render a skill invocation as the verbatim task line the agentic loop receives, e.g.
+ * `flag-vendor-risk vendor="Northwind" tier="1"`. Pure/total — params with no bound value fall back
+ * to their declared example, then to an empty quoted operand, so the call is always well-formed.
+ */
+function renderSkillCall(skill: Skill, args: Record<string, string>): string {
+  const parts = skill.params.map((p) => {
+    const value = args[p.name] ?? p.example ?? '';
+    return `${p.name}="${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  });
+  return [skill.name, ...parts].join(' ');
 }
 
 /**

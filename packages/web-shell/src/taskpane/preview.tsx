@@ -11,6 +11,7 @@ import {
   FIXTURE_PLAN,
   FIXTURE_PENDING_WRITE,
   FIXTURE_PROPOSALS,
+  FIXTURE_SKILLS,
   FIXTURE_ERROR,
   PREVIEW_SURFACES,
 } from './preview-fixtures.js';
@@ -31,6 +32,7 @@ interface Toggles {
   chips: boolean;
   messages: boolean;
   suggestions: boolean;
+  skills: boolean;
   steps: boolean;
   plan: boolean;
   write: boolean;
@@ -43,6 +45,7 @@ const ALL_ON: Toggles = {
   chips: true,
   messages: true,
   suggestions: true,
+  skills: true,
   steps: true,
   plan: true,
   write: true,
@@ -59,6 +62,7 @@ function buildState(t: Toggles): PanelState {
     proposals: t.proposals ? FIXTURE_PROPOSALS : [],
     changes: [],
     steps: t.steps ? FIXTURE_STEPS : [],
+    ...(t.skills ? { skills: FIXTURE_SKILLS } : {}),
     ...(t.write ? { pendingWrite: FIXTURE_PENDING_WRITE } : {}),
     ...(t.plan ? { pendingPlan: FIXTURE_PLAN } : {}),
     busy: t.busy,
@@ -94,6 +98,10 @@ export function makeMockController(state: PanelState): PanelController {
     applyProposal: async (id: ChangeId) => log('applyProposal')(id),
     dismissSuggestion: (id: string) => log('dismissSuggestion')(id),
     onAutomate: (q: string) => log('onAutomate')(q),
+    registerSkills: (skills: unknown) => log('registerSkills')(skills),
+    listSkills: () => state.skills ?? [],
+    invokeSkill: async (name: string, args: Record<string, string>) =>
+      log('invokeSkill')(name, args),
     onContext: () => undefined,
     onSuggest: () => undefined,
   };
@@ -104,6 +112,7 @@ const TOGGLE_LABELS: ReadonlyArray<[keyof Toggles, string]> = [
   ['chips', 'Context'],
   ['messages', 'Thread'],
   ['suggestions', 'Suggestions'],
+  ['skills', 'Skills'],
   ['steps', 'Run steps'],
   ['plan', 'Plan'],
   ['write', 'Write'],
@@ -167,6 +176,7 @@ function Preview(): JSX.Element {
                 chips: false,
                 messages: true,
                 suggestions: false,
+                skills: false,
                 steps: false,
                 plan: false,
                 write: false,

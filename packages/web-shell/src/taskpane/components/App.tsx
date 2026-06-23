@@ -9,6 +9,7 @@ import { ProposalCard } from './ProposalCard.js';
 import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
+import { SkillsPanel } from './SkillsPanel.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -77,6 +78,11 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
           ))}
         </section>
       )}
+
+      <SkillsPanel
+        skills={state.skills ?? []}
+        onInvoke={(name, args) => void controller.invokeSkill(name, args)}
+      />
 
       <main className="thread-region" aria-label="Conversation and activity">
         <MessageThread messages={state.messages} />

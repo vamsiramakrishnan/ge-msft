@@ -1,14 +1,17 @@
 import type { Surface } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
+import type { ProvenancePayload } from '@ge/contracts';
 import type {
   ChatMessage,
   ContextChip,
+  EffectDryRun,
   PanelState,
   PendingPlan,
   PendingWrite,
   PlanEffect,
   Proposal,
   RunStep,
+  Skill,
   Suggestion,
 } from '../controller.js';
 
@@ -108,30 +111,44 @@ const planEffect = (
   kind: PlanEffect['request']['kind'],
   command: string,
   params: PlanEffect['request']['params'],
+  dryRun?: EffectDryRun,
 ): PlanEffect => ({
   command,
   request: { changeId: asChangeId(id), kind, surface: 'excel', params },
+  ...(dryRun ? { dryRun } : {}),
 });
 
 export const FIXTURE_PLAN: PendingPlan = {
   summary: '3 writes + 2 comments',
   effects: [
-    planEffect('p-1', 'write-cells', 'set Sales!F2 =C2-D2', {
-      target: { range: 'Sales!F2' },
-      cells: [['=C2-D2']],
-    }),
-    planEffect('p-2', 'write-cells', 'set Sales!F3 =C3-D3', {
-      target: { range: 'Sales!F3' },
-      cells: [['=C3-D3']],
-    }),
-    planEffect('p-3', 'write-cells', 'set Sales!F4 =C4-D4', {
-      target: { range: 'Sales!F4' },
-      cells: [['=C4-D4']],
-    }),
-    planEffect('p-4', 'add-comment', 'comment Sales!F2 "Below margin policy — review"', {
-      target: { range: 'Sales!F2' },
-      text: 'Below margin policy — review',
-    }),
+    planEffect(
+      'p-1',
+      'write-cells',
+      'set Sales!F2 =C2-D2',
+      { target: { range: 'Sales!F2' }, cells: [['=C2-D2']] },
+      { target: 'Sales!F2', resolved: '=C2-D2', before: '(empty)', after: '$184,000' },
+    ),
+    planEffect(
+      'p-2',
+      'write-cells',
+      'set Sales!F3 =C3-D3',
+      { target: { range: 'Sales!F3' }, cells: [['=C3-D3']] },
+      { target: 'Sales!F3', resolved: '=C3-D3', before: '(empty)', after: '$71,500' },
+    ),
+    planEffect(
+      'p-3',
+      'write-cells',
+      'set Sales!F4 =C4-D4',
+      { target: { range: 'Sales!F4' }, cells: [['=C4-D4']] },
+      { target: 'Sales!F4', resolved: '=C4-D4', before: '(empty)', after: '$22,800' },
+    ),
+    planEffect(
+      'p-4',
+      'add-comment',
+      'comment Sales!F2 "Below margin policy — review"',
+      { target: { range: 'Sales!F2' }, text: 'Below margin policy — review' },
+      { target: 'Sales!F2', resolved: 'Below margin policy — review' },
+    ),
     planEffect('p-5', 'add-comment', 'comment Sales!F4 "Confirm residency clause"', {
       target: { range: 'Sales!F4' },
       text: 'Confirm residency clause',
@@ -145,32 +162,88 @@ export const FIXTURE_PENDING_WRITE: PendingWrite = {
   command: 'suggest "SLA of 99.5%" => "SLA of 99.5% (below the 99.9% policy)"',
 };
 
+/** Provenance stamped onto an applied write — drives the proposal drill-down fixture. */
+export const FIXTURE_PROVENANCE: ProvenancePayload = {
+  agentId: 'contract-review-agent@v2',
+  identity: 'v.k@acme.com',
+  timestamp: '2026-06-23T09:14:02.000Z',
+  sources: [
+    { title: 'Vendor Risk Policy v4', uri: 'https://example.com/policy/v4', locator: '§3.2' },
+    {
+      title: 'MSA — Northwind Cloud',
+      uri: 'https://example.com/contracts/northwind',
+      locator: 'cl. 11',
+    },
+  ],
+  contentHash: 'sha256:4f1a9c2e7b08d3c6a51e0f9b2d7c4a8e3f6b1d0c9a2e5b8f',
+};
+
 export const FIXTURE_PROPOSALS: Proposal[] = [
   {
     changeId: asChangeId('c-1'),
     kind: 'tracked-change',
     params: {
-      target: { matchText: 'liability cap' },
-      text: 'liability cap (no data-breach carve-out)',
+      target: { matchText: 'SLA of 99.5%' },
+      text: 'SLA of 99.9% (FSI standard)',
     },
-    label: 'Flag the liability cap gap as a tracked change',
+    label: 'Raise the SLA to policy as a tracked change',
     status: 'pending',
   },
   {
     changeId: asChangeId('c-2'),
+    kind: 'write-cells',
+    params: { target: { range: 'Sales!F2' }, cells: [['=C2-D2']] },
+    label: 'Write the net exposure formula to F2',
+    status: 'pending',
+    entityCard: {
+      title: 'Northwind Cloud',
+      subtitle: 'Entity · enriched by Gemini Enterprise',
+      rows: [
+        { key: 'Contract status', value: 'Active · renews Nov 26' },
+        { key: 'SLA', value: '99.5% (below policy)' },
+        { key: 'ISO 27001', value: 'Valid' },
+        { key: 'Open risks', value: '2 (liability cap)' },
+      ],
+      footnote: 'Loaded from the unit · not stored in the workbook',
+    },
+  },
+  {
+    changeId: asChangeId('c-3'),
     kind: 'add-comment',
     params: { target: { matchText: 'renews' }, text: 'Renewal window opens 90 days prior.' },
     label: 'Add a renewal-window comment',
     status: 'applied',
     detail: 'Landed at cl. 11 · reversible',
+    provenance: FIXTURE_PROVENANCE,
   },
   {
-    changeId: asChangeId('c-3'),
+    changeId: asChangeId('c-4'),
     kind: 'write-cells',
     params: { target: { range: 'Sales!G2' }, cells: [['=F2*1.1']] },
     label: 'Write the adjusted exposure to G2',
     status: 'degraded',
     detail: 'Anchor drifted — surfaced as a panel item instead.',
+  },
+];
+
+export const FIXTURE_SKILLS: Skill[] = [
+  {
+    name: 'flag-vendor-risk',
+    description:
+      'Read the vendor row, compare SLA + liability against policy, and propose a flag plan.',
+    params: [
+      { name: 'vendor', example: 'Northwind Cloud' },
+      { name: 'tier', example: '1' },
+    ],
+    registered: true,
+    def: 'def flag-vendor-risk(vendor, tier) { read row; compare policy; suggest + comment }',
+  },
+  {
+    name: 'draft-renewal-note',
+    description: 'Draft a short, grounded renewal-risk note and land it as a tracked change.',
+    params: [{ name: 'vendor', example: 'Northwind Cloud' }],
+    registered: true,
+    def: 'def draft-renewal-note(vendor) { ground unit; suggest tracked-change }',
   },
 ];
 
@@ -186,6 +259,7 @@ export const FIXTURE_STATE: PanelState = {
   steps: FIXTURE_STEPS,
   pendingWrite: FIXTURE_PENDING_WRITE,
   pendingPlan: FIXTURE_PLAN,
+  skills: FIXTURE_SKILLS,
   busy: true,
   error: FIXTURE_ERROR,
 };

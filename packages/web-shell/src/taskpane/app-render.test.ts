@@ -132,4 +132,82 @@ describe('<App/> render smoke', () => {
     // While busy, the send button flips to Cancel.
     expect(container.querySelector('.snd.cancel')).not.toBeNull();
   });
+
+  it('renders the skills surface with each skill signature, def confirmation and an invoke action', () => {
+    render();
+    const skills = container.querySelector('.skills[aria-label="Skills"]');
+    expect(skills).not.toBeNull();
+    expect(skills?.querySelectorAll('.skill').length).toBe(FIXTURE_STATE.skills?.length);
+    // The first skill renders its signature, registration badge, verbatim def and an Invoke button.
+    expect(skills?.querySelector('.skill-sig')?.textContent).toContain('flag-vendor-risk');
+    expect(skills?.querySelector('.skill-badge')?.textContent).toContain('registered');
+    expect(skills?.querySelector('.skill-def')?.textContent).toContain('def flag-vendor-risk');
+    expect(skills?.querySelector('[aria-label="Invoke flag-vendor-risk"]')).not.toBeNull();
+    // Param fields are bindable inputs prefilled from the declared examples.
+    const param = skills?.querySelector<HTMLInputElement>('input.skill-param-input');
+    expect(param?.value).toBe('Northwind Cloud');
+  });
+
+  it('expands a plan effect to reveal its target and dry-run before→after preview', () => {
+    render();
+    const plan = container.querySelector('.plan-approval');
+    // Each effect head is a collapsed, expandable button.
+    const head = plan?.querySelector<HTMLButtonElement>('.plan-effect-head');
+    expect(head?.getAttribute('aria-expanded')).toBe('false');
+    act(() => head?.click());
+    expect(head?.getAttribute('aria-expanded')).toBe('true');
+    const detail = plan?.querySelector('.plan-effect-detail');
+    expect(detail).not.toBeNull();
+    // The first effect's dry-run resolves a before→after preview.
+    expect(detail?.querySelector('.diff-after')?.textContent).toBe('$184,000');
+    expect(detail?.textContent).toContain('Sales!F2');
+  });
+
+  it('opens a citation source-detail popover with title and link', () => {
+    render();
+    const cite = container.querySelector<HTMLButtonElement>('.cite-btn');
+    expect(cite?.getAttribute('aria-expanded')).toBe('false');
+    act(() => cite?.click());
+    expect(cite?.getAttribute('aria-expanded')).toBe('true');
+    const detail = container.querySelector('.cite-detail');
+    expect(detail).not.toBeNull();
+    expect(detail?.querySelector('.cite-detail-title')).not.toBeNull();
+    expect(detail?.querySelector('a.cite-detail-link')).not.toBeNull();
+  });
+
+  it('renders the Excel formula-first body and entity card on a write-cells proposal', () => {
+    render();
+    const proposals = container.querySelector('.proposals');
+    // Formula-first: the value renders as a code formula against its range target.
+    const formula = proposals?.querySelector('.proposal-formula .formula');
+    expect(formula?.textContent).toBe('=C2-D2');
+    expect(proposals?.querySelector('.cell-target')?.textContent).toBe('Sales!F2');
+    // The linked-entity card treatment.
+    const entity = proposals?.querySelector('.entity-card');
+    expect(entity).not.toBeNull();
+    expect(entity?.querySelector('.entity-title')?.textContent).toBe('Northwind Cloud');
+  });
+
+  it('renders the Word redline body on a tracked-change proposal', () => {
+    render();
+    const redline = container.querySelector('.proposal-redline');
+    expect(redline).not.toBeNull();
+    expect(redline?.querySelector('del.redline-del')?.textContent).toBe('SLA of 99.5%');
+    expect(redline?.querySelector('ins.redline-ins')?.textContent).toBe(
+      'SLA of 99.9% (FSI standard)',
+    );
+  });
+
+  it('drills into the provenance of an applied write', () => {
+    render();
+    const toggle = container.querySelector<HTMLButtonElement>('.prov-toggle');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle?.click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    const prov = container.querySelector('.provenance[aria-label="Change provenance"]');
+    expect(prov).not.toBeNull();
+    expect(prov?.textContent).toContain('contract-review-agent@v2');
+    expect(prov?.textContent).toContain('v.k@acme.com');
+    expect(prov?.querySelectorAll('.prov-sources li').length).toBe(2);
+  });
 });

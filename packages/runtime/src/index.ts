@@ -9,6 +9,7 @@ export {
   type CompactionOptions,
   type ContextLoopOptions,
   type CommandLoopEvent,
+  type PlanEffect,
   type RunCommandsOptions,
   DOC_STATE_REF_ID,
   READ_REF_PREFIX,

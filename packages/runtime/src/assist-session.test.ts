@@ -11,7 +11,7 @@ import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
 import type { DocStateSnapshot } from '@ge/contracts';
 import { AssistSession, DOC_STATE_REF_ID, READ_REF_PREFIX } from './assist-session.js';
-import type { CommandLoopEvent } from './assist-session.js';
+import type { CommandLoopEvent, PlanEffect } from './assist-session.js';
 import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
 
@@ -702,6 +702,7 @@ describe('AssistSession — event-fed context model (construct → commit)', () 
 class ComposeBridge implements DocBridge {
   readonly surface = 'excel' as const;
   readRangeCalls: string[] = [];
+  applied: ActuationRequest[] = [];
   getCapabilities(): CapabilityManifest {
     return {
       surface: 'excel',
@@ -718,6 +719,7 @@ class ComposeBridge implements DocBridge {
     return Promise.resolve([]);
   }
   actuate(request: ActuationRequest): Promise<ActuationResult> {
+    this.applied.push(request);
     return Promise.resolve({ ok: true, changeId: request.changeId, kind: request.kind });
   }
   readRange(a1: string): Promise<ResolvedContext[]> {
@@ -824,5 +826,211 @@ describe('AssistSession.runCommands — ADR-0005 composition (pure)', () => {
     });
     // No write-result event — composition never actuated.
     expect(events.some((e) => e.type === 'write-result')).toBe(false);
+  });
+});
+
+/* ───────────────── ADR-0005 Phase 2 — gated effect composition (plan) ───────── */
+
+const planEvents = (
+  events: Array<SseEvent | CommandLoopEvent>,
+): Array<Extract<CommandLoopEvent, { type: 'plan-preview' }>> =>
+  events.filter((e) => e.type === 'plan-preview') as Array<
+    Extract<CommandLoopEvent, { type: 'plan-preview' }>
+  >;
+
+const writeResults = (
+  events: Array<SseEvent | CommandLoopEvent>,
+): Array<Extract<CommandLoopEvent, { type: 'write-result' }>> =>
+  events.filter((e) => e.type === 'write-result') as Array<
+    Extract<CommandLoopEvent, { type: 'write-result' }>
+  >;
+
+describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect composition)', () => {
+  it('resolves an effect-arg expression at dry-run to a concrete number write', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      // Bind a table, then write a composed value into a cell — the keystone connection.
+      '```cmd\nlet $t = read Sales!A1:B5\n```',
+      '```cmd\nset Summary!B2 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let previewed: PlanEffect[] | undefined;
+    const events = await collectLoop(
+      session.runCommands('write the total', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    // The plan-preview carried the dry-run effect with the RESOLVED value: 100 + 250 + 50 = 400.
+    const preview = planEvents(events);
+    expect(preview).toHaveLength(1);
+    expect(previewed?.[0]?.request).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] },
+    });
+    expect(previewed?.[0]?.command).toBe('set Summary!B2 = ($t | sum amount)');
+    // Approved → it actuated exactly once.
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]?.params.cells).toEqual([['400']]);
+  });
+
+  it('type-check rejects an unsupported verb before execution (no write)', async () => {
+    // Word-only verb `suggest` on an Excel surface that does not advertise tracked-change.
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nsuggest "a" => "b"\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('try unsupported', { approvePlan: () => true }),
+    );
+    // No plan-preview (nothing resolvable), no actuation; the model got a corrective in ```result```.
+    expect(planEvents(events)).toHaveLength(0);
+    expect(bridge.applied).toHaveLength(0);
+    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
+      | Extract<CommandLoopEvent, { type: 'command' }>
+      | undefined;
+    expect(cmdErr?.compiled).toMatchObject({ error: expect.stringContaining('not supported') });
+  });
+
+  it('type-check rejects an effect with an unbound $var before the gate (no write)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset B2 = ($missing | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    // The unbound $var fails at dry-run resolution → no plan effect, no actuation.
+    expect(planEvents(events)).toHaveLength(0);
+    expect(bridge.applied).toHaveLength(0);
+    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
+      | Extract<CommandLoopEvent, { type: 'command' }>
+      | undefined;
+    expect(cmdErr?.compiled).toMatchObject({ error: expect.stringContaining('unbound') });
+  });
+
+  it('dry-run produces the effect-set without actuating; reject → nothing actuates', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nset A1 1\nset A2 2\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let sawEffects = 0;
+    const events = await collectLoop(
+      session.runCommands('two writes', {
+        approvePlan: (effects) => {
+          sawEffects = effects.length;
+          return false; // reject the whole plan
+        },
+      }),
+    );
+
+    // The plan was previewed with BOTH effects (dry-run resolved them)…
+    expect(sawEffects).toBe(2);
+    expect(planEvents(events)[0]?.effects).toHaveLength(2);
+    // …but the reject blocked every one — zero actuations, each a corrective plan_unapproved.
+    expect(bridge.applied).toHaveLength(0);
+    const writes = writeResults(events);
+    expect(writes).toHaveLength(2);
+    expect(writes.every((w) => w.result.error?.code === 'plan_unapproved')).toBe(true);
+  });
+
+  it('approve → every effect is gated + actuated (one approval for the whole set)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\nset A2 2\nset A3 3\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let calls = 0;
+    await collectLoop(
+      session.runCommands('three writes', {
+        approvePlan: () => {
+          calls += 1;
+          return true;
+        },
+      }),
+    );
+    // ONE plan approval, three gated actuations.
+    expect(calls).toBe(1);
+    expect(bridge.applied).toHaveLength(3);
+  });
+
+  it('no approver ⇒ the whole plan is blocked (fail-closed); nothing actuates', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('write')); // no approvePlan / approveWrite
+    expect(bridge.applied).toHaveLength(0);
+    expect(writeResults(events)[0]?.result.error?.code).toBe('plan_unapproved');
+  });
+
+  it('back-compat: approveWrite (no approvePlan) falls back to ADR-0004 per-write approval', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nset A1 1\nset A2 2\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let perWrite = 0;
+    await collectLoop(
+      session.runCommands('two writes', {
+        approveWrite: () => {
+          perWrite += 1;
+          return true;
+        },
+      }),
+    );
+    // Per-write approver called once per effect (ADR-0004 Track A), both actuated.
+    expect(perWrite).toBe(2);
+    expect(bridge.applied).toHaveLength(2);
+  });
+
+  it('an effect-arg that resolves to a table is rejected (scalar required, no write)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      // No scalar terminal → the pipeline value is a table; writing it into one cell is rejected.
+      '```cmd\nset B2 = (read Sales!A1:B5 | filter region=East)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(planEvents(events)).toHaveLength(0);
+    expect(bridge.applied).toHaveLength(0);
+    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
+      | Extract<CommandLoopEvent, { type: 'command' }>
+      | undefined;
+    expect(cmdErr?.compiled).toMatchObject({ error: expect.stringContaining('scalar') });
+  });
+
+  it('the per-turn write cap holds (capped effects never reach the gate)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\nset A2 2\nset A3 3\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('three writes', { approvePlan: () => true, maxWritesPerTurn: 2 }),
+    );
+    expect(bridge.applied).toHaveLength(2); // third capped, never planned/actuated
+    expect(planEvents(events)[0]?.effects).toHaveLength(2);
+    expect(events.some((e) => e.type === 'capped')).toBe(true);
   });
 });

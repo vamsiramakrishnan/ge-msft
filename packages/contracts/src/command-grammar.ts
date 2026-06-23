@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import type { ActuationKind, CapabilityManifest } from './capability.js';
 import {
+  ParsedExprSchema,
   isExpressionLine,
+  isExprParseError,
+  parseEffectArg,
   parseExpressionLine,
   type ExprParseError,
   type ParsedExpr,
@@ -62,16 +65,23 @@ export const ALL_VERBS = [
  * A successfully parsed command line — a discriminated union on `verb`. The selector/args
  * are surface-agnostic strings here; the runtime compiler maps them onto surface-specific
  * targets (`set` cell → `target.range`; `suggest` oldText → `target.matchText`).
+ *
+ * ADR-0005 Phase 2 — the effect verbs `set`/`comment`/`reply` may carry an optional `valueExpr`
+ * (for `set`) or `textExpr` (for `comment`/`reply`): a `ParsedExpr` the runtime evaluates against
+ * the binding env at dry-run, rendering the resulting `Value` into the concrete `value`/`text`
+ * param. When the arg is a LITERAL (plain text or `=formula`, the ADR-0004 case) the `*Expr` field
+ * is absent and `value`/`text` carries the verbatim literal. `suggest` and `format` stay
+ * literal-only this wave (no `*Expr` field).
  */
 export type ParsedCommand =
   | { verb: 'outline' }
   | { verb: 'read'; selector: string }
   | { verb: 'search'; text: string }
-  | { verb: 'set'; cell: string; value: string }
+  | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'suggest'; oldText: string; newText: string }
-  | { verb: 'comment'; selector: string; text: string }
+  | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'format'; range: string; props: Record<string, string> }
-  | { verb: 'reply'; commentId: string; text: string }
+  | { verb: 'reply'; commentId: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -79,11 +89,26 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('outline') }),
   z.object({ verb: z.literal('read'), selector: z.string() }),
   z.object({ verb: z.literal('search'), text: z.string() }),
-  z.object({ verb: z.literal('set'), cell: z.string(), value: z.string() }),
+  z.object({
+    verb: z.literal('set'),
+    cell: z.string(),
+    value: z.string(),
+    valueExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
   z.object({ verb: z.literal('suggest'), oldText: z.string(), newText: z.string() }),
-  z.object({ verb: z.literal('comment'), selector: z.string(), text: z.string() }),
+  z.object({
+    verb: z.literal('comment'),
+    selector: z.string(),
+    text: z.string(),
+    textExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
   z.object({ verb: z.literal('format'), range: z.string(), props: z.record(z.string()) }),
-  z.object({ verb: z.literal('reply'), commentId: z.string(), text: z.string() }),
+  z.object({
+    verb: z.literal('reply'),
+    commentId: z.string(),
+    text: z.string(),
+    textExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -174,8 +199,13 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       if (cell === '' || value === '') {
         return { error: 'set needs a cell and a value — usage: set <A1> <value|=formula>' };
       }
-      // value is the FULL remainder — commas/spaces/`=SUM(A1, A2)` preserved verbatim.
-      return { verb: 'set', cell, value };
+      // ADR-0005 Phase 2: the value may be an effect-arg EXPRESSION (`$var` or `( <pipeline> )`)
+      // evaluated against the env at dry-run; otherwise it is a LITERAL (commas/spaces/`=SUM(A1,
+      // A2)` preserved verbatim, ADR-0004 back-compat).
+      const expr = parseEffectArg(value);
+      if (expr === undefined) return { verb: 'set', cell, value };
+      if (isExprParseError(expr)) return expr;
+      return { verb: 'set', cell, value, valueExpr: expr };
     }
 
     case 'suggest': {
@@ -260,15 +290,24 @@ function parseComment(rest: string): ParsedCommand | CommandParseError {
     i += sp;
   }
 
-  // Separator whitespace, then the quoted comment body.
+  // Separator whitespace, then the comment body: a quoted literal OR (ADR-0005 Phase 2) an
+  // effect-arg expression (`$var` / `( <pipeline> )`) evaluated against the env at dry-run.
   while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  if (selector === '') return { error: usage };
+
+  const bodyRest = rest.slice(i);
+  if (rest[i] !== '"') {
+    // Not a quoted string → try an effect-arg expression; if it is neither, it is malformed.
+    const expr = parseEffectArg(bodyRest);
+    if (expr === undefined) return { error: usage };
+    if (isExprParseError(expr)) return expr;
+    return { verb: 'comment', selector, text: '', textExpr: expr };
+  }
+
   const body = scanQuoted(rest, i);
   if (!body) return { error: usage };
-
   // Anything after the closing quote (other than whitespace) is malformed.
   if (rest.slice(body.end).trim() !== '') return { error: usage };
-
-  if (selector === '') return { error: usage };
   return { verb: 'comment', selector, text: body.value };
 }
 
@@ -323,15 +362,23 @@ function parseReply(rest: string): ParsedCommand | CommandParseError {
   const commentId = rest.slice(i, i + sp);
   i += sp;
 
-  // Separator whitespace, then the quoted reply body.
+  // Separator whitespace, then the reply body: a quoted literal OR (ADR-0005 Phase 2) an
+  // effect-arg expression (`$var` / `( <pipeline> )`) evaluated against the env at dry-run.
   while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  if (commentId === '') return { error: usage };
+
+  const bodyRest = rest.slice(i);
+  if (rest[i] !== '"') {
+    const expr = parseEffectArg(bodyRest);
+    if (expr === undefined) return { error: usage };
+    if (isExprParseError(expr)) return expr;
+    return { verb: 'reply', commentId, text: '', textExpr: expr };
+  }
+
   const body = scanQuoted(rest, i);
   if (!body) return { error: usage };
-
   // Anything after the closing quote (other than whitespace) is malformed.
   if (rest.slice(body.end).trim() !== '') return { error: usage };
-
-  if (commentId === '') return { error: usage };
   return { verb: 'reply', commentId, text: body.value };
 }
 

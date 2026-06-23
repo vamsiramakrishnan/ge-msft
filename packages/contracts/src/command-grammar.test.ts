@@ -98,6 +98,100 @@ describe('command-grammar — set quoting (value is the full remainder)', () => 
   });
 });
 
+describe('command-grammar — ADR-0005 Phase 2 effect-arg expressions', () => {
+  it('a bare $var value is an expression (not a literal)', () => {
+    expect(parseCommandLine('set B3 = $total')).toMatchObject({
+      verb: 'set',
+      cell: 'B3',
+      valueExpr: { kind: 'pipeline', source: { src: 'var', name: 'total' }, stages: [] },
+    });
+  });
+
+  it('a parenthesized pipeline value is an expression', () => {
+    expect(parseCommandLine('set Summary!B2 = ($anz | sum Revenue)')).toMatchObject({
+      verb: 'set',
+      cell: 'Summary!B2',
+      valueExpr: {
+        kind: 'pipeline',
+        source: { src: 'var', name: 'anz' },
+        stages: [{ name: 'sum', args: 'Revenue' }],
+      },
+    });
+  });
+
+  it('a read-sourced parenthesized pipeline value is an expression', () => {
+    expect(parseCommandLine('set B5 = (read Sales!A1:B9 | sum amount)')).toMatchObject({
+      verb: 'set',
+      valueExpr: {
+        kind: 'pipeline',
+        source: { src: 'read', selector: 'Sales!A1:B9' },
+        stages: [{ name: 'sum', args: 'amount' }],
+      },
+    });
+  });
+
+  it('a literal value (formula / plain text) is NOT an expression (back-compat)', () => {
+    expect(parseCommandLine('set Sales!F2 =SUM(A1, A2)')).toEqual({
+      verb: 'set',
+      cell: 'Sales!F2',
+      value: '=SUM(A1, A2)',
+    });
+    expect(parseCommandLine('set B16 Total Revenue')).toEqual({
+      verb: 'set',
+      cell: 'B16',
+      value: 'Total Revenue',
+    });
+  });
+
+  it('an effect-arg expr cannot smuggle a write — the effect stays a transform STAGE (runtime rejects it)', () => {
+    // `( $x | set ... )` parses structurally into a pipeline whose source is `$x` and whose
+    // stage is a (non-existent) transform named `set` — it is NEVER a command. The runtime
+    // evaluator rejects the `set` stage with the pure-only corrective at eval time, so it can
+    // read+compute but never write. The KEY safety property here: the parser produced an
+    // EXPRESSION, not a nested `set` command.
+    const cmd = parseCommandLine('set B3 = ($x | set A1 1)');
+    expect(cmd).toMatchObject({
+      verb: 'set',
+      cell: 'B3',
+      valueExpr: {
+        kind: 'pipeline',
+        source: { src: 'var', name: 'x' },
+        stages: [{ name: 'set', args: 'A1 1' }],
+      },
+    });
+  });
+
+  it('comment/reply text may be a $var or parenthesized pipeline; a quoted body stays literal', () => {
+    expect(parseCommandLine('comment Sales!A1 $note')).toMatchObject({
+      verb: 'comment',
+      selector: 'Sales!A1',
+      text: '',
+      textExpr: { kind: 'pipeline', source: { src: 'var', name: 'note' } },
+    });
+    expect(parseCommandLine('reply {3f2a} ($t | count)')).toMatchObject({
+      verb: 'reply',
+      commentId: '{3f2a}',
+      textExpr: { stages: [{ name: 'count', args: '' }] },
+    });
+    // A quoted body is still a literal (no textExpr).
+    expect(parseCommandLine('comment Sales!A1 "anomalous spike"')).toEqual({
+      verb: 'comment',
+      selector: 'Sales!A1',
+      text: 'anomalous spike',
+    });
+  });
+
+  it('an empty ( ) expression is a corrective error', () => {
+    expect(parseCommandLine('set B3 = ()')).toMatchObject({ error: expect.any(String) });
+  });
+
+  it('an unbalanced ( expression is a corrective error (not a silent literal write)', () => {
+    expect(parseCommandLine('set B3 = ($a | sum amount')).toMatchObject({
+      error: expect.stringContaining('unbalanced'),
+    });
+  });
+});
+
 describe('command-grammar — suggest quoting (embedded quotes, escapes, separators)', () => {
   it('parses two quoted strings separated by =>', () => {
     expect(parseCommandLine('suggest "old text" => "new text"')).toEqual({

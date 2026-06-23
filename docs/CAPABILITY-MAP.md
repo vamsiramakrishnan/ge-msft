@@ -81,11 +81,20 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 | **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` (native compose or base64 deck) |
 | **append-page** | OneNote | ✅ `bridge-onenote` (synthesis + inline citation tags) |
 | **reply-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayReplyForm`) |
+| **create-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayNewMessageForm`; `compose` verb, unaddressed by default) |
 | **post-message** (+ Adaptive Card) | Teams | ✅ `teams` (reviewable compose) |
 | insert-text, replace-selection, insert-ooxml | Word/PPT | 🟡 modeled — **not advertised** by any bridge (ADR-0006: never advertise what `actuate()` can't do) |
 | fill-content-control | Word | 🟡 modeled — **not advertised** (no `actuate()` case) |
 | set-speaker-notes | PowerPoint | 🟡 modeled — **not advertised** (no host write path in current typings; always degraded, so un-advertised per ADR-0006) |
-| create-mail, create-event, create-task | Outlook/Graph | 🟡 modeled — **not advertised** (only `reply-mail` is handled) |
+| create-event, create-task | Outlook/Graph | 🟡 modeled — **not advertised** (no `actuate()` case yet) |
+
+**Every write verb maps to a CLI verb and is composition-bearing.** `WRITE_VERB_TO_KIND`:
+`set`→write-cells, `suggest`→tracked-change, `comment`→add-comment, `format`→format-cells,
+`reply`→comment-reply, `slide`→insert-slide, `page`→append-page, `mail`→reply-mail,
+`post`→post-message, `compose`→create-mail. The free-text slot of every text-bearing verb accepts a
+`( <pipeline> )` / `$var` expression evaluated at dry-run (ADR-0005), so a composed value can feed a
+cell, a comment, a slide's bullets (table rows → bullets), a page, an email, or a chat post — not
+just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
 
 ### Plane B · estate actions (separately authorized)
 | Action | Target | Status | Notes |
@@ -108,7 +117,7 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 | Context budget + inline/reference/upload strategy | ✅ | `@ge/content` `recommendStrategy`/`ContextBudget` |
 | Connector (data-store) scoping | 🟡 | request shape built; no UI enumeration |
 | Capability **detection** (runtime) | 🟡 | `detectSurface()` (host→bridge) built; per-capability intersection gate not |
-| Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. Client `ProvenanceStore` view-model built for all. |
+| Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. A landed-but-untraced write is now **observable**: `ActuationResult.provenanceDropped` (had a record, failed to persist) and `provenanceMissing` (no payload at all → unattributed) are surfaced on the run-step instead of swallowed. Client `ProvenanceStore` view-model built for all. |
 | Code-execution file upload (`addContextFile`, v1) | ⬜ | needs a v1 client in `@ge/gemini-client` |
 | A2UI render + action→actuation routing | ⬜ | designed (`api/discoveryengine/a2ui.md`); renderer not built |
 | Audit | 🟡 | client-direct: provenance-in-artifact is the trail; optional thin sink undecided |
@@ -116,11 +125,13 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 ## The gaps that matter (to "map all capabilities" fully)
 1. **Sideload shell.** The React/Vite/manifest layer over the `web-shell` core — the last mile to
    load in a real host. (The core logic is built + tested.)
-2. **Broader CLI parity (tracked gaps, ADR-0006).** Several handled actuations have no CLI verb yet
-   (`insert-slide`/`append-page`/`reply-mail`/`post-message`). These are tracked gaps on the closure
-   allow-list, not phantoms — they're reachable from the bridge but not yet from the model's verb
-   grammar. **(Closed:** the read-port gap — PowerPoint/OneNote/Outlook/Teams now serve their
-   `outline`/`read`/`search` verbs through real bridge ports; see the reads table above.)
+2. **CLI parity — closed.** Every handled actuation now has a model-facing CLI verb
+   (`slide`/`page`/`mail`/`post`/`compose`), and every text-bearing effect verb is
+   composition-bearing (ADR-0005 expressions in the free-text slot). The remaining write frontier is
+   not *more verbs* but **deeper host operations** per surface (Excel tables/charts, Word styles/OOXML,
+   PowerPoint shapes, Outlook calendar) and **cross-surface composition** (a multi-bridge router so a
+   value read on one surface can be written on another — today an `AssistSession` owns one bridge;
+   live cross-surface needs Graph/the research unit because each add-in instance runs in one host).
 3. **Estate writes.** Reads are first-class (`@ge/graph-client`); Graph/SharePoint *writes*
    (send mail, create event, upload/checkout) are modeled but not wired.
 4. **Engine paths unbuilt:** v1 `addContextFile` (code-execution uploads) and the A2UI renderer.
@@ -128,6 +139,7 @@ when its bridge method exists — conformance-enforced per surface (`capability-
    ADR-0002 is not.
 
 Net: **All six surface bridges (Word/Excel/PowerPoint/OneNote/Outlook/Teams) have a truthful,
-conformance-enforced read+write set; the estate read/search path is live via `@ge/graph-client`.**
-The remaining holes are the sideload shell, broader CLI verb parity (tracked gaps), estate writes,
-and the two engine extras.
+conformance-enforced read+write set, every write verb is CLI-reachable and composition-bearing, and
+the estate read/search path is live via `@ge/graph-client`.** The remaining holes are the sideload
+shell + live-host validation, cross-surface composition, deeper per-surface host operations, estate
+writes, and the two engine extras.

@@ -25,47 +25,39 @@ export function ProposalCard({ proposals, onApply }: ProposalCardProps): JSX.Ele
   if (proposals.length === 0) return null;
   return (
     <section className="proposals" aria-label="Proposed changes">
-      {proposals.map((p) => {
-        const settled =
-          p.status === 'applied' ||
-          p.status === 'blocked' ||
-          p.status === 'failed' ||
-          p.status === 'degraded';
-        return (
-          <div key={p.changeId} className={`card status-${p.status}`}>
-            <div className="card-top" aria-hidden="true" />
-            <div className="card-in">
-              <div className="cat">Proposed change</div>
-              <div className="t">{p.label}</div>
-              <div className="w">
-                Lands as a reversible, provenanced {p.kind} change — accept or reject it in the
-                host.
-              </div>
-              <div className={`status-line status-${p.status}`}>{STATUS_TEXT[p.status]}</div>
-              {p.detail && <div className="muted small">{p.detail}</div>}
-              {p.status === 'pending' && (
-                <div className="act">
-                  <button type="button" className="btn pr" onClick={() => onApply(p.changeId)}>
-                    Accept change
-                  </button>
-                </div>
-              )}
-              {settled && p.status !== 'applied' && (
-                <div className="act">
-                  <button
-                    type="button"
-                    className="btn pr"
-                    onClick={() => onApply(p.changeId)}
-                    disabled
-                  >
-                    Accept change
-                  </button>
-                </div>
-              )}
+      {proposals.map((p) => (
+        <div
+          key={p.changeId}
+          className={`card status-${p.status}`}
+          role="region"
+          aria-label={`Proposed ${p.kind} change: ${p.label}`}
+        >
+          <div className="card-top" aria-hidden="true" />
+          <div className="card-in">
+            <div className="cat">Proposed change</div>
+            <div className="t">{p.label}</div>
+            <div className="w">
+              Lands as a reversible, provenanced {p.kind} change — accept or reject it in the host.
             </div>
+            <div className={`status-line status-${p.status}`}>{STATUS_TEXT[p.status]}</div>
+            {p.detail && <div className="muted small">{p.detail}</div>}
+            {p.status === 'pending' && (
+              <div className="act">
+                <button type="button" className="btn pr" onClick={() => onApply(p.changeId)}>
+                  Accept change
+                </button>
+              </div>
+            )}
+            {p.status === 'applying' && (
+              <div className="act">
+                <button type="button" className="btn pr" disabled aria-disabled="true">
+                  Applying…
+                </button>
+              </div>
+            )}
           </div>
-        );
-      })}
+        </div>
+      ))}
     </section>
   );
 }

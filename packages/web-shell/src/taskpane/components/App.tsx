@@ -42,7 +42,7 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
   };
 
   return (
-    <div className="panel">
+    <div className="panel" data-surface={surface} aria-busy={state.busy}>
       <header className="ph">
         <div className="pht">
           <div className="av" aria-hidden="true" />
@@ -60,7 +60,7 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
       />
 
       {state.suggestions.length > 0 && (
-        <div className="suggestions" aria-label="Suggestions">
+        <section className="suggestions" aria-label="Suggestions">
           {state.suggestions.map((s) => (
             <button
               key={s.id}
@@ -75,35 +75,37 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
               {s.detail && <span className="s-detail">{s.detail}</span>}
             </button>
           ))}
-        </div>
+        </section>
       )}
 
-      <MessageThread messages={state.messages} />
+      <main className="thread-region" aria-label="Conversation and activity">
+        <MessageThread messages={state.messages} />
 
-      <RunSteps steps={state.steps} />
+        <RunSteps steps={state.steps} />
 
-      <PlanApprovalCard
-        plan={state.pendingPlan}
-        onApprove={() => controller.approvePlan()}
-        onReject={() => controller.rejectPlan()}
-      />
+        <PlanApprovalCard
+          plan={state.pendingPlan}
+          onApprove={() => controller.approvePlan()}
+          onReject={() => controller.rejectPlan()}
+        />
 
-      <WriteApprovalCard
-        pending={state.pendingWrite}
-        onApprove={() => controller.approvePendingWrite()}
-        onReject={() => controller.rejectPendingWrite()}
-      />
+        <WriteApprovalCard
+          pending={state.pendingWrite}
+          onApprove={() => controller.approvePendingWrite()}
+          onReject={() => controller.rejectPendingWrite()}
+        />
 
-      <ProposalCard
-        proposals={state.proposals}
-        onApply={(id: ChangeId) => void controller.applyProposal(id)}
-      />
+        <ProposalCard
+          proposals={state.proposals}
+          onApply={(id: ChangeId) => void controller.applyProposal(id)}
+        />
 
-      {state.error && (
-        <div className="panel-error" role="alert">
-          {state.error}
-        </div>
-      )}
+        {state.error && (
+          <div className="panel-error" role="alert">
+            {state.error}
+          </div>
+        )}
+      </main>
 
       <Composer
         busy={state.busy}

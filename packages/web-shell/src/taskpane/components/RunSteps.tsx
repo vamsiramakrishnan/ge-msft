@@ -12,13 +12,16 @@ export interface RunStepsProps {
 export function RunSteps({ steps }: RunStepsProps): JSX.Element | null {
   if (steps.length === 0) return null;
   return (
-    <ol className="run-steps" aria-label="Command loop steps" aria-live="polite">
-      {steps.map((s) => (
-        <li key={s.id} className={`run-step step-${s.kind}`}>
-          <span className="step-kind">{s.kind}</span>
-          <span className="step-text">{s.text}</span>
-        </li>
-      ))}
-    </ol>
+    <section className="run-steps" aria-label="Command loop steps" aria-live="polite">
+      <div className="run-steps-h eyebrow">Activity</div>
+      <ol className="run-steps-list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {steps.map((s) => (
+          <li key={s.id} className={`run-step step-${s.kind}`}>
+            <span className="step-kind">{s.kind.replace(/-/g, ' ')}</span>
+            <span className="step-text">{s.text}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

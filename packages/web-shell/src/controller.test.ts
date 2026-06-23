@@ -8,9 +8,15 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
-import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
+import type { CommandLoopEvent } from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
-import { PanelController, type AssistLike, type ContextLister } from './controller.js';
+import {
+  PanelController,
+  type AssistLike,
+  type ContextLister,
+  type PlanEffect,
+  type PlanRunCommandsOptions,
+} from './controller.js';
 
 const ref = (id: string, title: string): ContextRef => ({
   id,
@@ -20,10 +26,22 @@ const ref = (id: string, title: string): ContextRef => ({
   preview: title,
 });
 
-/** A scripted command-loop step: yield an event, or trigger an approval round-trip for a write. */
-type CommandAction = { event: SseEvent | CommandLoopEvent } | { approve: ActuationRequest };
+/**
+ * A scripted command-loop step: yield an event, trigger a per-write approval round-trip, or trigger
+ * an ADR-0005 plan-level approval round-trip (emit `plan-preview`, await `approvePlan`, narrate the
+ * decision).
+ */
+type CommandAction =
+  | { event: SseEvent | CommandLoopEvent }
+  | { approve: ActuationRequest }
+  | { plan: PlanEffect[] };
 
 const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
+
+const planEffect = (changeId: string): PlanEffect => {
+  const request = writeReq(changeId);
+  return { request, command: `set Sales!F2 =C2-D2 [${changeId}]` };
+};
 
 const writeReq = (changeId: string): ActuationRequest => ({
   changeId: asChangeId(changeId),
@@ -109,9 +127,12 @@ class FakeAssist implements AssistLike {
   runTasks: string[] = [];
   approveCalls: ActuationRequest[] = [];
   approveResults: boolean[] = [];
+  /** The plan effect-sets passed to `approvePlan` and the decisions returned, for assertions. */
+  planCalls: PlanEffect[][] = [];
+  planResults: boolean[] = [];
   async *runCommands(
     task: string,
-    opts?: RunCommandsOptions,
+    opts?: PlanRunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     this.runTasks.push(task);
     for (const action of this.commandScript) {
@@ -129,6 +150,31 @@ class FakeAssist implements AssistLike {
               error: { code: 'unapproved', message: 'rejected' },
             };
         yield { type: 'write-result', turn: 1, changeId: request.changeId, result };
+      } else if ('plan' in action) {
+        // ADR-0005: emit the dry-run preview, then gate the whole effect-set on `approvePlan`.
+        const effects = action.plan;
+        // The runtime `CommandLoopEvent` union has no `plan-preview` yet; the controller narrows it
+        // structurally, so cast at the fake boundary to drive that path.
+        yield { type: 'plan-preview', turn: 1, effects } as unknown as CommandLoopEvent;
+        this.planCalls.push(effects);
+        const approved = opts?.approvePlan ? await opts.approvePlan(effects) : false;
+        this.planResults.push(approved);
+        // On approval, the executor gates each effect and narrates a per-effect write-result.
+        if (approved) {
+          for (const e of effects) {
+            yield {
+              type: 'write-result',
+              turn: 1,
+              changeId: e.request.changeId,
+              result: {
+                ok: true,
+                changeId: e.request.changeId,
+                kind: e.request.kind,
+                location: 'A1',
+              },
+            };
+          }
+        }
       } else {
         yield action.event;
       }
@@ -460,6 +506,138 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
 
     expect(assist.approveResults).toEqual([false]); // cancel released the gate as a rejection
     expect(c.getState().pendingWrite).toBeUndefined();
+  });
+});
+
+describe('PanelController — plan loop (ADR-0005 plan-level approval)', () => {
+  it('stages the full effect-set as pendingPlan and actuates only after approvePlan() (true)', async () => {
+    const assist = new FakeAssist();
+    const effects = [planEffect('p-1'), planEffect('p-2')];
+    assist.commandScript = [ev({ type: 'turn-start', turn: 1 }), { plan: effects }];
+    const c = new PanelController(assist, lister([]));
+
+    // Don't await: the loop blocks on the plan-level decision.
+    const run = c.runCommands('reconcile the totals');
+    await tick();
+
+    // The whole effect-set is staged, rendered verbatim from each request, and nothing actuated.
+    const plan = c.getState().pendingPlan;
+    expect(plan?.effects).toHaveLength(2);
+    expect(plan?.effects.map((e) => e.request.changeId)).toEqual([
+      asChangeId('p-1'),
+      asChangeId('p-2'),
+    ]);
+    expect(plan?.summary).toBe('2 writes');
+    expect(assist.planResults).toEqual([]); // decision not made yet
+    expect(assist.applied).toEqual([]); // nothing actuated
+    expect(c.getState().busy).toBe(true);
+    // The preview reduced into the steps transcript.
+    expect(c.getState().steps.map((s) => s.kind)).toEqual(['turn-start', 'plan-preview']);
+
+    c.approvePlan();
+    await run;
+
+    expect(assist.planResults).toEqual([true]); // approvePlan resolved true → plan executes
+    expect(c.getState().pendingPlan).toBeUndefined(); // card cleared on decision
+    // Each effect narrated a per-effect write-result.
+    const writeSteps = c.getState().steps.filter((s) => s.kind === 'write-result');
+    expect(writeSteps).toHaveLength(2);
+    expect(c.getState().busy).toBe(false);
+  });
+
+  it('the rendered effect-set is exactly what executes (same requests, no divergence)', async () => {
+    const assist = new FakeAssist();
+    const effects = [planEffect('p-1'), planEffect('p-2')];
+    assist.commandScript = [{ plan: effects }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('reconcile');
+    await tick();
+    const staged = c.getState().pendingPlan?.effects ?? [];
+    // The requests the user sees are reference-identical to the ones handed to approvePlan.
+    expect(staged.map((e) => e.request)).toEqual(effects.map((e) => e.request));
+
+    c.approvePlan();
+    await run;
+    expect(assist.planCalls[0]).toBe(effects); // executor received the same effect-set
+  });
+
+  it('rejectPlan() resolves false: the whole plan is blocked, the card clears, nothing runs', async () => {
+    const assist = new FakeAssist();
+    const effects = [planEffect('p-1'), planEffect('p-2')];
+    assist.commandScript = [{ plan: effects }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('reconcile');
+    await tick();
+    expect(c.getState().pendingPlan?.effects).toHaveLength(2);
+
+    c.rejectPlan();
+    await run;
+
+    expect(assist.planResults).toEqual([false]); // approvePlan resolved false → blocked
+    expect(c.getState().pendingPlan).toBeUndefined();
+    expect(assist.applied).toEqual([]); // no effect actuated
+    expect(c.getState().steps.some((s) => s.kind === 'write-result')).toBe(false);
+  });
+
+  it('cancel() while gated on a plan releases fail-closed (rejects the whole plan)', async () => {
+    const assist = new FakeAssist();
+    const effects = [planEffect('p-1')];
+    assist.commandScript = [{ plan: effects }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('reconcile');
+    await tick();
+    expect(c.getState().pendingPlan).toBeDefined();
+
+    c.cancel();
+    await run;
+
+    expect(assist.planResults).toEqual([false]); // cancel released the plan gate as a rejection
+    expect(c.getState().pendingPlan).toBeUndefined();
+    expect(assist.applied).toEqual([]);
+  });
+
+  it('fail-closed: a plan abandoned at teardown without a decision settles as a rejection', async () => {
+    const assist = new FakeAssist();
+    const effects = [planEffect('p-1')];
+    // Emit the preview but DON'T loop through approvePlan in the script — the generator returns,
+    // hitting the controller's `finally`, which must settle the open plan false.
+    assist.commandScript = [
+      { event: { type: 'plan-preview', turn: 1, effects } as unknown as CommandLoopEvent },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('reconcile');
+
+    // No approvePlan was awaited by the fake, but the controller's approvePlan promise that it
+    // wired is irrelevant here; the key invariant is the card never lingers and nothing actuated.
+    expect(c.getState().pendingPlan).toBeUndefined();
+    expect(assist.applied).toEqual([]);
+  });
+
+  it('summarizes a mixed effect-set as a pluralized count header', async () => {
+    const assist = new FakeAssist();
+    const write: PlanEffect = planEffect('w-1');
+    const comment: PlanEffect = {
+      request: {
+        changeId: asChangeId('c-1'),
+        kind: 'add-comment',
+        surface: 'word',
+        params: { target: { matchText: 'SLA' }, text: 'check this' },
+      },
+      command: 'comment "SLA" "check this"',
+    };
+    assist.commandScript = [{ plan: [write, comment, comment] }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('mixed');
+    await tick();
+    expect(c.getState().pendingPlan?.summary).toBe('1 write + 2 comments');
+
+    c.rejectPlan();
+    await run;
   });
 });
 

@@ -16,6 +16,52 @@ import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
 import { renderCommandLine } from './render-command.js';
 
 /**
+ * One actuation in a composed plan (ADR-0005 §3 Planner/Executor). The runtime dry-runs the turn
+ * (reads + pure transforms, no writes), computes the full effect-set, and emits it for ONE
+ * plan-level approval before any effect actuates. `command` is the verbatim CLI line
+ * (`set Sales!F2 =SUM(C2:C7)`) the preview renders; `request` is the typed `ActuationRequest` that
+ * will execute — they are the SAME object, so what the user sees is exactly what runs.
+ *
+ * Declared structurally here (mirroring the fixed runtime contract) so the web-shell stays
+ * independently verifiable while the runtime half is built in parallel.
+ */
+export interface PlanEffect {
+  request: ActuationRequest;
+  /** The verbatim CLI line shown on the plan-approval card. */
+  command: string;
+}
+
+/**
+ * The plan-level approval callback the command loop awaits before executing a composed plan
+ * (ADR-0005 §3). **Fail-closed:** with no approver the whole plan is blocked. Supersedes the
+ * per-write `approveWrite` for composed plans. Mirrors the fixed runtime contract structurally.
+ */
+export type ApprovePlan = (effects: PlanEffect[]) => boolean | Promise<boolean>;
+
+/**
+ * The `plan-preview` command-loop event (ADR-0005 §3): the runtime emits the dry-run effect-set
+ * just before it awaits `approvePlan`. Declared structurally here so the controller can reduce it
+ * without depending on the not-yet-shipped runtime `CommandLoopEvent` variant.
+ */
+export interface PlanPreviewEvent {
+  type: 'plan-preview';
+  turn: number;
+  effects: PlanEffect[];
+}
+
+/**
+ * `RunCommandsOptions` (from `@ge/runtime`) augmented with the ADR-0005 plan-level approver. The
+ * runtime's option type gains `approvePlan` in parallel; we widen it locally so passing the
+ * approver type-checks against the current runtime types without coupling to that team's progress.
+ */
+export type PlanRunCommandsOptions = RunCommandsOptions & { approvePlan?: ApprovePlan };
+
+/** Narrow an arbitrary loop event to the structural `plan-preview` shape. */
+function isPlanPreview(ev: { type: string }): ev is PlanPreviewEvent {
+  return ev.type === 'plan-preview';
+}
+
+/**
  * The subset of `AssistSession` the panel drives. `AssistSession` satisfies this structurally,
  * so the controller is unit-testable against a fake and carries no host/network dependency.
  */
@@ -30,11 +76,15 @@ export interface AssistLike {
     changeId: ChangeId,
   ): Promise<ActuationResult>;
   /**
-   * The ADR-0004 read-many/write-one command loop. Streams `SseEvent`s (tokens/citations) plus
-   * `CommandLoopEvent`s (loop mechanics); calls `opts.approveWrite` for EVERY compiled write and
-   * actuates only on `true` (fail-closed).
+   * The ADR-0004 read-many/write-one command loop, extended with ADR-0005 plan execution. Streams
+   * `SseEvent`s (tokens/citations) plus `CommandLoopEvent`s (loop mechanics, incl. `plan-preview`);
+   * calls `opts.approveWrite` for EVERY compiled per-write (fail-closed) and `opts.approvePlan`
+   * once for a composed plan's full effect-set (fail-closed) before any effect actuates.
    */
-  runCommands(task: string, opts?: RunCommandsOptions): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  runCommands(
+    task: string,
+    opts?: PlanRunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
   ingest(event: HostEvent): Promise<void>;
   readonly sessionId?: string;
 }
@@ -91,6 +141,20 @@ export interface PendingWrite {
   command: string;
 }
 
+/**
+ * A composed plan awaiting the user's ONE plan-level decision (ADR-0005 §3). The runtime has
+ * type-checked the plan and dry-run it (reads + pure transforms, no writes) and emitted the full
+ * effect-set; nothing actuates until the user calls `approvePlan()`. `effects` are rendered verbatim
+ * on the plan card and are exactly the `ActuationRequest`s that execute on approval (no
+ * render-benign / execute-malicious divergence). `summary` is the one-line count header
+ * (e.g. "3 writes + 2 comments").
+ */
+export interface PendingPlan {
+  effects: PlanEffect[];
+  /** One-line count summary of the effect-set, e.g. "3 writes + 2 comments". */
+  summary: string;
+}
+
 /** One narrated step of the command loop, surfaced so the user can see the loop's progress. */
 export interface RunStep {
   id: string;
@@ -98,6 +162,7 @@ export interface RunStep {
   kind:
     | 'turn-start'
     | 'command'
+    | 'plan-preview'
     | 'read-result'
     | 'write-result'
     | 'no-fence'
@@ -116,8 +181,10 @@ export interface PanelState {
   changes: ChangeRecord[];
   /** The command-loop transcript (ADR-0004 read-many/write-one steps). */
   steps: RunStep[];
-  /** The single write awaiting approval, if the loop is currently gated on the user. */
+  /** The single write awaiting approval, if the loop is currently gated on the user (ADR-0004). */
   pendingWrite?: PendingWrite;
+  /** The composed plan awaiting ONE plan-level approval, if the loop is gated on it (ADR-0005). */
+  pendingPlan?: PendingPlan;
   busy: boolean;
   error?: string;
 }
@@ -154,6 +221,13 @@ export class PanelController {
    * abandoned (cancel/teardown) without a decision, we resolve `false` so no write actuates.
    */
   private resolvePendingWrite: ((approved: boolean) => void) | undefined;
+  /**
+   * Resolves the `approvePlan` promise the command loop is awaiting for a composed plan (ADR-0005).
+   * Set while a `pendingPlan` is staged; `approvePlan()`/`rejectPlan()` call it. Fail-closed: if the
+   * plan is abandoned (cancel/teardown/error) without a decision, we resolve `false` so the WHOLE
+   * plan is blocked and no effect actuates.
+   */
+  private resolvePendingPlan: ((approved: boolean) => void) | undefined;
 
   constructor(
     private readonly session: AssistLike,
@@ -291,9 +365,11 @@ export class PanelController {
    */
   cancel(): void {
     this.inflight?.abort();
-    // A loop gated on the user when cancelled must release fail-closed (reject the pending write),
-    // so the loop's `approveWrite` resolves `false` and no write actuates after the abort.
+    // A loop gated on the user when cancelled must release fail-closed, so its awaited approval
+    // resolves `false` and nothing actuates after the abort — for both the per-write gate and the
+    // ADR-0005 plan-level gate.
     this.settlePendingWrite(false);
+    this.settlePendingPlan(false);
   }
 
   // ---- command loop (ADR-0004) --------------------------------------------
@@ -327,7 +403,7 @@ export class PanelController {
     this.inflight = controller;
     const sources: SourceRef[] = [];
 
-    // The approver: stage the compiled request as a pending write and await the user's decision.
+    // The per-write approver (ADR-0004): stage the compiled request and await the user's decision.
     const approveWrite = (request: ActuationRequest): Promise<boolean> =>
       new Promise<boolean>((resolve) => {
         // Defensive: if a prior decision is somehow still open, release it false first.
@@ -342,11 +418,29 @@ export class PanelController {
         });
       });
 
+    // The plan-level approver (ADR-0005): stage the full dry-run effect-set and await ONE decision.
+    // Fail-closed: nothing here resolves `true` except an explicit `approvePlan()`.
+    const approvePlan: ApprovePlan = (effects) =>
+      new Promise<boolean>((resolve) => {
+        this.settlePendingPlan(false);
+        this.resolvePendingPlan = resolve;
+        this.set({ pendingPlan: { effects, summary: summarizeEffects(effects) } });
+      });
+
+    const opts: PlanRunCommandsOptions = {
+      signal: controller.signal,
+      approveWrite,
+      approvePlan,
+    };
+
     try {
-      for await (const ev of this.session.runCommands(t, {
-        signal: controller.signal,
-        approveWrite,
-      })) {
+      for await (const ev of this.session.runCommands(t, opts)) {
+        // The plan-preview variant is not (yet) in the runtime `CommandLoopEvent` union; narrow it
+        // structurally so we reduce it without coupling to the parallel runtime build.
+        if (isPlanPreview(ev)) {
+          this.addStep('plan-preview', summarizeEffects(ev.effects));
+          continue;
+        }
         switch (ev.type) {
           case 'token':
             this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
@@ -402,8 +496,9 @@ export class PanelController {
         this.addStep('error', errorText(err));
       }
     } finally {
-      // Any write still gated when the loop ends releases fail-closed.
+      // Any write or plan still gated when the loop ends releases fail-closed (never default-accept).
       this.settlePendingWrite(false);
+      this.settlePendingPlan(false);
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false, changes: this.store.list() });
@@ -437,6 +532,33 @@ export class PanelController {
 
   private clearPendingWrite(): void {
     if (this.state.pendingWrite) this.set({ pendingWrite: undefined });
+  }
+
+  /**
+   * Approve the staged composed plan (ADR-0005) — resolves the loop's `approvePlan` with `true`, so
+   * the executor runs the previewed effect-set (each effect still gated/provenanced one-by-one).
+   */
+  approvePlan(): void {
+    this.settlePendingPlan(true);
+  }
+
+  /** Reject the staged plan — resolves `approvePlan` with `false`; the WHOLE plan is blocked. */
+  rejectPlan(): void {
+    this.settlePendingPlan(false);
+  }
+
+  /** Resolve the awaited plan decision (if any) and stop showing the plan-approval card. */
+  private settlePendingPlan(approved: boolean): void {
+    const resolve = this.resolvePendingPlan;
+    if (!resolve) return;
+    this.resolvePendingPlan = undefined;
+    // Drop the card on a decision either way: the executor's per-effect outcomes narrate as steps.
+    this.clearPendingPlan();
+    resolve(approved);
+  }
+
+  private clearPendingPlan(): void {
+    if (this.state.pendingPlan) this.set({ pendingPlan: undefined });
   }
 
   private addStep(kind: RunStep['kind'], text: string): void {
@@ -543,6 +665,44 @@ export class PanelController {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A one-line count summary of a plan's effect-set for the preview header, e.g. "3 writes + 2
+ * comments". Groups by a human label for each `ActuationRequest.kind` and pluralizes. Pure/total —
+ * an empty set degrades to "no effects" rather than rendering an empty header.
+ */
+function summarizeEffects(effects: readonly PlanEffect[]): string {
+  if (effects.length === 0) return 'no effects';
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const e of effects) {
+    const label = effectNoun(e.request.kind);
+    if (!counts.has(label)) order.push(label);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return order
+    .map((label) => {
+      const n = counts.get(label) ?? 0;
+      return `${n} ${label}${n === 1 ? '' : 's'}`;
+    })
+    .join(' + ');
+}
+
+/** A human noun for an actuation kind, used by the plan summary header. */
+function effectNoun(kind: ActuationRequest['kind']): string {
+  switch (kind) {
+    case 'write-cells':
+    case 'tracked-change':
+      return 'write';
+    case 'add-comment':
+    case 'comment-reply':
+      return 'comment';
+    case 'format-cells':
+      return 'format';
+    default:
+      return kind;
+  }
 }
 
 /** A one-line label for a `command` loop step: the parsed verb (or the corrective parse error). */

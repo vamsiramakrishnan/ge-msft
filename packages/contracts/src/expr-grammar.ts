@@ -18,6 +18,8 @@ export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'page',
   'mail',
   'post',
+  // Outlook create-mail (compose a new draft) — also an effect, never a pipeline source.
+  'compose',
 ]);
 
 /** The Phase-1 corrective when the model tries to compose an effect. */

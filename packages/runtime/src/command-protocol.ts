@@ -129,6 +129,12 @@ export function compileCommand(
       return compileWrite(WRITE_VERB_TO_KIND.post, ctx, {
         text: cmd.text,
       });
+    case 'compose':
+      // Outlook `create-mail`: the bridge opens a NEW draft from `params.mail` ({ subject, body });
+      // recipients are left for the user (never auto-addressed) — see bridge-outlook planCompose.
+      return compileWrite(WRITE_VERB_TO_KIND.compose, ctx, {
+        mail: { subject: cmd.subject, body: cmd.body },
+      });
   }
 }
 

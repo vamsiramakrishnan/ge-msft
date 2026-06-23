@@ -8,7 +8,7 @@ import {
   MAX_SEARCH_LINES,
   MAX_OUTLINE_LINES,
 } from './capture.js';
-import { planReply } from './actuate-plan.js';
+import { planCompose, planReply } from './actuate-plan.js';
 
 describe('outlook capture (pure)', () => {
   it('produces valid text context from a plain-text mail item', () => {
@@ -127,5 +127,26 @@ describe('outlook actuation planning (pure)', () => {
       params: { text: 'Thanks, will follow up.' },
     });
     expect(plan).toEqual({ body: 'Thanks, will follow up.' });
+  });
+
+  it('planCompose builds a new draft from subject + body (unaddressed by default)', () => {
+    const plan = planCompose({
+      changeId: asChangeId('c3'),
+      kind: 'create-mail',
+      surface: 'outlook',
+      params: { mail: { subject: 'Follow-up on Q3', body: 'Summary below.' } },
+    });
+    // No `to` unless the agent supplied one — a compose draft is left for the user to address.
+    expect(plan).toEqual({ subject: 'Follow-up on Q3', body: 'Summary below.' });
+  });
+
+  it('planCompose passes recipients through only when supplied, body falls back to params.text', () => {
+    const plan = planCompose({
+      changeId: asChangeId('c4'),
+      kind: 'create-mail',
+      surface: 'outlook',
+      params: { mail: { subject: 'Re: dates', to: ['pat@acme.com'] }, text: 'Confirming below.' },
+    });
+    expect(plan).toEqual({ subject: 'Re: dates', body: 'Confirming below.', to: ['pat@acme.com'] });
   });
 });

@@ -4,10 +4,11 @@ import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, OutlookBridge } from './outlook-bridge.js';
 
 /**
- * ADR-0006 capability closure — Outlook. Self-contained. `create-mail` was un-advertised (never
- * handled), so advertised==handled=={reply-mail}; and Outlook now declares whole-item `read` +
- * `search`, each backed by a real bridge port (Team READS): `read` → `captureDocState` (a mail item
- * has no addressable sub-range), `search` → `searchDocument`. No `outline` (a mail has no headings).
+ * ADR-0006 capability closure — Outlook. Self-contained. Both `reply-mail` (reviewable reply form)
+ * and `create-mail` (new draft via `displayNewMessageForm`) are advertised AND handled, so
+ * advertised==handled; and Outlook declares whole-item `read` + `search`, each backed by a real
+ * bridge port (Team READS): `read` → `captureDocState` (a mail item has no addressable sub-range),
+ * `search` → `searchDocument`. No `outline` (a mail has no headings).
  */
 describe('Outlook capability closure', () => {
   it('advertised actuation kinds === handled actuation kinds', () => {
@@ -15,8 +16,11 @@ describe('Outlook capability closure', () => {
     expect(advertised).toEqual(new Set(HANDLED_ACTUATIONS));
   });
 
-  it('does NOT advertise the previously-phantom create-mail', () => {
-    expect(OUTLOOK_CAPABILITIES.actuations.map((a) => a.kind)).not.toContain('create-mail');
+  it('advertises both reply-mail and create-mail (each backed by a real actuate case)', () => {
+    expect(OUTLOOK_CAPABILITIES.actuations.map((a) => a.kind).sort()).toEqual([
+      'create-mail',
+      'reply-mail',
+    ]);
   });
 
   it('advertised reads match the implemented read ports', () => {

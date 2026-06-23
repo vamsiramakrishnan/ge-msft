@@ -227,6 +227,22 @@ describe('compileCommand', () => {
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
+
+  it('compiles `compose` → create-mail with params.mail.{subject,body}', () => {
+    const c = compileCommand(
+      { verb: 'compose', subject: 'Follow-up on Q3', body: 'Hi — summary below.' },
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'create-mail',
+        surface: 'outlook',
+        params: { mail: { subject: 'Follow-up on Q3', body: 'Hi — summary below.' } },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
 });
 
 describe('renderGrammarPrompt', () => {

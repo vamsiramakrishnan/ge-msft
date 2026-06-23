@@ -20,3 +20,23 @@ export function planReply(req: ActuationRequest): ReplyPlan {
     ...(mail?.subject ? { subject: mail.subject } : {}),
   };
 }
+
+/**
+ * A brand-new draft (`create-mail`): subject + body from `params.mail` (body falls back to
+ * `params.text`). Recipients are passed through only if the agent supplied them — by default a
+ * compose draft is left unaddressed for the user to fill, so nothing is auto-sent to anyone.
+ */
+export interface ComposePlan {
+  subject: string;
+  body: string;
+  to?: string[];
+}
+
+export function planCompose(req: ActuationRequest): ComposePlan {
+  const mail = req.params.mail;
+  return {
+    subject: mail?.subject ?? '',
+    body: mail?.body ?? req.params.text ?? '',
+    ...(mail?.to ? { to: mail.to } : {}),
+  };
+}

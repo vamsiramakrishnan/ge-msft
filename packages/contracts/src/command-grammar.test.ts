@@ -44,6 +44,7 @@ describe('command-grammar — verb map', () => {
       page: 'append-page',
       mail: 'reply-mail',
       post: 'post-message',
+      compose: 'create-mail',
     });
   });
 });
@@ -584,6 +585,16 @@ describe('command-grammar — ADR-0006 CLI parity verbs (slide/page/mail/post)',
       text: 'summary of decisions',
     });
     expect(isCommandParseError(parseCommandLine('post unquoted'))).toBe(true);
+  });
+  it('compose: a quoted subject and body', () => {
+    expect(parseCommandLine('compose "Follow-up on Q3" "Hi — summary below."')).toEqual({
+      verb: 'compose',
+      subject: 'Follow-up on Q3',
+      body: 'Hi — summary below.',
+    });
+    // Subject is required; body alone (one string) or an empty subject is corrective.
+    expect(isCommandParseError(parseCommandLine('compose "only subject"'))).toBe(true);
+    expect(isCommandParseError(parseCommandLine('compose "" "body"'))).toBe(true);
   });
   it('escapes are honored inside quoted args', () => {
     expect(parseCommandLine('post "say \\"hi\\""')).toEqual({ verb: 'post', text: 'say "hi"' });

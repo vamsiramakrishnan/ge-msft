@@ -1,9 +1,10 @@
 /**
  * In-memory **Excel host simulator**. Models the exact slice of the Office.js object model the real
  * {@link "@ge/bridge-excel"!ExcelBridge} drives, so the REAL bridge runs unchanged against seeded
- * workbook data. `load()` is a no-op and `sync()` resolves immediately (the proxy graph is already
- * materialized in memory); reads return seeded values and WRITES record back into the seed so a test
- * can assert them via {@link ExcelSimulator.snapshot}.
+ * workbook data. The proxy graph is materialized in memory, but `Range` reads honor the **load/sync
+ * contract**: a property must be named in `load()` and resolved by a `context.sync()` before it can
+ * be read (reading early throws, like the real host and `office-addin-mock`). WRITES record back into
+ * the seed at `sync()` so a test can assert them via {@link ExcelSimulator.snapshot}.
  *
  * Enumerated host calls modelled (the fidelity boundary for Excel):
  *   - `Excel.run(cb)` — the global entry; runs `cb(ctx)` against a fresh fake `RequestContext`.
@@ -119,12 +120,19 @@ export interface ExcelEvents {
 
 /* ─────────────────────────── the fake object model ─────────────────────── */
 
+/** The `Range` read properties subject to load-gating (mirrors office-addin-mock's PropertyNotLoaded). */
+const RANGE_READ_PROPS = ['address', 'values', 'rowCount', 'columnCount', 'isNullObject'] as const;
+
 class FakeRange {
-  isNullObject = false;
-  address = '';
-  rowCount = 0;
-  columnCount = 0;
-  values: string[][] = [];
+  // Private backings (materialized eagerly from the seed); read access is gated through getters.
+  private _isNullObject = false;
+  private _address = '';
+  private _rowCount = 0;
+  private _columnCount = 0;
+  private _values: string[][] = [];
+  /** Queued `.values` write (write side is NOT gated; Office writes don't require a prior load). */
+  private _pendingValues: string[][] | undefined;
+  // Write-only facets the bridge sets (never read back by the bridge), so left ungated.
   formulas: unknown[][] = [];
   numberFormat: unknown[][] = [];
   readonly format = {
@@ -132,27 +140,82 @@ class FakeRange {
     fill: { color: undefined as string | undefined },
   };
 
+  /**
+   * Office.js proxy fidelity: a property is unreadable until it has been named in `load()` AND a
+   * `context.sync()` has resolved it. `requested` holds names from `load()` this batch; `sync()`
+   * calls {@link flushLoads} to promote them into `loaded`. Reading an unloaded prop throws, exactly
+   * like the real host (and Microsoft's `office-addin-mock`) — so an integration test can't pass
+   * against a bridge that reads `.values` without loading it first.
+   */
+  private readonly loaded = new Set<string>();
+  private readonly requested = new Set<string>();
+
   constructor(
     private readonly seed: ExcelSeed,
     private readonly sheetName: string,
     private readonly rangeA1: string,
     nullObject = false,
   ) {
-    this.isNullObject = nullObject;
+    this._isNullObject = nullObject;
     if (!nullObject) this.materialize();
   }
 
   private materialize(): void {
     const sheet = sheetByName(this.seed, this.sheetName);
     const span = parseA1(this.rangeA1);
-    this.address = `${this.sheetName}!${this.rangeA1}`;
-    this.rowCount = span.rows;
-    this.columnCount = span.cols;
-    this.values = readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
+    this._address = `${this.sheetName}!${this.rangeA1}`;
+    this._rowCount = span.rows;
+    this._columnCount = span.cols;
+    this._values = readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
   }
 
-  load(_props?: string): this {
+  private requireLoaded(prop: string): void {
+    if (!this.loaded.has(prop))
+      throw new Error(
+        `fake-excel: property "${prop}" is not loaded — call range.load('${prop}') then ` +
+          `context.sync() before reading it (Office.js PropertyNotLoaded).`,
+      );
+  }
+
+  get isNullObject(): boolean {
+    this.requireLoaded('isNullObject');
+    return this._isNullObject;
+  }
+  get address(): string {
+    this.requireLoaded('address');
+    return this._address;
+  }
+  get rowCount(): number {
+    this.requireLoaded('rowCount');
+    return this._rowCount;
+  }
+  get columnCount(): number {
+    this.requireLoaded('columnCount');
+    return this._columnCount;
+  }
+  get values(): string[][] {
+    this.requireLoaded('values');
+    return this._pendingValues ?? this._values;
+  }
+  set values(grid: unknown[][]) {
+    this._pendingValues = grid as string[][];
+  }
+
+  /** Queue a property (or comma-list, or all when omitted) for resolution at the next `sync()`. */
+  load(props?: string): this {
+    const names =
+      props && props.trim() ? props.split(',') : (RANGE_READ_PROPS as readonly string[]);
+    for (const raw of names) {
+      const name = raw.trim().split('/')[0]?.trim();
+      if (name) this.requested.add(name);
+    }
     return this;
+  }
+
+  /** Promote this batch's requested loads into readable props (called by `context.sync()`). */
+  flushLoads(): void {
+    for (const p of this.requested) this.loaded.add(p);
+    this.requested.clear();
   }
 
   getCell(rowOffset: number, colOffset: number): FakeRange {
@@ -161,9 +224,12 @@ class FakeRange {
     return new FakeRange(this.seed, this.sheetName, cellA1);
   }
 
-  /** Commit any queued `values`/`formulas`/`format` writes back into the seed (called at `sync()`). */
+  /**
+   * Commit any queued `values`/`formulas`/`format` writes back into the seed (called at `sync()`).
+   * Uses the private backings directly — write-back is internal bookkeeping, not a gated host read.
+   */
   commit(): void {
-    if (this.isNullObject) return;
+    if (this._isNullObject) return;
     this.commitFormat();
     const sheet = sheetByName(this.seed, this.sheetName);
     const span = parseA1(this.rangeA1);
@@ -172,7 +238,7 @@ class FakeRange {
     for (let r = 0; r < span.rows; r++) {
       for (let c = 0; c < span.cols; c++) {
         const formula = this.formulas[r]?.[c];
-        const value = this.values[r]?.[c];
+        const value = this._pendingValues?.[r]?.[c];
         const written =
           formula !== undefined && formula !== null && formula !== ''
             ? String(formula)
@@ -194,8 +260,8 @@ class FakeRange {
       ...(numberFormat !== undefined ? { numberFormat: String(numberFormat) } : {}),
     };
     if (Object.keys(facets).length === 0) return;
-    const prev = this.seed.formats.get(this.address) ?? {};
-    this.seed.formats.set(this.address, { ...prev, ...facets });
+    const prev = this.seed.formats.get(this._address) ?? {};
+    this.seed.formats.set(this._address, { ...prev, ...facets });
   }
 }
 
@@ -365,6 +431,8 @@ class FakeRequestContext {
     this.workbook = trackRanges(new FakeWorkbook(seed), this.touched);
   }
   sync(): Promise<void> {
+    // Resolve queued loads first (so a property loaded this batch reads back), then commit writes.
+    for (const r of this.touched) r.flushLoads();
     for (const r of this.touched) r.commit();
     return Promise.resolve();
   }

@@ -34,14 +34,15 @@ harness needs a cast or `any`.
 
 Every fake follows the same contract, matching how the bridges batch:
 
-- **`load(props)` is a no-op** that returns `this`. The real Office.js proxy graph is materialized on
-  `sync()`; the fake materializes eagerly (values are already in the seed), so `load` only needs to
-  exist and chain.
-- **`sync()` returns a resolved promise.** For Excel it *also* commits queued writes (see below);
-  for Word/PowerPoint the writes mutate the seed object directly, so `sync()` is a bare
-  `Promise.resolve()`.
-- Properties (`range.values`, `result.text`, `slide.index`, …) are readable immediately after the
-  call that produced the proxy — the bridge's read-after-sync pattern works unchanged.
+- **`load(props)` records which properties to resolve** and returns `this` for chaining.
+- **Excel `Range` reads are load-gated** (matching the real host and `office-addin-mock`): a property
+  must be named in `load()` **and** resolved by a `context.sync()` before it can be read — reading
+  early throws `PropertyNotLoaded`. This keeps an integration test honest: a bridge can't pass by
+  reading `.values` without loading it first. Writes (`range.values = …`, `.formulas`, `.format.*`)
+  are **not** gated, mirroring Office (you don't load before you write).
+- **`sync()` resolves queued loads, then commits queued writes.** For Excel that means promoting
+  loaded props to readable and writing back into the seed; for Word/PowerPoint the writes mutate the
+  seed object directly, so `sync()` is effectively a `Promise.resolve()`.
 
 This is verified directly (no bridge in the loop) in
 [`harness.test.ts`](../src/test-harness/harness.test.ts).

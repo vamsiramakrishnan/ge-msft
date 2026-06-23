@@ -15,7 +15,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

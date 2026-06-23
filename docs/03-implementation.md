@@ -1,13 +1,29 @@
 # Implementation — Gemini Enterprise M365 Add-in Suite
 
-**The buildable spec: how the one-gateway/one-unit design becomes five shipping surfaces.**
-*Companion to the architecture doc (gateway internals, identity federation, anchoring) and the design doc (experience, phasing).*
+> **⚠️ Superseded in part — updated by `ADR-0001` and `ADR-0004`/`ADR-0005`.** The **client tier**,
+> **packaging** (§2: Package A unified manifest + Package B OneNote), **per-surface bridge** notes
+> (§3), and **identity/auth** model (§4: NAA for Office, TeamsJS SSO for Teams) are still accurate
+> and useful. What changed: there is **no Surface Gateway** (`ADR-0001`) — the client calls Discovery
+> Engine directly; the `services/*` and `/infra` paths in §7 no longer exist. The "name an intent"
+> model is superseded by the **CLI command protocol** the model emits, compiled to typed
+> `ActuationRequest`s (`ADR-0004`), composing via the value algebra (`ADR-0005`). Treat `docs/STATUS.md`
+> + `CAPABILITY-MAP.md` as the source of truth for the actual repo layout and package status.
+
+**The buildable spec: how the one-core/one-unit design becomes six shipping surfaces.**
+*Companion to the architecture doc (identity federation, anchoring) and the design doc (experience, phasing). Architecture-of-record: the ADRs.*
 
 ---
 
 ## 1. Architecture recap
 
-One stateless **Surface Gateway** on Cloud Run holds all Google credentials, performs identity federation, screens input, routes between StreamAssist and A2A specialist agents on Agent Engine, relays streams as SSE, and signs provenance. Every client is thin: it renders, reads/writes the host's content, authenticates the user, and names an intent (`assist`, `review`, `resolve-comment`, `regen-clause`, `draft-slides`, `synthesize`, `meeting-notes`). The full internals are in the architecture doc; this document covers the *client* tier across five surfaces and the packaging that unifies them.
+> *Superseded by `ADR-0001`: the gateway below does not exist.* Originally: one stateless **Surface
+> Gateway** on Cloud Run holds all Google credentials, performs identity federation, screens input,
+> routes between StreamAssist and A2A specialist agents, relays SSE, and signs provenance. **Now:**
+> the add-in is **client-direct** — `@ge/gemini-client` federates identity in the browser (WIF) and
+> calls Discovery Engine directly; Model Armor / agent routing / grounding are **engine config**. The
+> assist loop is the CLI command protocol (`ADR-0004`), not intent dispatch. Every client is thin: it
+> renders, reads/writes the host's content, authenticates the user, and drives the command loop. This
+> document covers the *client* tier across the surfaces and the packaging that unifies them.
 
 The unifying engineering fact: **the same web app is the client for most surfaces.** Microsoft's packaging lets one distributable bundle carry Word/Excel/PowerPoint/Outlook task panes *and* Teams tab/bot/meeting capabilities, and lets a single page experience appear as both an add-in task pane and a Teams personal tab. So the panel, the unit composer, the auth client, and the stream client are written once and reused; only the per-surface document bridge differs.
 

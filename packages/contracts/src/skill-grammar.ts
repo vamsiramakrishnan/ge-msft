@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ALL_VERBS, scanQuoted } from './command-grammar.js';
+import { TRANSFORM_NAMES } from './expr-grammar.js';
 
 /**
  * ADR-0005 Phase 3 — named skills: saved, parameterized compositions the model defines once and
@@ -137,9 +138,16 @@ function normalizeParam(token: string): string | undefined {
   return SKILL_NAME_RE.test(name) ? name : undefined;
 }
 
-/** True when `name` collides with a built-in verb (so a skill can never shadow a primitive). */
+/**
+ * True when `name` collides with a built-in verb OR a pure transform name — so a skill can never
+ * shadow a primitive (a `def sum(…)` or `def filter(…)` would make `| sum` / `| filter` ambiguous
+ * between the transform and the skill). Both name sets are owned by the grammar boundary.
+ */
 export function shadowsBuiltin(name: string): boolean {
-  return (ALL_VERBS as readonly string[]).includes(name);
+  return (
+    (ALL_VERBS as readonly string[]).includes(name) ||
+    (TRANSFORM_NAMES as readonly string[]).includes(name)
+  );
 }
 
 /* ───────────────────────── header parsing ─────────────────────────── */

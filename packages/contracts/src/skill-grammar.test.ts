@@ -53,6 +53,11 @@ describe('skill-grammar — shadowsBuiltin', () => {
       expect(shadowsBuiltin(v)).toBe(true);
     }
   });
+  it('flags pure transform names (a skill must not shadow | sum / | filter)', () => {
+    for (const t of ['filter', 'select', 'sum', 'avg', 'count', 'sort', 'head', 'tail']) {
+      expect(shadowsBuiltin(t)).toBe(true);
+    }
+  });
   it('does not flag a fresh name', () => {
     expect(shadowsBuiltin('reconcile')).toBe(false);
   });

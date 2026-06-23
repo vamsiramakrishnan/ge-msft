@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseExpressionLine, type PipeSource } from '@ge/contracts';
+import { parseExpressionLine, TRANSFORM_NAMES, type PipeSource } from '@ge/contracts';
 import {
   TRANSFORMS,
   parseTable,
@@ -9,6 +9,12 @@ import {
   type Value,
   type RunRead,
 } from './compose.js';
+
+describe('TRANSFORMS ↔ TRANSFORM_NAMES (no drift)', () => {
+  it('the registry provides exactly the names the grammar boundary advertises', () => {
+    expect(Object.keys(TRANSFORMS).sort()).toEqual([...TRANSFORM_NAMES].sort());
+  });
+});
 
 const table = (columns: string[], rows: string[][]): Value => ({ kind: 'table', columns, rows });
 

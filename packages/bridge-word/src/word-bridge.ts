@@ -197,7 +197,7 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
-      ...dropFlag(dropped),
+      ...provFlags(req, dropped),
     };
   }
 
@@ -247,7 +247,7 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: 'comment',
-      ...dropFlag(dropped),
+      ...provFlags(req, dropped),
     };
   }
 
@@ -282,7 +282,7 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
-      ...dropFlag(dropped),
+      ...provFlags(req, dropped),
     };
   }
 
@@ -330,7 +330,15 @@ export class WordBridge implements DocBridge {
   }
 }
 
-/** Attach the observability flag only when provenance actually dropped (keeps a clean result). */
-function dropFlag(dropped: boolean): { provenanceDropped?: true } {
+/**
+ * Observability flags for a landed write: `provenanceMissing` when the request carried no provenance
+ * payload at all (an unattributed write — never mistake it for an attributed one), `provenanceDropped`
+ * when a present record failed to persist durably. Persisted cleanly ⇒ empty.
+ */
+function provFlags(
+  req: ActuationRequest,
+  dropped: boolean,
+): { provenanceDropped?: true; provenanceMissing?: true } {
+  if (!req.provenance) return { provenanceMissing: true };
   return dropped ? { provenanceDropped: true } : {};
 }

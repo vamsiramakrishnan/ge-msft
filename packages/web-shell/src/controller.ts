@@ -837,8 +837,16 @@ function commandStepText(ev: Extract<CommandLoopEvent, { type: 'command' }>): st
 function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>): string {
   const r = ev.result;
   const outcome = r.ok ? (r.degraded ? 'degraded' : 'applied') : (r.error?.code ?? 'failed');
-  // Observability: the change landed but its durable provenance dropped — make it visible, not silent.
-  const provenance = r.ok && r.provenanceDropped ? ' (⚠ provenance not recorded)' : '';
+  // Observability: the change landed but its provenance is not durably recorded — make it visible.
+  // `provenanceMissing` (no payload at all → unattributed) is distinct from `provenanceDropped`
+  // (had a record, failed to persist); both leave the write without a durable trace.
+  const provenance = !r.ok
+    ? ''
+    : r.provenanceMissing
+      ? ' (⚠ unattributed — no provenance)'
+      : r.provenanceDropped
+        ? ' (⚠ provenance not recorded)'
+        : '';
   return `${r.kind} — ${outcome}${provenance}`;
 }
 

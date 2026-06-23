@@ -877,9 +877,14 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
       params: { target: { range: 'Summary!B2' }, cells: [['400']] },
     });
     expect(previewed?.[0]?.command).toBe('set Summary!B2 = ($t | sum amount)');
+    // The approval card sees the CONCRETE resolved value, not just the formula (security: the human
+    // approves the value that will land, derived from doc content, not an opaque expression).
+    expect(previewed?.[0]?.dryRun).toEqual({ target: 'Summary!B2', resolved: '400' });
     // Approved → it actuated exactly once.
     expect(bridge.applied).toHaveLength(1);
     expect(bridge.applied[0]?.params.cells).toEqual([['400']]);
+    // A grounded turn emits provenance (streamAssist), so the stamped write IS attributed.
+    expect(bridge.applied[0]?.provenance).toBeDefined();
   });
 
   it('resolves a slide bulletsExpr (table → bullets) at dry-run', async () => {
@@ -907,6 +912,11 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(previewed?.[0]?.request).toMatchObject({
       kind: 'insert-slide',
       params: { slide: { title: 'Regions', bullets: ['East · 100', 'West · 250', 'East · 50'] } },
+    });
+    // The approval card previews the resolved bullets, not the opaque expression.
+    expect(previewed?.[0]?.dryRun).toEqual({
+      target: 'Regions',
+      resolved: '• East · 100  • West · 250  • East · 50',
     });
     expect(bridge.applied[0]?.params.slide?.bullets).toEqual([
       'East · 100',

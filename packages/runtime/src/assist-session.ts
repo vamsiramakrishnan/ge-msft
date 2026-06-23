@@ -144,6 +144,14 @@ export interface PlanEffect {
   request: ActuationRequest;
   /** The verbatim command line the model emitted, for the human-auditable preview. */
   command: string;
+  /**
+   * Dry-run preview for the approval card. Populated when the effect's value came from a composed
+   * EXPRESSION (`set X = ($t | sum)`, `slide "T" ($rows | …)`, …): the human then approves the
+   * CONCRETE resolved value (derived from possibly-untrusted document content), not just the
+   * formula — closing the render-shows-formula / execute-writes-value divergence. Absent for literal
+   * effects, whose command line already shows exactly what lands.
+   */
+  dryRun?: { target?: string; resolved?: string };
 }
 
 /**
@@ -834,7 +842,20 @@ export class AssistSession {
       if (compiled.kind !== 'write')
         return { error: `"${command.verb}" did not compile to a write` };
 
-      return { request: compiled.request, command: renderCommandLine(command) };
+      const effect: PlanEffect = { request: compiled.request, command: renderCommandLine(command) };
+      // If the value came from an expression, surface the RESOLVED value so the approver sees the
+      // concrete content that will land — not just the formula over (possibly untrusted) doc data.
+      if (hasEffectExpr(command)) {
+        effect.dryRun = {
+          ...(effectTarget(compiled.request) !== undefined && {
+            target: effectTarget(compiled.request),
+          }),
+          ...(effectResolved(compiled.request) !== undefined && {
+            resolved: effectResolved(compiled.request),
+          }),
+        };
+      }
+      return effect;
     } catch (err) {
       return { error: `could not plan "${command.verb}": ${errMsg(err)}` };
     }
@@ -1317,6 +1338,70 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
       const body = command.bodyExpr ? renderExprArg(command.bodyExpr) : `"${command.body}"`;
       return `compose "${command.subject}" ${body}`;
     }
+  }
+}
+
+/** True when the effect's value/text/bullets came from a composed expression (not a literal). */
+function hasEffectExpr(c: Extract<ParsedCommand, { verb: WriteVerb }>): boolean {
+  switch (c.verb) {
+    case 'set':
+      return c.valueExpr !== undefined;
+    case 'comment':
+    case 'reply':
+    case 'post':
+      return c.textExpr !== undefined;
+    case 'mail':
+    case 'page':
+    case 'compose':
+      return c.bodyExpr !== undefined;
+    case 'slide':
+      return c.bulletsExpr !== undefined;
+    default:
+      return false;
+  }
+}
+
+/** A short human label for an effect's target, for the approval card's "target" line. */
+function effectTarget(req: ActuationRequest): string | undefined {
+  const p = req.params;
+  switch (req.kind) {
+    case 'write-cells':
+    case 'format-cells':
+      return p.target?.range;
+    case 'tracked-change':
+    case 'add-comment':
+      return p.target?.matchText;
+    case 'comment-reply':
+      return p.target?.commentId ? `comment ${p.target.commentId}` : undefined;
+    case 'insert-slide':
+      return p.slide?.title;
+    case 'append-page':
+      return p.target?.matchText;
+    case 'create-mail':
+      return p.mail?.subject;
+    default:
+      return undefined;
+  }
+}
+
+/** The CONCRETE resolved value an effect will write/insert, for the approval card. */
+function effectResolved(req: ActuationRequest): string | undefined {
+  const p = req.params;
+  switch (req.kind) {
+    case 'write-cells':
+      return p.cells?.map((row) => row.join(', ')).join(' | ');
+    case 'add-comment':
+    case 'comment-reply':
+    case 'post-message':
+    case 'append-page':
+      return p.text;
+    case 'reply-mail':
+    case 'create-mail':
+      return p.mail?.body;
+    case 'insert-slide':
+      return p.slide?.bullets.map((b) => `• ${b}`).join('  ');
+    default:
+      return undefined;
   }
 }
 

@@ -433,8 +433,9 @@ export class ExcelBridge implements DocBridge {
     });
     // Durable provenance (BUILD-PLAN 1.6): persist the record after the reversible write lands.
     // Best-effort, feature-detected, never fails the write (mirrors the citation-comment path).
-    if (result.ok && (await this.persistProvenance(req))) {
-      return { ...result, provenanceDropped: true };
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
     }
     return result;
   }
@@ -482,8 +483,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
-    if (result.ok && (await this.persistProvenance(req))) {
-      return { ...result, provenanceDropped: true };
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
     }
     return result;
   }
@@ -533,8 +535,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: anchor.address };
     });
-    if (result.ok && (await this.persistProvenance(req))) {
-      return { ...result, provenanceDropped: true };
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
     }
     return result;
   }
@@ -571,8 +574,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
     });
-    if (result.ok && (await this.persistProvenance(req))) {
-      return { ...result, provenanceDropped: true };
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
     }
     return result;
   }
@@ -629,6 +633,19 @@ interface OfficeSettingsLike {
 function asyncStatus(result: unknown): string {
   const status = (result as { status?: unknown } | undefined)?.status;
   return String(status ?? 'succeeded').toLowerCase();
+}
+
+/**
+ * Observability flags for a landed write: `provenanceMissing` when the request carried no provenance
+ * payload at all (an unattributed write — never mistake it for an attributed one), `provenanceDropped`
+ * when a present record failed to persist durably. Persisted cleanly ⇒ empty.
+ */
+function provFlags(
+  req: ActuationRequest,
+  dropped: boolean,
+): { provenanceDropped?: true; provenanceMissing?: true } {
+  if (!req.provenance) return { provenanceMissing: true };
+  return dropped ? { provenanceDropped: true } : {};
 }
 
 /** A NamedItem.formula is an A1 reference like "=Sheet1!$A$1:$D$9"; drop the leading `=`. */

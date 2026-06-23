@@ -108,6 +108,10 @@ export const ActuationResultSchema = z.object({
   // (host metadata write failed / unavailable). The change is real but unprovenanced — surface it so
   // the audit trail and the user know, rather than silently dropping the trace. Absent ⇒ recorded.
   provenanceDropped: z.boolean().optional(),
+  // Observability: the write LANDED carrying NO provenance payload at all (the turn produced no
+  // provenance to stamp). Distinct from `provenanceDropped` (had a record, failed to persist) — this
+  // is an unattributed write, surfaced so it is never mistaken for an attributed one.
+  provenanceMissing: z.boolean().optional(),
   error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
 export type ActuationResult = z.infer<typeof ActuationResultSchema>;

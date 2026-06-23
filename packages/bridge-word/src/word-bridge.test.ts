@@ -187,6 +187,9 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-42'),
         kind: 'tracked-change',
         location: 'tracked-change',
+        // This request carried no provenance payload → the write is flagged unattributed, so an
+        // unprovenanced change is never mistaken for an attributed one.
+        provenanceMissing: true,
       });
       // changeId propagated, not re-minted.
       expect(res.changeId).toBe(req.changeId);
@@ -376,6 +379,7 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-c'),
         kind: 'comment-reply',
         location: 'comment:cmt-1',
+        provenanceMissing: true, // request carried no provenance payload (see tracked-change test)
       });
       expect(host.replies).toEqual([{ commentId: 'cmt-1', reply: 'done', resolve: true }]);
     });
@@ -414,6 +418,7 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-9'),
         kind: 'add-comment',
         location: 'comment',
+        provenanceMissing: true, // request carried no provenance payload (see tracked-change test)
       });
       expect(host.addedComments).toEqual([
         { query: '99.5%', matchCase: false, text: 'Unsourced claim' },

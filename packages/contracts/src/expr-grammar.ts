@@ -25,6 +25,25 @@ export const EFFECT_COMPOSE_ERROR =
   "effects can't be composed yet — emit them as standalone commands (Phase 2)";
 
 /**
+ * The pure pipeline transforms, by name — the canonical list the composition grammar advertises.
+ * The runtime's `TRANSFORMS` registry (packages/runtime/src/compose.ts) MUST provide exactly these
+ * keys; a drift test in `compose.test.ts` binds the two. Kept here (not in runtime) so the boundary
+ * owns the name set and `shadowsBuiltin` can refuse a skill that would shadow a transform.
+ */
+export const TRANSFORM_NAMES = [
+  'filter',
+  'select',
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'count',
+  'sort',
+  'head',
+  'tail',
+] as const;
+
+/**
  * ADR-0005 (Phase 1) — the expression layer over the ADR-0004 command grammar.
  *
  * The keystone is a typed *value* between reads and transforms: reads produce values; pure

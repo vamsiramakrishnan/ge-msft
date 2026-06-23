@@ -115,7 +115,6 @@ export type ActuationResult = z.infer<typeof ActuationResultSchema>;
  * value means "no addressable reads declared".
  */
 export const ReadVerbSchema = z.enum(['outline', 'read', 'search']);
-export type ReadVerb = z.infer<typeof ReadVerbSchema>;
 
 /** A surface's full capability advertisement: what it can read and what it can write. */
 export const CapabilityManifestSchema = z.object({

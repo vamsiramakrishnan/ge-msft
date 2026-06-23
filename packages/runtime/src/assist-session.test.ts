@@ -709,6 +709,8 @@ class ComposeBridge implements DocBridge {
       contextKinds: ['range'],
       actuations: [
         { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
+        // Advertised so a composition-parity test can resolve `slide`'s bulletsExpr through the loop.
+        { kind: 'insert-slide', surface: 'excel', title: 'Insert slide', reversible: true },
       ],
     };
   }
@@ -878,6 +880,39 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     // Approved → it actuated exactly once.
     expect(bridge.applied).toHaveLength(1);
     expect(bridge.applied[0]?.params.cells).toEqual([['400']]);
+  });
+
+  it('resolves a slide bulletsExpr (table → bullets) at dry-run', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nlet $t = read Sales!A1:B5\n```',
+      // The table's rows become bullets — composition parity for a surface verb.
+      '```cmd\nslide "Regions" ($t | select region,amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let previewed: PlanEffect[] | undefined;
+    await collectLoop(
+      session.runCommands('build the slide', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    // Each row of the projected table became one bullet (cells joined by " · ").
+    expect(previewed?.[0]?.request).toMatchObject({
+      kind: 'insert-slide',
+      params: { slide: { title: 'Regions', bullets: ['East · 100', 'West · 250', 'East · 50'] } },
+    });
+    expect(bridge.applied[0]?.params.slide?.bullets).toEqual([
+      'East · 100',
+      'West · 250',
+      'East · 50',
+    ]);
   });
 
   it('type-check rejects an unsupported verb before execution (no write)', async () => {

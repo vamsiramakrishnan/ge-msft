@@ -186,6 +186,53 @@ describe('command-grammar — ADR-0005 Phase 2 effect-arg expressions', () => {
     });
   });
 
+  it('mail/post bodies may be a $var or parenthesized pipeline (composition parity)', () => {
+    expect(parseCommandLine('mail ($draft | head 1)')).toMatchObject({
+      verb: 'mail',
+      body: '',
+      bodyExpr: { stages: [{ name: 'head', args: '1' }] },
+    });
+    expect(parseCommandLine('post $summary')).toMatchObject({
+      verb: 'post',
+      text: '',
+      textExpr: { kind: 'pipeline', source: { src: 'var', name: 'summary' } },
+    });
+    // A quoted body stays literal (no *Expr).
+    expect(parseCommandLine('mail "Thanks — confirming."')).toEqual({
+      verb: 'mail',
+      body: 'Thanks — confirming.',
+    });
+  });
+
+  it('page/compose bodies may be an expression while the title/subject stays literal', () => {
+    expect(parseCommandLine('page "Notes" ($rows | count)')).toMatchObject({
+      verb: 'page',
+      title: 'Notes',
+      body: '',
+      bodyExpr: { stages: [{ name: 'count', args: '' }] },
+    });
+    expect(parseCommandLine('compose "Re: Q3" ($draft | head 1)')).toMatchObject({
+      verb: 'compose',
+      subject: 'Re: Q3',
+      body: '',
+      bodyExpr: { stages: [{ name: 'head', args: '1' }] },
+    });
+  });
+
+  it('slide bullets may be a table expression (bulletsExpr); quoted bullets stay literal', () => {
+    expect(parseCommandLine('slide "Top accounts" ($rows | select name,arr)')).toMatchObject({
+      verb: 'slide',
+      title: 'Top accounts',
+      bullets: [],
+      bulletsExpr: { stages: [{ name: 'select', args: 'name,arr' }] },
+    });
+    expect(parseCommandLine('slide "Q3" "Revenue up 12%" "Churn down"')).toEqual({
+      verb: 'slide',
+      title: 'Q3',
+      bullets: ['Revenue up 12%', 'Churn down'],
+    });
+  });
+
   it('an empty ( ) expression is a corrective error', () => {
     expect(parseCommandLine('set B3 = ()')).toMatchObject({ error: expect.any(String) });
   });

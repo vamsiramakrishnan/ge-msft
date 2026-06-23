@@ -23,8 +23,14 @@ export const OUTLOOK_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['mail-item'],
     },
-    // NOTE: `create-mail` was advertised but `actuate()` handles only `reply-mail` (ADR-0006
-    // phantom). Un-advertised rather than implemented. Re-add with a `displayNewMessageForm`
-    // `actuate()` case + a CLI verb when a "draft new message" flow is actually built.
+    {
+      kind: 'create-mail',
+      surface: 'outlook',
+      title: 'Draft new email',
+      description:
+        'Open a new message form pre-filled with a grounded subject + body (unaddressed).',
+      reversible: true,
+      appliesTo: ['mail-item'],
+    },
   ],
 };

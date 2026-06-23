@@ -1264,6 +1264,8 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
       return `mail "${command.body}"`;
     case 'post':
       return `post "${command.text}"`;
+    case 'compose':
+      return `compose "${command.subject}" "${command.body}"`;
   }
 }
 

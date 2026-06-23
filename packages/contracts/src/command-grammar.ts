@@ -62,6 +62,10 @@ export const WRITE_VERB_TO_KIND = {
   page: 'append-page',
   mail: 'reply-mail',
   post: 'post-message',
+  // Outlook `create-mail` — compose a brand-new grounded draft (vs `mail`, which replies to the open
+  // item). The bridge opens a fresh message form via displayNewMessageForm; recipients are left for
+  // the user to fill (we never auto-address). Gated/approved + provenanced like every other effect.
+  compose: 'create-mail',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -104,6 +108,7 @@ export type ParsedCommand =
   | { verb: 'page'; title: string; body: string }
   | { verb: 'mail'; body: string }
   | { verb: 'post'; text: string }
+  | { verb: 'compose'; subject: string; body: string }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -135,6 +140,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('page'), title: z.string(), body: z.string() }),
   z.object({ verb: z.literal('mail'), body: z.string() }),
   z.object({ verb: z.literal('post'), text: z.string() }),
+  z.object({ verb: z.literal('compose'), subject: z.string(), body: z.string() }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -262,6 +268,8 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return parseMail(rest);
     case 'post':
       return parsePost(rest);
+    case 'compose':
+      return parseCompose(rest);
 
     default:
       return { error: unknownVerbError(verb) };
@@ -469,6 +477,20 @@ function parsePost(rest: string): ParsedCommand | CommandParseError {
   const text = strings[0]!;
   if (text === '') return { error: 'post text cannot be empty' };
   return { verb: 'post', text };
+}
+
+/**
+ * `compose "<subject>" "<body>"` (Outlook `create-mail`). Two quoted strings — a brand-new draft's
+ * subject and body. The bridge opens a fresh message form (recipients left for the user); never
+ * auto-sent. A missing/empty subject, a missing body, or trailing junk is corrective.
+ */
+function parseCompose(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'compose needs a quoted subject and body — usage: compose "Subject" "body text"';
+  const strings = scanQuotedList(rest);
+  if (!strings || strings.length !== 2) return { error: usage };
+  const [subject, body] = strings;
+  if (subject === undefined || subject === '') return { error: 'compose subject cannot be empty' };
+  return { verb: 'compose', subject, body: body ?? '' };
 }
 
 /**
@@ -824,6 +846,12 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'post',
         usage: 'post "text"',
         hint: 'stage a reviewable chat post, e.g. post "Summary of decisions: ..."',
+      };
+    case 'compose':
+      return {
+        verb: 'compose',
+        usage: 'compose "Subject" "body"',
+        hint: 'draft a new grounded email, e.g. compose "Follow-up on Q3" "Hi — summarizing below ..."',
       };
   }
 }

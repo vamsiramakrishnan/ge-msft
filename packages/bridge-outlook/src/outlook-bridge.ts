@@ -17,7 +17,7 @@ import {
   searchMailItem,
   type MailItem,
 } from './capture.js';
-import { planReply } from './actuate-plan.js';
+import { planCompose, planReply } from './actuate-plan.js';
 import { composeEvent, receivedEvent } from './events.js';
 
 /**
@@ -31,10 +31,10 @@ import { composeEvent, receivedEvent } from './events.js';
  */
 /**
  * The exact `ActuationKind`s {@link OutlookBridge.actuate} handles (ADR-0006 closure source of
- * truth). `create-mail` is deliberately ABSENT — it was advertised but never handled, so it was
- * un-advertised. The conformance test asserts this equals the manifest's advertised kinds.
+ * truth). `reply-mail` opens a reviewable reply form; `create-mail` opens a fresh draft via
+ * `displayNewMessageForm`. The conformance test asserts this equals the manifest's advertised kinds.
  */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['reply-mail'];
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['reply-mail', 'create-mail'];
 
 export class OutlookBridge implements DocBridge {
   readonly surface = 'outlook' as const;
@@ -122,6 +122,8 @@ export class OutlookBridge implements DocBridge {
     switch (req.kind) {
       case 'reply-mail':
         return this.applyReply(req);
+      case 'create-mail':
+        return this.applyCompose(req);
       default:
         return {
           ok: false,
@@ -195,6 +197,39 @@ export class OutlookBridge implements DocBridge {
     // Open a reviewable reply form rather than sending — the user confirms before it leaves.
     item.displayReplyForm({ htmlBody: plan.body });
     return { ok: true, changeId: req.changeId, kind: req.kind, location: 'reply-form' };
+  }
+
+  /**
+   * `create-mail`: open a brand-new draft via `displayNewMessageForm` — a reviewable host form the
+   * user edits and sends, never an auto-send. Recipients are passed through only when the agent
+   * supplied them (by default the draft is left unaddressed). Requires the mailbox host and a
+   * non-empty subject; otherwise a corrective so the model can self-fix.
+   */
+  private async applyCompose(req: ActuationRequest): Promise<ActuationResult> {
+    const mailbox = Office.context.mailbox;
+    if (!mailbox?.displayNewMessageForm) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_mailbox', message: 'Compose is unavailable on this host.' },
+      };
+    }
+    const plan = planCompose(req);
+    if (!plan.subject.trim()) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_subject', message: 'create-mail needs params.mail.subject' },
+      };
+    }
+    mailbox.displayNewMessageForm({
+      subject: plan.subject,
+      htmlBody: plan.body,
+      ...(plan.to ? { toRecipients: plan.to } : {}),
+    });
+    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'new-message-form' };
   }
 }
 

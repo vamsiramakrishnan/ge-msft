@@ -3,7 +3,7 @@
  * styles) + content-anchored tracked-change writes. Implements @ge/runtime's DocBridge,
  * so it plugs into the shared AssistSession loop unchanged.
  */
-export { WordBridge } from './word-bridge.js';
+export { WordBridge, HANDLED_ACTUATIONS } from './word-bridge.js';
 export { WORD_CAPABILITIES } from './capabilities.js';
 export {
   wordElementsToBlocks,

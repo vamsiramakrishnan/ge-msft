@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -25,6 +26,12 @@ import { meetingEndedEvent, sessionEndEvent, sessionStartEvent } from './events.
  * directly (mirroring web-shell's `MsalLike`), so the core stays unit-testable and dep-light; the
  * app wires a real TeamsJS module (which satisfies this shape) at startup.
  */
+/**
+ * The exact `ActuationKind`s {@link TeamsBridge.actuate} handles (ADR-0006 closure source of
+ * truth). The conformance test asserts this equals the advertised manifest's actuation kinds.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['post-message'];
+
 export class TeamsBridge implements DocBridge {
   readonly surface = 'teams' as const;
 

@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -21,6 +22,13 @@ import { composeEvent, receivedEvent } from './events.js';
  * reviewable host form (`displayReplyForm`) rather than mutating silently. Pure mapping lives in
  * `capture.ts` / `actuate-plan.ts`; this file is the host wiring.
  */
+/**
+ * The exact `ActuationKind`s {@link OutlookBridge.actuate} handles (ADR-0006 closure source of
+ * truth). `create-mail` is deliberately ABSENT — it was advertised but never handled, so it was
+ * un-advertised. The conformance test asserts this equals the manifest's advertised kinds.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['reply-mail'];
+
 export class OutlookBridge implements DocBridge {
   readonly surface = 'outlook' as const;
 

@@ -15,9 +15,9 @@ what is actually implemented. Companion to `ADR-0002-capability-model.md` (the d
 rank), `@ge/graph-client` (delegated Graph reads), `@ge/triggers` (event engine + actuation gate),
 `@ge/runtime` (AssistSession + ContextModel + Orchestrator), and the `@ge/web-shell` core
 (`NaaAuthClient`, `composeSession`, `PanelController`, `ProvenanceStore`). **Surface bridges built and
-tested: Word, Excel, Outlook, Teams.** PowerPoint and OneNote remain planned stubs. The remaining gap
-to actually load in a host is the **React/Vite/manifest shell** over the web-shell core. 216 tests,
-green. See `STATUS.md`.
+tested: Word, Excel, Outlook, Teams, PowerPoint, OneNote** — each with an advertised==handled
+capability set, conformance-enforced per ADR-0006. The remaining gap to actually load in a host is
+the **React/Vite/manifest shell** over the web-shell core. See `STATUS.md`.
 
 ## Read — attach to context
 
@@ -29,8 +29,8 @@ green. See `STATUS.md`.
 | mail item / subject / from / body | Outlook | ✅ | `bridge-outlook` (string path; reads active item) |
 | transcript window | Teams | ✅ | `teams` bridge (RSC-consented, injected) |
 | comment / thread | Word, Excel | ✅ | comment-reply actuation + `comment-added` events |
-| slide / shape / speaker notes | PowerPoint | ⬜ | `native.slide()` builder ✅ in `@ge/content`; no PPT bridge |
-| page / outline | OneNote | ⬜ | modeled; OneNote is web-only; no bridge |
+| slide / shape | PowerPoint | ✅ | `bridge-powerpoint` (selected slides → shapes' text) |
+| page / outline | OneNote | ✅ | `bridge-onenote` (active page title + outline rich text; web-only) |
 | calendar event (active item) | Outlook | 🟡 | Office.js appointment read not yet in the bridge |
 | image / rendered file | Word/PPT | 🟡 | `file` kind modeled; **note:** can't attach inline to `streamAssist` (no blob part) |
 | prior provenance (read) | Word/PPT/… | 🟡 | `ProvenanceStore` (client view-model) built; durable host-metadata read per surface not wired |
@@ -45,21 +45,40 @@ green. See `STATUS.md`.
 | Read the NotebookLM notebook | GE notebook | 🟡 | `UnitDescriptor.notebookId` modeled; engine-side |
 | Reference an indexed/Drive doc as context | `documentReference` / `driveDocumentReference` | ✅ | `ContextValue` + `query.parts` mapping in `@ge/gemini-client`; search hits map straight to references |
 
+### Read CLI verbs (`outline` / `read` / `search`) — `CapabilityManifest.reads` per surface (ADR-0006)
+These are the addressable read verbs the command grammar advertises per surface — distinct from
+context-attach (`listContext`/`resolveContext`), which is the **universal** port every bridge serves
+and is NOT a read verb. ADR-0006 closure: a surface advertises a read verb ONLY when it has the
+matching bridge port, and a per-surface conformance test (`capability-closure.test.ts`) fails the
+build on drift.
+
+| Surface | `reads` | Ports backing them |
+|---|---|---|
+| Word | `outline`, `read`, `search` | `captureDocState` (outline + whole-doc `read`), `searchDocument` |
+| Excel | `outline`, `read`, `search` | `captureDocState` (outline), `readRange` (addressable `read <A1\|NamedRange>`, bounded to `MAX_READ_CELLS`=10k cells), `searchDocument` |
+| PowerPoint | — | none (no `captureDocState`/`readRange`/`searchDocument`) |
+| OneNote | — | none |
+| Outlook | — | none addressable (active-item capture only) |
+| Teams | — | none addressable (transcript capture only) |
+
 ## Write — actuate back
 
 ### Plane A · in-document
 | Actuation (`ActuationKind`) | Surfaces | Status |
 |---|---|---|
 | **tracked-change** | Word | ✅ `bridge-word` (content-anchored, drift-degrading) |
+| **add-comment** | Word, Excel | ✅ content/cell-anchored new comment (ADR-0004 `comment` verb) |
 | **write-cells** | Excel | ✅ `bridge-excel` (address-targeted) |
+| **format-cells** | Excel | ✅ `bridge-excel` (ADR-0004 `format` verb) |
 | **comment-reply** (+ resolve) | Word, Excel | ✅ |
+| **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` (native compose or base64 deck) |
+| **append-page** | OneNote | ✅ `bridge-onenote` (synthesis + inline citation tags) |
 | **reply-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayReplyForm`) |
 | **post-message** (+ Adaptive Card) | Teams | ✅ `teams` (reviewable compose) |
-| insert-text, replace-selection, insert-ooxml | Word/PPT | 🟡 modeled |
-| fill-content-control | Word | 🟡 |
-| insert-slide, set-speaker-notes | PowerPoint | 🟡 modeled; no PPT bridge |
-| append-page | OneNote | 🟡 modeled; no bridge |
-| create-mail, create-event, create-task | Outlook/Graph | 🟡 modeled |
+| insert-text, replace-selection, insert-ooxml | Word/PPT | 🟡 modeled — **not advertised** by any bridge (ADR-0006: never advertise what `actuate()` can't do) |
+| fill-content-control | Word | 🟡 modeled — **not advertised** (no `actuate()` case) |
+| set-speaker-notes | PowerPoint | 🟡 modeled — **not advertised** (no host write path in current typings; always degraded, so un-advertised per ADR-0006) |
+| create-mail, create-event, create-task | Outlook/Graph | 🟡 modeled — **not advertised** (only `reply-mail` is handled) |
 
 ### Plane B · estate actions (separately authorized)
 | Action | Target | Status | Notes |
@@ -90,14 +109,17 @@ green. See `STATUS.md`.
 ## The gaps that matter (to "map all capabilities" fully)
 1. **Sideload shell.** The React/Vite/manifest layer over the `web-shell` core — the last mile to
    load in a real host. (The core logic is built + tested.)
-2. **PowerPoint + OneNote bridges.** Real surfaces in the vision; currently planned stubs — the only
-   Plane-A reads/writes still 🟡.
+2. **Broader CLI parity (tracked gaps, ADR-0006).** Several handled actuations have no CLI verb yet
+   (`insert-slide`/`append-page`/`reply-mail`/`post-message`), and PowerPoint/OneNote/Outlook/Teams
+   expose no addressable read verb. These are tracked gaps on the closure allow-list, not phantoms —
+   they're reachable from the bridge but not yet from the model's verb grammar.
 3. **Estate writes.** Reads are first-class (`@ge/graph-client`); Graph/SharePoint *writes*
    (send mail, create event, upload/checkout) are modeled but not wired.
 4. **Engine paths unbuilt:** v1 `addContextFile` (code-execution uploads) and the A2UI renderer.
 5. **Per-capability detection.** Host detection is built; the per-capability intersection gate from
    ADR-0002 is not.
 
-Net: **Word/Excel/Outlook/Teams read + write are live; the estate read/search path is live via
-`@ge/graph-client`.** The remaining holes are the sideload shell, the two planned bridges, estate
-writes, and the two engine extras.
+Net: **All six surface bridges (Word/Excel/PowerPoint/OneNote/Outlook/Teams) have a truthful,
+conformance-enforced read+write set; the estate read/search path is live via `@ge/graph-client`.**
+The remaining holes are the sideload shell, broader CLI verb parity (tracked gaps), estate writes,
+and the two engine extras.

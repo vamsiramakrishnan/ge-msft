@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -28,6 +29,17 @@ import {
   splitFormulaGrid,
 } from './actuate-plan.js';
 import { provenanceRecord } from './provenance-record.js';
+
+/**
+ * The exact `ActuationKind`s {@link ExcelBridge.actuate} handles (ADR-0006 closure source of
+ * truth). The conformance test asserts this set equals the advertised manifest's actuation kinds.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
+  'write-cells',
+  'format-cells',
+  'add-comment',
+  'comment-reply',
+];
 
 /**
  * The Excel `DocBridge`. The ONLY place Office.js (`Excel.run`) is touched. Reads via the
@@ -188,6 +200,35 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       if ((used as { isNullObject?: boolean }).isNullObject === true) return [];
       return searchUsedRange(used.address, used.values as string[][], q);
+    });
+  }
+
+  /**
+   * ADR-0006 closure: serve the `read <A1|NamedRange>` CLI verb (ADR-0004) with an addressable,
+   * on-demand read. Resolves `a1` as a sheet-qualified/plain A1 address (`Sheet1!A1:B3` → the named
+   * sheet, else the active sheet) OR, when it isn't an A1 address, as a workbook-scoped **named
+   * range** (`getItemOrNullObject` so a missing name degrades to `[]` instead of throwing). The
+   * grid is mapped through the same pure `rangeToContext` path the rest of the bridge uses — host
+   * content carried strictly as `ResolvedContext` data, never as instructions — and the read is
+   * **bounded** to {@link MAX_READ_CELLS} cells so a huge range can't blow the per-turn budget.
+   * Empty selector / missing name / empty grid → `[]`.
+   */
+  async readRange(a1: string): Promise<ResolvedContext[]> {
+    const selector = a1.trim();
+    if (!selector) return [];
+    return Excel.run(async (ctx) => {
+      const range = resolveReadRange(ctx, selector);
+      if (!range) return [];
+      // First sync: cheap metadata only. Bound the read BEFORE materializing `.values`, so a large
+      // finite range (e.g. A1:A1048576) can't pull ~1M cells across the Office.js bridge.
+      range.load('address,rowCount,columnCount,isNullObject');
+      await ctx.sync();
+      if ((range as { isNullObject?: boolean }).isNullObject === true) return [];
+      if (!withinReadBudget(range.rowCount, range.columnCount)) return [];
+      // Within budget — now materialize the values.
+      range.load('values');
+      await ctx.sync();
+      return rangeToContext(range.address, range.values as string[][]);
     });
   }
 
@@ -581,6 +622,60 @@ function previewOf(values: string[][]): string {
     .map((c) => String(c ?? ''))
     .join(' | ')
     .slice(0, 120);
+}
+
+/**
+ * Upper bound on cells materialized by a single `read <A1|NamedRange>` (ADR-0006). Guards the
+ * per-turn budget against an unbounded selector (e.g. a whole-column "A:A"); a range over this is
+ * treated as "too large to inline" and degrades to `[]`. 10k cells ≈ a generous addressable read.
+ */
+export const MAX_READ_CELLS = 10_000;
+
+/**
+ * True iff a `rowCount × columnCount` range is within the read budget ({@link MAX_READ_CELLS}).
+ * Pure + exported so the bound that protects against a huge model-emitted `read` is unit-testable:
+ * `readRange` checks this on cheap metadata BEFORE materializing `.values`. A zero/undefined
+ * dimension (empty or unresolved range) is out of budget, so the port returns `[]`.
+ */
+export function withinReadBudget(
+  rowCount: number | undefined,
+  columnCount: number | undefined,
+): boolean {
+  const cells = (rowCount ?? 0) * (columnCount ?? 0);
+  return cells > 0 && cells <= MAX_READ_CELLS;
+}
+
+/**
+ * True iff `selector` looks like an A1 range reference (`A1`, `A1:B3`, `$A$1`, optionally with a
+ * `Sheet1!`/`'My Sheet'!` qualifier) rather than a named range. Conservative: anything that isn't a
+ * recognizable A1 shape is treated as a name, which we resolve via the workbook's named items.
+ */
+export function isA1Address(selector: string): boolean {
+  const bang = selector.lastIndexOf('!');
+  const rangePart = bang >= 0 ? selector.slice(bang + 1) : selector;
+  return /^\$?[A-Za-z]{1,3}\$?\d{1,7}(:\$?[A-Za-z]{1,3}\$?\d{1,7})?$/.test(rangePart.trim());
+}
+
+/**
+ * Resolve a read selector to a live Excel `Range`, or `undefined` when it cannot be addressed.
+ * A1 selectors go through `parseAddress` + `getRange` (named sheet, else the active sheet); any
+ * other selector is treated as a workbook-scoped named range via `getItemOrNullObject` (so a
+ * missing name yields a null-object the caller degrades to `[]`, never a throw). Pure host wiring,
+ * kept out of the bridge body so the A1-vs-name decision is unit-testable via {@link isA1Address}.
+ */
+function resolveReadRange(ctx: Excel.RequestContext, selector: string): Excel.Range | undefined {
+  if (isA1Address(selector)) {
+    const { sheetName, rangeAddress } = parseAddress(selector);
+    const sheet =
+      sheetName !== undefined
+        ? ctx.workbook.worksheets.getItem(sheetName)
+        : ctx.workbook.worksheets.getActiveWorksheet();
+    return sheet.getRange(rangeAddress);
+  }
+  // Not an A1 shape → a named range. `getItemOrNullObject` degrades a missing name to a null-object
+  // (its `.getRange()` is null-object-safe), which the caller filters via the `isNullObject` load.
+  const named = ctx.workbook.names.getItemOrNullObject(selector);
+  return named.getRange();
 }
 
 /** Split "Sheet1!A1:B3" into its worksheet name and range address. */

@@ -4,7 +4,7 @@
  * (`insert-slide`, `set-speaker-notes`). Implements @ge/runtime's DocBridge, so it plugs into
  * the shared AssistSession loop unchanged.
  */
-export { PowerPointBridge } from './powerpoint-bridge.js';
+export { PowerPointBridge, HANDLED_ACTUATIONS } from './powerpoint-bridge.js';
 export { POWERPOINT_CAPABILITIES } from './capabilities.js';
 export {
   shapesToSlideText,

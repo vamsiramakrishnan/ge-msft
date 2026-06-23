@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -15,7 +16,7 @@ import {
   slidesToContext,
   type SlideElement,
 } from './capture.js';
-import { planInsertSlide, planSpeakerNotes } from './actuate-plan.js';
+import { planInsertSlide } from './actuate-plan.js';
 import { documentChanged, selectionChanged } from './events.js';
 
 /**
@@ -36,6 +37,13 @@ import { documentChanged, selectionChanged } from './events.js';
  *     Office-level `Office.EventType.DocumentSelectionChanged` (l.645) + `ActiveViewChanged` (l.582)
  *     with add/removeHandlerAsync (l.3875 / l.3965). Neither carries a coauthor source → origin 'local'.
  */
+/**
+ * The exact `ActuationKind`s {@link PowerPointBridge.actuate} handles (ADR-0006 closure source of
+ * truth). `set-speaker-notes` is deliberately ABSENT — it had no working write path (always
+ * degraded) and was un-advertised. The conformance test asserts this equals the manifest's kinds.
+ */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['insert-slide'];
+
 export class PowerPointBridge implements DocBridge {
   readonly surface = 'powerpoint' as const;
 
@@ -98,8 +106,6 @@ export class PowerPointBridge implements DocBridge {
     switch (req.kind) {
       case 'insert-slide':
         return this.applyInsertSlide(req);
-      case 'set-speaker-notes':
-        return this.applySpeakerNotes(req);
       default:
         return {
           ok: false,
@@ -150,30 +156,11 @@ export class PowerPointBridge implements DocBridge {
     });
   }
 
-  private async applySpeakerNotes(req: ActuationRequest): Promise<ActuationResult> {
-    const plan = planSpeakerNotes(req);
-    if (!plan.notes.trim()) {
-      return {
-        ok: false,
-        changeId: req.changeId,
-        kind: req.kind,
-        error: { code: 'empty_notes', message: 'set-speaker-notes needs notes text' },
-      };
-    }
-    // Speaker-notes write is not modeled on `Slide` in this Office.js typings version: there is
-    // no `Slide.notes`/notesSlide API to set. Rather than reach past the typed surface, degrade
-    // to a panel item so the talking points are still surfaced to the user (reversible, no edit).
-    return Promise.resolve({
-      ok: false,
-      changeId: req.changeId,
-      kind: req.kind,
-      degraded: true,
-      error: {
-        code: 'notes_unsupported',
-        message: 'Speaker notes are not writable on this PowerPoint host; shown in the panel.',
-      },
-    });
-  }
+  // NOTE: a `set-speaker-notes` actuation was handled here but ALWAYS degraded — this Office.js
+  // typings version exposes no `Slide.notes`/notesSlide write path. Per ADR-0006 we removed the
+  // phantom from the manifest AND its `actuate()` case (advertised==handled), rather than keep a
+  // case that can never succeed. Re-add (manifest + case + CLI verb) once the host typings ship a
+  // notes writer. The pure `planSpeakerNotes` plan stays in `actuate-plan.ts` for that day.
 
   /**
    * Stream PowerPoint host events into the trigger engine via the Office-level event bus

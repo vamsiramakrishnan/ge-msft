@@ -8,6 +8,10 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const ONENOTE_CAPABILITIES: CapabilityManifest = {
   surface: 'onenote',
   contextKinds: ['page', 'document'],
+  // No addressable read verbs: OneNote reads the active page via the universal
+  // `listContext`/`resolveContext` port, but ships no `outline`/`read`/`search` read port today
+  // (no `captureDocState`/`readRange`/`searchDocument`). ADR-0006 closure: advertise nothing.
+  reads: [],
   actuations: [
     {
       kind: 'append-page',

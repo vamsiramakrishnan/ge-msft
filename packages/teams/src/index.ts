@@ -6,6 +6,7 @@
  */
 export {
   TeamsBridge,
+  HANDLED_ACTUATIONS,
   type TeamsBridgeOptions,
   type TeamsJsLike,
   type TeamsComposeRequest,

@@ -8,6 +8,9 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const EXCEL_CAPABILITIES: CapabilityManifest = {
   surface: 'excel',
   contextKinds: ['selection', 'range', 'sheet', 'table'],
+  // Read verbs Excel serves (ADR-0006 closure): `outline` via `captureDocState`, addressable
+  // `read <A1|NamedRange>` via `readRange`, `search` via `searchDocument`.
+  reads: ['outline', 'read', 'search'],
   actuations: [
     {
       kind: 'write-cells',

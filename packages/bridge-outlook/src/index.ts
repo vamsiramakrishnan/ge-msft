@@ -4,7 +4,7 @@
  * writes through `Office.context.mailbox.item`. Implements @ge/runtime's DocBridge, so it
  * plugs into the shared AssistSession loop unchanged.
  */
-export { OutlookBridge } from './outlook-bridge.js';
+export { OutlookBridge, HANDLED_ACTUATIONS } from './outlook-bridge.js';
 export { OUTLOOK_CAPABILITIES } from './capabilities.js';
 export { mailItemToContext, type MailItem } from './capture.js';
 export { planReply, type ReplyPlan } from './actuate-plan.js';

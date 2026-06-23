@@ -8,6 +8,10 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const OUTLOOK_CAPABILITIES: CapabilityManifest = {
   surface: 'outlook',
   contextKinds: ['mail-item', 'mail-thread', 'attachment'],
+  // No addressable read verbs: Outlook captures the active mail item via the universal
+  // `listContext`/`resolveContext` port, but has no `outline`/`read`/`search` read port today
+  // (no `captureDocState`/`readRange`/`searchDocument`). ADR-0006 closure: advertise nothing.
+  reads: [],
   actuations: [
     {
       kind: 'reply-mail',
@@ -17,12 +21,8 @@ export const OUTLOOK_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['mail-item'],
     },
-    {
-      kind: 'create-mail',
-      surface: 'outlook',
-      title: 'Draft new message',
-      description: 'Open a new draft message pre-filled with grounded content.',
-      reversible: true,
-    },
+    // NOTE: `create-mail` was advertised but `actuate()` handles only `reply-mail` (ADR-0006
+    // phantom). Un-advertised rather than implemented. Re-add with a `displayNewMessageForm`
+    // `actuate()` case + a CLI verb when a "draft new message" flow is actually built.
   ],
 };

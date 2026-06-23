@@ -104,6 +104,10 @@ export const ActuationResultSchema = z.object({
   kind: ActuationKindSchema,
   location: z.string().optional(), // where it landed (range, slide #, comment id, draft id)
   degraded: z.boolean().optional(), // e.g. anchor drifted → applied as a panel item
+  // Observability: the reversible write LANDED but its durable provenance could not be persisted
+  // (host metadata write failed / unavailable). The change is real but unprovenanced — surface it so
+  // the audit trail and the user know, rather than silently dropping the trace. Absent ⇒ recorded.
+  provenanceDropped: z.boolean().optional(),
   error: z.object({ code: z.string(), message: z.string() }).optional(),
 });
 export type ActuationResult = z.infer<typeof ActuationResultSchema>;

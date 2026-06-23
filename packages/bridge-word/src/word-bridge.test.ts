@@ -196,6 +196,34 @@ describe('WordBridge orchestration (against a fake host)', () => {
       ]);
     });
 
+    it('flags provenanceDropped when the change lands but durable provenance fails to persist', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      host.provenanceFails = true; // host can't write the custom XML part.
+
+      const req: ActuationRequest = {
+        ...trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }, 'chg-prov'),
+        provenance: PROVENANCE,
+      };
+      const res = await new WordBridge(host).actuate(req);
+
+      // The reversible write still succeeded — the drop is surfaced, not fatal.
+      expect(res.ok).toBe(true);
+      expect(res.provenanceDropped).toBe(true);
+    });
+
+    it('does not flag provenanceDropped when persistence succeeds', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['Availability: 99.5% uptime']);
+      const req: ActuationRequest = {
+        ...trackedChange({ text: '99.9%', target: { matchText: '99.5%' } }, 'chg-ok'),
+        provenance: PROVENANCE,
+      };
+      const res = await new WordBridge(host).actuate(req);
+      expect(res.ok).toBe(true);
+      expect(res.provenanceDropped).toBeUndefined();
+    });
+
     it('picks the first hit when no contextHint is given', async () => {
       const host = new FakeWordHost();
       host.searchHits.set('SLA', ['first SLA', 'second SLA']);

@@ -191,12 +191,13 @@ export class WordBridge implements DocBridge {
       await this.host.addComment(plan.matchText, false, formatSources(sources));
     }
     // Durable provenance (BUILD-PLAN 1.6): stamp the record after the reversible change lands.
-    await this.persistProvenance(req);
+    const dropped = await this.persistProvenance(req);
     return {
       ok: true,
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      ...dropFlag(dropped),
     };
   }
 
@@ -240,8 +241,14 @@ export class WordBridge implements DocBridge {
         },
       };
     }
-    await this.persistProvenance(req);
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'comment' };
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: 'comment',
+      ...dropFlag(dropped),
+    };
   }
 
   private async applyCommentReply(req: ActuationRequest): Promise<ActuationResult> {
@@ -269,8 +276,14 @@ export class WordBridge implements DocBridge {
         error: { code: 'comment_gone', message: 'The comment no longer exists.' },
       };
     }
-    await this.persistProvenance(req);
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: outcome.location };
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      ...dropFlag(dropped),
+    };
   }
 
   /**
@@ -280,14 +293,23 @@ export class WordBridge implements DocBridge {
    * custom XML part (`customXmlParts.add`), so we persist the record's OOXML form via the port.
    *
    * Best-effort and feature-detected, exactly like the citation-comment path: a missing
-   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it), and the
-   * port swallows any host failure. The reversible write already succeeded; provenance is additive
-   * metadata, not the system of record, so a persistence failure must not fail the write.
+   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it). The reversible
+   * write already succeeded; provenance is additive metadata, not the system of record, so a
+   * persistence failure must NOT fail the write — but it is no longer SILENT: we return whether the
+   * record dropped so the caller can flag `provenanceDropped` on the result (observability).
+   *
+   * @returns `true` when provenance was present but could not be durably persisted (a drop to
+   * surface); `false` when persisted or when there was nothing to persist.
    */
-  private async persistProvenance(req: ActuationRequest): Promise<void> {
-    if (!req.provenance) return; // no provenance to persist — actuation still succeeded.
+  private async persistProvenance(req: ActuationRequest): Promise<boolean> {
+    if (!req.provenance) return false; // nothing to persist — not a drop.
     const record = provenanceRecord(req.changeId, req.provenance);
-    await this.host.persistProvenance(record.xml);
+    try {
+      const outcome = await this.host.persistProvenance(record.xml);
+      return !outcome.ok; // port reports failure → dropped.
+    } catch {
+      return true; // host threw → dropped (the write still stands).
+    }
   }
 
   /**
@@ -306,4 +328,9 @@ export class WordBridge implements DocBridge {
       },
     });
   }
+}
+
+/** Attach the observability flag only when provenance actually dropped (keeps a clean result). */
+function dropFlag(dropped: boolean): { provenanceDropped?: true } {
+  return dropped ? { provenanceDropped: true } : {};
 }

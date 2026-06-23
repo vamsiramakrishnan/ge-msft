@@ -433,7 +433,9 @@ export class ExcelBridge implements DocBridge {
     });
     // Durable provenance (BUILD-PLAN 1.6): persist the record after the reversible write lands.
     // Best-effort, feature-detected, never fails the write (mirrors the citation-comment path).
-    if (result.ok) this.persistProvenance(req);
+    if (result.ok && (await this.persistProvenance(req))) {
+      return { ...result, provenanceDropped: true };
+    }
     return result;
   }
 
@@ -480,7 +482,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
-    if (result.ok) this.persistProvenance(req);
+    if (result.ok && (await this.persistProvenance(req))) {
+      return { ...result, provenanceDropped: true };
+    }
     return result;
   }
 
@@ -529,7 +533,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: anchor.address };
     });
-    if (result.ok) this.persistProvenance(req);
+    if (result.ok && (await this.persistProvenance(req))) {
+      return { ...result, provenanceDropped: true };
+    }
     return result;
   }
 
@@ -565,7 +571,9 @@ export class ExcelBridge implements DocBridge {
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
     });
-    if (result.ok) this.persistProvenance(req);
+    if (result.ok && (await this.persistProvenance(req))) {
+      return { ...result, provenanceDropped: true };
+    }
     return result;
   }
 
@@ -576,24 +584,37 @@ export class ExcelBridge implements DocBridge {
    * so we use `Office.context.document.settings` (workbook-persisted) carrying the JSON record.
    *
    * Best-effort and feature-detected, exactly like the citation-comment path: a missing
-   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it), and any
-   * settings/Office failure is swallowed. The reversible write already succeeded; provenance is
-   * additive metadata, not the system of record, so a persistence failure must not fail the write.
+   * `req.provenance` is skipped (we never fabricate identity — the runtime stamps it). The reversible
+   * write already succeeded; provenance is additive metadata, not the system of record, so a
+   * persistence failure must NOT fail the write — but it is no longer SILENT: we return whether the
+   * record dropped so the caller can flag `provenanceDropped` on the result (observability). A missing
+   * settings bag (older host) is itself a drop: the change cannot be durably provenanced here.
+   *
+   * @returns `true` when provenance was present but could not be durably persisted; `false` when
+   * persisted or when there was nothing to persist.
    */
-  private persistProvenance(req: ActuationRequest): void {
-    if (!req.provenance) return; // no provenance to persist — actuation still succeeded.
+  private async persistProvenance(req: ActuationRequest): Promise<boolean> {
+    if (!req.provenance) return false; // nothing to persist — not a drop.
     try {
       const settings = (
         globalThis as {
           Office?: { context?: { document?: { settings?: OfficeSettingsLike } } };
         }
       ).Office?.context?.document?.settings;
-      if (!settings) return; // no settings bag (older host / harness) — skip silently.
+      if (!settings) return true; // no settings bag (older host / harness) — cannot persist ⇒ drop.
       const record = provenanceRecord(req.changeId, req.provenance);
       settings.set(record.key, record.json);
-      settings.saveAsync();
+      // Await the persisted save so an async settings failure is observed, not swallowed.
+      const status = await new Promise<string>((resolve) => {
+        try {
+          settings.saveAsync((result) => resolve(asyncStatus(result)));
+        } catch {
+          resolve('failed');
+        }
+      });
+      return status !== 'succeeded';
     } catch {
-      // Settings unavailable / host quirk — the reversible write already landed, so log-and-continue.
+      return true; // settings unavailable / host quirk — the write landed, but provenance dropped.
     }
   }
 }
@@ -602,6 +623,12 @@ export class ExcelBridge implements DocBridge {
 interface OfficeSettingsLike {
   set(name: string, value: unknown): void;
   saveAsync(callback?: (result: unknown) => void): void;
+}
+
+/** Normalize an Office `AsyncResult.status` to `'succeeded'`/`'failed'` (enum value or string). */
+function asyncStatus(result: unknown): string {
+  const status = (result as { status?: unknown } | undefined)?.status;
+  return String(status ?? 'succeeded').toLowerCase();
 }
 
 /** A NamedItem.formula is an A1 reference like "=Sheet1!$A$1:$D$9"; drop the leading `=`. */

@@ -12,7 +12,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **~714 tests across 73 files green** (Vitest) · `npm run lint` clean.
+`npm run typecheck` clean · **~740 tests across 74 files green** (Vitest) · `npm run lint` clean.
 
 ## Packages — built vs planned
 
@@ -55,11 +55,16 @@ The defining work since the last status: the document became a programmable envi
     (`contracts/expr-grammar.ts`, `runtime/compose.ts`).
   - *Phase 2* — a turn's effects form a **plan**: type-check → dry-run (reads + pure, **zero
     actuation**, each effect resolved to a Zod-validated `ActuationRequest`) → `plan-preview` → **one**
-    `approvePlan` (fail-closed) → gated execution (`runtime/assist-session.ts`).
+    `approvePlan` (fail-closed) → gated execution (`runtime/assist-session.ts`). **Composition parity:**
+    every text-bearing effect verb (`set`/`comment`/`reply`/`mail`/`post`/`page`/`compose`, and
+    `slide` bullets) accepts a `( <pipeline> )` / `$var` expression in its free-text slot, resolved at
+    dry-run through the same pure-only path — a composed value can feed a slide/page/email/post, not
+    just a cell. `suggest`/`format` (no free-text slot) stay literal.
   - *Phase 3* — **named skills** (`def name(p…): … end` / call) expand into the same Phase-2 plan;
     bounded substitution, no gate bypass (`contracts/skill-grammar.ts`, `runtime/skill-registry.ts`).
+    A skill name may not shadow a built-in verb **or** a pure transform name (`shadowsBuiltin`).
   - *Deferred:* `for`/`each` iteration, durable (host-metadata) skill persistence, and Phase 4
-    cross-surface compositions.
+    cross-surface compositions (a multi-bridge router — see "What's next").
 - **Capability closure (ADR-0006).** `checkCapabilityClosure({ manifest, handledKinds, readPorts,
   verbKinds })` in `@ge/contracts` computes the closed set; per-surface `capability-closure.test.ts`
   asserts **no phantoms** (hard) and tracks **gaps** against an allow-list. Drift remediation
@@ -102,7 +107,7 @@ The defining work since the last status: the document became a programmable envi
 
 ## Testing approach
 
-Vitest across all workspaces (~714 tests / 73 files). Bridges are tested against **in-repo Office
+Vitest across all workspaces (~740 tests / 74 files). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate

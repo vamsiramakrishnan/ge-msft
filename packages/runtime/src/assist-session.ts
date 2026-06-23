@@ -865,8 +865,49 @@ export class AssistSession {
       if ('error' in text) return text;
       return { command: { verb: 'reply', commentId: command.commentId, text: text.text } };
     }
-    // Literal-only verbs (suggest/format) and literal args of set/comment/reply pass through.
+    // Composition parity: the ADR-0006 surface verbs are expression-bearing too. The free-text slot
+    // (body/text) resolves to a SCALAR like set/comment/reply; `slide` bullets resolve from a TABLE.
+    if (command.verb === 'mail' && command.bodyExpr) {
+      const body = await this.evalEffectArg(command.bodyExpr);
+      if ('error' in body) return body;
+      return { command: { verb: 'mail', body: body.text } };
+    }
+    if (command.verb === 'post' && command.textExpr) {
+      const text = await this.evalEffectArg(command.textExpr);
+      if ('error' in text) return text;
+      return { command: { verb: 'post', text: text.text } };
+    }
+    if (command.verb === 'page' && command.bodyExpr) {
+      const body = await this.evalEffectArg(command.bodyExpr);
+      if ('error' in body) return body;
+      return { command: { verb: 'page', title: command.title, body: body.text } };
+    }
+    if (command.verb === 'compose' && command.bodyExpr) {
+      const body = await this.evalEffectArg(command.bodyExpr);
+      if ('error' in body) return body;
+      return { command: { verb: 'compose', subject: command.subject, body: body.text } };
+    }
+    if (command.verb === 'slide' && command.bulletsExpr) {
+      const bullets = await this.evalBulletsExpr(command.bulletsExpr);
+      if ('error' in bullets) return bullets;
+      return { command: { verb: 'slide', title: command.title, bullets: bullets.bullets } };
+    }
+    // Literal-only verbs (suggest/format) and literal args pass through unchanged.
     return { command };
+  }
+
+  /**
+   * Evaluate a `slide` bullets expression to a bullet list. A TABLE (the expected case, e.g.
+   * `slide "Top accounts" ($rows | select name,arr)`) maps each row to one bullet — cells joined by
+   * " · " — capped at {@link SLIDE_BULLET_CAP} with a transparent "+N more" tail. A scalar (text /
+   * number) becomes a single bullet. An eval error surfaces as a corrective.
+   */
+  private async evalBulletsExpr(
+    expr: ParsedExpr,
+  ): Promise<{ bullets: string[] } | { error: string }> {
+    const result = await this.evalExpression(expr);
+    if ('error' in result) return result;
+    return { bullets: valueToBullets(result) };
   }
 
   /**
@@ -1255,18 +1296,50 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
       return `format ${command.range} ${props}`;
     }
     case 'slide': {
+      if (command.bulletsExpr)
+        return `slide "${command.title}" ${renderExprArg(command.bulletsExpr)}`;
       const bullets = command.bullets.map((b) => `"${b}"`).join(' ');
       return bullets ? `slide "${command.title}" ${bullets}` : `slide "${command.title}"`;
     }
-    case 'page':
-      return `page "${command.title}" "${command.body}"`;
-    case 'mail':
-      return `mail "${command.body}"`;
-    case 'post':
-      return `post "${command.text}"`;
-    case 'compose':
-      return `compose "${command.subject}" "${command.body}"`;
+    case 'page': {
+      const body = command.bodyExpr ? renderExprArg(command.bodyExpr) : `"${command.body}"`;
+      return `page "${command.title}" ${body}`;
+    }
+    case 'mail': {
+      const body = command.bodyExpr ? renderExprArg(command.bodyExpr) : `"${command.body}"`;
+      return `mail ${body}`;
+    }
+    case 'post': {
+      const text = command.textExpr ? renderExprArg(command.textExpr) : `"${command.text}"`;
+      return `post ${text}`;
+    }
+    case 'compose': {
+      const body = command.bodyExpr ? renderExprArg(command.bodyExpr) : `"${command.body}"`;
+      return `compose "${command.subject}" ${body}`;
+    }
   }
+}
+
+/** Max bullets a `slide` table expression yields before the rest collapse into a "+N more" tail. */
+const SLIDE_BULLET_CAP = 10;
+
+/**
+ * Map a composed {@link Value} to slide bullets. A table → one bullet per row (cells joined by
+ * " · ", blank cells dropped), capped at {@link SLIDE_BULLET_CAP} with a transparent "+N more rows"
+ * tail so a large table never silently overruns the slide. A scalar (text / number) → one bullet.
+ */
+function valueToBullets(value: Value): string[] {
+  if (value.kind !== 'table') return [renderValue(value)];
+  const rows = value.rows.slice(0, SLIDE_BULLET_CAP).map((row) =>
+    row
+      .map((cell) => String(cell ?? '').trim())
+      .filter((cell) => cell !== '')
+      .join(' · '),
+  );
+  if (value.rows.length > SLIDE_BULLET_CAP) {
+    rows.push(`(+${value.rows.length - SLIDE_BULLET_CAP} more rows)`);
+  }
+  return rows;
 }
 
 /** Render an effect-arg `ParsedExpr` back to its source form (`$var` or `( <pipeline> )`). */

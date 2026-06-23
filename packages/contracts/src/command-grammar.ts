@@ -86,12 +86,14 @@ export const ALL_VERBS = [
  * are surface-agnostic strings here; the runtime compiler maps them onto surface-specific
  * targets (`set` cell → `target.range`; `suggest` oldText → `target.matchText`).
  *
- * ADR-0005 Phase 2 — the effect verbs `set`/`comment`/`reply` may carry an optional `valueExpr`
- * (for `set`) or `textExpr` (for `comment`/`reply`): a `ParsedExpr` the runtime evaluates against
- * the binding env at dry-run, rendering the resulting `Value` into the concrete `value`/`text`
- * param. When the arg is a LITERAL (plain text or `=formula`, the ADR-0004 case) the `*Expr` field
- * is absent and `value`/`text` carries the verbatim literal. `suggest` and `format` stay
- * literal-only this wave (no `*Expr` field).
+ * ADR-0005 Phase 2 — the effect verbs carry an optional `*Expr`: a `ParsedExpr` the runtime
+ * evaluates against the binding env at dry-run, rendering the resulting `Value` into the concrete
+ * param. Composition parity (this wave): every text-bearing effect verb is expression-bearing —
+ * `set`→`valueExpr`, `comment`/`reply`→`textExpr`, `mail`/`page`/`compose`→`bodyExpr`,
+ * `post`→`textExpr`, and `slide`→`bulletsExpr` (a table whose rows become bullets). When the arg is
+ * a LITERAL (plain text or `=formula`, the ADR-0004 case) the `*Expr` field is absent and the param
+ * carries the verbatim literal. `suggest` and `format` (typed key=value props, no free-text slot)
+ * stay literal-only.
  */
 export type ParsedCommand =
   | { verb: 'outline' }
@@ -102,13 +104,15 @@ export type ParsedCommand =
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'format'; range: string; props: Record<string, string> }
   | { verb: 'reply'; commentId: string; text: string; textExpr?: ParsedExpr }
-  // ADR-0006 CLI parity effect verbs — literal-only this wave (no `*Expr`), matching the param
-  // shapes the respective bridges consume (see compileCommand).
-  | { verb: 'slide'; title: string; bullets: string[] }
-  | { verb: 'page'; title: string; body: string }
-  | { verb: 'mail'; body: string }
-  | { verb: 'post'; text: string }
-  | { verb: 'compose'; subject: string; body: string }
+  // ADR-0006 CLI parity effect verbs — now composition-bearing: the free-text slot accepts a
+  // `( <pipeline> )` / `$var` expression (evaluated at dry-run) as well as a quoted literal. The
+  // anchor slots (title/subject) stay literal. `slide` bullets accept a table expression whose rows
+  // become bullets (`bulletsExpr`).
+  | { verb: 'slide'; title: string; bullets: string[]; bulletsExpr?: ParsedExpr }
+  | { verb: 'page'; title: string; body: string; bodyExpr?: ParsedExpr }
+  | { verb: 'mail'; body: string; bodyExpr?: ParsedExpr }
+  | { verb: 'post'; text: string; textExpr?: ParsedExpr }
+  | { verb: 'compose'; subject: string; body: string; bodyExpr?: ParsedExpr }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -136,11 +140,34 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     text: z.string(),
     textExpr: z.lazy(() => ParsedExprSchema).optional(),
   }),
-  z.object({ verb: z.literal('slide'), title: z.string(), bullets: z.array(z.string()) }),
-  z.object({ verb: z.literal('page'), title: z.string(), body: z.string() }),
-  z.object({ verb: z.literal('mail'), body: z.string() }),
-  z.object({ verb: z.literal('post'), text: z.string() }),
-  z.object({ verb: z.literal('compose'), subject: z.string(), body: z.string() }),
+  z.object({
+    verb: z.literal('slide'),
+    title: z.string(),
+    bullets: z.array(z.string()),
+    bulletsExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
+  z.object({
+    verb: z.literal('page'),
+    title: z.string(),
+    body: z.string(),
+    bodyExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
+  z.object({
+    verb: z.literal('mail'),
+    body: z.string(),
+    bodyExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
+  z.object({
+    verb: z.literal('post'),
+    text: z.string(),
+    textExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
+  z.object({
+    verb: z.literal('compose'),
+    subject: z.string(),
+    body: z.string(),
+    bodyExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -426,71 +453,130 @@ function parseReply(rest: string): ParsedCommand | CommandParseError {
 }
 
 /**
- * `slide "<title>" ["<bullet>" …]` (ADR-0006 `insert-slide`). The first quoted string is the slide
- * title; each subsequent quoted string is a bullet (zero or more). All quote-aware via
- * {@link scanQuoted} (`\"`/`\\` escapes). A missing/empty title or a non-quoted token is corrective.
+ * `slide "<title>" ["<bullet>" …]` OR `slide "<title>" (<table-expr>)` (`insert-slide`). The first
+ * quoted string is the title; the bullets are EITHER zero-or-more quoted strings OR a single
+ * composition expression (`( <pipeline> )` / `$var`) whose resulting table's rows become bullets at
+ * dry-run (`bulletsExpr`). A missing/empty title or a non-quoted, non-expression tail is corrective.
  */
 function parseSlide(rest: string): ParsedCommand | CommandParseError {
   const usage =
-    'slide needs a quoted title and optional quoted bullets — usage: slide "Title" "bullet one" "bullet two"';
-  const strings = scanQuotedList(rest);
-  if (!strings || strings.length === 0) return { error: usage };
-  const [title, ...bullets] = strings;
-  if (title === undefined || title === '') return { error: 'slide title cannot be empty' };
-  return { verb: 'slide', title, bullets };
+    'slide needs a quoted title and bullets (quoted strings or a table expression) — usage: slide "Title" "bullet one" "bullet two"  OR  slide "Title" ($rows | select a,b)';
+  const t = rest.trim();
+  if (!t.startsWith('"')) return { error: usage };
+  const title = scanQuoted(t, 0);
+  if (!title) return { error: usage };
+  if (title.value === '') return { error: 'slide title cannot be empty' };
+
+  const tail = t.slice(title.end).trim();
+  if (tail === '') return { verb: 'slide', title: title.value, bullets: [] };
+  // Expression bullets: a parenthesized pipeline or a bare `$var` (quoted bullets always start `"`).
+  if (tail.startsWith('(') || tail.startsWith('$')) {
+    const expr = parseEffectArg(tail);
+    if (expr === undefined) return { error: usage };
+    if (isExprParseError(expr)) return expr;
+    return { verb: 'slide', title: title.value, bullets: [], bulletsExpr: expr };
+  }
+  const bullets = scanQuotedList(tail);
+  if (!bullets) return { error: usage };
+  return { verb: 'slide', title: title.value, bullets };
 }
 
 /**
- * `page "<title>" "<body>"` (ADR-0006 `append-page`). Exactly two quoted strings: the OneNote page
- * title and its body text. Both quote-aware. A missing string or trailing junk is corrective.
+ * Parse a free-text effect slot: EITHER one quoted literal (`"…"`, quote-aware, no trailing junk) OR
+ * a composition expression (`( <pipeline> )` / `$var`, via {@link parseEffectArg}). Returns the
+ * literal text, the parsed expression, or a corrective. Empty literals are allowed here; callers
+ * that require non-empty content (mail/post) reject `''` themselves.
+ */
+function parseBodyArg(
+  rest: string,
+  usage: string,
+): { text: string } | { expr: ParsedExpr } | CommandParseError {
+  const t = rest.trim();
+  if (t === '') return { error: usage };
+  if (t.startsWith('"')) {
+    const q = scanQuoted(t, 0);
+    if (!q) return { error: usage };
+    if (t.slice(q.end).trim() !== '') return { error: usage };
+    return { text: q.value };
+  }
+  const expr = parseEffectArg(t);
+  if (expr === undefined) return { error: usage };
+  if (isExprParseError(expr)) return expr;
+  return { expr };
+}
+
+/** Read a leading quoted anchor (title/subject) and return it + the remaining tail, or undefined. */
+function scanLeadingQuoted(rest: string): { value: string; tail: string } | undefined {
+  const t = rest.trim();
+  if (!t.startsWith('"')) return undefined;
+  const q = scanQuoted(t, 0);
+  if (!q) return undefined;
+  return { value: q.value, tail: t.slice(q.end) };
+}
+
+/**
+ * `page "<title>" "<body>"` OR `page "<title>" (<expr>)` (`append-page`). A quoted page title, then
+ * a body that is EITHER a quoted literal or a composition expression (evaluated to text at dry-run).
+ * A missing/empty title or a malformed body is corrective.
  */
 function parsePage(rest: string): ParsedCommand | CommandParseError {
-  const usage = 'page needs a quoted title and a quoted body — usage: page "Title" "body text"';
-  const strings = scanQuotedList(rest);
-  if (!strings || strings.length !== 2) return { error: usage };
-  const [title, body] = strings;
-  if (title === undefined || title === '') return { error: 'page title cannot be empty' };
-  return { verb: 'page', title, body: body ?? '' };
+  const usage =
+    'page needs a quoted title and a body (quoted or an expression) — usage: page "Title" "body text"  OR  page "Title" ($notes | ...)';
+  const head = scanLeadingQuoted(rest);
+  if (!head) return { error: usage };
+  if (head.value === '') return { error: 'page title cannot be empty' };
+  const arg = parseBodyArg(head.tail, usage);
+  if ('error' in arg) return arg;
+  return 'expr' in arg
+    ? { verb: 'page', title: head.value, body: '', bodyExpr: arg.expr }
+    : { verb: 'page', title: head.value, body: arg.text };
 }
 
 /**
- * `mail "<body>"` (ADR-0006 `reply-mail`; `reply` is already the comment-reply verb, so this is
- * `mail`). One quoted string — the reply body. Missing/empty or trailing junk is corrective.
+ * `mail "<body>"` OR `mail (<expr>)` (`reply-mail`; `reply` is the comment-reply verb, so this is
+ * `mail`). The reply body is a quoted literal or a composition expression. Missing/empty is corrective.
  */
 function parseMail(rest: string): ParsedCommand | CommandParseError {
-  const usage = 'mail needs a quoted body — usage: mail "reply body text"';
-  const strings = scanQuotedList(rest);
-  if (!strings || strings.length !== 1) return { error: usage };
-  const body = strings[0]!;
-  if (body === '') return { error: 'mail body cannot be empty' };
-  return { verb: 'mail', body };
+  const usage =
+    'mail needs a quoted body or an expression — usage: mail "reply body text"  OR  mail ($draft | ...)';
+  const arg = parseBodyArg(rest, usage);
+  if ('error' in arg) return arg;
+  if ('expr' in arg) return { verb: 'mail', body: '', bodyExpr: arg.expr };
+  if (arg.text === '') return { error: 'mail body cannot be empty' };
+  return { verb: 'mail', body: arg.text };
 }
 
 /**
- * `post "<text>"` (ADR-0006 `post-message`). One quoted string — the Teams chat post text. The
- * bridge stages it for review (never auto-sent). Missing/empty or trailing junk is corrective.
+ * `post "<text>"` OR `post (<expr>)` (`post-message`). The Teams chat post text is a quoted literal
+ * or a composition expression; the bridge stages it for review (never auto-sent). Missing/empty is
+ * corrective.
  */
 function parsePost(rest: string): ParsedCommand | CommandParseError {
-  const usage = 'post needs a quoted text — usage: post "message text"';
-  const strings = scanQuotedList(rest);
-  if (!strings || strings.length !== 1) return { error: usage };
-  const text = strings[0]!;
-  if (text === '') return { error: 'post text cannot be empty' };
-  return { verb: 'post', text };
+  const usage =
+    'post needs a quoted text or an expression — usage: post "message text"  OR  post ($summary | ...)';
+  const arg = parseBodyArg(rest, usage);
+  if ('error' in arg) return arg;
+  if ('expr' in arg) return { verb: 'post', text: '', textExpr: arg.expr };
+  if (arg.text === '') return { error: 'post text cannot be empty' };
+  return { verb: 'post', text: arg.text };
 }
 
 /**
- * `compose "<subject>" "<body>"` (Outlook `create-mail`). Two quoted strings — a brand-new draft's
- * subject and body. The bridge opens a fresh message form (recipients left for the user); never
- * auto-sent. A missing/empty subject, a missing body, or trailing junk is corrective.
+ * `compose "<subject>" "<body>"` OR `compose "<subject>" (<expr>)` (`create-mail`). A quoted subject,
+ * then a body that is a quoted literal or a composition expression. The bridge opens a fresh message
+ * form (recipients left for the user); never auto-sent. A missing/empty subject is corrective.
  */
 function parseCompose(rest: string): ParsedCommand | CommandParseError {
-  const usage = 'compose needs a quoted subject and body — usage: compose "Subject" "body text"';
-  const strings = scanQuotedList(rest);
-  if (!strings || strings.length !== 2) return { error: usage };
-  const [subject, body] = strings;
-  if (subject === undefined || subject === '') return { error: 'compose subject cannot be empty' };
-  return { verb: 'compose', subject, body: body ?? '' };
+  const usage =
+    'compose needs a quoted subject and a body (quoted or an expression) — usage: compose "Subject" "body text"  OR  compose "Subject" ($draft | ...)';
+  const head = scanLeadingQuoted(rest);
+  if (!head) return { error: usage };
+  const subject = head.value;
+  if (subject === '') return { error: 'compose subject cannot be empty' };
+  const arg = parseBodyArg(head.tail, usage);
+  if ('error' in arg) return arg;
+  if ('expr' in arg) return { verb: 'compose', subject, body: '', bodyExpr: arg.expr };
+  return { verb: 'compose', subject, body: arg.text };
 }
 
 /**
@@ -826,32 +912,32 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'slide':
       return {
         verb: 'slide',
-        usage: 'slide "Title" "bullet" ...',
-        hint: 'add a slide, e.g. slide "Q3 Results" "Revenue up 12%" "Churn down"',
+        usage: 'slide "Title" "bullet" ...  OR  slide "Title" (<table expr>)',
+        hint: 'add a slide; bullets can be a table expression, e.g. slide "Top accounts" ($rows | select name,arr)',
       };
     case 'page':
       return {
         verb: 'page',
-        usage: 'page "Title" "body"',
-        hint: 'append a synthesized page, e.g. page "Meeting notes" "Decisions: ..."',
+        usage: 'page "Title" "body"  OR  page "Title" (<expr>)',
+        hint: 'append a synthesized page, e.g. page "Meeting notes" ($decisions | head 5)',
       };
     case 'mail':
       return {
         verb: 'mail',
-        usage: 'mail "body"',
-        hint: 'stage a reviewable reply, e.g. mail "Thanks — confirming the dates below."',
+        usage: 'mail "body"  OR  mail (<expr>)',
+        hint: 'stage a reviewable reply; body may compose, e.g. mail ($draft | head 1)',
       };
     case 'post':
       return {
         verb: 'post',
-        usage: 'post "text"',
-        hint: 'stage a reviewable chat post, e.g. post "Summary of decisions: ..."',
+        usage: 'post "text"  OR  post (<expr>)',
+        hint: 'stage a reviewable chat post, e.g. post ($summary | head 1)',
       };
     case 'compose':
       return {
         verb: 'compose',
-        usage: 'compose "Subject" "body"',
-        hint: 'draft a new grounded email, e.g. compose "Follow-up on Q3" "Hi — summarizing below ..."',
+        usage: 'compose "Subject" "body"  OR  compose "Subject" (<expr>)',
+        hint: 'draft a new grounded email, e.g. compose "Follow-up on Q3" ($draft | head 1)',
       };
   }
 }

@@ -1,6 +1,6 @@
 # ADR-0005 — A composable capability algebra for the assist loop
 
-**Status:** Accepted (2026-06-22); Phases 1–2 implemented (2026-06-23) · refines ADR-0004 (command protocol); builds on ADR-0003 (context construction), ADR-0002 (capability model). Scope: the assist path (grounded `streamAssist`). A2A specialist agents unchanged.
+**Status:** Accepted (2026-06-22); Phases 1–3 implemented (2026-06-23) · refines ADR-0004 (command protocol); builds on ADR-0003 (context construction), ADR-0002 (capability model). Scope: the assist path (grounded `streamAssist`). A2A specialist agents unchanged.
 
 ## Context
 
@@ -95,7 +95,17 @@ code**.
    and remain the fallback when `approvePlan` is absent.
    (`packages/contracts/src/{expr-grammar,command-grammar}.ts`;
    `packages/runtime/src/assist-session.ts` `resolveEffect`/`executePlan`/`PlanEffect`.)
-3. **Named skills** — define / call / store parameterized compositions; the compounding library.
+3. **Named skills** *(implemented — parameterized macros)* — define (`def name(p…): … end`) / call
+   (`name arg…`) parameterized compositions; the compounding library. A `def` registers an in-session
+   skill (no execution → a confirmation); a call binds args→params, substitutes `$param` tokens, and
+   runs the expanded lines through the **same Phase-2 plan** (type-check → dry-run → `approvePlan` →
+   gated execute) — a skill call is just a plan, with no new gate/approval bypass. Substitution is
+   textual into already-parsed entries: an arg cannot inject a command line (newline/fence rejected),
+   only whole declared `$param` tokens substitute, and the expansion is bounded (command budget, write
+   cap, body cap, nesting depth). A name may not shadow a built-in verb. `for`/`each` iteration and
+   durable (host-metadata) skill persistence are deferred to a later phase.
+   (`packages/contracts/src/skill-grammar.ts` grammar/AST; `packages/runtime/src/skill-registry.ts`
+   registry + expansion; `AssistSession.processEntry` registers defs / expands calls into the plan.)
 4. **Cross-surface compositions** — read Excel → write PowerPoint; the unit, programmable end-to-end.
 
 ## Consequences

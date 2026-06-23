@@ -104,6 +104,31 @@ export function compileCommand(
         target: { commentId: cmd.commentId },
         text: cmd.text,
       });
+    case 'slide':
+      // ADR-0006 PowerPoint `insert-slide`: the bridge composes the slide from `params.slide`
+      // ({ title, bullets, notes? }) — see bridge-powerpoint planInsertSlide.
+      return compileWrite(WRITE_VERB_TO_KIND.slide, ctx, {
+        slide: { title: cmd.title, bullets: cmd.bullets },
+      });
+    case 'page':
+      // ADR-0006 OneNote `append-page`: the bridge takes the page title from `target.matchText`
+      // and the body from `params.text` (+ optional sources) — see bridge-onenote planAppendPage.
+      return compileWrite(WRITE_VERB_TO_KIND.page, ctx, {
+        target: { matchText: cmd.title },
+        text: cmd.body,
+      });
+    case 'mail':
+      // ADR-0006 Outlook `reply-mail`: the bridge builds the draft from `params.mail.body`
+      // (falling back to `params.text`) — see bridge-outlook planReply.
+      return compileWrite(WRITE_VERB_TO_KIND.mail, ctx, {
+        mail: { body: cmd.body },
+      });
+    case 'post':
+      // ADR-0006 Teams `post-message`: the bridge stages a reviewable post from `params.text`
+      // (never auto-sent) — see teams planPostMessage.
+      return compileWrite(WRITE_VERB_TO_KIND.post, ctx, {
+        text: cmd.text,
+      });
   }
 }
 

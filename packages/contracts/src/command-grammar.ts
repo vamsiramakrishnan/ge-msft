@@ -9,6 +9,14 @@ import {
   type ExprParseError,
   type ParsedExpr,
 } from './expr-grammar.js';
+import {
+  isSkillDefHeader,
+  isSkillEnd,
+  parseSkillCall,
+  parseSkillDefHeader,
+  type ParsedSkillCall,
+  type ParsedSkillDef,
+} from './skill-grammar.js';
 
 /**
  * ADR-0004 — the command-line protocol grammar (the single source of truth).
@@ -46,6 +54,14 @@ export const WRITE_VERB_TO_KIND = {
   comment: 'add-comment',
   format: 'format-cells',
   reply: 'comment-reply',
+  // ADR-0006 CLI parity — the bridges already HANDLE + advertise these kinds; these verbs make
+  // them reachable from the model. Each compiles to the kind the matching bridge's actuate()
+  // consumes (PowerPoint `insert-slide`, OneNote `append-page`, Outlook `reply-mail`, Teams
+  // `post-message`), and each is gated/approved + provenanced like every other effect.
+  slide: 'insert-slide',
+  page: 'append-page',
+  mail: 'reply-mail',
+  post: 'post-message',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -82,6 +98,12 @@ export type ParsedCommand =
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'format'; range: string; props: Record<string, string> }
   | { verb: 'reply'; commentId: string; text: string; textExpr?: ParsedExpr }
+  // ADR-0006 CLI parity effect verbs — literal-only this wave (no `*Expr`), matching the param
+  // shapes the respective bridges consume (see compileCommand).
+  | { verb: 'slide'; title: string; bullets: string[] }
+  | { verb: 'page'; title: string; body: string }
+  | { verb: 'mail'; body: string }
+  | { verb: 'post'; text: string }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -109,6 +131,10 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     text: z.string(),
     textExpr: z.lazy(() => ParsedExprSchema).optional(),
   }),
+  z.object({ verb: z.literal('slide'), title: z.string(), bullets: z.array(z.string()) }),
+  z.object({ verb: z.literal('page'), title: z.string(), body: z.string() }),
+  z.object({ verb: z.literal('mail'), body: z.string() }),
+  z.object({ verb: z.literal('post'), text: z.string() }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -227,6 +253,15 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       const parsed = parseReply(rest);
       return parsed;
     }
+
+    case 'slide':
+      return parseSlide(rest);
+    case 'page':
+      return parsePage(rest);
+    case 'mail':
+      return parseMail(rest);
+    case 'post':
+      return parsePost(rest);
 
     default:
       return { error: unknownVerbError(verb) };
@@ -383,6 +418,81 @@ function parseReply(rest: string): ParsedCommand | CommandParseError {
 }
 
 /**
+ * `slide "<title>" ["<bullet>" …]` (ADR-0006 `insert-slide`). The first quoted string is the slide
+ * title; each subsequent quoted string is a bullet (zero or more). All quote-aware via
+ * {@link scanQuoted} (`\"`/`\\` escapes). A missing/empty title or a non-quoted token is corrective.
+ */
+function parseSlide(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'slide needs a quoted title and optional quoted bullets — usage: slide "Title" "bullet one" "bullet two"';
+  const strings = scanQuotedList(rest);
+  if (!strings || strings.length === 0) return { error: usage };
+  const [title, ...bullets] = strings;
+  if (title === undefined || title === '') return { error: 'slide title cannot be empty' };
+  return { verb: 'slide', title, bullets };
+}
+
+/**
+ * `page "<title>" "<body>"` (ADR-0006 `append-page`). Exactly two quoted strings: the OneNote page
+ * title and its body text. Both quote-aware. A missing string or trailing junk is corrective.
+ */
+function parsePage(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'page needs a quoted title and a quoted body — usage: page "Title" "body text"';
+  const strings = scanQuotedList(rest);
+  if (!strings || strings.length !== 2) return { error: usage };
+  const [title, body] = strings;
+  if (title === undefined || title === '') return { error: 'page title cannot be empty' };
+  return { verb: 'page', title, body: body ?? '' };
+}
+
+/**
+ * `mail "<body>"` (ADR-0006 `reply-mail`; `reply` is already the comment-reply verb, so this is
+ * `mail`). One quoted string — the reply body. Missing/empty or trailing junk is corrective.
+ */
+function parseMail(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'mail needs a quoted body — usage: mail "reply body text"';
+  const strings = scanQuotedList(rest);
+  if (!strings || strings.length !== 1) return { error: usage };
+  const body = strings[0]!;
+  if (body === '') return { error: 'mail body cannot be empty' };
+  return { verb: 'mail', body };
+}
+
+/**
+ * `post "<text>"` (ADR-0006 `post-message`). One quoted string — the Teams chat post text. The
+ * bridge stages it for review (never auto-sent). Missing/empty or trailing junk is corrective.
+ */
+function parsePost(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'post needs a quoted text — usage: post "message text"';
+  const strings = scanQuotedList(rest);
+  if (!strings || strings.length !== 1) return { error: usage };
+  const text = strings[0]!;
+  if (text === '') return { error: 'post text cannot be empty' };
+  return { verb: 'post', text };
+}
+
+/**
+ * Scan a whitespace-separated list of double-quoted strings (`"a" "b" "c"`), honoring `\"`/`\\`
+ * escapes via {@link scanQuoted}. Returns the unescaped values, or `null` if the input is not a
+ * clean sequence of quoted strings (a bare/unquoted token, an unterminated quote, or junk between
+ * strings). An empty/whitespace-only input yields `[]`.
+ */
+function scanQuotedList(s: string): string[] | null {
+  const values: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i]!)) i++;
+    if (i >= s.length) break;
+    if (s[i] !== '"') return null; // a bare/unquoted token between quotes
+    const scanned = scanQuoted(s, i);
+    if (!scanned) return null; // unterminated quote
+    values.push(scanned.value);
+    i = scanned.end;
+  }
+  return values;
+}
+
+/**
  * Scan a double-quoted string starting at `start` (which must index the opening `"`).
  * Honors `\"` (literal quote) and `\\` (literal backslash). Returns the unescaped value and
  * the index just past the closing quote, or `null` if there is no well-formed quoted string.
@@ -443,10 +553,15 @@ export function parseCommandBlock(modelText: string): {
 
 /**
  * One entry in a parsed program block: a simple ADR-0004 command, an ADR-0005 expression
- * (pipeline / `let`), or a corrective parse error from either layer. The runtime loop dispatches
- * on `kind` (expression) vs `verb` (command) vs `error`.
+ * (pipeline / `let`), an ADR-0005 Phase-3 skill definition (`def … end`) or call, or a corrective
+ * parse error from any layer. The runtime loop dispatches on `kind` vs `verb` vs `error`.
  */
-export type ProgramEntry = ParsedCommand | ParsedExpr | CommandParseError;
+export type ProgramEntry =
+  | ParsedCommand
+  | ParsedExpr
+  | ParsedSkillDef
+  | ParsedSkillCall
+  | CommandParseError;
 
 export function isProgramExpr(entry: ProgramEntry): entry is ParsedExpr {
   return 'kind' in entry && (entry.kind === 'pipeline' || entry.kind === 'let');
@@ -456,16 +571,52 @@ export function isProgramCommand(entry: ProgramEntry): entry is ParsedCommand {
   return 'verb' in entry;
 }
 
+export function isProgramSkillDef(entry: ProgramEntry): entry is ParsedSkillDef {
+  return 'kind' in entry && entry.kind === 'skill-def';
+}
+
+export function isProgramSkillCall(entry: ProgramEntry): entry is ParsedSkillCall {
+  return 'kind' in entry && entry.kind === 'skill-call';
+}
+
 /**
- * Parse the whole model reply as an ADR-0005 *program*: extract the ```cmd fence, then for each
- * non-blank, non-comment line route to the expression parser (when the line `isExpressionLine` —
- * a top-level `|` or a leading `let`) or to the unchanged ADR-0004 command parser otherwise.
+ * Parse a single ADR-0005 program line (already trimmed, non-blank, non-comment) into a program
+ * entry, given the set of currently-registered skill names. Routing, in order:
+ *   1. a registered skill name as the first token → a {@link ParsedSkillCall} (positional args);
+ *   2. an expression line (top-level `|` or leading `let`) → the expression parser;
+ *   3. otherwise the unchanged ADR-0004 command parser.
  *
- * This is a superset of {@link parseCommandBlock}: every line that is NOT an expression parses
- * EXACTLY as before, so all ADR-0004 behavior is preserved. `found` is false when there is no
- * fence (the runtime re-prompts).
+ * A skill name is checked FIRST (before the command parser's did-you-mean) so a call never degrades
+ * to an "unknown verb" error; a `def …`/`end` line is handled by the block grouper, not here.
  */
-export function parseProgramBlock(modelText: string): {
+function parseProgramLine(line: string, knownSkills: ReadonlySet<string>): ProgramEntry {
+  const firstSpace = line.search(/\s/);
+  const head = firstSpace === -1 ? line : line.slice(0, firstSpace);
+  if (knownSkills.has(head)) {
+    const rest = firstSpace === -1 ? '' : line.slice(firstSpace + 1).trim();
+    return parseSkillCall(head, rest);
+  }
+  return isExpressionLine(line) ? parseExpressionLine(line) : parseCommandLine(line);
+}
+
+/**
+ * Parse the whole model reply as an ADR-0005 *program*: extract the ```cmd fence, then walk the
+ * lines, grouping each `def <name>(…): … end` block into ONE {@link ParsedSkillDef} entry and
+ * routing every other non-blank, non-comment line through {@link parseProgramLine}.
+ *
+ * `knownSkills` (default empty) is the runtime's live registry of skill names; a line whose first
+ * token is a registered skill becomes a {@link ParsedSkillCall}. This is a superset of
+ * {@link parseCommandBlock}: with no skills and no `def`, every line parses EXACTLY as before, so
+ * all ADR-0004/Phase-1/Phase-2 behavior is preserved. `found` is false when there is no fence.
+ *
+ * `def … end` grouping is defensive: an unterminated `def` (no `end` before the block ends) and a
+ * stray `end` (no open `def`) each yield a corrective error entry — never a throw, never a silent
+ * drop of the body.
+ */
+export function parseProgramBlock(
+  modelText: string,
+  knownSkills: ReadonlySet<string> = new Set(),
+): {
   found: boolean;
   entries: ProgramEntry[];
 } {
@@ -473,12 +624,84 @@ export function parseProgramBlock(modelText: string): {
   if (block === null) return { found: false, entries: [] };
 
   const entries: ProgramEntry[] = [];
-  for (const raw of block.split('\n')) {
-    const line = raw.trim();
+  const lines = block.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!.trim();
+    i++;
     if (line === '' || line.startsWith('#')) continue;
-    entries.push(isExpressionLine(line) ? parseExpressionLine(line) : parseCommandLine(line));
+
+    if (isSkillEnd(line)) {
+      // A stray `end` with no open `def` — corrective, not a silent drop.
+      entries.push({ error: '`end` without a matching `def`' });
+      continue;
+    }
+    if (isSkillDefHeader(line)) {
+      const def = collectSkillDef(line, lines, i);
+      entries.push(def.entry);
+      i = def.nextIndex;
+      continue;
+    }
+    entries.push(parseProgramLine(line, knownSkills));
   }
   return { found: true, entries };
+}
+
+/**
+ * Collect a `def … end` block starting at the header line (already consumed; body scanning resumes
+ * at `start`). Returns the grouped {@link ParsedSkillDef} (or a corrective error entry) and the
+ * index of the line AFTER the closing `end`. The body lines are kept VERBATIM (trimmed, with
+ * blanks/comments skipped) for the runtime to re-parse post-substitution. A nested `def` is
+ * rejected (no nested definitions this wave); an unterminated body (no `end`) is corrective.
+ */
+function collectSkillDef(
+  header: string,
+  lines: string[],
+  start: number,
+): { entry: ParsedSkillDef | CommandParseError; nextIndex: number } {
+  const parsedHeader = parseSkillDefHeader(header);
+  if ('error' in parsedHeader) {
+    // Still consume the body up to `end` so the rest of the block parses cleanly after the error.
+    const skipTo = scanToEnd(lines, start);
+    return { entry: { error: parsedHeader.error }, nextIndex: skipTo.nextIndex };
+  }
+
+  const body: string[] = [];
+  let i = start;
+  while (i < lines.length) {
+    const line = lines[i]!.trim();
+    i++;
+    if (line === '' || line.startsWith('#')) continue;
+    if (isSkillEnd(line)) {
+      return {
+        entry: { kind: 'skill-def', name: parsedHeader.name, params: parsedHeader.params, body },
+        nextIndex: i,
+      };
+    }
+    if (isSkillDefHeader(line)) {
+      const skipTo = scanToEnd(lines, i);
+      return {
+        entry: { error: `nested def in "${parsedHeader.name}" is not allowed` },
+        nextIndex: skipTo.nextIndex,
+      };
+    }
+    body.push(line);
+  }
+  // Ran off the end with no `end`.
+  return {
+    entry: { error: `def "${parsedHeader.name}" is missing a closing \`end\`` },
+    nextIndex: i,
+  };
+}
+
+/** Skip forward to (and past) the next `end` line; used to recover after a malformed `def`. */
+function scanToEnd(lines: string[], start: number): { nextIndex: number } {
+  let i = start;
+  while (i < lines.length) {
+    if (isSkillEnd(lines[i]!.trim())) return { nextIndex: i + 1 };
+    i++;
+  }
+  return { nextIndex: i };
 }
 
 export type { ExprParseError };
@@ -577,6 +800,30 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'reply',
         usage: 'reply <commentId> "text"',
         hint: 'reply to an existing comment by its id, e.g. reply {3f2a} "addressed in the redline"',
+      };
+    case 'slide':
+      return {
+        verb: 'slide',
+        usage: 'slide "Title" "bullet" ...',
+        hint: 'add a slide, e.g. slide "Q3 Results" "Revenue up 12%" "Churn down"',
+      };
+    case 'page':
+      return {
+        verb: 'page',
+        usage: 'page "Title" "body"',
+        hint: 'append a synthesized page, e.g. page "Meeting notes" "Decisions: ..."',
+      };
+    case 'mail':
+      return {
+        verb: 'mail',
+        usage: 'mail "body"',
+        hint: 'stage a reviewable reply, e.g. mail "Thanks — confirming the dates below."',
+      };
+    case 'post':
+      return {
+        verb: 'post',
+        usage: 'post "text"',
+        hint: 'stage a reviewable chat post, e.g. post "Summary of decisions: ..."',
       };
   }
 }

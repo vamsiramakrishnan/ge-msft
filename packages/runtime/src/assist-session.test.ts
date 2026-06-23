@@ -1034,3 +1034,185 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(events.some((e) => e.type === 'capped')).toBe(true);
   });
 });
+
+/* ───────────────── ADR-0005 Phase 3 — named skills (def / call → plan) ───────── */
+
+const skillExpanded = (
+  events: Array<SseEvent | CommandLoopEvent>,
+): Array<Extract<CommandLoopEvent, { type: 'skill-expanded' }>> =>
+  events.filter((e) => e.type === 'skill-expanded') as Array<
+    Extract<CommandLoopEvent, { type: 'skill-expanded' }>
+  >;
+
+describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => {
+  it('a def registers (no execution) → a skill-registered event, nothing actuates', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef writeTotal($a $b):\n  set $b = ($a | sum amount)\nend\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('define a skill', { approvePlan: () => true }),
+    );
+
+    const reg = events.find((e) => e.type === 'skill-registered') as
+      | Extract<CommandLoopEvent, { type: 'skill-registered' }>
+      | undefined;
+    expect(reg?.result.ok).toBe(true);
+    expect(reg?.name).toBe('writeTotal');
+    // A def is not an effect — no plan, no actuation.
+    expect(bridge.applied).toHaveLength(0);
+    expect(events.some((e) => e.type === 'write-result')).toBe(false);
+  });
+
+  it('a call expands, binds args, and runs as ONE plan gated by approvePlan (approve → actuates)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      // Turn 1: define a 2-param skill whose body reads a range and writes a composed sum.
+      '```cmd\ndef writeTotal($src $dst):\n  set $dst = (read $src | sum amount)\nend\n```',
+      // Turn 2: call it — the expansion is the plan.
+      '```cmd\nwriteTotal Sales!A1:B5 Summary!B2\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let previewed: PlanEffect[] | undefined;
+    const events = await collectLoop(
+      session.runCommands('run the skill', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    // The call expanded with $src/$dst substituted.
+    const exp = skillExpanded(events)[0];
+    expect(exp?.name).toBe('writeTotal');
+    expect(exp?.lines).toEqual(['set Summary!B2 = (read Sales!A1:B5 | sum amount)']);
+
+    // The expansion formed ONE plan: a single preview, single approval, the composed sum resolved.
+    expect(planEvents(events)).toHaveLength(1);
+    expect(previewed).toHaveLength(1);
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] }, // 100+250+50
+    });
+  });
+
+  it('rejecting the plan blocks the WHOLE expansion — nothing actuates', async () => {
+    const bridge = new ComposeBridge();
+    // The body binds a read, then writes the composed count into two cells — two effects, one plan.
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef two($src $c1 $c2):\n  let $t = read $src\n  set $c1 = ($t | count)\n  set $c2 = ($t | count)\nend\n```',
+      '```cmd\ntwo Sales!A1:B5 Summary!B2 Summary!B3\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('run + reject', { approvePlan: () => false }),
+    );
+
+    // Two effects previewed in one plan, but the reject blocked every one — zero actuations.
+    expect(planEvents(events)[0]?.effects).toHaveLength(2);
+    expect(bridge.applied).toHaveLength(0);
+    const blocked = writeResults(events);
+    expect(blocked).toHaveLength(2);
+    expect(blocked.every((w) => w.result.error?.code === 'plan_unapproved')).toBe(true);
+  });
+
+  it('an undefined-name call is corrective (not actuated)', async () => {
+    const bridge = new ComposeBridge();
+    // `mystery` is not a built-in verb and not registered → unknown-verb command error.
+    const { fetch } = scriptedFetch(['```cmd\nmystery A1\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('call missing', { approvePlan: () => true }),
+    );
+    expect(bridge.applied).toHaveLength(0);
+    expect(events.some((e) => e.type === 'write-result')).toBe(false);
+  });
+
+  it('an arity-mismatched call is corrective — nothing actuates', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef f($a $b):\n  set $a = ($a | count)\nend\n```',
+      '```cmd\nf Sales!A1:B5\n```', // one arg, expects two
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('bad arity', { approvePlan: () => true }));
+    const exp = skillExpanded(events)[0];
+    expect(exp?.lines).toEqual([]); // expansion failed → no lines
+    expect(bridge.applied).toHaveLength(0);
+  });
+
+  it('a def whose name shadows a built-in is rejected at register time', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef set($a):\n  read $a\nend\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('shadow', { approvePlan: () => true }));
+    // The parser rejects `def set(...)` as a corrective error entry (not a skill-registered ok).
+    const reg = events.find((e) => e.type === 'skill-registered') as
+      | Extract<CommandLoopEvent, { type: 'skill-registered' }>
+      | undefined;
+    // Either it never registered, or it registered with ok:false — never a usable `set` override.
+    expect(reg?.result.ok ?? false).toBe(false);
+  });
+
+  it('SECURITY: a self-recursive skill is bounded (no stack overflow, never actuates)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef loop($a):\n  loop $a\nend\n```',
+      '```cmd\nloop Sales!A1\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    // Terminates (depth guard) and surfaces a corrective; zero actuations.
+    const events = await collectLoop(session.runCommands('recurse', { approvePlan: () => true }));
+    expect(bridge.applied).toHaveLength(0);
+    expect(
+      events.some(
+        (e) => e.type === 'capped' || (e.type === 'skill-expanded' && e.lines.length === 0),
+      ),
+    ).toBe(true);
+  });
+
+  it('SECURITY: a skill expansion cannot exceed the per-turn command cap', async () => {
+    const bridge = new ComposeBridge();
+    // A body of 4 reads; cap the turn to 2 commands — the call expands but is budget-bounded.
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef many($a):\n  read $a\n  read $a\n  read $a\n  read $a\nend\n```',
+      '```cmd\nmany Sales!A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(
+      session.runCommands('budget', { approvePlan: () => true, maxCommandsPerTurn: 2 }),
+    );
+    // The call itself costs 1 budget unit; only 1 expanded read runs before the budget is exhausted.
+    // (readRange is the read port — at most `maxCommandsPerTurn` reads can fire across the expansion.)
+    expect(bridge.readRangeCalls.length).toBeLessThanOrEqual(2);
+    expect(bridge.readRangeCalls.length).toBeGreaterThan(0);
+  });
+});

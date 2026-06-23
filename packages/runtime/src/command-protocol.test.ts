@@ -162,6 +162,71 @@ describe('compileCommand', () => {
       verb: 'done',
     });
   });
+
+  /* ADR-0006 CLI parity verbs — each compiles to the kind + param shape its bridge consumes. */
+  it('compiles `slide` → insert-slide with params.slide { title, bullets }', () => {
+    const c = compileCommand(
+      { verb: 'slide', title: 'Q3 Results', bullets: ['Revenue up 12%', 'Churn down'] },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-slide',
+        surface: 'powerpoint',
+        params: { slide: { title: 'Q3 Results', bullets: ['Revenue up 12%', 'Churn down'] } },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `page` → append-page with target.matchText (title) + text (body)', () => {
+    const c = compileCommand(
+      { verb: 'page', title: 'Meeting notes', body: 'Decisions: ship' },
+      { surface: 'onenote', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'append-page',
+        surface: 'onenote',
+        params: { target: { matchText: 'Meeting notes' }, text: 'Decisions: ship' },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `mail` → reply-mail with params.mail.body', () => {
+    const c = compileCommand(
+      { verb: 'mail', body: 'Thanks — confirming the dates below.' },
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'reply-mail',
+        surface: 'outlook',
+        params: { mail: { body: 'Thanks — confirming the dates below.' } },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `post` → post-message with params.text', () => {
+    const c = compileCommand(
+      { verb: 'post', text: 'Summary of decisions: ...' },
+      { surface: 'teams', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'post-message',
+        surface: 'teams',
+        params: { text: 'Summary of decisions: ...' },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
 });
 
 describe('renderGrammarPrompt', () => {

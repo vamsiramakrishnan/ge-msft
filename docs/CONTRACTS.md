@@ -1,6 +1,14 @@
 # Contracts
 
-The authoritative boundary between the gateway and the clients. These live in `packages/contracts` as TypeScript types + Zod schemas and are imported by both `services/gateway` and the client packages. Change them deliberately and update both sides. The Python agents in `services/agents` mirror the `Finding` and `UnitDescriptor` shapes.
+> **Note (client-direct, `ADR-0001`).** These contracts are the authoritative boundary between the
+> **surface-agnostic core** (`runtime`/`web-shell`/`gemini-client`) and the **per-surface bridges**,
+> and the shape of every Discovery Engine call. There is **no gateway** — references below to "the
+> gateway" or `services/*` endpoints are historical (the add-in calls Discovery Engine directly; see
+> the "Gateway endpoints" table caveat at the bottom). The schemas themselves are current: the
+> capability grammar, composition expressions, skills, and closure (below) are the live `ADR-0004`→
+> `ADR-0006` surface and the single source of truth for the command/expr/skill grammars.
+
+The authoritative boundary between the surface-agnostic core and the per-surface bridges (and the shape of every Gemini Enterprise call). These live in `packages/contracts` as TypeScript types + Zod schemas and are imported by both the core and the bridges. Change them deliberately and update both sides. (Specialist A2A agents, where used, mirror the `Finding` and `UnitDescriptor` shapes.)
 
 ---
 
@@ -271,6 +279,12 @@ export interface CapabilityClosureReport {
 Each specialist agent is an ADK agent exposed as an A2A server with an agent card. The gateway calls it as a remote A2A agent (not via StreamAssist `agentsSpec`). Agents accept the resolved unit context + intent and return intent-appropriate output: `review` → `Finding[]`; `resolve-comment` → `{ editedText, replyText, sources }`; `regen-clause` → `{ text, sources }`; `draft-slides` → a stream of slide events; `synthesize` → a stream of tokens + citations. Agents must emit `sources` for every claim; an assertion without a source is a contract violation.
 
 ## Gateway endpoints (summary)
+
+> **Historical — no gateway (`ADR-0001`).** In the client-direct architecture the add-in calls
+> Discovery Engine `:streamAssist` (and `search`/`completeQuery`/`checkGrounding`/`rank`) **directly**
+> as the federated user. The table below maps the *original* gateway routes to the intents they
+> served; it survives as a reference for which intent produces which stream shape, not as a live API.
+> The optional CORS/audit proxy (`proxyUrl`) is a transparent pass-through, not an intent router.
 
 | Method | Path | Intent | Returns |
 |---|---|---|---|

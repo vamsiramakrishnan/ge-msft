@@ -1,7 +1,15 @@
 # Design — Gemini Enterprise for Microsoft 365
 
-**A multi-surface add-in: one agent, one research unit, one identity — across Word, Excel, PowerPoint, OneNote, and Teams.**
-*Phased design doc. Companion to the architecture and implementation docs, and the five surface prototypes.*
+> **⚠️ Updated by `ADR-0001`.** This doc's **five experience invariants** (§2: the agent recedes,
+> the unit travels, one identity envelope, provenanced + reversible, grounded-or-it-says-so) and the
+> **per-surface verbs** (§4) remain the design north star and are still accurate. What changed: there
+> is **no Surface Gateway** — wherever this doc says "one Surface Gateway," read "the shared
+> surface-agnostic core (`runtime` + `web-shell`) calling Discovery Engine client-direct." The
+> **phasing** (§6) is historical; **Outlook** is now a first-class sixth surface (not in the original
+> five), and all six bridges are built. See `docs/STATUS.md` for current state.
+
+**A multi-surface add-in: one agent, one research unit, one identity — across Word, Excel, PowerPoint, OneNote, Outlook, and Teams.**
+*Phased design doc. Companion to the architecture and implementation docs, and the surface prototypes.*
 
 ---
 
@@ -9,7 +17,12 @@
 
 A knowledge worker shouldn't "use a Gemini app." They should find Gemini Enterprise *already present* in the Microsoft surface they're working in — reviewing the contract in Word, modelling the spend in Excel, building the QBR in PowerPoint, capturing research in OneNote, deciding in a Teams meeting — grounded the whole time on the *same* curated set of trusted sources, acting with *their* identity, leaving changes that are *traceable and reversible*.
 
-The strategic point, carried from the surfaces plan: this is not five products. It is one Surface Gateway and one research unit, with five thin clients. The clients differ only where the *surface* differs; everything that constitutes the intelligence, the grounding, the identity, and the trust is shared and built once.
+The strategic point, carried from the surfaces plan: this is not six products. It is one shared
+surface-agnostic core (`runtime` + `web-shell`) and one research unit, with six thin bridges. *(The
+original framing said "one Surface Gateway" — there is no gateway now; see `ADR-0001`. The leverage
+argument is unchanged: write the core once, add a thin bridge per surface.)* The clients differ only
+where the *surface* differs; everything that constitutes the intelligence, the grounding, the
+identity, and the trust is shared and built once.
 
 ```
                          ┌──────────────  THE RESEARCH UNIT  ──────────────┐

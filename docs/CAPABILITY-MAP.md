@@ -108,7 +108,7 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 | Context budget + inline/reference/upload strategy | ✅ | `@ge/content` `recommendStrategy`/`ContextBudget` |
 | Connector (data-store) scoping | 🟡 | request shape built; no UI enumeration |
 | Capability **detection** (runtime) | 🟡 | `detectSurface()` (host→bridge) built; per-capability intersection gate not |
-| Provenance write to host durable metadata | 🟡 | `ProvenancePayload` + client `ProvenanceStore` built; per-surface host-metadata write not wired |
+| Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. Client `ProvenanceStore` view-model built for all. |
 | Code-execution file upload (`addContextFile`, v1) | ⬜ | needs a v1 client in `@ge/gemini-client` |
 | A2UI render + action→actuation routing | ⬜ | designed (`api/discoveryengine/a2ui.md`); renderer not built |
 | Audit | 🟡 | client-direct: provenance-in-artifact is the trail; optional thin sink undecided |

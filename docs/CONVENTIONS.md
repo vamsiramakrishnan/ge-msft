@@ -1,5 +1,14 @@
 # Conventions
 
+> **Note (client-direct, `ADR-0001`).** The **TypeScript stack, code style, project-layout, testing,
+> error-handling, and security standards** below are all current and enforced. The **gateway-specific
+> items are historical** — there is no gateway/`services/*` tier and no Python ADK agents in the repo
+> today: ignore "Fastify/Cloud Run for the gateway," "the gateway is stateless," "one responsibility
+> per gateway module," and structured-gateway-logging/audit-to-BigQuery as *deploy-time* concerns for
+> the optional proxy, not workspace code. The security standards (no Google secrets in a client,
+> identity scoped end-to-end, untrusted host content, provenanced+reversible writes, residency, least
+> privilege) hold identically client-direct.
+
 ## Stack
 - **TypeScript** (strict) for clients and gateway; **Python 3.12** for `services/agents` (ADK).
 - **React 18** + Office.js / TeamsJS for clients; **Vite** for bundling; HTTPS in dev (Office requires it).

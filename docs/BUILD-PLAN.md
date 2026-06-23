@@ -21,7 +21,7 @@ Each task lists the package(s) it touches and a verifiable acceptance criterion 
 The goal of P0 is the slice-1 spine: a signed-in user, federated to Google, gets a grounded streamed answer over a Word selection. If that works, identity federation and the streaming relay — the two hardest pieces — are solved.
 
 - [x] **0.1 Monorepo scaffold.** Root `package.json` (npm workspaces), `tsconfig.base.json`, ESLint + Prettier, Vitest config, the `packages/*` and `services/*` directories with placeholder `package.json` each. *AC: `npm install` succeeds; `npm run typecheck` runs clean on empty packages.*
-- [x] **0.2 Contracts package.** Implement `packages/contracts` exactly per `docs/CONTRACTS.md`: the `Intent` enum, `UnitDescriptor`, `AssistRequest`, `Finding`, `ProvenancePayload`, and the SSE event types, as TypeScript types + Zod schemas. *AC: schemas parse the example payloads in CONTRACTS.md; exported types compile.*
+- [x] **0.2 Contracts package.** Implement `packages/contracts` exactly per `docs/CONTRACTS.md`: the `Intent` enum, `UnitDescriptor`, `AssistRequest`, `Finding`, `ProvenancePayload`, and the SSE event types, as TypeScript types + Zod schemas. *(Done, and since grown well beyond the original scope: the capability manifest, the command/expr/skill grammars, and the closure helper — see ADR-0002→0006.)* *AC: schemas parse the example payloads in CONTRACTS.md; exported types compile.*
 - [ ] **0.3 Gateway skeleton.** `services/gateway` Fastify app with `/healthz`, structured logging, config loaded from env (`.env.example`), and CORS for the web-shell origin. *AC: `GET /healthz` returns 200 with build info.*
 - [ ] **0.4 Entra token validation.** Middleware that validates the inbound Entra JWT against the tenant JWKS (issuer, audience, expiry) and extracts identity + `groups`/`roles` claims. *AC: a valid test token passes; tampered/expired tokens are rejected with 401. (run `security-reviewer`)*
 - [ ] **0.5 Identity federation.** Exchange the validated Entra OIDC token for scoped Google credentials via Workforce Identity Federation (STS). Cache the federated token under its TTL. *AC: a federated token is obtained and reused; expiry triggers re-exchange. (run `security-reviewer`)*
@@ -34,6 +34,12 @@ The goal of P0 is the slice-1 spine: a signed-in user, federated to Google, gets
 
 ## Phase 1 — Word (the deepest surface, the bellwether)
 
+> **Bridge status:** the Word bridge (capture + content-anchored tracked changes + add-comment +
+> `watch()`) is **built and tested against in-repo Office fakes** — see `STATUS.md`. The per-surface
+> ACs below remain the targets for **real-host** validation, which is still pending. The intent-named
+> A2A flows (1.2/1.4/1.5) are reframed by `ADR-0004`/`ADR-0005`: the assist loop is the CLI command
+> protocol + composable plans, not intent dispatch.
+
 - [ ] **1.1 Word DocBridge.** `packages/bridge-word`: read selection/body/content controls/`getFileAsync`; write tracked changes (`changeTrackingMode`), `insertOoxml`, comment replies. *AC: round-trip read selection → write a tracked change.*
 - [ ] **1.2 Review agent (A2A).** `services/agents`: an ADK Review agent exposed as an A2A server, deployed to Agent Engine, returning `Finding[]` per CONTRACTS. Gateway routes intent `review` to it. *AC: `POST /review` returns structured findings grounded on the unit.*
 - [ ] **1.3 Annotations + anchoring.** Render findings as inline annotations (annotations API) anchored by `matchText`/`contextHint` via `body.search`; re-resolve at apply-time; degrade to a panel item if the text is gone. *AC: clicking a finding shows its card; Accept applies a tracked change at the right range; an edited-away finding degrades gracefully.*
@@ -44,12 +50,25 @@ The goal of P0 is the slice-1 spine: a signed-in user, federated to Google, gets
 
 ## Phase 2 — Excel + PowerPoint (reuse the spine; surface code only)
 
+> **Bridge status:** both the Excel bridge (range capture + `write-cells`/`format-cells` + `readRange`
+> + `watch()`) and the PowerPoint bridge (slide capture + deck compose + `watch()`) are **built and
+> tested against fakes**. Note the mechanism changed from the original `=GE.ASK` streaming custom
+> function / linked-entity cells to the **CLI command + composable-plan** model (`ADR-0004`/`ADR-0005`):
+> the model reads ranges and writes formula-first cells through the gated plan, rather than via a
+> custom function. Real-host validation pending.
+
 - [ ] **2.1 Excel streaming function.** `packages/bridge-excel`: `=GE.ASK(prompt, range)` as a `@streaming` custom function calling `/assist` and streaming into the cell. *AC: a cell streams a grounded answer.*
 - [ ] **2.2 Excel entity cells.** Linked-entity load service backed by the gateway/Gemini retrieval; vendor cells expand into agent-enriched cards. *AC: an entity cell loads on demand and expands; nothing large is stored in the workbook.*
 - [ ] **2.3 PowerPoint composer.** `packages/bridge-powerpoint`: intent `draft-slides` streams generated slides into the deck (`insertSlidesFromBase64`/shapes), each with provenance; speaker-notes generation; a redesign suggestion. *AC: "draft the risk section" adds source-backed slides matching `docs/mockups/3-powerpoint.html`.*
 - [ ] **2.4 P2 exit gate.** An Excel analyst flow and a PowerPoint deck flow both ground on the *same* unit a Word user assembled. *AC: unit continuity demonstrated across three surfaces.*
 
 ## Phase 3 — OneNote + Teams (divergent client models)
+
+> **Bridge status:** the OneNote bridge (page synthesis + inline citation tags), the Teams bridge
+> (transcript capture + reviewable post-message + meeting events), and the Outlook bridge (not in the
+> original five — mail capture + reviewable reply + the on-send gate) are all **built and tested
+> against fakes**. The Bot Framework bot + message extension (3.4) are not built. Real-host
+> validation pending.
 
 - [ ] **3.1 OneNote package.** `packages/bridge-onenote` with its own legacy XML manifest (`manifests/onenote.manifest.xml`); `OneNote.run` page synthesis. *AC: the add-in loads in OneNote on the web.*
 - [ ] **3.2 OneNote research capture.** Intent `synthesize`: write a citation-tagged summary of the notebook unit onto the page; wire NotebookLM overview (audio/video) calls scoped to the notebook. *AC: synthesis + a generated overview match `docs/mockups/4-onenote.html`.*

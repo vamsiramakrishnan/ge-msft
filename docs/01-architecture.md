@@ -1,7 +1,18 @@
 # Architecture — Gemini Enterprise in Word
 
+> **⚠️ Superseded in part — updated by `ADR-0001` (client-direct) and `ADR-0003`–`ADR-0006`.**
+> This doc describes the **original gateway-centric** three-tier design: a stateless Cloud Run
+> **Surface Gateway** holding Google credentials, federating identity server-side, screening with
+> Model Armor, routing, relaying, and signing provenance. **That tier no longer exists.** The
+> project is now **client-direct**: identity federates to Google in the browser (WIF), the add-in
+> calls Discovery Engine directly, and Model Armor / agent routing / grounding are **engine config**,
+> not our code. Read this doc for the *anchoring contract* (§7, still authoritative — content anchors
+> + apply-time re-resolution) and the *identity-federation reasoning* (§5, now done client-side); for
+> everything else the **ADRs are the source of truth**. The assist read/write loop is no longer an
+> intent dispatch — it is the **CLI command protocol → composable algebra** (`ADR-0004`/`ADR-0005`).
+
 **A buildable design for the Word add-in, and the gateway underneath it that every other surface reuses.**
-*Companion to the Surfaces plan and the click-through prototype.*
+*Companion to the Surfaces plan and the click-through prototype. Architecture-of-record: the ADRs.*
 
 ---
 
@@ -32,7 +43,10 @@ Three tiers, three planes:
    TRUST PLANE    NAA → Workforce Identity Federation · Model Armor · provenance · residency
 ```
 
-The single most important boundary: **the client never holds Google credentials, and identity is exchanged server-side.** Everything else follows from that.
+The single most important boundary: **the client never holds Google *secrets*.** (Still true. What
+changed: identity is now exchanged **in the browser** via WIF, not server-side — the client holds the
+user's short-lived Entra token and the federated Google access token derived from it, in memory only.
+The "gateway tier" in the diagram above is gone; see `ADR-0001`.) Everything else follows from that.
 
 ---
 

@@ -8,10 +8,11 @@ import type { CapabilityManifest } from '@ge/contracts';
 export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
   surface: 'powerpoint',
   contextKinds: ['selection', 'slide', 'shape', 'document'],
-  // No addressable read verbs: PowerPoint has no `captureDocState`/`readRange`/`searchDocument`
-  // port today, so it advertises no `outline`/`read`/`search` (ADR-0006 closure). Context attach
-  // (`listContext`/`resolveContext`) is unaffected — that is the universal port, not a read verb.
-  reads: [],
+  // Read verbs PowerPoint serves (ADR-0006 closure): `outline` via `captureDocState` (slide
+  // inventory), addressable `read <slide:N>` via `readRange`, `search` via `searchDocument`
+  // (slide-text scan). Each backed by a real bridge port; the universal context-attach port
+  // (`listContext`/`resolveContext`) is separate and not a read verb.
+  reads: ['outline', 'read', 'search'],
   actuations: [
     {
       kind: 'insert-slide',

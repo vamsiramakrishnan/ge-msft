@@ -4,12 +4,19 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot } from '@ge/content';
 import { OUTLOOK_CAPABILITIES } from './capabilities.js';
-import { mailItemToContext, type MailItem } from './capture.js';
+import {
+  mailItemToContext,
+  mailItemToDocStateBlocks,
+  searchMailItem,
+  type MailItem,
+} from './capture.js';
 import { planReply } from './actuate-plan.js';
 import { composeEvent, receivedEvent } from './events.js';
 
@@ -32,6 +39,9 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['reply-mail'];
 export class OutlookBridge implements DocBridge {
   readonly surface = 'outlook' as const;
 
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
+
   getCapabilities(): CapabilityManifest {
     return OUTLOOK_CAPABILITIES;
   }
@@ -53,17 +63,59 @@ export class OutlookBridge implements DocBridge {
   }
 
   async resolveContext(_ref: ContextRef): Promise<ResolvedContext[]> {
+    const mail = await this.readMailItem();
+    return mail ? mailItemToContext(mail) : [];
+  }
+
+  /**
+   * ADR-0006 whole-item `read` (the runtime's empty-selector read → `captureDocState`): a mail item
+   * has no addressable sub-range, so the "document" is the single active item. Builds a snapshot
+   * from the subject (heading) + sender + leading body lines (bounded). Read-only; no active item →
+   * `undefined`. Version increments per capture.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    const mail = await this.readMailItem();
+    if (!mail) return undefined;
+    const blocks = mailItemToDocStateBlocks(mail);
+    if (blocks.length === 0) return undefined;
+    this.docStateVersion += 1;
+    return buildDocStateSnapshot({
+      surface: 'outlook',
+      version: this.docStateVersion,
+      ...(mail.subject?.trim() ? { title: mail.subject } : {}),
+      blocks,
+    });
+  }
+
+  /**
+   * ADR-0006 `search` read: scan the active mail item's body for `query` and return matching lines
+   * as `ResolvedContext` data (never instructions), bounded by `searchMailItem`. Scoped strictly to
+   * the active item (no cross-mailbox read). Empty query / no active item / no match → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const mail = await this.readMailItem();
+    return mail ? searchMailItem(mail, q) : [];
+  }
+
+  /**
+   * Read the **active** mail item (subject / from / HTML body) into a pure {@link MailItem} — the
+   * shared host read behind `resolveContext`/`captureDocState`/`searchDocument`. Read-only and
+   * scoped to `Office.context.mailbox.item` (the one open item); never enumerates the mailbox. No
+   * active item → `undefined`.
+   */
+  private async readMailItem(): Promise<MailItem | undefined> {
     const item = Office.context.mailbox?.item;
-    if (!item) return [];
+    if (!item) return undefined;
     const body = await getAsync<string>((cb) => item.body.getAsync(Office.CoercionType.Html, cb));
-    const mail: MailItem = {
+    return {
       ...(item.itemId ? { id: item.itemId } : {}),
       ...(readSubject(item) ? { subject: readSubject(item) } : {}),
       ...(readFrom(item) ? { from: readFrom(item) } : {}),
       body,
       bodyType: 'html',
     };
-    return mailItemToContext(mail);
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {

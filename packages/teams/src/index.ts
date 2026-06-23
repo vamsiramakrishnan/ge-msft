@@ -12,6 +12,14 @@ export {
   type TeamsComposeRequest,
 } from './teams-bridge.js';
 export { TEAMS_CAPABILITIES } from './capabilities.js';
-export { transcriptToContext, type TranscriptInput } from './capture.js';
+export {
+  transcriptToContext,
+  transcriptToDocStateBlocks,
+  transcriptToLines,
+  searchTranscript,
+  MAX_TRANSCRIPT_LINES,
+  MAX_SEARCH_LINES,
+  type TranscriptInput,
+} from './capture.js';
 export { planPostMessage, type PostMessagePlan } from './actuate-plan.js';
 export { sessionStartEvent, sessionEndEvent, meetingEndedEvent } from './events.js';

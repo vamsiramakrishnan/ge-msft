@@ -56,10 +56,17 @@ build on drift.
 |---|---|---|
 | Word | `outline`, `read`, `search` | `captureDocState` (outline + whole-doc `read`), `searchDocument` |
 | Excel | `outline`, `read`, `search` | `captureDocState` (outline), `readRange` (addressable `read <A1\|NamedRange>`, bounded to `MAX_READ_CELLS`=10k cells), `searchDocument` |
-| PowerPoint | — | none (no `captureDocState`/`readRange`/`searchDocument`) |
-| OneNote | — | none |
-| Outlook | — | none addressable (active-item capture only) |
-| Teams | — | none addressable (transcript capture only) |
+| PowerPoint | `outline`, `read`, `search` | `captureDocState` (slide inventory, bounded `MAX_READ_SLIDES`=60), `readRange` (addressable `read <slide:N>`, single slide), `searchDocument` (slide-text scan, `MAX_SEARCH_SLIDES`=8) |
+| OneNote | `outline`, `read`, `search` | `captureDocState` (active-page title + paragraph outline; also backs whole-page `read` — no addressable sub-range), `searchDocument` (page-paragraph scan, `MAX_SEARCH_PARAGRAPHS`=8) |
+| Outlook | `read`, `search` | `captureDocState` (whole-item `read`: subject + from + leading body lines, bounded `MAX_OUTLINE_LINES`=40 — a mail item has no sub-range), `searchDocument` (body-line scan, `MAX_SEARCH_LINES`=8). No `outline` (no heading structure). |
+| Teams | `read`, `search` | `captureDocState` (whole-transcript `read`: meeting title + turn lines, bounded `MAX_TRANSCRIPT_LINES`=60 — a transcript has no sub-range), `searchDocument` (transcript-line scan, `MAX_SEARCH_LINES`=8). No `outline` (no heading structure). |
+
+All four surfaces' ports are **read-only, bounded, and item/window-scoped** (Outlook reads only the
+active `mailbox.item`; Teams only the in-memory transcript window; PowerPoint/OneNote only the active
+deck/page), degrade to `[]`/`undefined` on bad input (older host via `isSet(...)`, unaddressable
+selector, no active item), and frame host content strictly as data (native/string `@ge/content`
+path or `buildDocStateSnapshot`'s untrusted-wrapped envelope). A surface advertises a read verb ONLY
+when its bridge method exists — conformance-enforced per surface (`capability-closure.test.ts`).
 
 ## Write — actuate back
 
@@ -110,9 +117,10 @@ build on drift.
 1. **Sideload shell.** The React/Vite/manifest layer over the `web-shell` core — the last mile to
    load in a real host. (The core logic is built + tested.)
 2. **Broader CLI parity (tracked gaps, ADR-0006).** Several handled actuations have no CLI verb yet
-   (`insert-slide`/`append-page`/`reply-mail`/`post-message`), and PowerPoint/OneNote/Outlook/Teams
-   expose no addressable read verb. These are tracked gaps on the closure allow-list, not phantoms —
-   they're reachable from the bridge but not yet from the model's verb grammar.
+   (`insert-slide`/`append-page`/`reply-mail`/`post-message`). These are tracked gaps on the closure
+   allow-list, not phantoms — they're reachable from the bridge but not yet from the model's verb
+   grammar. **(Closed:** the read-port gap — PowerPoint/OneNote/Outlook/Teams now serve their
+   `outline`/`read`/`search` verbs through real bridge ports; see the reads table above.)
 3. **Estate writes.** Reads are first-class (`@ge/graph-client`); Graph/SharePoint *writes*
    (send mail, create event, upload/checkout) are modeled but not wired.
 4. **Engine paths unbuilt:** v1 `addContextFile` (code-execution uploads) and the A2UI renderer.

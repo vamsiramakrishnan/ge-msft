@@ -4,12 +4,19 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
+import { buildDocStateSnapshot } from '@ge/content';
 import { ONENOTE_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
-import { pageToContext, type PageElement } from './capture.js';
+import {
+  pageElementToDocStateBlocks,
+  pageToContext,
+  searchPage,
+  type PageElement,
+} from './capture.js';
 import { planAppendPage } from './actuate-plan.js';
 
 /**
@@ -37,6 +44,9 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['append-page'];
 export class OneNoteBridge implements DocBridge {
   readonly surface = 'onenote' as const;
 
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
+
   getCapabilities(): CapabilityManifest {
     return ONENOTE_CAPABILITIES;
   }
@@ -61,16 +71,60 @@ export class OneNoteBridge implements DocBridge {
   }
 
   async resolveContext(_ref: ContextRef): Promise<ResolvedContext[]> {
-    if (!isSet('OneNoteApi', '1.1')) return [];
+    const page = await this.readActivePage();
+    return page ? pageToContext(page) : [];
+  }
+
+  /**
+   * ADR-0003 Layer B element 1 / ADR-0006 `outline` read: an ambient structural snapshot of the
+   * active page — its title (heading) + paragraph outline, mapped through the same native blocks
+   * grounding context uses. OneNote is web-only with a narrow API (no whole-notebook enumeration),
+   * so the "document" is the active page. Older host / no active page / empty page → `undefined`
+   * (the runtime just streams without the ambient part). Version increments per capture.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    const page = await this.readActivePage();
+    if (!page) return undefined;
+    const blocks = pageElementToDocStateBlocks(page);
+    if (blocks.length === 0) return undefined;
+    this.docStateVersion += 1;
+    return buildDocStateSnapshot({
+      surface: 'onenote',
+      version: this.docStateVersion,
+      ...(page.title.trim() ? { title: page.title } : {}),
+      blocks,
+    });
+  }
+
+  /**
+   * ADR-0006 `search` read: scan the active page's paragraphs for `query` and return the matching
+   * paragraphs as `ResolvedContext` data (never instructions), bounded by `searchPage`. Older host /
+   * empty query / no active page / no match → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const page = await this.readActivePage();
+    return page ? searchPage(page, q) : [];
+  }
+
+  /**
+   * Read the active OneNote page into a pure {@link PageElement} — the shared host read behind
+   * `resolveContext`/`captureDocState`/`searchDocument`. Read-only: loads the page title + its
+   * outlines' rich-text paragraphs in the fewest syncs (per the "batch loads before sync" rule) and
+   * writes nothing. Older host / no active page → `undefined`.
+   */
+  private async readActivePage(): Promise<PageElement | undefined> {
+    if (!isSet('OneNoteApi', '1.1')) return undefined;
     return OneNote.run(async (ctx) => {
       const page = ctx.application.getActivePageOrNull();
       page.load('id,title');
       await ctx.sync();
-      if (page.isNullObject) return [];
+      if (page.isNullObject) return undefined;
 
-      // Outlines → paragraphs → rich text, batched into the fewest syncs (per the wave-1
-      // "batch loads before sync" rule): (1) load the page's contents/outline types, (2) queue
-      // every outline's paragraphs in one sync, then (3) queue every rich-text body in one sync.
+      // Outlines → paragraphs → rich text, batched into the fewest syncs: (1) load the page's
+      // contents/outline types, (2) queue every outline's paragraphs in one sync, then (3) queue
+      // every rich-text body in one sync.
       const contents = page.contents;
       contents.load('items/type');
       await ctx.sync();
@@ -95,12 +149,11 @@ export class OneNoteBridge implements DocBridge {
       }
       await ctx.sync();
 
-      const element: PageElement = {
+      return {
         pageId: page.id,
         title: page.title,
         paragraphs: texts.map((t) => t.text ?? '').filter((t) => t.trim().length > 0),
       };
-      return pageToContext(element);
     });
   }
 

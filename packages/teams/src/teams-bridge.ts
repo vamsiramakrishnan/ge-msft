@@ -4,12 +4,19 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot } from '@ge/content';
 import { TEAMS_CAPABILITIES } from './capabilities.js';
-import { transcriptToContext, type TranscriptInput } from './capture.js';
+import {
+  searchTranscript,
+  transcriptToContext,
+  transcriptToDocStateBlocks,
+  type TranscriptInput,
+} from './capture.js';
 import { planPostMessage } from './actuate-plan.js';
 import { meetingEndedEvent, sessionEndEvent, sessionStartEvent } from './events.js';
 
@@ -34,6 +41,9 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['post-message'];
 
 export class TeamsBridge implements DocBridge {
   readonly surface = 'teams' as const;
+
+  /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
+  private docStateVersion = 0;
 
   constructor(private readonly options: TeamsBridgeOptions = {}) {}
 
@@ -80,6 +90,40 @@ export class TeamsBridge implements DocBridge {
    */
   setTranscript(input: TranscriptInput): void {
     this.options.transcript = input;
+  }
+
+  /**
+   * ADR-0006 whole-transcript `read` (the runtime's empty-selector read → `captureDocState`): a
+   * transcript has no addressable sub-range, so the "document" is the captured window. Builds a
+   * snapshot from the meeting title (heading) + bounded turn lines. Reads only the in-memory
+   * transcript snapshot (no host round-trip); no transcript captured yet → `undefined`. Version
+   * increments per capture.
+   */
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    const input = this.transcript;
+    if (!input || !input.transcript.trim()) return undefined;
+    const blocks = transcriptToDocStateBlocks(input);
+    if (blocks.length === 0) return undefined;
+    this.docStateVersion += 1;
+    return buildDocStateSnapshot({
+      surface: 'teams',
+      version: this.docStateVersion,
+      ...(input.meetingTitle?.trim() ? { title: input.meetingTitle } : {}),
+      blocks,
+    });
+  }
+
+  /**
+   * ADR-0006 `search` read: scan the captured transcript window for `query` and return matching
+   * turn lines as `ResolvedContext` data (never instructions), bounded by `searchTranscript`. Scoped
+   * to the in-memory transcript window (no cross-meeting read). Empty query / no transcript / no
+   * match → `[]`.
+   */
+  async searchDocument(query: string): Promise<ResolvedContext[]> {
+    const q = query.trim();
+    const input = this.transcript;
+    if (!q || !input || !input.transcript.trim()) return [];
+    return searchTranscript(input, q);
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {

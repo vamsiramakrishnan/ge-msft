@@ -52,7 +52,26 @@ interface ExcelRange {
 }
 
 describe('fake-excel fidelity', () => {
-  it('load() is a no-op and sync() resolves; used range + values read from the seed', async () => {
+  it('reading a Range property before load()+sync() throws (load/sync fidelity)', async () => {
+    const sim = installFakeExcel();
+    restore = sim.restore;
+    const Excel = host<ExcelLike>('Excel');
+
+    await Excel.run(async (ctx) => {
+      const used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange();
+      // No load() yet: reading .values must throw like the real proxy (PropertyNotLoaded).
+      expect(() => used.values).toThrow(/not loaded/);
+      // Loaded but not yet synced: still unreadable until context.sync() resolves it.
+      used.load('values');
+      expect(() => used.values).toThrow(/not loaded/);
+      await ctx.sync();
+      // After sync the loaded property is readable; an UNloaded sibling still throws.
+      expect(used.values[0]).toEqual(['region', 'rep', 'revenue', 'cost']);
+      expect(() => used.address).toThrow(/not loaded/);
+    });
+  });
+
+  it('sync() resolves loads; used range + values read from the seed', async () => {
     const sim = installFakeExcel();
     restore = sim.restore;
     const Excel = host<ExcelLike>('Excel');

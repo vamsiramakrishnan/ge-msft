@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ChangeIdSchema } from './brand.js';
-import { ContextKindSchema, SurfaceSchema } from './context.js';
+import { ContextKindSchema, SurfaceSchema, type Surface } from './context.js';
 import { SourceRefSchema } from './finding.js';
 import { ProvenancePayloadSchema } from './provenance.js';
 
@@ -125,3 +125,32 @@ export const CapabilityManifestSchema = z.object({
   reads: z.array(ReadVerbSchema).optional(),
 });
 export type CapabilityManifest = z.infer<typeof CapabilityManifestSchema>;
+
+/**
+ * ADR-0006 — the `Capability` descriptor: the forward source of truth for a single capability.
+ *
+ * One descriptor names a capability, locates it on a surface, and classifies it on the
+ * pure/effect split that ADR-0005 makes load-bearing:
+ *   - `read`   — a Layer-B host read (produces a value; never gated).
+ *   - `pure`   — a pure transform over values (composes freely; never gated).
+ *   - `effect` — an actuation terminal (consumes values, produces a gated `Effect`).
+ *
+ * The intent (ADR-0006) is that the manifest, the verb→kind map, and dispatch are eventually
+ * *derived* from a registry of these descriptors for new capabilities. This is a typed scaffold:
+ * no migration is required this wave — the {@link checkCapabilityClosure} conformance gate is what
+ * makes that incremental migration safe (drift can't silently return while descriptors and the
+ * hand-written manifest/map coexist). `signature` and `gatePolicy` are deliberately open for now;
+ * later waves narrow them as the registry lands.
+ */
+export interface Capability {
+  /** Stable capability name (also the CLI/skill identifier, e.g. `reply`, `write-cells`). */
+  name: string;
+  /** The surface this capability is defined on. */
+  surface: Surface;
+  /** The pure/effect classification (the ADR-0005 composition + safety boundary). */
+  kind: 'read' | 'pure' | 'effect';
+  /** A forward type signature for the value layer (open this wave; narrowed later). */
+  signature?: unknown;
+  /** A forward gate-policy hook for `effect` capabilities (open this wave; narrowed later). */
+  gatePolicy?: unknown;
+}

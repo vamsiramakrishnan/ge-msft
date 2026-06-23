@@ -13,6 +13,7 @@ import {
 const excelManifest: CapabilityManifest = {
   surface: 'excel',
   contextKinds: ['range', 'sheet'],
+  reads: ['outline', 'read', 'search'],
   actuations: [
     { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
     { kind: 'add-comment', surface: 'excel', title: 'Add comment', reversible: true },
@@ -23,9 +24,11 @@ const excelManifest: CapabilityManifest = {
 const wordManifest: CapabilityManifest = {
   surface: 'word',
   contextKinds: ['selection', 'document'],
+  reads: ['outline', 'read', 'search'],
   actuations: [
     { kind: 'tracked-change', surface: 'word', title: 'Insert tracked change', reversible: true },
     { kind: 'add-comment', surface: 'word', title: 'Add comment', reversible: true },
+    { kind: 'comment-reply', surface: 'word', title: 'Reply to comment', reversible: true },
   ],
 };
 
@@ -36,6 +39,7 @@ describe('command-grammar — verb map', () => {
       suggest: 'tracked-change',
       comment: 'add-comment',
       format: 'format-cells',
+      reply: 'comment-reply',
     });
   });
 });
@@ -219,6 +223,36 @@ describe('command-grammar — format (k=v pairs, values with # $ , . %)', () => 
   });
 });
 
+describe('command-grammar — reply (ADR-0006 comment-reply)', () => {
+  it('parses a bare comment id + quoted reply body', () => {
+    expect(parseCommandLine('reply {3f2a} "addressed in the redline"')).toEqual({
+      verb: 'reply',
+      commentId: '{3f2a}',
+      text: 'addressed in the redline',
+    });
+  });
+
+  it('honors embedded escaped quotes/backslashes in the reply body', () => {
+    expect(parseCommandLine('reply c-12 "re: the \\"SLA\\" claim"')).toEqual({
+      verb: 'reply',
+      commentId: 'c-12',
+      text: 're: the "SLA" claim',
+    });
+  });
+
+  it('errors when the reply body is missing or the line is malformed', () => {
+    expect(parseCommandLine('reply {3f2a}')).toMatchObject({
+      error: expect.stringContaining('reply'),
+    });
+    expect(parseCommandLine('reply')).toMatchObject({
+      error: expect.stringContaining('reply'),
+    });
+    expect(parseCommandLine('reply {3f2a} unquoted body')).toMatchObject({
+      error: expect.stringContaining('reply'),
+    });
+  });
+});
+
 describe('command-grammar — corrective errors + did-you-mean', () => {
   it('suggests the nearest verb for a typo', () => {
     expect(parseCommandLine('sett A1 5')).toMatchObject({
@@ -323,6 +357,16 @@ describe('command-grammar — capability scoping', () => {
     expect(specs.find((v) => v.verb === 'comment')?.usage).toBe('comment "anchor" "text"');
   });
 
+  it('Word advertises reply when comment-reply is in its actuations', () => {
+    const specs = grammarFor(wordManifest);
+    expect(specs.find((v) => v.verb === 'reply')?.usage).toBe('reply <commentId> "text"');
+  });
+
+  it('does NOT advertise reply when comment-reply is absent (Excel here has none)', () => {
+    const verbs = grammarFor(excelManifest).map((v) => v.verb);
+    expect(verbs).not.toContain('reply');
+  });
+
   it('a manifest without add-comment/format-cells does NOT advertise comment/format', () => {
     const plainExcel: CapabilityManifest = {
       surface: 'excel',
@@ -335,16 +379,41 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).not.toContain('format');
   });
 
-  it('always advertises read/control verbs regardless of actuations', () => {
+  it('always advertises control verbs regardless of actuations or reads', () => {
     const noWrite: CapabilityManifest = {
       surface: 'powerpoint',
       contextKinds: ['slide'],
       actuations: [],
     };
     const verbs = grammarFor(noWrite).map((v) => v.verb);
-    expect(verbs).toEqual(expect.arrayContaining(['outline', 'read', 'search', 'done', 'help']));
+    expect(verbs).toEqual(expect.arrayContaining(['done', 'help']));
     expect(verbs).not.toContain('set');
     expect(verbs).not.toContain('suggest');
+  });
+
+  it('scopes read verbs to manifest.reads (ADR-0006): absent reads ⇒ no read verbs advertised', () => {
+    const noReads: CapabilityManifest = {
+      surface: 'powerpoint',
+      contextKinds: ['slide'],
+      actuations: [],
+    };
+    const verbs = grammarFor(noReads).map((v) => v.verb);
+    expect(verbs).not.toContain('outline');
+    expect(verbs).not.toContain('read');
+    expect(verbs).not.toContain('search');
+  });
+
+  it('advertises ONLY the declared read verbs', () => {
+    const someReads: CapabilityManifest = {
+      surface: 'word',
+      contextKinds: ['document'],
+      reads: ['outline', 'search'],
+      actuations: [],
+    };
+    const verbs = grammarFor(someReads).map((v) => v.verb);
+    expect(verbs).toContain('outline');
+    expect(verbs).toContain('search');
+    expect(verbs).not.toContain('read'); // 'read' not declared ⇒ not advertised
   });
 });
 
@@ -358,6 +427,7 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('suggest "a" => "b"'),
       parseCommandLine('comment A1 "note"'),
       parseCommandLine('format A1 bold=true'),
+      parseCommandLine('reply {3f2a} "ok"'),
       parseCommandLine('done'),
       parseCommandLine('help'),
     ]) {

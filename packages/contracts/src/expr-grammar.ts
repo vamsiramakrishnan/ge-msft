@@ -7,7 +7,13 @@ import { scanQuoted } from './command-grammar.js';
  * command-grammar module (the two modules reference each other), and kept in sync by the
  * exhaustiveness test in `expr-grammar.test.ts`.
  */
-export const EFFECT_VERBS: ReadonlySet<string> = new Set(['set', 'suggest', 'comment', 'format']);
+export const EFFECT_VERBS: ReadonlySet<string> = new Set([
+  'set',
+  'suggest',
+  'comment',
+  'format',
+  'reply',
+]);
 
 /** The Phase-1 corrective when the model tries to compose an effect. */
 export const EFFECT_COMPOSE_ERROR =

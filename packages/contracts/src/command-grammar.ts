@@ -42,6 +42,7 @@ export const WRITE_VERB_TO_KIND = {
   suggest: 'tracked-change',
   comment: 'add-comment',
   format: 'format-cells',
+  reply: 'comment-reply',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -70,6 +71,7 @@ export type ParsedCommand =
   | { verb: 'suggest'; oldText: string; newText: string }
   | { verb: 'comment'; selector: string; text: string }
   | { verb: 'format'; range: string; props: Record<string, string> }
+  | { verb: 'reply'; commentId: string; text: string }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -81,6 +83,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('suggest'), oldText: z.string(), newText: z.string() }),
   z.object({ verb: z.literal('comment'), selector: z.string(), text: z.string() }),
   z.object({ verb: z.literal('format'), range: z.string(), props: z.record(z.string()) }),
+  z.object({ verb: z.literal('reply'), commentId: z.string(), text: z.string() }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -190,6 +193,11 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return parsed;
     }
 
+    case 'reply': {
+      const parsed = parseReply(rest);
+      return parsed;
+    }
+
     default:
       return { error: unknownVerbError(verb) };
   }
@@ -293,6 +301,38 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
   }
 
   return { verb: 'format', range, props };
+}
+
+/**
+ * `reply <commentId> "text"` (ADR-0006 `comment-reply`). The first bare token is the comment id
+ * (host-opaque, e.g. `{xyz}` / a GUID — no spaces); the second argument is the quoted reply body
+ * (with `\"`/`\\` escapes via {@link scanQuoted}). Gated behind the `comment-reply` actuation,
+ * which Word/Excel advertise. A missing id or body is a corrective error.
+ */
+function parseReply(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'reply needs a comment id and a quoted reply — usage: reply <commentId> "text"';
+
+  // Skip leading whitespace.
+  let i = 0;
+  while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  if (i >= rest.length) return { error: usage };
+
+  // First arg: a bare comment-id token (no quoting — host ids carry no spaces).
+  const sp = rest.slice(i).search(/\s/);
+  if (sp === -1) return { error: usage }; // id but no reply body
+  const commentId = rest.slice(i, i + sp);
+  i += sp;
+
+  // Separator whitespace, then the quoted reply body.
+  while (i < rest.length && /\s/.test(rest[i]!)) i++;
+  const body = scanQuoted(rest, i);
+  if (!body) return { error: usage };
+
+  // Anything after the closing quote (other than whitespace) is malformed.
+  if (rest.slice(body.end).trim() !== '') return { error: usage };
+
+  if (commentId === '') return { error: usage };
+  return { verb: 'reply', commentId, text: body.value };
 }
 
 /**
@@ -406,10 +446,12 @@ export interface VerbSpec {
 }
 
 /**
- * The capability-scoped grammar advertisement for a surface. Read + control verbs are always
- * advertised; a write verb appears ONLY when `manifest.actuations[]` contains its mapped
- * `ActuationKind`. Surface selector hints differ (Excel reads an A1/NamedRange; Word's `read`
- * is whole-document), so the smaller per-surface grammar is fewer tokens to get wrong.
+ * The capability-scoped grammar advertisement for a surface. Control verbs are always advertised; a
+ * READ verb (`outline`/`read`/`search`) appears ONLY when it is in `manifest.reads` (ADR-0006 — a
+ * surface must never advertise a read it cannot serve), and a WRITE verb appears ONLY when
+ * `manifest.actuations[]` contains its mapped `ActuationKind`. Surface selector hints differ (Excel
+ * reads an A1/NamedRange; Word's `read` is whole-document), so the smaller per-surface grammar is
+ * fewer tokens to get wrong.
  */
 export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   const isExcelLike = manifest.surface === 'excel';
@@ -417,11 +459,19 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
     ? { verb: 'read', usage: 'read <A1|NamedRange>', hint: 'read a range, e.g. read Sales!C2:C7' }
     : { verb: 'read', usage: 'read', hint: 'read the whole document' };
 
-  const specs: VerbSpec[] = [
-    { verb: 'outline', usage: 'outline', hint: 'show the document/workbook structure' },
-    readSelector,
-    { verb: 'search', usage: 'search <text>', hint: 'find content containing the text' },
-  ];
+  // Read verbs, scoped by manifest.reads (ADR-0006). Advertise a read verb only when the surface
+  // declares it serves that read — otherwise the grammar would advertise an unreachable read.
+  const declaredReads = new Set(manifest.reads ?? []);
+  const readSpecByVerb: Record<ReadVerb, VerbSpec> = {
+    outline: { verb: 'outline', usage: 'outline', hint: 'show the document/workbook structure' },
+    read: readSelector,
+    search: { verb: 'search', usage: 'search <text>', hint: 'find content containing the text' },
+  };
+
+  const specs: VerbSpec[] = [];
+  for (const verb of READ_VERBS) {
+    if (declaredReads.has(verb)) specs.push(readSpecByVerb[verb]);
+  }
 
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a
   // new (deferred) write verb only needs an entry there + its kind in the manifest.
@@ -474,6 +524,12 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'format',
         usage: 'format <range> k=v ...',
         hint: 'format a range, e.g. format Sales!A16:C16 bold=true fill=#FFF2CC numberFormat=$#,##0.00',
+      };
+    case 'reply':
+      return {
+        verb: 'reply',
+        usage: 'reply <commentId> "text"',
+        hint: 'reply to an existing comment by its id, e.g. reply {3f2a} "addressed in the redline"',
       };
   }
 }

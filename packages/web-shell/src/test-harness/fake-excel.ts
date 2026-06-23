@@ -129,7 +129,11 @@ class FakeRange {
   private _address = '';
   private _rowCount = 0;
   private _columnCount = 0;
-  private _values: string[][] = [];
+  /** Lazily materialized read grid — computed on first `.values` read, NOT in the constructor, so a
+   * range whose budget check fails (its `.values` is never loaded) never builds the grid. This is
+   * what lets the bridge's two-sync read bound run against a huge range without the fake paying for
+   * it: `load('rowCount,columnCount')` reads cheap span metadata; only `load('values')` materializes. */
+  private _valuesCache: string[][] | undefined;
   /** Queued `.values` write (write side is NOT gated; Office writes don't require a prior load). */
   private _pendingValues: string[][] | undefined;
   // Write-only facets the bridge sets (never read back by the bridge), so left ungated.
@@ -161,12 +165,17 @@ class FakeRange {
   }
 
   private materialize(): void {
-    const sheet = sheetByName(this.seed, this.sheetName);
     const span = parseA1(this.rangeA1);
     this._address = `${this.sheetName}!${this.rangeA1}`;
-    this._rowCount = span.rows;
+    this._rowCount = span.rows; // cheap span metadata; the value grid is deferred (see _valuesCache).
     this._columnCount = span.cols;
-    this._values = readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
+  }
+
+  /** Build the read grid from the seed on demand (cached). Only reached via the `.values` getter. */
+  private computeValues(): string[][] {
+    const sheet = sheetByName(this.seed, this.sheetName);
+    const span = parseA1(this.rangeA1);
+    return readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
   }
 
   private requireLoaded(prop: string): void {
@@ -195,7 +204,7 @@ class FakeRange {
   }
   get values(): string[][] {
     this.requireLoaded('values');
-    return this._pendingValues ?? this._values;
+    return this._pendingValues ?? (this._valuesCache ??= this.computeValues());
   }
   set values(grid: unknown[][]) {
     this._pendingValues = grid as string[][];
@@ -465,6 +474,16 @@ function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook
   };
   workbook.worksheets.getItem = (name: string) => wrapSheet(origGetItem(name));
   workbook.worksheets.getActiveWorksheet = () => wrapSheet(origActive());
+
+  // The named-range read path: `names.getItemOrNullObject(name).getRange()` returns a range that
+  // must also commit/flush on sync, or a `read <NamedRange>` would read an unloaded property.
+  const origNamed = workbook.names.getItemOrNullObject.bind(workbook.names);
+  workbook.names.getItemOrNullObject = (name: string): FakeNamedItem => {
+    const item = origNamed(name);
+    const gr = item.getRange.bind(item);
+    (item as { getRange: () => FakeRange }).getRange = () => registerRange(gr(), touched);
+    return item;
+  };
   return workbook;
 }
 

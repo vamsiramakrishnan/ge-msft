@@ -47,6 +47,7 @@ export function isCompileError(c: CompiledCommand): c is { error: string } {
  *   suggest "old" => "new"      → tracked-change { target:{ matchText:oldText }, text:newText }
  *   comment <sel> "text"        → add-comment   { target:{ range|matchText }, text }  (per surface)
  *   format <range> k=v ...      → format-cells  { target:{ range }, format:{…} }
+ *   reply <commentId> "text"    → comment-reply { target:{ commentId }, text }
  *   outline                     → read outline  (captureDocState)
  *   read <selector>             → read range    (readRange / whole-doc)
  *   search <text>               → read search   (searchDocument)
@@ -96,6 +97,13 @@ export function compileCommand(
         format,
       });
     }
+    case 'reply':
+      // ADR-0006: reply to an existing comment by its host-opaque id. The bridge re-resolves the
+      // comment and posts the reply (optionally resolving it); Word/Excel advertise comment-reply.
+      return compileWrite(WRITE_VERB_TO_KIND.reply, ctx, {
+        target: { commentId: cmd.commentId },
+        text: cmd.text,
+      });
   }
 }
 

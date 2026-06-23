@@ -117,6 +117,32 @@ describe('compileCommand', () => {
     expect(bad).toMatchObject({ error: expect.stringContaining('recognized property') });
   });
 
+  it('compiles `reply` → comment-reply with a commentId target (Zod-valid, changeId minted once)', () => {
+    const ids: string[] = [];
+    const mintOnce = () => {
+      const id = asChangeId(`cid-${ids.length}`);
+      ids.push(id);
+      return id;
+    };
+    const c = compileCommand(
+      { verb: 'reply', commentId: '{3f2a}', text: 'addressed in the redline' },
+      { surface: 'word', mintChangeId: mintOnce },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'comment-reply',
+        surface: 'word',
+        params: { target: { commentId: '{3f2a}' }, text: 'addressed in the redline' },
+      },
+    });
+    expect(ids).toHaveLength(1); // changeId minted exactly once
+    if ('request' in c) {
+      expect(c.request.changeId).toBe('cid-0');
+      expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+    }
+  });
+
   it('compiles reads to read intents', () => {
     expect(compileCommand({ verb: 'outline' }, { surface: 'excel', mintChangeId: mint })).toEqual({
       kind: 'read',
@@ -159,12 +185,14 @@ describe('renderGrammarPrompt', () => {
 const excelManifest: CapabilityManifest = {
   surface: 'excel',
   contextKinds: ['range', 'sheet'],
+  reads: ['outline', 'read', 'search'],
   actuations: [{ kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true }],
 };
 
 const wordManifest: CapabilityManifest = {
   surface: 'word',
   contextKinds: ['selection', 'document'],
+  reads: ['outline', 'read', 'search'],
   actuations: [
     { kind: 'tracked-change', surface: 'word', title: 'Insert tracked change', reversible: true },
   ],

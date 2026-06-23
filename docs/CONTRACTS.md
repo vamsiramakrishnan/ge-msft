@@ -135,6 +135,63 @@ export interface ActionRequest {
 }
 ```
 
+## Capability grammar (CLI verbs ↔ actuation kinds)
+
+The client-direct surfaces expose a small, capability-scoped CLI grammar to the model. Each surface advertises only the verbs it can actually serve, derived from its `CapabilityManifest` (`packages/contracts/src/command-grammar.ts`). Three verb classes:
+
+- **Control verbs** (`done`, `help`) — always advertised; not actuations.
+- **Read verbs** (`outline`, `read`, `search`) — advertised per `manifest.reads` (see below).
+- **Write verbs** — each maps to exactly one `ActuationKind` via `WRITE_VERB_TO_KIND`, and is advertised for a surface ONLY when `manifest.actuations[]` includes its mapped kind. The parser, the grammar advertisement, and the runtime compiler all derive from this single map.
+
+```ts
+export const WRITE_VERB_TO_KIND = {
+  set:     'write-cells',     // Excel
+  suggest: 'tracked-change',  // Word/PPT
+  comment: 'add-comment',     // Word/Excel/PPT
+  format:  'format-cells',    // Excel
+  reply:   'comment-reply',   // Word/Excel — ADR-0006
+} satisfies Record<string, ActuationKind>;
+```
+
+### `reply <commentId> "text"` → `comment-reply` (ADR-0006)
+
+Replies to an existing comment by its host-opaque id. The first bare token is the comment id (no spaces — host ids like `{3f2a}` or a GUID); the second argument is the quoted reply body (with `\"`/`\\` escapes). It is gated behind the `comment-reply` actuation, which **Word/Excel** advertise. It compiles to:
+
+```ts
+// ActuationRequest (validated by ActuationRequestSchema)
+{
+  changeId,                          // minted exactly once at compile time
+  kind: 'comment-reply',
+  surface,                           // 'word' | 'excel'
+  params: { target: { commentId }, text },
+}
+```
+
+### Read-scoping by `manifest.reads` (ADR-0006)
+
+The grammar advertises a read verb (`outline` / `read` / `search`) **only when it is present in `manifest.reads`** — a surface must never advertise a read it cannot serve. An **absent** `manifest.reads` advertises **no** reads. (Control verbs are always advertised; write verbs remain scoped by their advertised `ActuationKind` as above.)
+
+### Capability closure
+
+`checkCapabilityClosure({ manifest, handledKinds, readPorts })` (`packages/contracts/src/capability-closure.ts`) is the single, pure definition of whether a surface's *advertised* capability set matches what it can actually *do*. It returns three disagreement sets:
+
+```ts
+export interface CapabilityClosureReport {
+  phantoms: ActuationKind[];      // advertised actuation kinds the bridge does NOT handle
+  unreachedReads: ReadVerb[];     // advertised manifest.reads with no bridge read port
+  gaps: ActuationKind[];          // bridge-handled kinds reachable by no CLI write verb
+}
+```
+
+- **`phantoms` and `unreachedReads` are hard failures** — a surface claiming a write or read it cannot perform is a *lie*; the per-surface conformance test asserts both are empty.
+- **`gaps` are tracked, not fatal** — a handler with no CLI verb yet, compared against a checked-in allow-list and burned down deliberately. (`comment-reply` is no longer a gap now that the `reply` verb reaches it.)
+
+`gaps` is computed against `WRITE_VERB_TO_KIND`'s values (the set of kinds some CLI write verb reaches); advertised kinds are de-duped before comparison.
+
+### `Capability` descriptor (forward source of truth)
+
+`packages/contracts/src/capability.ts` introduces a `Capability` descriptor — `{ name, surface, kind: 'read' | 'pure' | 'effect', signature?, gatePolicy? }` — as the eventual single source from which the manifest, the verb→kind map, and dispatch are derived. It is a **typed scaffold only this wave**: no migration is required; the closure conformance gate is what makes incremental migration safe. `signature` and `gatePolicy` are deliberately open (`unknown`) and narrowed in later waves.
+
 ## A2A agent interface (`services/agents`)
 
 Each specialist agent is an ADK agent exposed as an A2A server with an agent card. The gateway calls it as a remote A2A agent (not via StreamAssist `agentsSpec`). Agents accept the resolved unit context + intent and return intent-appropriate output: `review` → `Finding[]`; `resolve-comment` → `{ editedText, replyText, sources }`; `regen-clause` → `{ text, sources }`; `draft-slides` → a stream of slide events; `synthesize` → a stream of tokens + citations. Agents must emit `sources` for every claim; an assertion without a source is a contract violation.

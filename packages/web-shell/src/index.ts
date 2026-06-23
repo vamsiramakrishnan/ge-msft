@@ -30,6 +30,11 @@ export {
   type Suggestion,
   type Proposal,
   type PendingWrite,
+  type PendingPlan,
+  type PlanEffect,
+  type PlanPreviewEvent,
+  type ApprovePlan,
+  type PlanRunCommandsOptions,
   type RunStep,
 } from './controller.js';
 export { renderCommandLine } from './render-command.js';

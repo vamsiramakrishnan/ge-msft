@@ -8,6 +8,7 @@ import { Composer } from './Composer.js';
 import { ProposalCard } from './ProposalCard.js';
 import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
+import { PlanApprovalCard } from './PlanApprovalCard.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -80,6 +81,12 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
       <MessageThread messages={state.messages} />
 
       <RunSteps steps={state.steps} />
+
+      <PlanApprovalCard
+        plan={state.pendingPlan}
+        onApprove={() => controller.approvePlan()}
+        onReject={() => controller.rejectPlan()}
+      />
 
       <WriteApprovalCard
         pending={state.pendingWrite}

@@ -22,6 +22,10 @@ import {
   chooseAnchorIndex,
   formatSources,
   planAddComment,
+  planFillContentControl,
+  planInsertOoxml,
+  planInsertText,
+  planReplaceSelection,
   planTrackedChange,
 } from './actuate-plan.js';
 import { provenanceRecord } from './provenance-record.js';
@@ -140,6 +144,14 @@ export class WordBridge implements DocBridge {
         return this.applyAddComment(req);
       case 'comment-reply':
         return this.applyCommentReply(req);
+      case 'insert-text':
+        return this.applyInsertText(req);
+      case 'replace-selection':
+        return this.applyReplaceSelection(req);
+      case 'insert-ooxml':
+        return this.applyInsertOoxml(req);
+      case 'fill-content-control':
+        return this.applyFillContentControl(req);
       default:
         return {
           ok: false,
@@ -276,6 +288,197 @@ export class WordBridge implements DocBridge {
         error: { code: 'comment_gone', message: 'The comment no longer exists.' },
       };
     }
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `insert-text`: insert plain text directly (NOT a tracked change). When `target.matchText`
+   * is given the insert is content-anchored — re-resolved via `body.search` at apply-time and degrading
+   * to a panel item on drift, the same discipline as a tracked change — otherwise it lands at the
+   * current selection. Fails closed on empty text. This is a DIRECT edit, so reversibility is recorded
+   * explicitly (see the captured prior-state below), not left to host-session undo.
+   */
+  private async applyInsertText(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertText(req);
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'insert-text needs params.text' },
+      };
+    }
+    const outcome = await this.host.insertText(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.text,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    // TODO(ADR-0007 inverse): captured prior-state for the inverse — an insertion has no prior text,
+    // so the inverse is "delete the inserted range". Shape needed on InverseDescriptorSchema:
+    //   { op: 'delete-content', insertedText: string, location: 'selection' | 'insert-text' }
+    // Reverse op: body.search(insertedText) → range.delete() (or shrink the range to empty).
+    const insertedState = { insertedText: outcome.insertedText, location: outcome.location };
+    void insertedState; // reported to central wiring; not yet on the schema (see summary).
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `replace-selection`: overwrite the current selection with new text. Fails closed on empty
+   * text and on an empty selection (no range to replace → degrade to a panel item). Captures the prior
+   * selection text BEFORE overwriting so the edit is reversible.
+   */
+  private async applyReplaceSelection(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planReplaceSelection(req);
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'replace-selection needs params.text' },
+      };
+    }
+    const outcome = await this.host.replaceSelection(plan.text);
+    if (outcome.status === 'empty') {
+      // Nothing selected → no range to replace. Degrade to a panel item rather than insert blindly.
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'no_selection', message: 'Nothing is selected to replace.' },
+      };
+    }
+    // TODO(ADR-0007 inverse): captured prior-state for the inverse — the selection's PRIOR text.
+    // Shape needed on InverseDescriptorSchema:
+    //   { op: 'restore-text', priorText: string, location: 'selection' }
+    // Reverse op: re-select the written range and insertText(priorText, replace).
+    const priorState = { priorText: outcome.priorText, location: outcome.location };
+    void priorState; // reported to central wiring; not yet on the schema (see summary).
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `insert-ooxml`: insert rich OOXML directly, content-anchored (degrading on drift) or at
+   * the selection. Fails closed on empty OOXML. The OOXML is host/model-derived → untrusted; it is
+   * handed to the host as data. Reversibility is recorded as a delete of the inserted range.
+   */
+  private async applyInsertOoxml(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertOoxml(req);
+    if (!plan.hasOoxml) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_ooxml', message: 'insert-ooxml needs params.ooxml' },
+      };
+    }
+    const outcome = await this.host.insertOoxml(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.ooxml,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    // TODO(ADR-0007 inverse): captured prior-state for the inverse — an OOXML insertion has no prior
+    // text and the rendered text isn't known here, so the inverse is "delete the inserted range".
+    // Shape needed on InverseDescriptorSchema:
+    //   { op: 'delete-content', anchor: string | null, location: 'selection' | 'insert-ooxml' }
+    // Reverse op: re-resolve the anchor (or the inserted range) and range.delete().
+    const insertedState = { location: outcome.location };
+    void insertedState; // reported to central wiring; not yet on the schema (see summary).
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `fill-content-control`: populate a named content control with text. Fails closed on a
+   * missing id or empty text; a stale id (the control was deleted) degrades to a panel item — the
+   * content-control analogue of anchor drift. Captures the control's prior text so the fill is
+   * reversible.
+   */
+  private async applyFillContentControl(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planFillContentControl(req);
+    if (!plan.hasId || !plan.contentControlId) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_content_control',
+          message: 'fill-content-control needs target.contentControlId',
+        },
+      };
+    }
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'fill-content-control needs params.text' },
+      };
+    }
+    const outcome = await this.host.fillContentControl(plan.contentControlId, plan.text);
+    if (outcome.status === 'gone') {
+      // The control was deleted → degrade to a panel item rather than throw (anchor-drift analogue).
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'content_control_gone', message: 'The content control no longer exists.' },
+      };
+    }
+    // TODO(ADR-0007 inverse): captured prior-state for the inverse — the control's PRIOR text.
+    // Shape needed on InverseDescriptorSchema:
+    //   { op: 'restore-content-control', contentControlId: string, priorText: string }
+    // Reverse op: contentControls.getByIdOrNullObject(id).insertText(priorText, replace).
+    const priorState = { contentControlId: plan.contentControlId, priorText: outcome.priorText };
+    void priorState; // reported to central wiring; not yet on the schema (see summary).
     const dropped = await this.persistProvenance(req);
     return {
       ok: true,

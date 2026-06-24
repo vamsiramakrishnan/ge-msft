@@ -444,7 +444,12 @@ export const ActuationParamsSchema = z.object({
       flagStatus: z.enum(['flagged', 'complete', 'notFlagged']).optional(),
     })
     .optional(),
-  /** create-mail-rule (Outlook/Graph): high-privilege standing automation. */
+  /**
+   * create-mail-rule (Outlook/Graph): high-privilege standing automation — the classic mailbox
+   * auto-exfiltration vector. UNTRUSTED SINK: `actions` forward/redirect recipients must be
+   * ALLOWLIST-screened, not merely user-confirmed (a forwarding rule persists and leaks future mail);
+   * never derive rule actions from email-body content. Hard-gated AND screened.
+   */
   mailRule: z
     .object({
       displayName: z.string(),
@@ -463,7 +468,12 @@ export const ActuationParamsSchema = z.object({
       userId: z.string().optional(),
     })
     .optional(),
-  /** post-card / update-message (Teams/Graph): a typed Adaptive Card (vs smuggling via `html`). */
+  /**
+   * post-card / update-message (Teams/Graph): a typed Adaptive Card (vs smuggling via `html`).
+   * UNTRUSTED SINK: card `Action.OpenUrl`/`Action.Submit` targets and input fields are
+   * model/host-derived — screen them (allowlist scheme/host) at apply-time exactly like `hyperlink`.
+   * Gating (user confirm) is NOT screening; a confirmed card can still carry a malicious action url.
+   */
   card: z.object({ adaptiveCard: z.unknown(), fallbackText: z.string().optional() }).optional(),
   /** set-reaction (Teams/Graph). */
   reaction: z.object({ reactionType: z.string(), emoji: z.string().optional() }).optional(),
@@ -522,10 +532,13 @@ export type ActuationRequest = z.infer<typeof ActuationRequestSchema>;
 export const InverseDescriptorSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('delete-object'),
-    // The host object kind to delete. SECURITY (ADR-0007 §inverse-identity): the undo must verify
-    // the object is the one THIS change minted (by the recorded name/id), never re-resolve an
-    // arbitrary object of this type against the live host. Word objects are mostly unnamed, so the
-    // inverse anchors by the recorded inserted-range id, not a name.
+    // The host object kind to delete. SECURITY (ADR-0007 §inverse-identity): `name` MUST be the
+    // apply-time MINTED handle/range-id recorded for THIS change (scoped to its `changeId`/provenance
+    // entry) — NEVER a human label or a re-resolvable search string. The undo applier verifies the
+    // object still matches that minted id and DEGRADES on a mismatch; it must never re-resolve an
+    // arbitrary object of this type against the live host (or an undo could delete a hand-made
+    // table/chart). Word objects are mostly unnamed, so the recorded id is the inserted-range id.
+    // The Phase-B+ security-reviewer pass asserts this per bridge.
     objectType: z.enum([
       'table',
       'chart',

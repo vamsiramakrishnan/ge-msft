@@ -4,6 +4,7 @@ import type {
   ActuationRequest,
   ActuationResult,
   ChangeId,
+  CommandPlan,
   ContextRef,
   ProvenancePayload,
   SseEvent,
@@ -147,6 +148,20 @@ class FakeAssist implements AssistLike {
       yield ev;
     }
   }
+  /** F: the planner pre-stage result. Default → no plan (proposePlan degrades to the executor). */
+  planned: { plan: CommandPlan | null; errors: string[]; needsClarification: boolean } = {
+    plan: null,
+    errors: [],
+    needsClarification: false,
+  };
+  planTasks: string[] = [];
+  plan(
+    task: string,
+  ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
+    this.planTasks.push(task);
+    return Promise.resolve(this.planned);
+  }
+
   apply(
     kind: ActuationRequest['kind'],
     _params: ActuationParams,
@@ -874,3 +889,78 @@ describe('PanelController — structured grounding wiring (Finding #2/#B-wire)',
 function tick(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
+
+describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
+  const wordPlan: CommandPlan = {
+    intent: 'rewrite',
+    surface: 'word',
+    scope: { kind: 'section', ref: '§4' },
+    ground: [],
+    steps: ['rewrite the SLA figure to 99.9% as a tracked change'],
+    excludes: ['the indemnity clause'],
+    clarify: [],
+  };
+
+  it('stages a CommandPlan for confirm, then runs the executor on confirm', async () => {
+    const assist = new FakeAssist();
+    assist.planned = { plan: wordPlan, errors: [], needsClarification: false };
+    // The executor turn (after confirm) stages a plan-level gate so we can see it ran.
+    assist.commandScript = [{ plan: [planEffect('w1')] }];
+    const c = new PanelController(assist, lister([]));
+
+    await c.proposePlan('/rewrite the SLA but leave indemnity', undefined);
+    expect(assist.planTasks).toEqual(['/rewrite the SLA but leave indemnity']);
+    expect(c.getState().pendingCommandPlan?.plan).toEqual(wordPlan);
+    expect(c.getState().busy).toBe(false);
+
+    c.confirmCommandPlan();
+    await tick();
+    await tick();
+    // The command plan cleared and the EXECUTOR ran (its own effect-level gate is now staged).
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+    expect(c.getState().pendingPlan).toBeDefined();
+  });
+
+  it('cancel discards the plan and runs nothing', async () => {
+    const assist = new FakeAssist();
+    assist.planned = { plan: wordPlan, errors: [], needsClarification: false };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/rewrite x', undefined);
+    expect(c.getState().pendingCommandPlan).toBeDefined();
+
+    c.cancelCommandPlan();
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+    expect(assist.asked).toEqual([]); // executor never invoked
+    expect(c.getState().pendingPlan).toBeUndefined();
+  });
+
+  it('a clarify-only plan asks a question and executes nothing', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: { ...wordPlan, steps: [], clarify: ['which section — §4 or §5?'] },
+      errors: [],
+      needsClarification: true,
+    };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/rewrite the section', undefined);
+
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+    const last = c.getState().messages.at(-1);
+    expect(last?.role).toBe('assistant');
+    expect(last?.text).toContain('which section');
+    expect(c.getState().pendingPlan).toBeUndefined();
+  });
+
+  it('degrades to the executor when the planner yields no parseable plan', async () => {
+    const assist = new FakeAssist();
+    assist.planned = { plan: null, errors: [], needsClarification: false };
+    assist.commandScript = [{ plan: [planEffect('w2')] }];
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/rewrite x', undefined);
+    await tick();
+    await tick();
+    // No plan card; the executor ran directly (its gate staged).
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+    expect(c.getState().pendingPlan).toBeDefined();
+  });
+});

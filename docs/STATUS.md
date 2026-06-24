@@ -129,6 +129,14 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   mentions map to real `streamAssist` fields (`query.parts[]`, `toolsSpec.dataStoreSpecs`, `fileIds`).
   Full-stack interplay tests (`taskpane/command-surface.integration.test.ts`) drive the real
   `<App/>` → controller for both routes. Specced in `docs/mockups/6-command-pane.html`.
+- **Planner-confirm front door (EXPERIENCE.md §F) — built + tested.** A **complex** free-text
+  actuating instruction (composer-typed, with a constraint/exclusion or ≥12 words —
+  `isComplexInstruction`) first runs the planner pre-stage (`AssistSession.plan` → a ` ```plan `
+  block → `parsePlanBlock`) and stages a confirmable `CommandPlan` (`CommandPlanCard`) **before** the
+  executor runs; on confirm it runs `runCommands` (which stages its own effect-level gate). Chips /
+  presets and short instructions skip the planner and go straight to the executor; a `clarify` plan
+  is surfaced as a question. Covered by unit (heuristic, `proposePlan`), runtime (`plan()`), and
+  full-stack (complex → plan card → confirm → gate) tests.
 - **Two Gemini Enterprise skills — authored + upload-verified (`skill/`).**
   - **`m365-surface-commander`** (executor) — emits the ADR-0004 ` ```cmd ` algebra; reads, writes,
     pipelines (`let`/`|`/`def`), per-surface capability map; ships with `parse_commands.py` and a

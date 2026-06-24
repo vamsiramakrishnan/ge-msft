@@ -1158,3 +1158,70 @@ a.cite:hover {
     transition-duration: 0.05ms !important;
   }
 }
+
+/* §F — the planner-confirm card: the high-level CommandPlan, confirmed before the executor runs. */
+.command-plan {
+  margin: var(--s4) var(--s6);
+  padding: var(--s4);
+  border: 1px solid var(--brand-soft);
+  border-radius: var(--r-md);
+  background: var(--brand-tint);
+}
+.command-plan-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.command-plan-verb {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  color: var(--brand-ink);
+}
+.command-plan-scope {
+  font-size: var(--fz-xs);
+  color: var(--soft);
+}
+.command-plan-tag {
+  margin-left: auto;
+  font-size: var(--fz-xs);
+  font-weight: 700;
+  color: var(--brand-ink);
+}
+.command-plan-steps {
+  margin: 0 0 var(--s3);
+  padding-left: 1.2em;
+  font-size: var(--fz-md);
+  line-height: 1.5;
+}
+.command-plan-excludes {
+  margin: 0 0 var(--s3);
+  padding-left: 1.2em;
+  font-size: var(--fz-sm);
+  color: var(--soft);
+}
+.command-plan-ground {
+  font-size: var(--fz-xs);
+  color: var(--soft);
+  margin-bottom: var(--s3);
+}
+.command-plan-actions {
+  display: flex;
+  gap: var(--s2);
+}
+.command-plan-confirm {
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+.command-plan-cancel {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #fff;
+  padding: 7px 13px;
+  cursor: pointer;
+}

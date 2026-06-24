@@ -3,6 +3,7 @@ import type {
   ActuationRequest,
   ActuationResult,
   ChangeId,
+  CommandPlan,
   ContextKind,
   ContextRef,
   ProvenancePayload,
@@ -101,6 +102,14 @@ export interface AssistLike {
    * once for a composed plan's full effect-set (fail-closed) before any effect actuates.
    */
   runCommands(task: string, opts?: RunCommandsOptions): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  /**
+   * The planner pre-stage (EXPERIENCE.md §F): stream one turn that proposes a confirmable
+   * {@link CommandPlan} for a complex free-text request, WITHOUT reading or writing the document.
+   */
+  plan(
+    task: string,
+    opts?: { signal?: AbortSignal; grounding?: ResolvedGrounding },
+  ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }>;
   ingest(event: HostEvent): Promise<void>;
   readonly sessionId?: string;
 }
@@ -220,6 +229,21 @@ export interface PendingPlan {
   summary: string;
 }
 
+/**
+ * The planner's {@link CommandPlan} awaiting the user's confirm BEFORE the executor runs
+ * (EXPERIENCE.md §F — the front-door stage for complex free-text). This is the high-level INTENTION
+ * (intent · scope · ordered steps · exclusions), distinct from {@link PendingPlan} (the executor's
+ * dry-run effect-set). On confirm the controller runs `runCommands(task)` — which then stages its
+ * own `pendingPlan` for the effect-level gate. A plan carrying `clarify` lines is surfaced as a
+ * question instead (it never reaches confirm).
+ */
+export interface PendingCommandPlan {
+  plan: CommandPlan;
+  /** The original free-text task, run through the executor verbatim on confirm. */
+  task: string;
+  grounding?: ResolvedGrounding;
+}
+
 /** One narrated step of the command loop, surfaced so the user can see the loop's progress. */
 export interface RunStep {
   id: string;
@@ -250,6 +274,11 @@ export interface PanelState {
   pendingWrite?: PendingWrite;
   /** The composed plan awaiting ONE plan-level approval, if the loop is gated on it (ADR-0005). */
   pendingPlan?: PendingPlan;
+  /**
+   * The planner's high-level {@link CommandPlan} awaiting the user's confirm before the executor runs
+   * (EXPERIENCE.md §F — the complex-free-text front door). Distinct from `pendingPlan`.
+   */
+  pendingCommandPlan?: PendingCommandPlan;
   /**
    * In-session skills (ADR-0005 `def`) registered for this surface, surfaced so the user can see
    * what's invokable and preview a skill's plan. Optional/back-compat: absent means "no skills
@@ -460,6 +489,78 @@ export class PanelController {
       this.set({ busy: false });
       this.drainPendingTurn();
     }
+  }
+
+  /**
+   * The PLANNER pre-stage (EXPERIENCE.md §F): for a COMPLEX free-text actuating request, stream a
+   * planner turn, parse a {@link CommandPlan}, and stage it for the user's one-tap confirm BEFORE the
+   * executor runs. A plan with `clarify` lines is surfaced as a question (no execution). A planner
+   * that yields no parseable plan degrades to running the executor directly — the executor has its
+   * own fail-closed gate, so the user's command still works. The planner turn neither reads nor
+   * writes the document.
+   */
+  async proposePlan(task: string, grounding?: ResolvedGrounding): Promise<void> {
+    const t = task.trim();
+    if (!t) return;
+    if (this.state.busy) {
+      // Mid-stream: don't lose it — queue as a commands turn (the executor, still gated).
+      this.pendingTurn = { mode: 'commands', task: t, ...(grounding ? { grounding } : {}) };
+      return;
+    }
+    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
+    this.beginTurn({ messages: [...this.state.messages, userMsg] });
+    const controller = new AbortController();
+    this.inflight = controller;
+    try {
+      const { plan, needsClarification } = await this.session.plan(t, {
+        signal: controller.signal,
+        ...(grounding ? { grounding } : {}),
+      });
+      if (controller.signal.aborted) return;
+      if (!plan) {
+        // No parseable plan → run the executor directly (it stages its own effect-level gate).
+        this.set({ busy: false });
+        void this.runCommands(t, grounding);
+        return;
+      }
+      if (needsClarification) {
+        const qs = plan.clarify.map((c) => `• ${c}`).join('\n');
+        this.set({
+          messages: [
+            ...this.state.messages,
+            { id: this.id('a'), role: 'assistant', text: `Before I plan this — ${qs}` },
+          ],
+          busy: false,
+        });
+        return;
+      }
+      this.set({
+        pendingCommandPlan: { plan, task: t, ...(grounding ? { grounding } : {}) },
+        busy: false,
+      });
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) this.set({ busy: false });
+      else this.set({ error: errorText(err), busy: false });
+    } finally {
+      if (this.inflight === controller) this.inflight = undefined;
+    }
+  }
+
+  /**
+   * Confirm the staged planner {@link CommandPlan}: clear it and run the executor on the original
+   * task — which then stages its OWN effect-level gate (`pendingPlan`) before anything actuates.
+   */
+  confirmCommandPlan(): void {
+    const p = this.state.pendingCommandPlan;
+    if (!p) return;
+    this.set({ pendingCommandPlan: undefined });
+    void this.runCommands(p.task, p.grounding);
+  }
+
+  /** Discard the staged planner plan without running anything (fail-closed: nothing executes). */
+  cancelCommandPlan(): void {
+    if (!this.state.pendingCommandPlan) return;
+    this.set({ pendingCommandPlan: undefined });
   }
 
   /**

@@ -13,6 +13,7 @@ import type {
   SourceRef,
   SseEvent,
   UnitDescriptor,
+  CommandPlan,
 } from '@ge/contracts';
 import {
   asChangeId,
@@ -21,6 +22,8 @@ import {
   isProgramSkillCall,
   isProgramSkillDef,
   parseProgramBlock,
+  parsePlanBlock,
+  renderPlanPrompt,
   WRITE_VERB_TO_KIND,
   type ParsedExpr,
   type PipeSource,
@@ -1078,6 +1081,32 @@ export class AssistSession {
     if (docState) parts.push(docState);
     parts.push(`TASK:\n${task}`, 'Begin.');
     return parts.join('\n\n');
+  }
+
+  /**
+   * The PLANNER pre-stage (EXPERIENCE.md §F): for a complex free-text actuating request, stream ONE
+   * turn that emits a fenced ` ```plan ` block, and return the parsed {@link CommandPlan} for the
+   * caller to render for a one-tap confirm BEFORE the executor (`runCommands`) runs. This does NOT
+   * read or write the document — it only proposes an intention. Provenance/citations are recorded as
+   * in any turn; the turn-scoped provenance is reset so a planner turn can't leak into a later write.
+   */
+  async plan(
+    task: string,
+    opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
+  ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
+    const capabilities = await this.bridge.getCapabilities();
+    const protocol = renderPlanPrompt(capabilities.surface);
+    const docState = await this.renderAmbientDocState();
+    const parts = [protocol];
+    if (docState) parts.push(docState);
+    parts.push(`REQUEST:\n${task}`, 'Emit one ```plan block.');
+
+    this.currentTurnProvenance = undefined; // a planner turn must not leave provenance for a later write
+    let text = '';
+    for await (const event of this.streamTurn(parts.join('\n\n'), opts.signal, opts.grounding)) {
+      if (event.type === 'token') text += event.text;
+    }
+    return parsePlanBlock(text);
   }
 
   /** Build a follow-up turn: the ```result block (JSON) + a fresh `<doc_state>`. */

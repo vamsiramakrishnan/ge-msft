@@ -125,3 +125,62 @@ describe('command surface — composer / and @ (full-stack)', () => {
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
   });
 });
+
+describe('command surface — planner-confirm for complex free-text (full-stack, §F)', () => {
+  it('a complex /rewrite proposes a plan, then runs the executor on confirm', async () => {
+    sim = installFakeWord();
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        // 1) the PLANNER turn → a ```plan block (the confirmable intention)
+        '```plan\nintent rewrite\nsurface word\nstep rewrite the SLA to 99.9% as a tracked change\nexclude the indemnity clause\n```',
+        // 2) the EXECUTOR turn (after confirm) → a ```cmd suggest → stages the effect gate
+        '```cmd\nsuggest "The SLA is 99.5%." => "The SLA is 99.9%."\n```',
+        '```cmd\ndone\n```',
+      ]),
+    });
+    await ui.flush();
+
+    // A composer-typed actuating instruction WITH a constraint → planner-confirm front door.
+    await typeAndSubmit('/rewrite the SLA to 99.9% but leave the indemnity clause');
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
+
+    // The planner card shows the steps; nothing has actuated and no effect gate yet.
+    const card = ui.container.querySelector('.command-plan');
+    expect(card).not.toBeNull();
+    expect(card!.textContent).toContain('99.9%');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
+    expect(sim.snapshot().inserts.length).toBe(0);
+
+    // Confirm → the executor runs and stages ITS OWN effect-level gate.
+    await ui.act(() =>
+      ui!.container
+        .querySelector<HTMLButtonElement>('[data-testid="command-plan-confirm"]')!
+        .click(),
+    );
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+    expect(ui.controller.getState().pendingCommandPlan).toBeUndefined();
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    expect(sim.snapshot().inserts.length).toBe(0); // still nothing applied — gated
+  });
+
+  it('a SIMPLE /rewrite skips the planner and goes straight to the executor gate', async () => {
+    sim = installFakeWord();
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        '```cmd\nsuggest "The SLA is 99.5%." => "The SLA is 99.9%."\n```',
+        '```cmd\ndone\n```',
+      ]),
+    });
+    await ui.flush();
+
+    await typeAndSubmit('/rewrite make it formal');
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+
+    // No planner card — the short instruction went straight to the executor's effect gate.
+    expect(ui.container.querySelector('.command-plan')).toBeNull();
+    expect(ui.controller.getState().pendingCommandPlan).toBeUndefined();
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+  });
+});

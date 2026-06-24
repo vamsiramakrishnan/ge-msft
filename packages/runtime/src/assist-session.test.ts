@@ -1324,3 +1324,50 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
     expect(bridge.readRangeCalls.length).toBeGreaterThan(0);
   });
 });
+
+/** A fetch that returns one streamAssist chunk carrying `text` (for the planner pre-stage). */
+function fetchText(text: string) {
+  const chunks = [
+    {
+      sessionInfo: { session: 'sess_p' },
+      answer: { state: 'SUCCEEDED', replies: [{ groundedContent: { content: { text } } }] },
+    },
+  ];
+  return vi.fn(async () => new Response(streamOf([JSON.stringify(chunks)]), { status: 200 }));
+}
+
+describe('AssistSession.plan — the planner pre-stage (§F)', () => {
+  it('streams one ```plan turn and returns the parsed CommandPlan', async () => {
+    const bridge = new FakeBridge();
+    const planText =
+      '```plan\nintent rewrite\nsurface word\nstep rewrite the SLA to 99.9% as a tracked change\nexclude the indemnity clause\n```';
+    const client = new StreamAssistClient(tokens, cfg, fetchText(planText) as never);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const { plan, errors, needsClarification } = await session.plan(
+      'rewrite the SLA but leave indemnity',
+    );
+
+    expect(errors).toEqual([]);
+    expect(needsClarification).toBe(false);
+    expect(plan?.intent).toBe('rewrite');
+    expect(plan?.surface).toBe('word');
+    expect(plan?.steps).toEqual(['rewrite the SLA to 99.9% as a tracked change']);
+    expect(plan?.excludes).toEqual(['the indemnity clause']);
+  });
+
+  it('surfaces a clarify-only plan as needsClarification (no steps required)', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(
+      tokens,
+      cfg,
+      fetchText(
+        '```plan\nintent rewrite\nsurface word\nclarify which section — §4 or §5?\n```',
+      ) as never,
+    );
+    const session = new AssistSession(bridge, client, { unit });
+    const { plan, needsClarification } = await session.plan('rewrite the section');
+    expect(needsClarification).toBe(true);
+    expect(plan?.clarify).toEqual(['which section — §4 or §5?']);
+  });
+});

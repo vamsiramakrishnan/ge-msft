@@ -100,6 +100,9 @@ class RecordingAssist implements AssistLike {
     this.runGrounding.push(opts?.grounding);
     yield { type: 'done', turn: 1, answer: '' };
   }
+  plan(): Promise<{ plan: null; errors: string[]; needsClarification: boolean }> {
+    return Promise.resolve({ plan: null, errors: [], needsClarification: false });
+  }
   ingest(_e: HostEvent): Promise<void> {
     return Promise.resolve();
   }

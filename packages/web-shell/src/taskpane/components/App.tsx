@@ -24,6 +24,7 @@ import { ProposalCard } from './ProposalCard.js';
 import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
+import { CommandPlanCard } from './CommandPlanCard.js';
 import { SkillsPanel } from './SkillsPanel.js';
 
 export interface AppProps {
@@ -57,6 +58,22 @@ export function isActuating(intent: Intent | undefined): boolean {
   // closure-derived output is not `chat`. `deriveOutput` lives in contracts next to INTENT_REQUIRES,
   // so the routing decision and the capability closure can never disagree (security review, Finding 2).
   return intent !== undefined && deriveOutput(intent) !== 'chat';
+}
+
+/** Words/markers that signal a multi-step or constrained instruction worth a plan-confirm first. */
+const CONSTRAINT_MARKERS =
+  /(^|\s)(but|only|except|without|unless|then|leave|keep|preserve|ignore|excluding)(\s|$)|[,;]/i;
+
+/**
+ * The heuristic for "complex free-text" (EXPERIENCE.md §F): an instruction earns the planner-confirm
+ * front door when it's long (≥ 12 words) or carries a constraint/exclusion marker (",", "but",
+ * "only", "leave …", etc.). A short, single-shot instruction ("make it formal") skips the planner and
+ * goes straight to the executor. Conservative by design — the executor's gate is the backstop either way.
+ */
+export function isComplexInstruction(instruction: string): boolean {
+  const t = instruction.trim();
+  if (!t) return false;
+  return t.split(/\s+/).length >= 12 || CONSTRAINT_MARKERS.test(t);
 }
 
 /**
@@ -128,8 +145,17 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
   const dispatch = (inv: ComposerInvocation): void => {
     const seed = invocationToSeed(inv);
     const grounding = invocationToGrounding(inv);
-    if (isActuating(inv.intent)) void controller.runCommands(seed, grounding);
-    else void controller.send(seed, grounding);
+    // EXPERIENCE.md §F — the planner-confirm front door, enforced ONLY for complex free-text: a
+    // composer-typed (raw ≠ '') actuating instruction with constraints first proposes a confirmable
+    // CommandPlan. A chip/preset (raw === '') or a simple instruction routes straight to the executor.
+    const composerOrigin = inv.raw.trim() !== '';
+    if (composerOrigin && isActuating(inv.intent) && isComplexInstruction(inv.instruction)) {
+      void controller.proposePlan(seed, grounding);
+    } else if (isActuating(inv.intent)) {
+      void controller.runCommands(seed, grounding);
+    } else {
+      void controller.send(seed, grounding);
+    }
   };
 
   // A chip is the same typed Invocation a composer line is — pre-filled, then dispatched through the
@@ -185,6 +211,12 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
         <MessageThread messages={state.messages} />
 
         <RunSteps steps={state.steps} />
+
+        <CommandPlanCard
+          pending={state.pendingCommandPlan}
+          onConfirm={() => controller.confirmCommandPlan()}
+          onCancel={() => controller.cancelCommandPlan()}
+        />
 
         <PlanApprovalCard
           plan={state.pendingPlan}

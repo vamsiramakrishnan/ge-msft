@@ -4,6 +4,7 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  ProvenancePayload,
   ResolvedContext,
   SseEvent,
 } from '@ge/contracts';
@@ -115,16 +116,24 @@ describe('AssistSession — the reusable loop', () => {
     expect(session.sources[0]?.title).toBe('Vendor Policy');
   });
 
-  it('applies an actuation through the bridge, stamping last-turn provenance', async () => {
+  it('applies an actuation through the bridge, stamping the EXPLICIT provenance the caller passes', async () => {
     const bridge = new FakeBridge();
     const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
     const session = new AssistSession(bridge, client, { unit, autoAttach: ['selection'] });
-    await collect(session.ask('rewrite the SLA clause'));
+
+    // Finding #4: provenance is turn-scoped. The caller captures the turn's `provenance` event and
+    // passes it back into `apply` EXPLICITLY — `apply` never reads an ambient instance field.
+    let captured: ProvenancePayload | undefined;
+    for await (const ev of session.ask('rewrite the SLA clause')) {
+      if (ev.type === 'provenance') captured = ev.payload;
+    }
+    expect(captured?.sources[0]?.title).toBe('Vendor Policy');
 
     const result = await session.apply(
       'tracked-change',
       { text: 'The SLA is 99.9%.', target: { matchText: 'The SLA is 99.5%.' } },
       asChangeId('change-1'),
+      captured,
     );
 
     expect(result.ok).toBe(true);
@@ -136,6 +145,60 @@ describe('AssistSession — the reusable loop', () => {
     });
     expect(bridge.applied[0]!.provenance?.identity).toBe('v.k@acme');
     expect(bridge.applied[0]!.provenance?.sources[0]?.title).toBe('Vendor Policy');
+  });
+
+  it('Finding #4: provenance is turn-scoped — a later provenance-less turn clears the prior turn’s, so a write inherits NONE of turn A’s', async () => {
+    const bridge = new FakeBridge();
+    // Turn A emits provenance; turn B is policy-BLOCKED, so it streams NO provenance event at all.
+    const fetchImpl = vi.fn(async () => {
+      const callIndex = fetchImpl.mock.calls.length; // 1-based after this call records
+      if (callIndex === 1) {
+        const chunk = {
+          sessionInfo: { session: 'sess_A' },
+          answer: {
+            state: 'SUCCEEDED',
+            replies: [
+              {
+                groundedContent: {
+                  content: { text: 'A' },
+                  textGroundingMetadata: {
+                    references: [
+                      { documentMetadata: { title: 'Vendor Policy', uri: 'https://x' } },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        };
+        return new Response(streamOf([JSON.stringify([chunk])]), { status: 200 });
+      }
+      // Turn B: a Model-Armor BLOCK verdict suppresses the answer AND the provenance for the turn.
+      const blocked = {
+        answer: { customerPolicyEnforcementResult: { verdict: 'BLOCK' } },
+      };
+      return new Response(streamOf([JSON.stringify([blocked])]), { status: 200 });
+    });
+    const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
+    const session = new AssistSession(bridge, client, { unit, autoAttach: ['selection'] });
+
+    // Turn A: a grounded ask that DOES emit provenance — captured turn-scoped.
+    const aEvents = await collect(session.ask('rewrite the SLA clause'));
+    expect(aEvents.some((e) => e.type === 'provenance')).toBe(true);
+
+    // Turn B: a provenance-LESS turn. It must CLEAR turn A's provenance from the turn-scoped slot.
+    const bEvents = await collect(session.ask('a follow-up'));
+    expect(bEvents.some((e) => e.type === 'provenance')).toBe(false);
+
+    // A write made now (no explicit provenance) must inherit NOTHING — not turn A's leftover.
+    const result = await session.apply(
+      'tracked-change',
+      { text: 'x', target: { matchText: 'The SLA is 99.5%.' } },
+      asChangeId('change-2'),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(bridge.applied[0]!.provenance).toBeUndefined();
   });
 
   it('lets the caller attach/detach context explicitly', async () => {

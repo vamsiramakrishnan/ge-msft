@@ -10,38 +10,32 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
-import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
+import type { ResolvedGrounding } from '@ge/gemini-client';
+import {
+  type CommandLoopEvent,
+  type PlanEffect as RuntimePlanEffect,
+  type RunCommandsOptions,
+} from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
 import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
 import { renderCommandLine } from './render-command.js';
 
 /**
- * One actuation in a composed plan (ADR-0005 §3 Planner/Executor). The runtime dry-runs the turn
- * (reads + pure transforms, no writes), computes the full effect-set, and emits it for ONE
- * plan-level approval before any effect actuates. `command` is the verbatim CLI line
- * (`set Sales!F2 =SUM(C2:C7)`) the preview renders; `request` is the typed `ActuationRequest` that
- * will execute — they are the SAME object, so what the user sees is exactly what runs.
- *
- * Declared structurally here (mirroring the fixed runtime contract) so the web-shell stays
- * independently verifiable while the runtime half is built in parallel.
+ * One actuation in a composed plan (ADR-0005 §3 Planner/Executor) — the CANONICAL runtime
+ * {@link RuntimePlanEffect} (Finding #6: the controller no longer redeclares it), widened only with
+ * the controller-owned PRESENTATIONAL {@link EffectDryRun}. `request` is the typed `ActuationRequest`
+ * that executes; `command` is the verbatim CLI line the preview renders — the SAME object, so what
+ * the user sees is exactly what runs. The richer `dryRun` (before→after) is a panel enrichment, not
+ * part of the execution contract.
  */
-export interface PlanEffect {
-  request: ActuationRequest;
-  /** The verbatim CLI line shown on the plan-approval card. */
-  command: string;
-  /**
-   * Optional dry-run preview the runtime computes while planning (reads + pure transforms, no
-   * writes). Purely presentational: the plan-approval card expands an effect to show the resolved
-   * value and/or a before→after diff so the reviewer sees what the effect will produce before it
-   * runs. Absent for effects the dry-run could not resolve (e.g. a not-yet-readable target).
-   */
-  dryRun?: EffectDryRun;
-}
+export type PlanEffect = RuntimePlanEffect & { dryRun?: EffectDryRun };
 
 /**
- * The resolved preview of a single plan effect, produced by the runtime's no-write dry-run. View
- * data only — it never gates or actuates; the plan-approval card renders it to make each effect's
- * outcome legible before the user approves the whole plan.
+ * The resolved preview of a single plan effect, produced by the runtime's no-write dry-run, widened
+ * with the panel's before→after diff. View data only — it never gates or actuates; the plan-approval
+ * card renders it to make each effect's outcome legible before the user approves the whole plan. The
+ * runtime contract carries only `{ target, resolved }`; `before`/`after` are a presentational
+ * enrichment the panel computes, so this is a superset (assignable to/from the runtime's `dryRun`).
  */
 export interface EffectDryRun {
   /** A short human label for the effect's target, e.g. "Sales!F2" or "“liability cap”". */
@@ -54,35 +48,24 @@ export interface EffectDryRun {
   after?: string;
 }
 
-/**
- * The plan-level approval callback the command loop awaits before executing a composed plan
- * (ADR-0005 §3). **Fail-closed:** with no approver the whole plan is blocked. Supersedes the
- * per-write `approveWrite` for composed plans. Mirrors the fixed runtime contract structurally.
- */
-export type ApprovePlan = (effects: PlanEffect[]) => boolean | Promise<boolean>;
+/** The plan-level approver type — the CANONICAL runtime option (Finding #6: not redeclared here). */
+export type ApprovePlan = NonNullable<RunCommandsOptions['approvePlan']>;
+/** The per-write approver type — the CANONICAL runtime option (Finding #6: not redeclared here). */
+type ApproveWrite = NonNullable<RunCommandsOptions['approveWrite']>;
 
 /**
- * The `plan-preview` command-loop event (ADR-0005 §3): the runtime emits the dry-run effect-set
- * just before it awaits `approvePlan`. Declared structurally here so the controller can reduce it
- * without depending on the not-yet-shipped runtime `CommandLoopEvent` variant.
+ * The `plan-preview` command-loop event (ADR-0005 §3) — re-exported as the CANONICAL runtime variant
+ * (Finding #6: the controller no longer declares a parallel structural copy). The runtime emits the
+ * dry-run effect-set just before it awaits `approvePlan`.
  */
-export interface PlanPreviewEvent {
-  type: 'plan-preview';
-  turn: number;
-  effects: PlanEffect[];
-}
+export type PlanPreviewEvent = Extract<CommandLoopEvent, { type: 'plan-preview' }>;
 
 /**
- * `RunCommandsOptions` (from `@ge/runtime`) augmented with the ADR-0005 plan-level approver. The
- * runtime's option type gains `approvePlan` in parallel; we widen it locally so passing the
- * approver type-checks against the current runtime types without coupling to that team's progress.
+ * Back-compat alias for the command-loop options the controller passes to the session. It is now the
+ * CANONICAL {@link RunCommandsOptions} verbatim — `approvePlan`/`approveWrite`/`grounding` all live on
+ * the runtime contract, so no local widening is needed (Finding #6: the parallel widening is gone).
  */
-export type PlanRunCommandsOptions = RunCommandsOptions & { approvePlan?: ApprovePlan };
-
-/** Narrow an arbitrary loop event to the structural `plan-preview` shape. */
-function isPlanPreview(ev: { type: string }): ev is PlanPreviewEvent {
-  return ev.type === 'plan-preview';
-}
+export type PlanRunCommandsOptions = RunCommandsOptions;
 
 /**
  * The subset of `AssistSession` the panel drives. `AssistSession` satisfies this structurally,
@@ -92,11 +75,24 @@ export interface AssistLike {
   readonly context: { size: number };
   attachRef(ref: ContextRef): Promise<void>;
   detach(id: string): void;
-  ask(query: string, opts?: { signal?: AbortSignal }): AsyncGenerator<SseEvent>;
+  /**
+   * Ask a grounded question. `opts.grounding` is the STRUCTURED resolution of the turn's typed
+   * `@`-mentions (Finding #2/#B-wire) — addressed query parts / data stores / files, NOT free-text.
+   */
+  ask(
+    query: string,
+    opts?: { signal?: AbortSignal; grounding?: ResolvedGrounding },
+  ): AsyncGenerator<SseEvent>;
+  /**
+   * Apply a staged proposal. Provenance (Finding #4) is passed EXPLICITLY — the provenance captured
+   * from the very turn that produced this change — so a later, provenance-less turn can never have
+   * its write inherit an earlier turn's leftover provenance.
+   */
   apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
     changeId: ChangeId,
+    provenance?: ProvenancePayload,
   ): Promise<ActuationResult>;
   /**
    * The ADR-0004 read-many/write-one command loop, extended with ADR-0005 plan execution. Streams
@@ -104,10 +100,7 @@ export interface AssistLike {
    * calls `opts.approveWrite` for EVERY compiled per-write (fail-closed) and `opts.approvePlan`
    * once for a composed plan's full effect-set (fail-closed) before any effect actuates.
    */
-  runCommands(
-    task: string,
-    opts?: PlanRunCommandsOptions,
-  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  runCommands(task: string, opts?: RunCommandsOptions): AsyncGenerator<SseEvent | CommandLoopEvent>;
   ingest(event: HostEvent): Promise<void>;
   readonly sessionId?: string;
 }
@@ -278,6 +271,25 @@ const EMPTY_STATE: PanelState = {
 };
 
 /**
+ * A TURN queued while another is in flight (Finding #3). The single-slot queue is LATEST-WINS, but
+ * it is now TYPED by mode so a queued turn drains through the SAME route it was requested on — a
+ * queued `commands` turn re-enters {@link PanelController.runCommands} (the fail-closed plan/approval
+ * loop), NEVER {@link PanelController.send} (plain grounded chat). Collapsing every queued turn into
+ * a string and re-sending it through `send()` (the prior `pendingQuery?: string`) silently downgraded
+ * a queued write/annotation turn into a chat turn, bypassing actuation — this discriminated union
+ * makes that impossible: the mode is carried through the drain.
+ */
+type QueuedTurn =
+  | { mode: 'ask'; query: string; grounding?: ResolvedGrounding }
+  | { mode: 'commands'; task: string; grounding?: ResolvedGrounding }
+  | { mode: 'skill'; name: string; args: Record<string, string> };
+
+/** Exhaustiveness guard: a compile error if a `QueuedTurn`/event variant is left unhandled. */
+function assertNever(x: never): never {
+  throw new Error(`unexpected variant: ${JSON.stringify(x)}`);
+}
+
+/**
  * The surface-agnostic panel logic — the brain behind the task pane. It drives the assist loop
  * (attach context → ask → stream → review/apply), keeps the immutable `PanelState` a thin React
  * view renders, and exposes `onContext`/`onSuggest`/`onAutomate` so the event Orchestrator feeds
@@ -287,12 +299,29 @@ export class PanelController {
   private state: PanelState = EMPTY_STATE;
   private readonly listeners = new Set<(state: PanelState) => void>();
   private readonly refs = new Map<string, ContextRef>();
-  private lastProvenance: ProvenancePayload | undefined;
   private seq = 0;
-  /** Single-slot queue (latest wins): a turn requested while another is streaming. */
-  private pendingQuery: string | undefined;
+  /**
+   * Finding #4: provenance is TURN-SCOPED, never ambient. This holds ONLY the provenance of the
+   * CURRENTLY-streaming turn — captured from that turn's `provenance` SSE event, read by `propose()`
+   * to stamp the proposal it creates, and CLEARED on every turn boundary (start, and every
+   * success/error/cancel settle). A proposal created by a provenance-less turn therefore carries no
+   * provenance, and `applyProposal` stamps the proposal's OWN captured provenance — never a leftover.
+   */
+  private currentTurnProvenance: ProvenancePayload | undefined;
+  /**
+   * Single-slot queue (latest wins), TYPED by mode (Finding #3): a turn requested while another is
+   * streaming. It drains through its OWN route (ask→send, commands→runCommands, skill→invokeSkill),
+   * so a queued write/annotation turn is never downgraded to plain chat.
+   */
+  private pendingTurn: QueuedTurn | undefined;
   /** Aborts the in-flight turn's network/stream; cleared when the turn settles. */
   private inflight: AbortController | undefined;
+  /**
+   * The approval id (changeId) of the write currently staged for decision (Finding #6). A decision
+   * (`approve`/`reject`) that arrives for a DIFFERENT id than this — a late click on a superseded
+   * card — is ignored, so it can never apply a request the loop has already moved past.
+   */
+  private pendingWriteId: ChangeId | undefined;
   /**
    * Resolves the `approveWrite` promise the command loop is awaiting. Set while a `pendingWrite` is
    * staged; `approvePendingWrite()`/`rejectPendingWrite()` call it. Fail-closed: if the loop is
@@ -364,31 +393,34 @@ export class PanelController {
 
   // ---- ask / stream -------------------------------------------------------
 
-  /** Ask a grounded question; stream tokens + citations into the assistant message. */
-  async send(query: string): Promise<void> {
+  /**
+   * Ask a grounded question; stream tokens + citations into the assistant message. `grounding` is the
+   * structured resolution of the turn's typed `@`-mentions (Finding #2/#B-wire), forwarded to the
+   * session as request grounding — never inlined into the prompt string.
+   */
+  async send(query: string, grounding?: ResolvedGrounding): Promise<void> {
     const q = query.trim();
     if (!q) return;
-    // A turn requested mid-stream is held (latest wins) and drained when the current turn ends,
-    // so an opt-in automated turn is never silently dropped. See `finally` below.
+    // A turn requested mid-stream is held (latest wins) and drained when the current turn ends, so an
+    // opt-in automated turn is never silently dropped. Queued AS AN ASK so it drains back through
+    // send() (Finding #3) — not collapsed into a string a later drain might mis-route.
     if (this.state.busy) {
-      this.pendingQuery = q;
+      this.pendingTurn = { mode: 'ask', query: q, ...(grounding ? { grounding } : {}) };
       return;
     }
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: q };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.set({
-      messages: [...this.state.messages, userMsg, reply],
-      busy: true,
-      error: undefined,
-      suggestions: [],
-    });
+    this.beginTurn({ messages: [...this.state.messages, userMsg, reply] });
 
     const controller = new AbortController();
     this.inflight = controller;
     const sources: SourceRef[] = [];
     try {
-      for await (const ev of this.session.ask(q, { signal: controller.signal })) {
+      for await (const ev of this.session.ask(q, {
+        signal: controller.signal,
+        ...(grounding ? { grounding } : {}),
+      })) {
         switch (ev.type) {
           case 'token':
             this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
@@ -398,7 +430,9 @@ export class PanelController {
             this.patchMessage(reply.id, () => ({ sources: [...sources] }));
             break;
           case 'provenance':
-            this.lastProvenance = ev.payload;
+            // Finding #4: capture THIS turn's provenance into the turn-local; `propose()` stamps it
+            // onto the proposal it creates. Cleared at the next turn boundary, never left ambient.
+            this.currentTurnProvenance = ev.payload;
             break;
           case 'error':
             this.patchMessage(reply.id, () => ({ error: ev.message }));
@@ -413,9 +447,8 @@ export class PanelController {
       if (controller.signal.aborted || isAbortError(err)) {
         this.patchMessage(reply.id, () => ({ cancelled: true }));
         // A cancelled turn never fully landed, so it carries no provenance worth stamping onto a
-        // later write. Provenance arrives only at end-of-stream today, so this is belt-and-braces:
-        // drop any value from this turn so applyProposal can't stamp a write with a half-landed turn.
-        this.lastProvenance = undefined;
+        // later write — drop it so applyProposal can't stamp a write with a half-landed turn.
+        this.currentTurnProvenance = undefined;
       } else {
         this.patchMessage(reply.id, () => ({ error: errorText(err) }));
       }
@@ -425,21 +458,15 @@ export class PanelController {
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false });
-      // Drain a queued turn, if any. Clearing the slot first avoids re-enqueueing it; the call
-      // is scheduled (not awaited) so draining does not re-enter synchronously while busy.
-      const next = this.pendingQuery;
-      if (next !== undefined) {
-        this.pendingQuery = undefined;
-        void this.send(next);
-      }
+      this.drainPendingTurn();
     }
   }
 
   /**
-   * Cancel the in-flight turn's network/stream. No-op when idle. A queued turn (pendingQuery) still
-   * drains afterwards — cancelling the current ask should run the one the user lined up behind it,
-   * not discard it. Office.js host writes already under way are not aborted (not abortable); this
-   * targets the assist stream only.
+   * Cancel the in-flight turn's network/stream. No-op when idle. A queued turn (`pendingTurn`) still
+   * drains afterwards THROUGH ITS OWN ROUTE — cancelling the current turn should run the one the user
+   * lined up behind it, in the mode they requested, not discard it or downgrade it. Office.js host
+   * writes already under way are not aborted (not abortable); this targets the assist stream only.
    */
   cancel(): void {
     this.inflight?.abort();
@@ -459,34 +486,31 @@ export class PanelController {
    * `pendingWrite` and actuates only after the user calls `approvePendingWrite()` — the fail-closed
    * human-in-the-loop. `send()`/`ask()` stay intact and untouched.
    */
-  async runCommands(task: string): Promise<void> {
+  async runCommands(task: string, grounding?: ResolvedGrounding): Promise<void> {
     const t = task.trim();
     if (!t) return;
+    // Queued AS A COMMANDS turn (Finding #3): it drains back through runCommands — the fail-closed
+    // plan/approval loop — NEVER through send(). A queued write turn is never downgraded to chat.
     if (this.state.busy) {
-      this.pendingQuery = t;
+      this.pendingTurn = { mode: 'commands', task: t, ...(grounding ? { grounding } : {}) };
       return;
     }
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.set({
-      messages: [...this.state.messages, userMsg, reply],
-      busy: true,
-      error: undefined,
-      suggestions: [],
-      steps: [],
-    });
+    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
 
     const controller = new AbortController();
     this.inflight = controller;
     const sources: SourceRef[] = [];
 
     // The per-write approver (ADR-0004): stage the compiled request and await the user's decision.
-    const approveWrite = (request: ActuationRequest): Promise<boolean> =>
+    const approveWrite: ApproveWrite = (request) =>
       new Promise<boolean>((resolve) => {
         // Defensive: if a prior decision is somehow still open, release it false first.
         this.settlePendingWrite(false);
         this.resolvePendingWrite = resolve;
+        this.pendingWriteId = request.changeId;
         this.set({
           pendingWrite: {
             changeId: request.changeId,
@@ -505,97 +529,142 @@ export class PanelController {
         this.set({ pendingPlan: { effects, summary: summarizeEffects(effects) } });
       });
 
-    const opts: PlanRunCommandsOptions = {
+    const opts: RunCommandsOptions = {
       signal: controller.signal,
       approveWrite,
       approvePlan,
+      ...(grounding ? { grounding } : {}),
     };
 
     try {
       for await (const ev of this.session.runCommands(t, opts)) {
-        // The plan-preview variant is not (yet) in the runtime `CommandLoopEvent` union; narrow it
-        // structurally so we reduce it without coupling to the parallel runtime build.
-        if (isPlanPreview(ev)) {
-          this.addStep('plan-preview', summarizeEffects(ev.effects));
-          continue;
-        }
-        switch (ev.type) {
-          case 'token':
-            this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
-            break;
-          case 'citation':
-            sources.push(ev.source);
-            this.patchMessage(reply.id, () => ({ sources: [...sources] }));
-            break;
-          case 'provenance':
-            this.lastProvenance = ev.payload;
-            break;
-          case 'error':
-            // `SseEvent` error (stream-level), distinct from a CommandLoopEvent.
-            this.patchMessage(reply.id, () => ({ error: ev.message }));
-            this.addStep('error', ev.message);
-            break;
-          case 'turn-start':
-            this.addStep('turn-start', `Turn ${ev.turn}`);
-            break;
-          case 'command':
-            this.addStep('command', commandStepText(ev));
-            break;
-          case 'read-result':
-            this.addStep('read-result', `read ${ev.intentLabel}`);
-            break;
-          case 'write-result':
-            this.addStep('write-result', writeStepText(ev));
-            // The decision has been consumed by the loop; clear the staged pending write.
-            this.clearPendingWrite();
-            break;
-          case 'no-fence':
-            this.addStep('no-fence', `Turn ${ev.turn}: no command block — re-prompting`);
-            break;
-          case 'capped':
-            this.addStep('capped', ev.reason);
-            break;
-          case 'done':
-            this.addStep('done', 'Done');
-            break;
-          case 'exhausted':
-            this.addStep('exhausted', `Stopped after ${ev.turns} turns`);
-            break;
-          default:
-            break;
-        }
+        this.reduceLoopEvent(ev, reply.id, sources);
       }
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err)) {
         this.patchMessage(reply.id, () => ({ cancelled: true }));
-        this.lastProvenance = undefined;
+        this.currentTurnProvenance = undefined;
       } else {
         this.patchMessage(reply.id, () => ({ error: errorText(err) }));
         this.addStep('error', errorText(err));
       }
     } finally {
-      // Any write or plan still gated when the loop ends releases fail-closed (never default-accept).
+      // Any write or plan still AWAITING a decision releases fail-closed (never default-accept).
       this.settlePendingWrite(false);
       this.settlePendingPlan(false);
+      // Finding #6: clear the approval cards on EVERY terminal path — including ones `settle*` skips
+      // because the decision was ALREADY consumed (an approval whose execution then THREW, or a
+      // write that produced no write-result). `settle*` only clears while a resolver is still open;
+      // these unconditional clears guarantee no card lingers after the loop returns or throws here.
+      this.clearPendingWrite();
+      this.clearPendingPlan();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false, changes: this.store.list() });
-      const next = this.pendingQuery;
-      if (next !== undefined) {
-        this.pendingQuery = undefined;
-        void this.send(next);
-      }
+      this.drainPendingTurn();
     }
   }
 
-  /** Approve the staged write — resolves the loop's `approveWrite` with `true` so it actuates. */
-  approvePendingWrite(): void {
+  /**
+   * Reduce ONE command-loop event (the merged `SseEvent | CommandLoopEvent` union) into panel state.
+   * Finding #6: handled EXHAUSTIVELY with an {@link assertNever} terminator, so a new event variant
+   * is a compile error here rather than a silently-dropped step. SSE variants the run transcript does
+   * not surface (`finding`/`slide`/`grounding-support`/`policy`/`related-questions`) are explicitly
+   * ignored, not swallowed by a permissive `default`.
+   */
+  private reduceLoopEvent(
+    ev: SseEvent | CommandLoopEvent,
+    replyId: string,
+    sources: SourceRef[],
+  ): void {
+    switch (ev.type) {
+      case 'token':
+        this.patchMessage(replyId, (m) => ({ text: m.text + ev.text }));
+        return;
+      case 'citation':
+        sources.push(ev.source);
+        this.patchMessage(replyId, () => ({ sources: [...sources] }));
+        return;
+      case 'provenance':
+        // Finding #4: turn-scoped capture, threaded to writes by the runtime; cleared at turn end.
+        this.currentTurnProvenance = ev.payload;
+        return;
+      case 'error':
+        // `SseEvent` error (stream-level): the CommandLoopEvent union has no `error` variant, so
+        // this narrows to the SSE shape with `code`/`message`.
+        this.patchMessage(replyId, () => ({ error: ev.message }));
+        this.addStep('error', ev.message);
+        return;
+      case 'turn-start':
+        this.addStep('turn-start', `Turn ${ev.turn}`);
+        return;
+      case 'command':
+        this.addStep('command', commandStepText(ev));
+        return;
+      case 'expr-result':
+        this.addStep('command', exprStepText(ev));
+        return;
+      case 'skill-registered':
+        this.addStep('command', ev.result.message);
+        return;
+      case 'skill-expanded':
+        this.addStep('command', `${ev.name} → ${ev.lines.length} line(s)`);
+        return;
+      case 'read-result':
+        this.addStep('read-result', `read ${ev.intentLabel}`);
+        return;
+      case 'plan-preview':
+        this.addStep('plan-preview', summarizeEffects(ev.effects));
+        return;
+      case 'write-result':
+        this.addStep('write-result', writeStepText(ev));
+        // The decision has been consumed by the loop; clear the staged pending write.
+        this.clearPendingWrite();
+        return;
+      case 'no-fence':
+        this.addStep('no-fence', `Turn ${ev.turn}: no command block — re-prompting`);
+        return;
+      case 'capped':
+        this.addStep('capped', ev.reason);
+        return;
+      case 'done':
+        this.addStep('done', 'Done');
+        return;
+      case 'exhausted':
+        this.addStep('exhausted', `Stopped after ${ev.turns} turns`);
+        return;
+      // SSE variants the command-loop transcript does not surface — explicitly ignored.
+      case 'finding':
+      case 'slide':
+      case 'grounding-support':
+      case 'policy':
+      case 'related-questions':
+        return;
+      default:
+        assertNever(ev);
+    }
+  }
+
+  /**
+   * Approve the staged write — resolves the loop's `approveWrite` with `true` so it actuates.
+   * Finding #6: pass the `changeId` the card was showing; a decision whose id no longer matches the
+   * currently-staged write (a late click on a SUPERSEDED card) is IGNORED, so it can never apply a
+   * request the loop has already moved past. Omit the id to approve whatever is staged (legacy).
+   */
+  approvePendingWrite(changeId?: ChangeId): void {
+    if (this.isSupersededWriteDecision(changeId)) return;
     this.settlePendingWrite(true);
   }
 
   /** Reject the staged write — resolves the loop's `approveWrite` with `false`; nothing actuates. */
-  rejectPendingWrite(): void {
+  rejectPendingWrite(changeId?: ChangeId): void {
+    if (this.isSupersededWriteDecision(changeId)) return;
     this.settlePendingWrite(false);
+  }
+
+  /** True when a UI decision carries an id that no longer matches the staged write (superseded). */
+  private isSupersededWriteDecision(changeId: ChangeId | undefined): boolean {
+    return changeId !== undefined && changeId !== this.pendingWriteId;
   }
 
   /** Resolve the awaited decision (if any) and stop showing the approval card. */
@@ -609,6 +678,7 @@ export class PanelController {
   }
 
   private clearPendingWrite(): void {
+    this.pendingWriteId = undefined;
     if (this.state.pendingWrite) this.set({ pendingWrite: undefined });
   }
 
@@ -645,7 +715,12 @@ export class PanelController {
 
   // ---- actuation review ---------------------------------------------------
 
-  /** Stage a reviewable, reversible change for the user to confirm. */
+  /**
+   * Stage a reviewable, reversible change for the user to confirm. Finding #4: the proposal CAPTURES
+   * the current turn's provenance AT CREATION and carries it explicitly — so when it is applied later
+   * it is attributed to the turn that actually produced it, never to whatever turn happens to be
+   * current at apply-time. A proposal created by a provenance-less turn carries none.
+   */
   propose(kind: ActuationRequest['kind'], params: ActuationParams, label: string): Proposal {
     const proposal: Proposal = {
       changeId: asChangeId(this.id('c')),
@@ -653,6 +728,7 @@ export class PanelController {
       params,
       label,
       status: 'pending',
+      ...(this.currentTurnProvenance ? { provenance: this.currentTurnProvenance } : {}),
     };
     this.set({ proposals: [...this.state.proposals, proposal] });
     return proposal;
@@ -667,8 +743,16 @@ export class PanelController {
     // the guard above — preventing a double host write / duplicate ChangeRecord.
     this.setProposal(changeId, { status: 'applying' });
 
-    const result = await this.session.apply(proposal.kind, proposal.params, proposal.changeId);
-    this.store.record(result, this.lastProvenance);
+    // Finding #4: stamp the PROPOSAL's OWN captured provenance — never an ambient `lastProvenance`
+    // a later turn could have overwritten. The session also receives it explicitly so the durable
+    // host-metadata record is attributed to the turn that produced this change.
+    const result = await this.session.apply(
+      proposal.kind,
+      proposal.params,
+      proposal.changeId,
+      proposal.provenance,
+    );
+    this.store.record(result, proposal.provenance);
 
     const status: Proposal['status'] = result.ok
       ? 'applied'
@@ -739,10 +823,51 @@ export class PanelController {
   async invokeSkill(name: string, args: Record<string, string> = {}): Promise<void> {
     const skill = (this.state.skills ?? []).find((s) => s.name === name);
     if (!skill) return;
+    // Finding #3: if a turn is in flight, queue AS A SKILL so the drain re-invokes invokeSkill (which
+    // re-renders the call against the live registry) rather than collapsing it into a stale string.
+    if (this.state.busy) {
+      this.pendingTurn = { mode: 'skill', name, args };
+      return;
+    }
     await this.runCommands(renderSkillCall(skill, args));
   }
 
   // ---- internals ----------------------------------------------------------
+
+  /**
+   * Open a turn: mark busy, clear the prior turn's error/suggestions, and RESET the turn-local
+   * provenance (Finding #4) so no leftover from an earlier turn can leak into this one's proposals.
+   * Callers pass the turn's initial message/step patch.
+   */
+  private beginTurn(patch: Partial<PanelState>): void {
+    this.currentTurnProvenance = undefined;
+    this.set({ busy: true, error: undefined, suggestions: [], ...patch });
+  }
+
+  /**
+   * Drain the single queued turn (Finding #3), if any, THROUGH ITS OWN ROUTE — ask→send,
+   * commands→runCommands, skill→invokeSkill — so a queued mode is preserved end-to-end. Clearing the
+   * slot first avoids re-enqueueing it; each dispatch is scheduled (not awaited) so draining does not
+   * re-enter synchronously while the just-settled turn is unwinding. Exhaustive via {@link assertNever}.
+   */
+  private drainPendingTurn(): void {
+    const next = this.pendingTurn;
+    if (!next) return;
+    this.pendingTurn = undefined;
+    switch (next.mode) {
+      case 'ask':
+        void this.send(next.query, next.grounding);
+        return;
+      case 'commands':
+        void this.runCommands(next.task, next.grounding);
+        return;
+      case 'skill':
+        void this.invokeSkill(next.name, next.args);
+        return;
+      default:
+        assertNever(next);
+    }
+  }
 
   private set(patch: Partial<PanelState>): void {
     this.state = { ...this.state, ...patch };
@@ -831,6 +956,11 @@ function effectNoun(kind: ActuationRequest['kind']): string {
 function commandStepText(ev: Extract<CommandLoopEvent, { type: 'command' }>): string {
   if ('error' in ev.compiled) return `error: ${ev.compiled.error}`;
   return ev.command.verb;
+}
+
+/** A one-line label for an `expr-result` loop step: the evaluated value, or the corrective error. */
+function exprStepText(ev: Extract<CommandLoopEvent, { type: 'expr-result' }>): string {
+  return 'error' in ev.result ? `expr error: ${ev.result.error}` : 'expr evaluated';
 }
 
 /** A one-line label for a `write-result` loop step: the write kind + its outcome. */

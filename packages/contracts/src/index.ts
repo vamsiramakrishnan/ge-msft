@@ -5,6 +5,7 @@
  */
 export * from './brand.js';
 export * from './intent.js';
+export * from './grounding.js';
 export * from './unit.js';
 export * from './finding.js';
 export * from './provenance.js';

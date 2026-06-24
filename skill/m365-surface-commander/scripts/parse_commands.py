@@ -37,15 +37,31 @@ def extract_command_block(text: str):
 
     Tolerates an unclosed fence: if the model opened ```cmd but never emitted the closing ```,
     we take everything after the opener (a frequent real-world failure mode worth surviving).
+
+    Thin wrapper over {@link extract_command_block_meta} that drops the closed/open flag, kept for
+    callers that only need the inner text.
+    """
+    inner, _closed = extract_command_block_meta(text)
+    return inner
+
+
+def extract_command_block_meta(text: str):
+    """Return `(inner, closed)`: the inner text of the first ```cmd fence (trimmed) and whether the
+    fence was properly CLOSED with a trailing ```.
+
+    `(None, False)` ⇒ no ```cmd fence at all (→ re-prompt, not an error). An UNCLOSED fence still
+    yields its inner text but with `closed=False`, so the actuation gate can refuse to treat a
+    truncated/streaming block as complete (review Finding #8/#10 — a half-emitted block must never
+    be honored as `done`).
     """
     m = _FENCE.search(text)
     if m:
-        return m.group(1).strip()
+        return m.group(1).strip(), True
     m = _FENCE_OPEN.search(text)
     if m:
         # drop a dangling trailing fence if present
-        return re.sub(r"```\s*$", "", m.group(1)).strip()
-    return None
+        return re.sub(r"```\s*$", "", m.group(1)).strip(), False
+    return None, False
 
 
 def _scan_quoted(rest: str):
@@ -74,9 +90,11 @@ def parse_line(line: str):
     if verb not in ALL_VERBS:
         return {"error": f"unknown verb '{verb}'{_did_you_mean(verb)} (run 'help')"}
 
-    if verb == "outline":
-        return {"verb": "outline"}
-    if verb in ("done", "help"):
+    # No-argument verbs. Consume the FULL line: a trailing token is malformed input, not something
+    # to silently drop (review Finding #8/#10 — a dropped `done`-block tail hid real parse failures).
+    if verb in ("outline", "done", "help"):
+        if rest:
+            return {"error": f"{verb} takes no arguments — got {rest!r} (usage: {verb})"}
         return {"verb": verb}
     if verb == "read":
         return {"verb": "read", "selector": rest}  # empty ⇒ whole doc
@@ -99,11 +117,18 @@ def parse_line(line: str):
         if not first:
             return {"error": 'suggest needs two quoted strings — usage: suggest "old" => "new"'}
         old, tail = first
-        tail = re.sub(r"^(=>|->)\s*", "", tail.strip())
+        sep = re.match(r"\s*(=>|->)\s*", tail)
+        if not sep:
+            return {"error": 'suggest needs two quoted strings — usage: suggest "old" => "new"'}
+        tail = tail[sep.end():]
         second = _scan_quoted(tail)
         if not second:
             return {"error": 'suggest needs two quoted strings — usage: suggest "old" => "new"'}
-        return {"verb": "suggest", "oldText": old, "newText": second[0]}
+        new, after = second
+        # Mirror the TS parser: anything after the closing quote (besides whitespace) is malformed.
+        if after.strip():
+            return {"error": 'suggest needs two quoted strings — usage: suggest "old" => "new"'}
+        return {"verb": "suggest", "oldText": old, "newText": new}
 
     if verb == "comment":
         # Two accepted forms:
@@ -122,13 +147,21 @@ def parse_line(line: str):
         return {"verb": "comment", "selector": selector, "text": q.group(1)}
 
     if verb == "format":
-        m = re.match(r"(\S+)\s+(.*)", rest)
-        if not m:
-            return {"error": "format needs a range and at least one key=value — usage: format <range> k=v ..."}
-        rng, props_s = m.group(1), m.group(2)
-        props = dict(p.split("=", 1) for p in props_s.split() if "=" in p)
-        if not props:
-            return {"error": f'format expects key=value pairs — got "{props_s}"'}
+        usage = "format needs a range and at least one key=value — usage: format <range> k=v ..."
+        tokens = [t for t in re.split(r"\s+", rest) if t]
+        if not tokens:
+            return {"error": usage}
+        rng, pairs = tokens[0], tokens[1:]
+        if not pairs:
+            return {"error": usage}
+        # Mirror the TS parser: every trailing token MUST be key=value (split on the first `=`).
+        # A bare token is malformed and reported, never silently dropped.
+        props = {}
+        for pair in pairs:
+            eq = pair.find("=")
+            if eq <= 0:
+                return {"error": f'format expects key=value pairs — got "{pair}" (usage: format <range> k=v)'}
+            props[pair[:eq]] = pair[eq + 1:]
         return {"verb": "format", "range": rng, "props": props}
 
     if verb == "reply":
@@ -162,18 +195,46 @@ def parse_line(line: str):
 
 
 def parse_block(model_text: str):
-    inner = extract_command_block(model_text)
+    inner, closed = extract_command_block_meta(model_text)
     if inner is None:
-        return {"block": None, "commands": [], "note": "no ```cmd fence (re-prompt, not an error)"}
+        return {
+            "block": None,
+            "closed": False,
+            "commands": [],
+            "note": "no ```cmd fence (re-prompt, not an error)",
+        }
     out = []
     for line in inner.splitlines():
         rec = parse_line(line)
         if rec is not None:
             out.append(rec)
-    return {"block": inner, "commands": out}
+    return {"block": inner, "closed": closed, "commands": out}
 
 
-def _self_test():
+def block_is_complete(parsed) -> bool:
+    """Decide whether a parsed block may be honored as DONE — the actuation gate's fail-closed
+    primitive (review Finding #8/#10; README §"What we learned": the add-in must "not honor `done`
+    if the same block had parse errors").
+
+    Complete iff ALL of:
+      • a ```cmd fence was present and properly CLOSED (a truncated/streaming block is never done);
+      • NO line produced a parse error (a single malformed line poisons the whole block); and
+      • at least one `done` command is present.
+
+    A block missing `done`, a block with any error, and an unclosed fence each return False — so a
+    partially-broken or in-flight block can never trip the gate.
+    """
+    if parsed.get("block") is None or not parsed.get("closed"):
+        return False
+    cmds = parsed.get("commands", [])
+    if any("error" in c for c in cmds):
+        return False
+    return any(c.get("verb") == "done" for c in cmds)
+
+
+def _self_test() -> int:
+    # This sample carries BOTH a parse error (`writ-cells`) AND `done` — the fail-closed case from
+    # review Finding #8/#10. The block must NOT be reported complete.
     sample = """**thought** I'll read then write.
 ```cmd
 read Sales!C2:C7
@@ -184,11 +245,36 @@ format Sales!A16:C16 bold=true fill=#FFF2CC
 writ-cells A1 5
 done
 ```"""
-    print(json.dumps(parse_block(sample), indent=2))
+    parsed = parse_block(sample)
+    print(json.dumps(parsed, indent=2))
+
+    failures = []
+    if block_is_complete(parsed):
+        failures.append("block with `done` + a parse error was reported complete (fail-open!)")
+
+    # An unclosed fence is never complete even with a clean `done`.
+    if block_is_complete(parse_block("```cmd\nread Sales!C2:C7\ndone")):
+        failures.append("unclosed fence reported complete")
+
+    # A clean, closed, done-bearing block IS complete.
+    if not block_is_complete(parse_block("```cmd\nread Sales!C2:C7\ndone\n```")):
+        failures.append("clean closed `done` block was NOT reported complete")
+
+    # A no-arg verb with a trailing token is a reported error, not a silent drop.
+    if "error" not in (parse_line("done now please") or {}):
+        failures.append("`done now please` did not error on its trailing tokens")
+
+    if failures:
+        print("SELF-TEST FAIL", file=sys.stderr)
+        for f in failures:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+    print("SELF-TEST OK — fail-closed `done`, unclosed fence, trailing-token guards hold")
+    return 0
 
 
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
-        _self_test()
+        sys.exit(_self_test())
     else:
         print(json.dumps(parse_block(sys.stdin.read()), indent=2))

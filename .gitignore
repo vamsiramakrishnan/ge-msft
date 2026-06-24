@@ -13,3 +13,7 @@ coverage/
 
 # GE skill bundle build artifacts
 skill/**/*.zip
+
+# Python caches
+__pycache__/
+*.pyc

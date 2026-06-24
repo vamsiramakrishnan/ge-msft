@@ -1,0 +1,142 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gemini · Command pane (/ and @)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--host:#185abd;--pl:#ececf1;--psoft:#646579;--fill:#f7f7fb;--ink:#1f1f24;--line:#e6e4e1;
+--grad:linear-gradient(135deg,#4285F4,#9b72f2 48%,#d96570);--pf:"Inter",system-ui,sans-serif;
+--sh:0 10px 30px rgba(16,18,40,.16),0 2px 6px rgba(16,18,40,.08);--teal:#0f9d8c;--blue:#2f6fed;--c:#8b5cf6;--ins:#137333}
+*{box-sizing:border-box}html,body{margin:0}
+body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoothing:antialiased;padding:26px}
+.wrap{max-width:1180px;margin:0 auto}
+.hd{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+.hd .sp{width:22px;height:22px;border-radius:50%;background:var(--grad)}
+.hd h1{font-size:18px;margin:0;font-weight:700}
+.hd .tag{font-size:11px;font-weight:600;color:#fff;background:rgba(20,20,30,.78);border-radius:18px;padding:4px 10px;margin-left:auto}
+.sub{font-size:12.5px;color:var(--psoft);margin:0 0 18px;line-height:1.5}
+.row{display:flex;gap:20px;align-items:flex-start}
+.col{flex:1;min-width:0}
+.cap{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--psoft);margin:0 0 9px}
+.cap .k{font-family:ui-monospace,monospace;font-size:13px;color:#fff;background:var(--grad);border-radius:6px;width:20px;height:20px;display:grid;place-items:center;text-transform:none}
+/* panel */
+.panel{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);overflow:hidden;display:flex;flex-direction:column;height:560px}
+.ph{padding:13px 15px 11px;border-bottom:1px solid var(--pl);display:flex;align-items:center;gap:10px}
+.av{width:30px;height:30px;border-radius:9px;background:var(--grad);position:relative;flex:none}.av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+.pn{font-size:14px;font-weight:700}.pss{font-size:11px;color:var(--psoft);margin-top:1px}
+.unit{margin:11px 15px 0;background:var(--fill);border:1px solid var(--pl);border-radius:10px;padding:9px 10px}
+.unit .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--psoft);margin-bottom:7px;display:flex;align-items:center;gap:6px}.unit .h .nb{width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;background:#fff;border:1px solid var(--pl);border-radius:18px;padding:4px 9px;margin:0 5px 5px 0}
+.chip .dot{width:7px;height:7px;border-radius:50%}.dgrad{background:var(--grad)}.dteal{background:var(--teal)}.dblue{background:var(--blue)}
+.chip .x{color:#b9bace;font-weight:700}.chip.add{border-style:dashed;color:var(--psoft)}
+.body{flex:1;padding:13px 15px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.m{display:flex;gap:9px}.m .ic{width:22px;height:22px;border-radius:7px;background:var(--grad);flex:none;position:relative}.m .ic::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:10px}
+.m .c{background:var(--fill);border:1px solid var(--pl);border-radius:3px 12px 12px 12px;padding:9px 11px;font-size:12.5px;line-height:1.5;color:#2b2d3c}
+.skillline{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;color:#5a4b8a;background:#f3eefb;border:1px solid #e6def7;border-radius:14px;padding:3px 9px;align-self:flex-start}
+.skillline .d{width:6px;height:6px;border-radius:50%;background:var(--grad)}
+/* composer + popover */
+.comp{position:relative;padding:12px 15px;border-top:1px solid var(--pl)}
+.pop{position:absolute;left:15px;right:15px;bottom:62px;background:#fff;border:1px solid var(--pl);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.pop .ph2{padding:8px 12px;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--psoft);background:var(--fill);border-bottom:1px solid var(--pl)}
+.opt{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:default;border-bottom:1px solid #f4f4f8}
+.opt:last-child{border-bottom:none}.opt.on{background:#f1edfb}
+.opt .v{font-family:ui-monospace,monospace;font-size:12.5px;font-weight:600;color:#5a4b8a;flex:none;min-width:120px}
+.opt .vat{min-width:0;display:flex;align-items:center;gap:8px}
+.opt .ico{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:10px;color:#fff;flex:none}
+.opt .d{font-size:11.5px;color:var(--psoft)}
+.opt .wire{margin-left:auto;font-family:ui-monospace,monospace;font-size:10px;color:#9aa;flex:none}
+.pop .ft{padding:7px 12px;font-size:10.5px;color:var(--psoft);background:var(--fill);border-top:1px solid var(--pl);display:flex;gap:6px;align-items:center}
+.cb{display:flex;align-items:center;gap:8px;border:1px solid #b9a8f2;border-radius:11px;padding:7px 9px;box-shadow:0 0 0 3px rgba(155,114,242,.13)}
+.cb .txt{flex:1;font-size:13px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.tok{font-family:ui-monospace,monospace;font-weight:600;color:#5a4b8a}
+.atok{display:inline-flex;align-items:center;gap:5px;background:#eef4ff;border:1px solid #d5e0fa;border-radius:7px;padding:1px 7px;font-size:12px;color:#1f4db8}.atok .d{width:6px;height:6px;border-radius:2px;background:var(--teal)}
+.cur{display:inline-block;width:1.5px;height:15px;background:#5a4b8a;animation:bl .9s steps(2) infinite;vertical-align:middle}@keyframes bl{50%{opacity:0}}
+.snd{width:30px;height:30px;border-radius:8px;border:none;background:var(--grad);color:#fff;display:grid;place-items:center;flex:none}
+/* pipeline band */
+.band{margin-top:20px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);padding:15px 18px}
+.band h3{font-size:12px;margin:0 0 12px;letter-spacing:.04em;text-transform:uppercase;color:var(--psoft);font-weight:700}
+.flow{display:flex;align-items:stretch;gap:0;flex-wrap:nowrap}
+.st{flex:1;padding:0 14px;position:relative}
+.st:not(:last-child)::after{content:"→";position:absolute;right:-7px;top:14px;color:#c3c0cf;font-weight:700}
+.st .l{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#9aa;margin-bottom:5px}
+.st .v{font-family:ui-monospace,monospace;font-size:11.5px;color:#2b2d3c;line-height:1.5}
+.st .v b{color:#5a4b8a}.st .v .g{color:var(--ins)}
+.legend{display:flex;gap:18px;margin-top:14px;flex-wrap:wrap;font-size:11px;color:var(--psoft)}
+.legend b{color:var(--ink)}
+</style></head>
+<body><div class="wrap">
+<div class="hd"><span class="sp"></span><h1>Command pane — <span style="font-family:ui-monospace,monospace">/</span> verbs &amp; <span style="font-family:ui-monospace,monospace">@</span> mentions</h1><span class="tag">Spec · surface-agnostic web-shell</span></div>
+<p class="sub">One composer, two triggers. <b>/</b> picks an action (an Intent verb, scoped to the active surface). <b>@</b> adds a source to the research unit. Both compile to a real <code>streamAssist</code> request; the grounded model then emits the CLI algebra (ADR-0004), reinforced by an auto-loaded Gemini Enterprise skill.</p>
+
+<div class="row">
+  <!-- ===================== / palette ===================== -->
+  <div class="col">
+    <p class="cap"><span class="k">/</span> Slash commands — actions, scoped to the surface</p>
+    <div class="panel">
+      <div class="ph"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Contract Review · Word · grounded on the unit</div></div></div>
+      <div class="unit"><div class="h"><span class="nb"></span> Research unit · grounding scope</div>
+        <span class="chip"><span class="dot dgrad"></span> Notebook: Vendor Risk <span class="x">×</span></span>
+        <span class="chip"><span class="dot dteal"></span> SharePoint · 3 docs <span class="x">×</span></span>
+        <span class="chip"><span class="dot dblue"></span> This document <span class="x">×</span></span>
+        <span class="chip add">+ Add</span></div>
+      <div class="body">
+        <div class="m"><span class="ic"></span><div class="c">Three clauses flagged inline. Type <b>/</b> for an action, or just ask.</div></div>
+        <span class="skillline"><span class="d"></span> ✦ used: <b style="margin:0 2px">ge-office-cli</b> skill · algebra active</span>
+      </div>
+      <div class="comp">
+        <div class="pop">
+          <div class="ph2">Commands · Word</div>
+          <div class="opt"><span class="v">/assist</span><span class="d">Grounded chat over the unit</span><span class="wire">streamAssist</span></div>
+          <div class="opt on"><span class="v">/review</span><span class="d">Inline review pass → findings</span><span class="wire">A2A · review</span></div>
+          <div class="opt"><span class="v">/resolve-comment</span><span class="d">Edit, reply &amp; resolve a comment</span><span class="wire">streamAssist</span></div>
+          <div class="opt"><span class="v">/regen-clause</span><span class="d">Rewrite one content control</span><span class="wire">streamAssist</span></div>
+          <div class="ft">Verbs come from the bridge’s <b style="color:#5a4b8a;margin:0 3px">CapabilityManifest</b> — only what Word can do shows here.</div>
+        </div>
+        <div class="cb"><div class="txt"><span class="tok">/</span><span class="cur"></span></div><button class="snd">→</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== @ picker ===================== -->
+  <div class="col">
+    <p class="cap"><span class="k">@</span> Mentions — sources, into the unit &amp; the request</p>
+    <div class="panel">
+      <div class="ph"><div class="av"></div><div><div class="pn">Gemini Enterprise</div><div class="pss">Contract Review · Word · grounded on the unit</div></div></div>
+      <div class="unit"><div class="h"><span class="nb"></span> Research unit · grounding scope</div>
+        <span class="chip"><span class="dot dgrad"></span> Notebook: Vendor Risk <span class="x">×</span></span>
+        <span class="chip"><span class="dot dteal"></span> SharePoint · 3 docs <span class="x">×</span></span>
+        <span class="chip"><span class="dot dblue"></span> This document <span class="x">×</span></span>
+        <span class="chip add">+ Add</span></div>
+      <div class="body">
+        <div class="m"><span class="ic"></span><div class="c">An <b>@</b> mention pins a source for this turn and adds it to the unit — it maps straight to the request, nothing copied.</div></div>
+      </div>
+      <div class="comp">
+        <div class="pop">
+          <div class="ph2">Add a source</div>
+          <div class="opt on"><div class="vat"><span class="ico" style="background:var(--teal)">▤</span><div><div class="d" style="color:#2b2d3c;font-weight:600">Vendor Risk Policy v4</div><div class="d">SharePoint · document</div></div></div><span class="wire">query.parts</span></div>
+          <div class="opt"><div class="vat"><span class="ico" style="background:var(--blue)">▤</span><div><div class="d" style="color:#2b2d3c;font-weight:600">Northwind MSA v3</div><div class="d">SharePoint · document</div></div></div><span class="wire">query.parts</span></div>
+          <div class="opt"><div class="vat"><span class="ico" style="background:#d6694a">PN</span><div><div class="d" style="color:#2b2d3c;font-weight:600">Priya N.</div><div class="d">Person</div></div></div><span class="wire">personRef</span></div>
+          <div class="opt"><div class="vat"><span class="ico" style="background:var(--grad)">🗄</span><div><div class="d" style="color:#2b2d3c;font-weight:600">Contracts connector</div><div class="d">Federated data store</div></div></div><span class="wire">dataStoreSpecs</span></div>
+          <div class="opt"><div class="vat"><span class="ico" style="background:#7719aa">⬆</span><div><div class="d" style="color:#2b2d3c;font-weight:600">Upload a file…</div><div class="d">Transient context</div></div></div><span class="wire">fileIds</span></div>
+          <div class="ft"><b style="color:#5a4b8a;margin-right:3px">@</b> resolves to real <code>streamAssist</code> fields — references &amp; data stores, scoped to what you can see.</div>
+        </div>
+        <div class="cb"><div class="txt"><span class="tok">/review</span> <span class="atok"><span class="d"></span> Vendor Risk Policy <span style="color:#9bb">×</span></span> <span class="tok" style="color:#888">@</span><span class="cur"></span></div><button class="snd">→</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== pipeline band ===================== -->
+<div class="band">
+  <h3>What one line compiles to · <span style="font-family:ui-monospace,monospace;color:#5a4b8a;text-transform:none;letter-spacing:0">/review @VendorRiskPolicy on §4–6</span></h3>
+  <div class="flow">
+    <div class="st"><div class="l">Human layer</div><div class="v"><b>/review</b> + <span style="color:#1f4db8">@VendorRiskPolicy</span><br>free text “on §4–6”</div></div>
+    <div class="st"><div class="l">Wire — streamAssist</div><div class="v">intent → <b>A2A review</b> /or assist<br><span class="g">query.parts[]</span> + <span class="g">tools_spec</span><br>+ session</div></div>
+    <div class="st"><div class="l">Machine — CLI algebra</div><div class="v">model emits<br><b>suggest "…" =&gt; "…"</b><br><b>comment §4 "…"</b></div></div>
+    <div class="st"><div class="l">Skill layer</div><div class="v">✦ <b>ge-office-cli</b><br>auto-loaded, teaches<br>the grammar</div></div>
+    <div class="st"><div class="l">Host — reversible</div><div class="v"><span class="g">gate()</span> → tracked change<br>+ provenance<br>+ <b>invokedSkills</b></div></div>
+  </div>
+  <div class="legend">
+    <span><b>/</b> = action (Intent verb, surface-scoped via CapabilityManifest)</span>
+    <span><b>@</b> = grounding source (maps to real request fields)</span>
+    <span><b>skill</b> = engine-side carrier of the CLI algebra (auto-loaded, not selected) → shows as <code>invokedSkills</code></span>
+  </div>
+</div>
+</div></body></html>

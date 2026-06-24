@@ -10,3 +10,6 @@ coverage/
 
 # TS build info (artifact)
 *.tsbuildinfo
+
+# GE skill bundle build artifacts
+skill/**/*.zip

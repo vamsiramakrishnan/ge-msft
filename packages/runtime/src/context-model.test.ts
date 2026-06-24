@@ -114,6 +114,40 @@ describe('ContextModel — constructs the working-context brief from events', ()
     expect(lines).toEqual(['- same']);
   });
 
+  it('folds an estate-changed event into the brief', () => {
+    const m = new ContextModel('word');
+    const hint = m.observe({ type: 'estate-changed', source: 'drive-item', id: 'file-7' });
+    expect(hint).toEqual({ commit: 'fold' });
+    const text = textOf(m);
+    expect(text).toContain('Estate item changed: drive-item file-7');
+  });
+
+  it('exposes a monotonic version that advances with each accepted note', () => {
+    const m = new ContextModel('word');
+    expect(m.version).toBe(0);
+    m.note('alpha');
+    expect(m.version).toBe(1);
+    m.note('alpha'); // consecutive duplicate — ignored, version unchanged
+    expect(m.version).toBe(1);
+    m.note('beta');
+    expect(m.version).toBe(2);
+  });
+
+  it('version-scopes markCommitted so a note added after the cutoff stays pending', () => {
+    const m = new ContextModel('word');
+    m.note('one'); // seq 1
+    m.note('two'); // seq 2
+    const cutoff = m.version; // 2
+    m.note('three'); // seq 3, arrives "after" the wire snapshot
+    m.markCommitted(cutoff); // only seq <= 2 are marked resident
+    // The post-cutoff note is still pending and on the next brief.
+    expect(m.hasPending).toBe(true);
+    const text = textOf(m);
+    expect(text).toContain('three');
+    expect(text).not.toContain('one');
+    expect(text).not.toContain('two');
+  });
+
   it('caps the log so the brief stays bounded', () => {
     const m = new ContextModel('word');
     for (let i = 0; i < 100; i++) m.note(`n${i}`);

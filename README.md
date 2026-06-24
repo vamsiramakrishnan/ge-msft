@@ -130,7 +130,9 @@ All four compile to the same path; nothing bypasses the gate.
   `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
 - **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (29 actions, `quickActionsForSurface()`
   closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
-  `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc.
+  `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc. An action
+  with `{{name}}` slots declares typed `parameters` and collects them in a fill form before dispatch —
+  a literal placeholder never reaches the model.
 - **Context menus** — a right-click "Ask Gemini about this" (`extensions.contextMenus` in the unified
   manifest, `ExtensionPoint` in the OneNote XML) reads the selection and seeds the open pane with it
   as `@this`. The selection rides as data, never instructions; the handoff seed carries no raw text.
@@ -229,7 +231,7 @@ Copy `.env.example` to `.env` for the engine/tenant config (project, location, e
 
 ## Status — what's built
 
-Verification baseline: `npm run typecheck` clean · **1506 tests across 127 files green** (Vitest) ·
+Verification baseline: `npm run typecheck` clean · **1517 tests across 128 files green** (Vitest) ·
 `npm run lint` clean.
 
 - **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —

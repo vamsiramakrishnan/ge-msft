@@ -22,7 +22,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **1506 tests across 127 files green** (Vitest) · `npm run lint` clean.
+`npm run typecheck` clean · **1517 tests across 128 files green** (Vitest) · `npm run lint` clean.
 
 ## Packages — built vs planned
 
@@ -153,7 +153,11 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   `QuickActionSchema`, 29 actions) lives in `@ge/contracts`, **closure-filtered per surface**
   (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
   `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
-  seed). Unit + full-stack interplay tested.
+  seed). **Typed parameters (H):** an action whose prompt carries `{{name}}` slots declares them as
+  typed `parameters`; clicking it opens `QuickActionParamForm` to collect every value FIRST (require-
+  values-before-dispatch), then the slots are substituted into the typed invocation. Template↔param
+  parity is schema-enforced (`promptPlaceholders` ⇄ `parameters`) and a `hasUnfilledPlaceholder` guard
+  fail-closes dispatch, so a literal `{{…}}` can never reach the model. Unit + full-stack interplay tested.
 - **Context menus — built (manifests + handler), real-host-unverified.** Right-click items are wired
   into **both manifests** (unified `extensions.contextMenus`, bumped to schema v1.23; legacy
   `ExtensionPoint`). The `askSelection` function command reads the host selection, hands a hardened
@@ -163,7 +167,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
 
 ## Testing approach
 
-Vitest across all workspaces (**1506 tests / 127 files**). Bridges are tested against **in-repo Office
+Vitest across all workspaces (**1517 tests / 128 files**). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate

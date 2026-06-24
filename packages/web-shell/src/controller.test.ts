@@ -5,10 +5,12 @@ import type {
   ActuationResult,
   ChangeId,
   ContextRef,
+  ProvenancePayload,
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
 import type { CommandLoopEvent } from '@ge/runtime';
+import type { ResolvedGrounding } from '@ge/gemini-client';
 import type { HostEvent } from '@ge/triggers';
 import {
   PanelController,
@@ -17,6 +19,14 @@ import {
   type PlanEffect,
   type PlanRunCommandsOptions,
 } from './controller.js';
+
+const PROV_A: ProvenancePayload = {
+  agentId: 'agent-A',
+  identity: 'u',
+  timestamp: 't-A',
+  sources: [],
+  contentHash: 'h-A',
+};
 
 const ref = (id: string, title: string): ContextRef => ({
   id,
@@ -34,7 +44,19 @@ const ref = (id: string, title: string): ContextRef => ({
 type CommandAction =
   | { event: SseEvent | CommandLoopEvent }
   | { approve: ActuationRequest }
-  | { plan: PlanEffect[] };
+  | { plan: PlanEffect[] }
+  /**
+   * Stage a write, await its approval, and — if approved — THROW from "execution" (after approval),
+   * the way a bridge actuate can fault post-approval (Finding #6). The controller's `finally` must
+   * still clear the card + busy.
+   */
+  | { approveThenThrow: ActuationRequest }
+  /**
+   * Stage write `first`, await+consume its decision, narrate its write-result (which clears the
+   * card + the staged id), then stage write `second` and BLOCK awaiting its decision — so a test can
+   * fire a LATE decision carrying `first`'s id at a card now showing `second` (Finding #6: ignored).
+   */
+  | { supersede: { first: ActuationRequest; second: ActuationRequest } };
 
 const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
 
@@ -56,7 +78,10 @@ class FakeAssist implements AssistLike {
   attached: string[] = [];
   detached: string[] = [];
   ingested: HostEvent[] = [];
-  applied: Array<{ kind: string; changeId: string }> = [];
+  applied: Array<{ kind: string; changeId: string; provenance?: ProvenancePayload }> = [];
+  /** The structured grounding handed to each ask/runCommands turn, in order (Finding #2/#B-wire). */
+  askGrounding: Array<ResolvedGrounding | undefined> = [];
+  runGrounding: Array<ResolvedGrounding | undefined> = [];
   script: SseEvent[] = [{ type: 'token', text: 'hi' }, { type: 'done' }];
   applyResult: ActuationResult = {
     ok: true,
@@ -87,8 +112,22 @@ class FakeAssist implements AssistLike {
     this.gate = { promise, release };
     return release;
   }
-  async *ask(query: string, opts?: { signal?: AbortSignal }): AsyncGenerator<SseEvent> {
+  /** Arm a gate so the next `runCommands` blocks at its START (holding the loop busy). */
+  private runGate: { promise: Promise<void>; release: () => void } | undefined;
+  holdRun(): () => void {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.runGate = { promise, release };
+    return release;
+  }
+  async *ask(
+    query: string,
+    opts?: { signal?: AbortSignal; grounding?: ResolvedGrounding },
+  ): AsyncGenerator<SseEvent> {
     this.asked.push(query);
+    this.askGrounding.push(opts?.grounding);
     const script = this.scriptFor.shift() ?? this.script;
     const gate = this.gate;
     this.gate = undefined;
@@ -112,8 +151,9 @@ class FakeAssist implements AssistLike {
     kind: ActuationRequest['kind'],
     _params: ActuationParams,
     changeId: ChangeId,
+    provenance?: ProvenancePayload,
   ): Promise<ActuationResult> {
-    this.applied.push({ kind, changeId });
+    this.applied.push({ kind, changeId, ...(provenance ? { provenance } : {}) });
     return Promise.resolve({ ...this.applyResult, changeId, kind });
   }
 
@@ -135,8 +175,50 @@ class FakeAssist implements AssistLike {
     opts?: PlanRunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     this.runTasks.push(task);
+    this.runGrounding.push(opts?.grounding);
+    const runGate = this.runGate;
+    this.runGate = undefined;
+    if (runGate) await runGate.promise; // hold the loop busy until released
     for (const action of this.commandScript) {
-      if ('approve' in action) {
+      if ('approveThenThrow' in action) {
+        // Finding #6: gate the write, and if approved, fault DURING execution (after approval).
+        const request = action.approveThenThrow;
+        this.approveCalls.push(request);
+        const approved = opts?.approveWrite ? await opts.approveWrite(request) : false;
+        this.approveResults.push(approved);
+        if (approved) throw new Error('actuate boom (post-approval)');
+        // If not approved, fall through with no further events (loop would continue normally).
+      } else if ('supersede' in action) {
+        // Finding #6: drive a card from `first` → `second` so a late `first`-id decision is stale.
+        const { first, second } = action.supersede;
+        // 1. Stage `first`, await + consume its decision, narrate its write-result (clears the card).
+        this.approveCalls.push(first);
+        const firstApproved = opts?.approveWrite ? await opts.approveWrite(first) : false;
+        this.approveResults.push(firstApproved);
+        yield {
+          type: 'write-result',
+          turn: 1,
+          changeId: first.changeId,
+          result: { ok: true, changeId: first.changeId, kind: first.kind, location: 'A1' },
+        };
+        // 2. Stage `second` and BLOCK on its decision — the test now holds the loop here.
+        this.approveCalls.push(second);
+        const secondApproved = opts?.approveWrite ? await opts.approveWrite(second) : false;
+        this.approveResults.push(secondApproved);
+        yield {
+          type: 'write-result',
+          turn: 1,
+          changeId: second.changeId,
+          result: secondApproved
+            ? { ok: true, changeId: second.changeId, kind: second.kind, location: 'B1' }
+            : {
+                ok: false,
+                changeId: second.changeId,
+                kind: second.kind,
+                error: { code: 'unapproved', message: 'rejected' },
+              },
+        };
+      } else if ('approve' in action) {
         const request = action.approve;
         this.approveCalls.push(request);
         const approved = opts?.approveWrite ? await opts.approveWrite(request) : false;
@@ -638,6 +720,154 @@ describe('PanelController — plan loop (ADR-0005 plan-level approval)', () => {
 
     c.rejectPlan();
     await run;
+  });
+});
+
+describe('PanelController — typed turn queue (Finding #3: a queued turn keeps its mode)', () => {
+  it('a commands turn queued mid-stream drains through runCommands (NOT send) — mode preserved', async () => {
+    const assist = new FakeAssist();
+    // The first (ask) turn is held open so the queued commands turn lands while busy.
+    assist.scriptFor = [[{ type: 'token', text: 'a-reply' }, { type: 'done' }]];
+    assist.commandScript = [ev({ type: 'done', turn: 1, answer: 'done' })];
+    const c = new PanelController(assist, lister([]));
+
+    const release = assist.hold();
+    const first = c.send('a'); // ask turn, held
+    expect(c.getState().busy).toBe(true);
+
+    // Queue a COMMANDS turn while the ask streams — it must NOT be downgraded to a send.
+    void c.runCommands('set Sales!F2 =C2-D2');
+    expect(assist.runTasks).toEqual([]); // not started yet (queued)
+
+    release();
+    await first;
+    await tick(); // let the scheduled drain settle
+
+    // The queued turn drained through runCommands — the command loop ran, send did NOT re-fire it.
+    expect(assist.runTasks).toEqual(['set Sales!F2 =C2-D2']);
+    expect(assist.asked).toEqual(['a']); // 'set …' never went through the chat/ask path
+  });
+
+  it('an ask turn queued mid-stream drains through send (NOT runCommands) — mode preserved', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [ev({ type: 'done', turn: 1, answer: 'done' })];
+    assist.scriptFor = [[{ type: 'token', text: 'q-reply' }, { type: 'done' }]];
+    const c = new PanelController(assist, lister([]));
+
+    // Hold the COMMANDS turn busy, then queue an ASK turn behind it.
+    const release = assist.holdRun();
+    const first = c.runCommands('reconcile'); // commands turn, held busy at its start
+    await tick();
+    expect(c.getState().busy).toBe(true);
+
+    void c.send('what changed?'); // ASK turn queued while busy
+    expect(assist.asked).toEqual([]); // not started yet (queued)
+
+    release();
+    await first;
+    await tick();
+
+    // The queued turn drained through send — it went to the ask path, NOT runCommands.
+    expect(assist.asked).toEqual(['what changed?']);
+    expect(assist.runTasks).toEqual(['reconcile']); // only the original command turn ran the loop
+  });
+});
+
+describe('PanelController — turn-scoped provenance (Finding #4)', () => {
+  it('turn A emits provenance A, turn B emits none → a write created by B never receives A', async () => {
+    const assist = new FakeAssist();
+    // Turn A streams provenance A; turn B streams NONE.
+    assist.scriptFor = [
+      [{ type: 'token', text: 'A' }, { type: 'provenance', payload: PROV_A }, { type: 'done' }],
+      [{ type: 'token', text: 'B' }, { type: 'done' }],
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    // Turn A → a proposal created by A captures provenance A.
+    await c.send('turn A');
+    const pa = c.propose('tracked-change', { text: 'x' }, 'from A');
+    await c.applyProposal(pa.changeId);
+    expect(assist.applied[0]?.provenance).toEqual(PROV_A); // A's write IS attributed to A
+
+    // Turn B (no provenance) → a proposal created by B must carry NONE (never A's leftover).
+    await c.send('turn B');
+    const pb = c.propose('tracked-change', { text: 'y' }, 'from B');
+    await c.applyProposal(pb.changeId);
+
+    expect(assist.applied[1]?.changeId).toBe(pb.changeId);
+    expect(assist.applied[1]?.provenance).toBeUndefined();
+    // And the recorded ChangeRecord for B carries no provenance either.
+    const recB = c.getState().changes.find((r) => r.changeId === pb.changeId);
+    expect(recB?.provenance).toBeUndefined();
+  });
+});
+
+describe('PanelController — approval lifecycle (Finding #6)', () => {
+  it('an approval followed by a thrown execution clears the card AND busy (fail-closed)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [{ approveThenThrow: writeReq('w-throw') }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('set the formula');
+    await tick();
+    expect(c.getState().pendingWrite?.changeId).toBe(asChangeId('w-throw'));
+    expect(c.getState().busy).toBe(true);
+
+    // Approve → the fake throws from execution AFTER approval. The card + busy must still clear.
+    c.approvePendingWrite();
+    await run;
+
+    expect(assist.approveResults).toEqual([true]); // it WAS approved
+    expect(c.getState().pendingWrite).toBeUndefined(); // card cleared on the throw path
+    expect(c.getState().busy).toBe(false); // busy cleared
+    expect(c.getState().messages[1]?.error).toContain('actuate boom');
+  });
+
+  it('a late decision for a SUPERSEDED approval id cannot apply the current request', async () => {
+    const assist = new FakeAssist();
+    const first = writeReq('w-first');
+    const second = writeReq('w-second');
+    assist.commandScript = [{ supersede: { first, second } }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('two writes');
+    await tick();
+    // The loop has consumed `first`'s decision and is now gated on `second`.
+    // Approve `first` (auto, since approvePendingWrite() with no id approves the staged one)…
+    c.approvePendingWrite(asChangeId('w-first'));
+    await tick();
+
+    // The card now shows `second`. A LATE decision carrying `first`'s id must be ignored.
+    expect(c.getState().pendingWrite?.changeId).toBe(asChangeId('w-second'));
+    const before = assist.approveResults.length;
+    c.approvePendingWrite(asChangeId('w-first')); // stale id → ignored, does not resolve `second`
+    c.rejectPendingWrite(asChangeId('w-first')); // stale id → ignored
+    expect(assist.approveResults.length).toBe(before); // no new decision was made
+
+    // A decision for the CURRENT id resolves `second` and the loop finishes.
+    c.approvePendingWrite(asChangeId('w-second'));
+    await run;
+
+    expect(c.getState().pendingWrite).toBeUndefined();
+    expect(c.getState().busy).toBe(false);
+  });
+});
+
+describe('PanelController — structured grounding wiring (Finding #2/#B-wire)', () => {
+  it('send/runCommands forward the structured grounding to the session (not raw text)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [ev({ type: 'done', turn: 1, answer: 'done' })];
+    const c = new PanelController(assist, lister([]));
+    const grounding: ResolvedGrounding = {
+      queryParts: [{ documentReference: { documentName: 'doc-1' } }],
+      dataStoreSpecs: [{ dataStore: 'ds-1' }],
+    };
+
+    await c.send('ask it', grounding);
+    expect(assist.askGrounding[0]).toBe(grounding);
+
+    await c.runCommands('do it', grounding);
+    expect(assist.runGrounding[0]).toBe(grounding);
   });
 });
 

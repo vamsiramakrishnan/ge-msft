@@ -28,7 +28,7 @@ import {
   type WriteVerb,
 } from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
-import { SessionContext, StreamAssistClient } from '@ge/gemini-client';
+import { SessionContext, StreamAssistClient, type ResolvedGrounding } from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
 import {
@@ -84,6 +84,16 @@ export interface ContextLoopOptions {
 
 /** Default lazy-read bound: enough to be useful, small enough to stay token-cheap. */
 const DEFAULT_MAX_READS = 4;
+
+/**
+ * The {@link StreamAssistClient.stream} options type, widened with the structured `grounding`
+ * (Finding #2/#B-wire) the session forwards. Derived from the client's own parameter type (rather
+ * than re-declared) so it never drifts; the `grounding` field is the typed `@`-mention resolution
+ * the gemini-client request-merge will consume (that last hop is the wiring agent's, deferred).
+ */
+type StreamOptionsWithGrounding = NonNullable<Parameters<StreamAssistClient['stream']>[1]> & {
+  grounding?: ResolvedGrounding;
+};
 
 /** Default turn bound for the command loop (ADR-0004 §3). */
 const DEFAULT_MAX_TURNS = 12;
@@ -205,6 +215,13 @@ export interface RunCommandsOptions {
   maxCommandsPerTurn?: number;
   /** Max writes actuated per model turn (default 8); extra writes are blocked. */
   maxWritesPerTurn?: number;
+  /**
+   * Finding #2/#B-wire — the STRUCTURED grounding for the loop's turns: the typed `@`-mention
+   * resolution (`resolveGrounding`) carrying addressed `queryParts`/`dataStoreSpecs`/`fileIds`, NOT
+   * free-text prompt content. Forwarded to the client on every turn's stream so a `@this`/`@data-store`
+   * pick scopes the agentic loop structurally.
+   */
+  grounding?: ResolvedGrounding;
 }
 
 /** Stable id of the ephemeral ambient `<doc_state>` part, so it replaces (never duplicates). */
@@ -255,7 +272,15 @@ export class AssistSession {
   /** The event-fed constructor of the working-context brief (see context-model.ts). */
   readonly model: ContextModel;
   private session: SessionId | undefined;
-  private lastProvenance: ProvenancePayload | undefined;
+  /**
+   * Finding #4: provenance is TURN-SCOPED. This holds ONLY the CURRENT turn's provenance — set from
+   * that turn's `provenance` SSE event and RESET to `undefined` at the START of every turn (`ask` and
+   * each `runCommands` turn). It is therefore never a stale leftover from an UNRELATED earlier turn:
+   * a later, provenance-less turn clears it, so its writes inherit nothing. The public {@link apply}
+   * uses it ONLY as a fallback when the caller passes no explicit provenance; the command loop always
+   * threads its turn-local provenance explicitly (so it never depends on this field at all).
+   */
+  private currentTurnProvenance: ProvenancePayload | undefined;
   private readonly citations: SourceRef[] = [];
   private readonly compaction: Required<CompactionOptions>;
   /**
@@ -315,8 +340,19 @@ export class AssistSession {
   /**
    * Ask a grounded question. Auto-attaches the configured context kinds (once), streams
    * the answer, and records the session id, citations, and provenance as they arrive.
+   *
+   * Finding #2/#B-wire: `opts.grounding` is the STRUCTURED resolution of the turn's typed
+   * `@`-mentions (computed by `resolveGrounding` in `@ge/gemini-client`). It carries the addressed
+   * `queryParts`/`dataStoreSpecs`/`fileIds` — NOT free-text prompt content — and is forwarded to the
+   * client as request grounding, so a `@this`/`@data-store` pick scopes the turn structurally instead
+   * of being smuggled into the prompt string.
    */
-  async *ask(query: string, opts: { signal?: AbortSignal } = {}): AsyncGenerator<SseEvent> {
+  async *ask(
+    query: string,
+    opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
+  ): AsyncGenerator<SseEvent> {
+    // Finding #4: a new turn starts — drop any prior turn's provenance so this turn cannot inherit it.
+    this.currentTurnProvenance = undefined;
     if (this.options.autoAttach && this.context.size === 0) {
       await this.attachContext(this.options.autoAttach);
     }
@@ -384,14 +420,16 @@ export class AssistSession {
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
     try {
-      for await (const event of this.client.stream(req, {
-        session: this.session,
-        context: this.context.list(),
-        ...(opts.signal ? { signal: opts.signal } : {}),
-      })) {
+      for await (const event of this.client.stream(
+        req,
+        this.streamOptions({ grounding: opts.grounding, signal: opts.signal }),
+      )) {
         if (event.type === 'citation') this.citations.push(event.source);
         if (event.type === 'provenance') {
-          this.lastProvenance = event.payload;
+          // Finding #4: capture THIS turn's provenance (turn-scoped — it was cleared at turn start and
+          // a later provenance-less turn clears it again). The controller still captures the same
+          // event to stamp proposals explicitly; this only backstops a direct `apply` in this turn.
+          this.currentTurnProvenance = event.payload;
           this.session = event.payload.sessionId ?? this.session;
         }
         yield event;
@@ -498,21 +536,28 @@ export class AssistSession {
   }
 
   /**
-   * Apply a proposed write through the bridge — reversibly and provenanced. The agent's
-   * last-turn provenance (agent id, sources, session) is stamped onto the actuation so the
-   * host's durable metadata records who/what/why.
+   * Apply a proposed write through the bridge — reversibly and provenanced. The caller SHOULD supply
+   * the provenance of the very turn that produced this change EXPLICITLY (the controller stamps the
+   * proposal's own captured provenance); when omitted, `apply` falls back to the CURRENT turn's
+   * provenance only.
+   *
+   * Finding #4: the fallback is TURN-SCOPED, not an ambient `lastProvenance` that outlives its turn —
+   * {@link currentTurnProvenance} is reset at the start of every turn, so a write made after a later,
+   * provenance-less turn inherits NOTHING from an unrelated earlier turn.
    */
   async apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
     changeId: ChangeId,
+    provenance?: ProvenancePayload,
   ): Promise<ActuationResult> {
+    const effective = provenance ?? this.currentTurnProvenance;
     const request: ActuationRequest = {
       changeId,
       kind,
       surface: this.bridge.surface,
       params,
-      ...(this.lastProvenance ? { provenance: this.lastProvenance } : {}),
+      ...(effective ? { provenance: effective } : {}),
     };
 
     // PreToolUse-style gate: a trigger may veto the write before it lands.
@@ -575,10 +620,22 @@ export class AssistSession {
     for (let turn = 1; turn <= maxTurns; turn++) {
       yield { type: 'turn-start', turn };
 
-      // Stream this turn; accumulate the answer text and record citations/provenance as ask() does.
+      // Stream this turn; accumulate the answer text and capture THIS turn's provenance locally.
+      // Finding #4: provenance is turn-scoped — it lives only for the duration of this turn and is
+      // threaded EXPLICITLY into the writes this same turn emits (never an ambient instance field a
+      // later turn could read). A turn that streams no `provenance` event leaves it `undefined`, so
+      // its writes are stamped with no provenance rather than a previous turn's leftover.
+      // Finding #4: each turn resets the turn-scoped provenance, then captures its own — so a turn
+      // with no `provenance` event leaves both the local and the instance fallback `undefined`.
+      this.currentTurnProvenance = undefined;
       let turnText = '';
-      for await (const event of this.streamTurn(query, opts.signal)) {
+      let turnProvenance: ProvenancePayload | undefined;
+      for await (const event of this.streamTurn(query, opts.signal, opts.grounding)) {
         if (event.type === 'token') turnText += event.text;
+        if (event.type === 'provenance') {
+          turnProvenance = event.payload;
+          this.currentTurnProvenance = event.payload;
+        }
         yield event;
       }
       answer += turnText;
@@ -639,7 +696,8 @@ export class AssistSession {
       if (planSlots.length > 0) {
         const effects = planSlots.map((s) => s.effect);
         yield { type: 'plan-preview', turn, effects };
-        for await (const ev of this.executePlan(turn, planSlots, opts, results)) yield ev;
+        for await (const ev of this.executePlan(turn, planSlots, opts, results, turnProvenance))
+          yield ev;
       }
 
       if (done) {
@@ -963,6 +1021,7 @@ export class AssistSession {
     planSlots: Array<{ index: number; effect: PlanEffect }>,
     opts: RunCommandsOptions,
     results: unknown[],
+    turnProvenance: ProvenancePayload | undefined,
   ): AsyncGenerator<CommandLoopEvent> {
     const effects = planSlots.map((s) => s.effect);
 
@@ -988,10 +1047,10 @@ export class AssistSession {
         };
       } else if (planApproved === true) {
         // Plan-approved: run the existing gate + provenance, pre-approved (no per-write re-prompt).
-        result = await this.applyRequest(effect.request, () => true);
+        result = await this.applyRequest(effect.request, turnProvenance, () => true);
       } else {
         // Per-write fallback (ADR-0004 Track A): approveWrite present, no approvePlan.
-        result = await this.applyRequest(effect.request, opts.approveWrite);
+        result = await this.applyRequest(effect.request, turnProvenance, opts.approveWrite);
       }
       results[index] = result;
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
@@ -1050,20 +1109,21 @@ export class AssistSession {
    * session id, citations, and provenance exactly as {@link ask} does. No ephemeral context-loop
    * parts are injected here — the loop carries its own `<doc_state>`/result blocks in the query.
    */
-  private async *streamTurn(query: string, signal?: AbortSignal): AsyncGenerator<SseEvent> {
+  private async *streamTurn(
+    query: string,
+    signal?: AbortSignal,
+    grounding?: ResolvedGrounding,
+  ): AsyncGenerator<SseEvent> {
     const req = {
       intent: 'ask' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.client.stream(req, {
-      session: this.session,
-      context: this.context.list(),
-      ...(signal ? { signal } : {}),
-    })) {
+    for await (const event of this.client.stream(req, this.streamOptions({ grounding, signal }))) {
       if (event.type === 'citation') this.citations.push(event.source);
       if (event.type === 'provenance') {
-        this.lastProvenance = event.payload;
+        // Finding #4: the caller (`runCommands`) captures this `provenance` event into a turn-local
+        // and threads it into THIS turn's writes. `streamTurn` only updates the resumable session id.
         this.session = event.payload.sessionId ?? this.session;
       }
       yield event;
@@ -1158,19 +1218,21 @@ export class AssistSession {
 
   /**
    * Apply one compiled write request through the actuation gate (ADR-0004 write-one). Reuses the
-   * gate/audit path of {@link apply} but takes a fully-built request (provenance is stamped from the
-   * last turn). Wrapped defensively: a thrown gate/actuate becomes a corrective error result.
+   * gate/audit path of {@link apply} but takes a fully-built request plus the EXPLICIT provenance of
+   * the turn that emitted it. Wrapped defensively: a thrown gate/actuate becomes a corrective error.
    */
   private async applyRequest(
     request: ActuationRequest,
+    provenance: ProvenancePayload | undefined,
     approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
   ): Promise<ActuationResult> {
-    // Provenance is bound to the turn that emitted this command: `lastProvenance` is set during
-    // this turn's stream (in streamTurn), immediately before the command executes. Durable
+    // Finding #4: provenance is bound to the turn that emitted this command and passed in
+    // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
+    // A turn with no provenance stamps none (rather than inheriting a previous turn's). Durable
     // persistence of the payload is the bridge's job (BUILD-PLAN 1.6, deferred).
     const stamped: ActuationRequest = {
       ...request,
-      ...(this.lastProvenance ? { provenance: this.lastProvenance } : {}),
+      ...(provenance ? { provenance } : {}),
     };
     // Fail-closed human-in-the-loop: a model-emitted write (its text shaped by untrusted document
     // content) is NEVER actuated without explicit per-write approval. No approver ⇒ blocked, per the
@@ -1236,6 +1298,26 @@ export class AssistSession {
       return lazy.maxReads;
     }
     return DEFAULT_MAX_READS;
+  }
+
+  /**
+   * Build the {@link StreamAssistClient.stream} options for a turn, folding in the structured
+   * grounding (Finding #2/#B-wire) alongside the live `session`/`context`/`signal`. The grounding's
+   * resolved `queryParts`/`dataStoreSpecs`/`fileIds` ride as a typed `grounding` option (NOT inlined
+   * into the prompt). The client's request-merge of `opts.grounding` into the streamAssist body is
+   * the gemini-client wiring agent's remaining hop (deferred); this method threads it that far so a
+   * `@`-mention is carried structurally end-to-end on our side.
+   */
+  private streamOptions(o: {
+    grounding?: ResolvedGrounding;
+    signal?: AbortSignal;
+  }): StreamOptionsWithGrounding {
+    return {
+      session: this.session,
+      context: this.context.list(),
+      ...(o.signal ? { signal: o.signal } : {}),
+      ...(o.grounding ? { grounding: o.grounding } : {}),
+    };
   }
 
   private surfaceContext(): UnitDescriptor['surfaceContext'] {

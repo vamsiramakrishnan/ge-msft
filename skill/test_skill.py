@@ -8,7 +8,8 @@ stores) and simulates the Office add-in's multi-turn loop against a realistic mo
 citations, and suggestions are handled the way a real add-in must.
 
 Modes:
-  live  (default): calls the real streamAssist on phoenix-telco. Asserts isolation (no grounding).
+  live  (default): calls the real streamAssist on the env-configured engine (GE_PROJECT/GE_ENGINE).
+                   Asserts isolation (no grounding).
   --stub CANNED  : drives the SAME loop against canned replies from de_stub (offline, deterministic)
                    to validate the harness/parser without the API.
 
@@ -29,14 +30,29 @@ from parse_commands import parse_block          # noqa: E402
 from de_stub import read_response, make_response  # noqa: E402
 from fixtures import FIXTURES, TASKS             # noqa: E402
 
-# Configure for your engine via env vars (defaults shown).
-PROJECT = os.environ.get("GE_PROJECT", "vital-octagon-19612")
-PROJECT_NUMBER = os.environ.get("GE_PROJECT_NUMBER", "440790012685")
+# Live mode targets a real tenant and has NO baked-in defaults: GE_PROJECT, GE_PROJECT_NUMBER and
+# GE_ENGINE must be set explicitly (the offline --stub self-check needs none of them).
+REQUIRED_ENV = ("GE_PROJECT", "GE_PROJECT_NUMBER", "GE_ENGINE")
 LOCATION = os.environ.get("GE_LOCATION", "global")
-ENGINE = os.environ.get("GE_ENGINE", "phoenix-telco_1751440131886")
-BASE = (f"projects/{PROJECT_NUMBER}/locations/{LOCATION}/collections/default_collection"
-        f"/engines/{ENGINE}/assistants/default_assistant")
-URL = f"https://discoveryengine.googleapis.com/v1alpha/{BASE}:streamAssist"
+HTTP_TIMEOUT = 120  # seconds
+
+
+def resolve_live_config():
+    """Return (project, base_resource, url) from env, or exit clearly if a required var is unset."""
+    missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+    if missing:
+        sys.exit(
+            "Refusing live mode: missing required environment variable(s): "
+            f"{', '.join(missing)}. Set GE_PROJECT, GE_PROJECT_NUMBER and GE_ENGINE "
+            "(or use --stub for the offline self-check)."
+        )
+    project = os.environ["GE_PROJECT"]
+    project_number = os.environ["GE_PROJECT_NUMBER"]
+    engine = os.environ["GE_ENGINE"]
+    base = (f"projects/{project_number}/locations/{LOCATION}/collections/default_collection"
+            f"/engines/{engine}/assistants/default_assistant")
+    url = f"https://discoveryengine.googleapis.com/v1alpha/{base}:streamAssist"
+    return project, base, url
 
 
 def token():
@@ -46,19 +62,20 @@ def token():
     return c.token
 
 
-def call_live(tok, agent, query, session=None):
+def call_live(tok, project, base, url, agent, query, session=None):
     body = {
         "query": {"parts": [{"text": query}]},
-        "skillsSpec": {"skills": [{"name": f"{BASE}/agents/{agent}"}]},
+        "skillsSpec": {"skills": [{"name": f"{base}/agents/{agent}"}]},
         "toolsSpec": {},  # ISOLATION
     }
     if session:
         body["session"] = session
-    req = urllib.request.Request(URL, data=json.dumps(body).encode(),
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Authorization": "Bearer " + tok,
-                                          "X-Goog-User-Project": PROJECT,
+                                          "X-Goog-User-Project": project,
                                           "Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req))
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        return json.load(resp)
 
 
 # Exact per-verb usage the add-in can inject each turn (highest-leverage anti-drift lever).
@@ -188,11 +205,12 @@ def main():
     if not args.agent:
         sys.exit("--agent required for live mode (or use --stub)")
 
+    project, base, url = resolve_live_config()
     tok = token()
     fixture = FIXTURES[args.surface]()
     task = TASKS[args.surface]
     print(f"### LIVE  agent={args.agent}  surface={args.surface}\n### TASK: {task}\n")
-    run(lambda q, s: call_live(tok, args.agent, q, s), fixture, task,
+    run(lambda q, s: call_live(tok, project, base, url, args.agent, q, s), fixture, task,
         max_turns=args.max_turns, raw=args.raw)
 
 

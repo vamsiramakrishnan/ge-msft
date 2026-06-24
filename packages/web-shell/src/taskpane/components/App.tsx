@@ -1,16 +1,23 @@
 import { useEffect } from 'react';
 import {
   deriveOutput,
+  GROUND_SOURCE_TO_SELECTION_KIND,
   type Surface,
   type ChangeId,
   type QuickAction,
   type Intent,
+  type GroundingSelection,
 } from '@ge/contracts';
+import {
+  resolveGrounding,
+  type GroundingResolveContext,
+  type ResolvedGrounding,
+} from '@ge/gemini-client';
 import type { PanelController } from '../../controller.js';
 import { usePanelState } from '../usePanelState.js';
 import { ContextTray } from './ContextTray.js';
 import { MessageThread } from './MessageThread.js';
-import { Composer, type ComposerInvocation } from './Composer.js';
+import { Composer, type ComposerInvocation, type ComposerMention } from './Composer.js';
 import { QuickActionBar } from './QuickActionBar.js';
 import { invocationToSeed, quickActionToInvocation } from './quick-action-seed.js';
 import { ProposalCard } from './ProposalCard.js';
@@ -53,6 +60,48 @@ export function isActuating(intent: Intent | undefined): boolean {
 }
 
 /**
+ * Map ONE typed composer `@`-mention to its {@link GroundingSelection} (Finding #2/#B-wire). The
+ * `GroundSource` kind picks the value-level selection kind; the reference-kinds (`current-context`,
+ * `unit`) carry no id, while `document`/`person`/`data-store`/`upload` need the addressable handle the
+ * mention carried (`ref`). A mention of an addressable kind with NO ref cannot be resolved — it is
+ * dropped (returns `undefined`) rather than smuggled into the prompt as raw text.
+ */
+export function mentionToSelection(m: ComposerMention): GroundingSelection | undefined {
+  const kind = GROUND_SOURCE_TO_SELECTION_KIND[m.kind];
+  switch (kind) {
+    case 'current-context':
+    case 'unit':
+      return { kind };
+    case 'document':
+    case 'person':
+    case 'data-store':
+      return m.ref ? { kind, id: m.ref } : undefined;
+    case 'upload':
+      return m.ref ? { kind, fileId: m.ref } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Turn an invocation's typed `@`-mentions into STRUCTURED grounding (Finding #2/#B-wire): map each
+ * mention to a {@link GroundingSelection}, then resolve them onto the streamAssist request buckets via
+ * `resolveGrounding` (gemini-client). The mentions become addressed `queryParts`/`dataStoreSpecs`/
+ * `fileIds` — NEVER inlined into the prompt string; the raw text is kept only for audit/display.
+ * Returns `undefined` when no mention resolved to anything, so a mention-free turn carries no grounding.
+ */
+export function invocationToGrounding(
+  inv: ComposerInvocation,
+  ctx: GroundingResolveContext = {},
+): ResolvedGrounding | undefined {
+  const selections = inv.mentions
+    .map(mentionToSelection)
+    .filter((s): s is GroundingSelection => s !== undefined);
+  if (selections.length === 0) return undefined;
+  return resolveGrounding(selections, ctx);
+}
+
+/**
  * The task pane. A thin React view over `PanelController` state: header (agent identity), context
  * tray (attach/detach chips), streamed grounded thread with citations, proposal-review cards, and
  * the composer (send / cancel). No host or network code here — the controller owns all of that.
@@ -72,12 +121,15 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
 
   // Dispatch the typed invocation through ONE predicate-routed seam (EXPERIENCE.md §3): chat verbs
   // route to `send`, write/annotation verbs to the fail-closed plan/approval loop (`runCommands`).
-  // The controller still takes a string task, so the typed tuple is rendered to its deterministic
-  // seed only at this seam. No new gate is introduced — chips/`/verbs` only seed the existing route.
+  // The model-facing TASK stays the CLI seed (deterministic from the typed fields); ALONGSIDE it, the
+  // typed `@`-mentions are CONSUMED into STRUCTURED grounding (Finding #2/#B-wire) via
+  // `invocationToGrounding` → `resolveGrounding`, and passed as the turn's grounding — never discarded
+  // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
     const seed = invocationToSeed(inv);
-    if (isActuating(inv.intent)) void controller.runCommands(seed);
-    else void controller.send(seed);
+    const grounding = invocationToGrounding(inv);
+    if (isActuating(inv.intent)) void controller.runCommands(seed, grounding);
+    else void controller.send(seed, grounding);
   };
 
   // A chip is the same typed Invocation a composer line is — pre-filled, then dispatched through the

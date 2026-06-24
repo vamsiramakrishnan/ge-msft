@@ -8,6 +8,7 @@ export * from './config.js';
 export * from './wif.js';
 export * from './stream-assist.js';
 export * from './session-context.js';
+export * from './resolve-grounding.js';
 export * from './search.js';
 export * from './autocomplete.js';
 export * from './grounding.js';

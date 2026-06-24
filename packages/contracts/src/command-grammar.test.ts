@@ -45,6 +45,9 @@ describe('command-grammar — verb map', () => {
       mail: 'reply-mail',
       post: 'post-message',
       compose: 'create-mail',
+      table: 'create-table',
+      chart: 'insert-chart',
+      cf: 'format-conditional',
     });
   });
 });
@@ -240,6 +243,64 @@ describe('command-grammar — ADR-0005 Phase 2 effect-arg expressions', () => {
   it('an unbalanced ( expression is a corrective error (not a silent literal write)', () => {
     expect(parseCommandLine('set B3 = ($a | sum amount')).toMatchObject({
       error: expect.stringContaining('unbalanced'),
+    });
+  });
+});
+
+describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', () => {
+  it('parses table with a bare headers flag and a name prop', () => {
+    expect(parseCommandLine('table Report!A1:C12 headers name=Top')).toEqual({
+      verb: 'table',
+      range: 'Report!A1:C12',
+      props: { headers: 'true', name: 'Top' },
+    });
+  });
+
+  it('table needs a range', () => {
+    expect(parseCommandLine('table')).toMatchObject({ error: expect.stringContaining('range') });
+  });
+
+  it('parses chart type + range + a quoted title (spaces preserved) + series', () => {
+    expect(
+      parseCommandLine('chart column Report!A1:B11 title="Top regions" series=columns'),
+    ).toEqual({
+      verb: 'chart',
+      chartType: 'column',
+      range: 'Report!A1:B11',
+      props: { title: 'Top regions', series: 'columns' },
+    });
+  });
+
+  it('chart needs a type and a range', () => {
+    expect(parseCommandLine('chart column')).toMatchObject({
+      error: expect.stringContaining('range'),
+    });
+  });
+
+  it('parses cf with an inline operator + fill', () => {
+    expect(parseCommandLine('cf Sales!E2:E200 >100000 fill=#C6EFCE')).toEqual({
+      verb: 'cf',
+      range: 'Sales!E2:E200',
+      props: { op: '>', value: '100000', fill: '#C6EFCE' },
+    });
+  });
+
+  it('parses cf with a bare mode (databar) and with top=N', () => {
+    expect(parseCommandLine('cf Sales!E2:E200 databar')).toEqual({
+      verb: 'cf',
+      range: 'Sales!E2:E200',
+      props: { databar: 'true' },
+    });
+    expect(parseCommandLine('cf Sales!E2:E200 top=5 bottom=true')).toEqual({
+      verb: 'cf',
+      range: 'Sales!E2:E200',
+      props: { top: '5', bottom: 'true' },
+    });
+  });
+
+  it('cf needs a rule (range alone is a corrective)', () => {
+    expect(parseCommandLine('cf Sales!E2:E200')).toMatchObject({
+      error: expect.stringContaining('rule'),
     });
   });
 });

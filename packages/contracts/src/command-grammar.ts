@@ -33,7 +33,8 @@ import {
  * corrective error (`unknown verb "writ" — did you mean "write"? (run help)`) the model
  * self-corrects on the next turn.
  *
- * SCOPE: `outline · read · search · set · suggest · comment · format · done · help`.
+ * SCOPE: `outline · read · search · set · suggest · comment · format · reply · slide · page · mail ·
+ * post · compose · table · chart · cf · done · help` (ADR-0007 adds the host-native Excel kinds).
  */
 
 /** Read verbs (Layer-B host reads, ADR-0003). Always advertised; never gated. */
@@ -66,6 +67,13 @@ export const WRITE_VERB_TO_KIND = {
   // item). The bridge opens a fresh message form via displayNewMessageForm; recipients are left for
   // the user to fill (we never auto-address). Gated/approved + provenanced like every other effect.
   compose: 'create-mail',
+  // ADR-0007 host-native Excel write kinds — each is gated/approved + provenanced and carries a
+  // recorded inverse (delete-object / restore / clear-rule). `table`/`chart`/`cf` take a literal
+  // range + props (the `format`-style grammar); the data source for a chart is a range produced
+  // directly or by composition (`spill`, ADR-0007 §3).
+  table: 'create-table',
+  chart: 'insert-chart',
+  cf: 'format-conditional',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -113,6 +121,11 @@ export type ParsedCommand =
   | { verb: 'mail'; body: string; bodyExpr?: ParsedExpr }
   | { verb: 'post'; text: string; textExpr?: ParsedExpr }
   | { verb: 'compose'; subject: string; body: string; bodyExpr?: ParsedExpr }
+  // ADR-0007 host-native Excel kinds — literal range + props (no free-text/expression slot in this
+  // wave; the chart title is a literal). The anchor is always an explicit range/name.
+  | { verb: 'table'; range: string; props: Record<string, string> }
+  | { verb: 'chart'; chartType: string; range: string; props: Record<string, string> }
+  | { verb: 'cf'; range: string; props: Record<string, string> }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -168,6 +181,14 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     body: z.string(),
     bodyExpr: z.lazy(() => ParsedExprSchema).optional(),
   }),
+  z.object({ verb: z.literal('table'), range: z.string(), props: z.record(z.string()) }),
+  z.object({
+    verb: z.literal('chart'),
+    chartType: z.string(),
+    range: z.string(),
+    props: z.record(z.string()),
+  }),
+  z.object({ verb: z.literal('cf'), range: z.string(), props: z.record(z.string()) }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -298,6 +319,13 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'compose':
       return parseCompose(rest);
 
+    case 'table':
+      return parseTable(rest);
+    case 'chart':
+      return parseChart(rest);
+    case 'cf':
+      return parseCf(rest);
+
     default:
       return { error: unknownVerbError(verb) };
   }
@@ -410,6 +438,81 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
   }
 
   return { verb: 'format', range, props };
+}
+
+/**
+ * Split a verb's argument string into positional tokens + `key=value` props, keeping `"quoted
+ * values"` (with spaces) intact — used by the ADR-0007 `table`/`chart`/`cf` verbs whose props (a
+ * chart `title="Top regions"`) may carry spaces. A `key="quoted"` / `key=bare` arm yields a prop;
+ * anything else is positional (the range, the chart type, a bare CF mode like `databar`).
+ */
+function tokenizeArgs(rest: string): { positional: string[]; props: Record<string, string> } {
+  const positional: string[] = [];
+  const props: Record<string, string> = {};
+  const re = /(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rest)) !== null) {
+    if (m[1] !== undefined) props[m[1]] = m[2]!;
+    else if (m[3] !== undefined) props[m[3]] = m[4]!;
+    else if (m[5] !== undefined) positional.push(m[5]);
+    else positional.push(m[6]!);
+  }
+  return { positional, props };
+}
+
+/** ADR-0007 `table <range> [headers] [name=...]` — promote a range to a native Table. */
+function parseTable(rest: string): ParsedCommand | CommandParseError {
+  const { positional, props } = tokenizeArgs(rest);
+  const range = positional[0];
+  if (range === undefined) {
+    return { error: 'table needs a range — usage: table <range> [headers] [name=...]' };
+  }
+  // A bare `headers` flag is sugar for headers=true (the common case).
+  if (positional.slice(1).includes('headers')) props.headers = 'true';
+  return { verb: 'table', range, props };
+}
+
+/** ADR-0007 `chart <type> <range> [title="…"] [series=rows|columns]` — a chart over a source range. */
+function parseChart(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'chart needs a type and a range — usage: chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns]';
+  const { positional, props } = tokenizeArgs(rest);
+  const chartType = positional[0];
+  const range = positional[1];
+  if (chartType === undefined || range === undefined) return { error: usage };
+  return { verb: 'chart', chartType: chartType.toLowerCase(), range, props };
+}
+
+/**
+ * ADR-0007 `cf <range> <rule>` — one conditional-format rule. Tolerant of an INLINE operator
+ * (`cf E2:E20 >1000 fill=#C6EFCE`), an explicit `op=/value=` form, a bare mode (`cf E2:E20 databar`),
+ * or `top=N`. The parser only collects props; `compileCommand` interprets them into a typed rule.
+ */
+function parseCf(rest: string): ParsedCommand | CommandParseError {
+  const { positional, props } = tokenizeArgs(rest);
+  const range = positional[0];
+  if (range === undefined) {
+    return {
+      error:
+        'cf needs a range and a rule — usage: cf <range> >VALUE [fill=#hex] | cf <range> databar|colorscale | cf <range> top=N',
+    };
+  }
+  for (const tok of positional.slice(1)) {
+    const opMatch = /^(>=|<=|!=|>|<|=)(.+)$/.exec(tok);
+    if (opMatch) {
+      props.op = opMatch[1]!;
+      props.value = opMatch[2]!;
+    } else {
+      props[tok.toLowerCase()] = 'true'; // a bare mode: databar / colorscale
+    }
+  }
+  if (Object.keys(props).length === 0) {
+    return {
+      error:
+        'cf needs a rule — usage: cf <range> >VALUE [fill=#hex] | cf <range> databar|colorscale | cf <range> top=N',
+    };
+  }
+  return { verb: 'cf', range, props };
 }
 
 /**
@@ -938,6 +1041,25 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'compose',
         usage: 'compose "Subject" "body"  OR  compose "Subject" (<expr>)',
         hint: 'draft a new grounded email, e.g. compose "Follow-up on Q3" ($draft | head 1)',
+      };
+    case 'table':
+      return {
+        verb: 'table',
+        usage: 'table <range> [headers] [name=...]',
+        hint: 'promote a range to a native Table, e.g. table Report!A1:C12 headers',
+      };
+    case 'chart':
+      return {
+        verb: 'chart',
+        usage: 'chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns]',
+        hint: 'add a chart over a range, e.g. chart column Report!A1:B11 title="Top regions"',
+      };
+    case 'cf':
+      return {
+        verb: 'cf',
+        usage:
+          'cf <range> >VALUE [fill=#hex]  OR  cf <range> databar|colorscale  OR  cf <range> top=N',
+        hint: 'add a conditional-format rule, e.g. cf Sales!E2:E200 >100000 fill=#C6EFCE',
       };
   }
 }

@@ -1449,6 +1449,19 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
       const body = command.bodyExpr ? renderExprArg(command.bodyExpr) : `"${command.body}"`;
       return `compose "${command.subject}" ${body}`;
     }
+    case 'table':
+    case 'chart':
+    case 'cf': {
+      // ADR-0007 host-native kinds: render the verb, the positional anchor(s), then the props.
+      const props = Object.entries(command.props)
+        .map(([k, v]) => (/\s/.test(v) ? `${k}="${v}"` : `${k}=${v}`))
+        .join(' ');
+      const head =
+        command.verb === 'chart'
+          ? `chart ${command.chartType} ${command.range}`
+          : `${command.verb} ${command.range}`;
+      return props ? `${head} ${props}` : head;
+    }
   }
 }
 
@@ -1479,6 +1492,12 @@ function effectTarget(req: ActuationRequest): string | undefined {
     case 'write-cells':
     case 'format-cells':
       return p.target?.range;
+    case 'create-table':
+      return p.table?.range;
+    case 'insert-chart':
+      return p.chart?.sourceRange;
+    case 'format-conditional':
+      return p.conditional?.range;
     case 'tracked-change':
     case 'add-comment':
       return p.target?.matchText;
@@ -1511,6 +1530,14 @@ function effectResolved(req: ActuationRequest): string | undefined {
       return p.mail?.body;
     case 'insert-slide':
       return p.slide?.bullets.map((b) => `• ${b}`).join('  ');
+    case 'create-table':
+      return p.table ? `${p.table.hasHeaders ? 'with headers' : 'no headers'}` : undefined;
+    case 'insert-chart':
+      return p.chart
+        ? `${p.chart.chartType} chart${p.chart.title ? ` — ${p.chart.title}` : ''}`
+        : undefined;
+    case 'format-conditional':
+      return p.conditional?.rule.kind;
     default:
       return undefined;
   }

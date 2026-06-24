@@ -243,6 +243,103 @@ describe('compileCommand', () => {
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
+
+  it('compiles `table` → create-table with params.table (ADR-0007)', () => {
+    const c = compileCommand(
+      { verb: 'table', range: 'Report!A1:C12', props: { headers: 'true', name: 'Top' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'create-table',
+        surface: 'excel',
+        params: { table: { range: 'Report!A1:C12', hasHeaders: true, name: 'Top' } },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `chart` → insert-chart with the typed chart payload (ADR-0007)', () => {
+    const c = compileCommand(
+      {
+        verb: 'chart',
+        chartType: 'column',
+        range: 'Report!A1:B11',
+        props: { title: 'Top regions', series: 'columns' },
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-chart',
+        surface: 'excel',
+        params: {
+          chart: {
+            chartType: 'column',
+            sourceRange: 'Report!A1:B11',
+            seriesBy: 'columns',
+            title: 'Top regions',
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('rejects an unknown chart type at schema validation (corrective, not a bad write)', () => {
+    const c = compileCommand(
+      { verb: 'chart', chartType: 'donut', range: 'A1:B2', props: {} },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({ error: expect.stringContaining('insert-chart') });
+  });
+
+  it('compiles `cf` inline operator → format-conditional cellValue rule (ADR-0007)', () => {
+    const c = compileCommand(
+      { verb: 'cf', range: 'Sales!E2:E200', props: { op: '>', value: '100000', fill: '#C6EFCE' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'format-conditional',
+        params: {
+          conditional: {
+            range: 'Sales!E2:E200',
+            rule: { kind: 'cellValue', operator: 'gt', value: '100000', fill: '#C6EFCE' },
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `cf databar` and `cf top=N` into their typed rules', () => {
+    const bar = compileCommand(
+      { verb: 'cf', range: 'A:A', props: { databar: 'true' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(bar).toMatchObject({
+      request: { params: { conditional: { rule: { kind: 'dataBar' } } } },
+    });
+    const top = compileCommand(
+      { verb: 'cf', range: 'A:A', props: { top: '5', bottom: 'true' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(top).toMatchObject({
+      request: { params: { conditional: { rule: { kind: 'top', rank: 5, bottom: true } } } },
+    });
+  });
+
+  it('cf with no expressible rule is a corrective error', () => {
+    const c = compileCommand(
+      { verb: 'cf', range: 'A:A', props: { nonsense: 'true' } },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({ error: expect.stringContaining('rule') });
+  });
 });
 
 describe('renderGrammarPrompt', () => {

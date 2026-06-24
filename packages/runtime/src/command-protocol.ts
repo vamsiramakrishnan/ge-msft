@@ -135,7 +135,100 @@ export function compileCommand(
       return compileWrite(WRITE_VERB_TO_KIND.compose, ctx, {
         mail: { subject: cmd.subject, body: cmd.body },
       });
+    case 'table':
+      // ADR-0007 Excel `create-table`: promote `range` to a native Table; the bridge mints the
+      // object name and records its `delete-object` inverse at apply-time.
+      return compileWrite(WRITE_VERB_TO_KIND.table, ctx, {
+        table: {
+          range: cmd.range,
+          hasHeaders: cmd.props.headers !== 'false',
+          ...(cmd.props.name ? { name: cmd.props.name } : {}),
+        },
+      });
+    case 'chart': {
+      // ADR-0007 Excel `insert-chart`: a chart over `range`. The verb's first positional is the
+      // chart type; the schema validates it against the allowed enum (a bad type → corrective).
+      const seriesBy = cmd.props.series;
+      return compileWrite(WRITE_VERB_TO_KIND.chart, ctx, {
+        chart: {
+          chartType: cmd.chartType as ChartType,
+          sourceRange: cmd.range,
+          seriesBy: seriesBy === 'rows' || seriesBy === 'columns' ? seriesBy : 'auto',
+          ...(cmd.props.title ? { title: cmd.props.title } : {}),
+        },
+      });
+    }
+    case 'cf': {
+      // ADR-0007 Excel `format-conditional`: interpret the collected props into ONE typed rule.
+      const rule = conditionalRuleFromProps(cmd.props);
+      if ('error' in rule) return rule;
+      return compileWrite(WRITE_VERB_TO_KIND.cf, ctx, {
+        conditional: { range: cmd.range, rule: rule.rule },
+      });
+    }
   }
+}
+
+type ChartType = NonNullable<ActuationRequest['params']['chart']>['chartType'];
+type ConditionalRule = NonNullable<ActuationRequest['params']['conditional']>['rule'];
+
+/** Map a CLI operator symbol/word to the schema's `cellValue` operator enum. */
+const CF_OPERATORS: Record<string, 'gt' | 'lt' | 'ge' | 'le' | 'eq' | 'ne' | 'between'> = {
+  '>': 'gt',
+  '<': 'lt',
+  '>=': 'ge',
+  '<=': 'le',
+  '=': 'eq',
+  '!=': 'ne',
+  gt: 'gt',
+  lt: 'lt',
+  ge: 'ge',
+  le: 'le',
+  eq: 'eq',
+  ne: 'ne',
+  between: 'between',
+};
+
+/**
+ * Interpret `cf` props into ONE typed conditional rule. A bare `databar`/`colorscale` mode wins; then
+ * `top=N` (with optional `bottom`); otherwise a `cellValue` rule from `op`/`value` (+`value2`/`fill`).
+ * Returns a corrective when no rule is expressible.
+ */
+function conditionalRuleFromProps(
+  props: Record<string, string>,
+): { rule: ConditionalRule } | { error: string } {
+  if (props.databar === 'true') return { rule: { kind: 'dataBar' } };
+  if (props.colorscale === 'true') return { rule: { kind: 'colorScale' } };
+  if (props.top !== undefined) {
+    const rank = Number(props.top);
+    if (!Number.isFinite(rank) || rank <= 0) {
+      return { error: `cf top must be a positive number — got "${props.top}"` };
+    }
+    return {
+      rule: {
+        kind: 'top',
+        rank,
+        bottom: props.bottom === 'true',
+        ...(props.fill ? { fill: props.fill } : {}),
+      },
+    };
+  }
+  const operator = props.op !== undefined ? CF_OPERATORS[props.op] : undefined;
+  if (operator && props.value !== undefined) {
+    return {
+      rule: {
+        kind: 'cellValue',
+        operator,
+        value: props.value,
+        ...(props.value2 ? { value2: props.value2 } : {}),
+        ...(props.fill ? { fill: props.fill } : {}),
+      },
+    };
+  }
+  return {
+    error:
+      'cf needs a rule — usage: cf <range> >VALUE [fill=#hex] | cf <range> databar|colorscale | cf <range> top=N',
+  };
 }
 
 /** Recognized format-cells props. */

@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Surface } from '@ge/contracts';
+import { intentsForManifest, type Surface } from '@ge/contracts';
 import { detectSurface, surfaceFromHost } from '../host.js';
 import { NaaAuthClient } from '../auth-client.js';
 import { composeSession } from '../compose.js';
@@ -113,7 +113,10 @@ async function boot(): Promise<void> {
     const { session } = await composeSession({ config, auth, bridge, unit });
     const controller = new PanelController(session, bridge);
 
-    mount(<App controller={controller} surface={surface} />);
+    // Narrow the quick-action bar + `/` palette to what THIS surface can actually run (ADR-0006).
+    const allowedIntents = intentsForManifest(await bridge.getCapabilities());
+
+    mount(<App controller={controller} surface={surface} allowedIntents={allowedIntents} />);
     // The selection was re-grounded as @this by the bridge; the query is a fixed template.
     if (pendingSeed) void controller.send(askSelectionQuery(pendingSeed));
   } catch (err) {

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { Surface, ChangeId, QuickAction } from '@ge/contracts';
+import type { Surface, ChangeId, QuickAction, Intent } from '@ge/contracts';
 import type { PanelController } from '../../controller.js';
 import { usePanelState } from '../usePanelState.js';
 import { ContextTray } from './ContextTray.js';
@@ -17,6 +17,12 @@ export interface AppProps {
   controller: PanelController;
   surface: Surface;
   agentLabel?: string;
+  /**
+   * The intents the active surface can actually run (from `intentsForManifest(bridge manifest)`).
+   * Narrows the quick-action bar and the `/` palette to capability closure (ADR-0006). When omitted
+   * (preview/tests), only the per-surface filter applies.
+   */
+  allowedIntents?: Iterable<Intent>;
 }
 
 const SURFACE_PLACEHOLDER: Readonly<Record<string, string>> = {
@@ -31,7 +37,7 @@ const SURFACE_PLACEHOLDER: Readonly<Record<string, string>> = {
  * tray (attach/detach chips), streamed grounded thread with citations, proposal-review cards, and
  * the composer (send / cancel). No host or network code here — the controller owns all of that.
  */
-export function App({ controller, surface, agentLabel }: AppProps): JSX.Element {
+export function App({ controller, surface, agentLabel, allowedIntents }: AppProps): JSX.Element {
   const state = usePanelState(controller);
 
   // Load the attachable-context chips once on mount.
@@ -132,11 +138,17 @@ export function App({ controller, surface, agentLabel }: AppProps): JSX.Element 
         )}
       </main>
 
-      <QuickActionBar surface={surface} busy={state.busy} onAction={onQuickAction} />
+      <QuickActionBar
+        surface={surface}
+        allowedIntents={allowedIntents}
+        busy={state.busy}
+        onAction={onQuickAction}
+      />
 
       <Composer
         busy={state.busy}
         surface={surface}
+        allowedIntents={allowedIntents}
         onSend={(q) => void controller.send(q)}
         onRun={(t) => void controller.runCommands(t)}
         onCancel={() => controller.cancel()}

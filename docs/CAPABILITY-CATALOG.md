@@ -171,8 +171,13 @@ modeled** (it breaks the no-auto-send invariant).
 | Create event (server) | `create-event` | B | `POST /me/events` | delete-object(event) | yes | — | estate |
 | Categorize/triage received | `categorize-message` | B | `PATCH /me/messages/{id}` | restore-mail-state | immediate | — | estate |
 | Flag / follow-up | `flag-message` | B | `PATCH /me/messages/{id}` (flag) | restore-mail-state | immediate | — | estate (no Office.js path) |
-| Delete message | `delete-message` | B | `DELETE /me/messages/{id}` (soft) | restore-mail-state | **hard** | — | estate |
+| Delete message | `delete-message` | B | `DELETE /me/messages/{id}` (soft) | move-from-deleted-items (perm. delete = not-reversible) | **hard** | — | estate |
 | Inbox rule | `create-mail-rule` | B | `POST /me/mailFolders/inbox/messageRules` | delete-object(mail-rule) | **hard** | — | estate (highest privilege) |
+
+> **Untrusted sink — `create-mail-rule`.** Being hard-gated (user confirm) is NOT enough: the rule's
+> forward/redirect recipients are model/host-derived and must be **allowlist-screened** before the
+> rule is created — a forwarding rule is the classic mailbox auto-exfiltration vector and persists
+> across future mail. Never derive rule actions from email-body content.
 
 > **Excluded by design:** Graph `POST /me/sendMail` (`send-mail`) — the only write that bypasses the
 > on-send gate. Modeling it would violate "nothing auto-sends." The reviewable path is
@@ -201,6 +206,16 @@ primitives (deep links, dialogs, share-to-stage) are *not* gated content writes 
 | Task (Planner/To Do) | `create-task` | B | `POST /planner/tasks` / `…/todo/…/tasks` (`Tasks.ReadWrite`) | delete-object(task) | yes | — | estate |
 | Activity-feed notify | `send-activity-notification` | B | `POST /users/{id}/teamwork/sendActivityNotification` (`TeamsActivity.Send`) | **not-reversible** | **hard** | — | estate (+ manifest activityType) |
 
+> **Untrusted sink — `post-card`/`update-message`.** Adaptive Card `Action.OpenUrl`/`Action.Submit`
+> targets and input fields are model/host-derived → **screen the scheme/host (allowlist)** at
+> apply-time, exactly like a hyperlink. User confirmation is not screening — a confirmed card can
+> still carry a malicious action URL.
+>
+> **Provenance-external — `send-activity-notification`** (and any handle-less Plane-B `POST`). A fired
+> activity notification returns no durable host object, so there is nothing to stamp provenance into:
+> `provenanceMissing` is always set. Its audit record must live in the **estate-write audit log**
+> (server-side), not host metadata — a stated precondition of the estate-write ADR.
+>
 > **Architectural gap (documented, not modeled):** true *interactive* Adaptive Cards (button →
 > `Action.Submit` → update-the-card-in-place) require **Bot Framework** server credentials
 > (`updateActivity`). That conflicts with the client-direct / no-server-credentials constraint

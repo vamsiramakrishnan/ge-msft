@@ -18,6 +18,8 @@ export interface ComposerProps {
   busy: boolean;
   /** The current surface — scopes the `/` palette verbs offered (capability closure, ADR-0006). */
   surface?: Surface;
+  /** The intents the surface can actually run; narrows the `/` palette further (ADR-0006). */
+  allowedIntents?: Iterable<Intent>;
   onSend: (query: string) => void;
   /** Start the ADR-0004 read-many/write-one command loop (agentic mode). */
   onRun: (task: string) => void;
@@ -70,6 +72,7 @@ const ALL_VERBS: CommandVerb[] = (
 export function Composer({
   busy,
   surface,
+  allowedIntents,
   onSend,
   onRun,
   onCancel,
@@ -79,7 +82,10 @@ export function Composer({
   const [value, setValue] = useState('');
   const [agentic, setAgentic] = useState(false);
 
-  const palette = useMemo(() => (surface ? commandPaletteFor(surface) : undefined), [surface]);
+  const palette = useMemo(
+    () => (surface ? commandPaletteFor(surface, allowedIntents) : undefined),
+    [surface, allowedIntents],
+  );
 
   // The trailing token decides which affordance is open: `/…` → verb palette, `@…` → mention kinds.
   const trailing = /(^|\s)([/@]\S*)$/.exec(value)?.[2];

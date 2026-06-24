@@ -19,6 +19,7 @@ export * from './capability-closure.js';
 export * from './command-grammar.js';
 export * from './command-plan.js';
 export * from './command-palette.js';
+export * from './intent-capability.js';
 export * from './quick-actions.js';
 export * from './expr-grammar.js';
 export * from './skill-grammar.js';

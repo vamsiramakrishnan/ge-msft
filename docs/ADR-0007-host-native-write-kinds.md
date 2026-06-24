@@ -146,11 +146,16 @@ Mechanics, reusing the existing dry-run engine (`assist-session.ts` `resolveEffe
   (mirror of the existing `valueToBullets`) renders it to `params.cells: string[][]`. The existing
   formula-safety screen (`isUnsafeFormula`) runs on every spilled cell — composed data can never
   promote to executable active content.
-- **`spill` returns its target range as a bindable address**, so the dynamic size is composable:
-  `let $r = spill Report!A1 = ($anz)` then `table ($r) headers` / `chart column ($r)`. The
-  dry-run knows the table's dimensions, so the resulting range (`Report!A1:B11`) is computed before
-  the dependent `table`/`chart` resolves. This keeps the chain pure and gated — every intermediate
-  range is visible on the approval card, nothing is hidden scratch state.
+- **`spill` is a terminal effect; its written range is computed, not bound** (⚠️ **superseded —
+  see ADR-0008 §3**). The original framing below illustrated a bindable `let $r = spill …` /
+  `table ($r)`, but the implemented parser treats `spill` as a command, not an expression. ADR-0008
+  resolves the fork to **Option A**: at dry-run the compiler infers the written range from the
+  table's `rows × columns` (`Report!A1` + 10×2 → `Report!A1:B11`), and the dependent
+  `table Report!A1:B11` / `chart Report!A1:B11` reference that **computed literal range** — no runtime
+  bind of the effect result. The invariant holds: *expressions return values, commands produce
+  effects.* (Effect-result refs return only for host-minted ids — `update-message`/`set-reaction`/
+  `graph-patch-page` — never for the in-document range case.) The chain stays pure and gated; every
+  intermediate range is visible on the approval card, nothing is hidden scratch state.
 - Charts/tables therefore consume a **range produced by composition**, not a table-as-source magic
   coercion — which keeps anchor + inverse + provenance well-defined (you anchor/undo on the range
   and the named object, both concrete).

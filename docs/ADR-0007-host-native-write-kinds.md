@@ -221,6 +221,25 @@ host content (and composed data) framed strictly as data, never instructions · 
 - **Estate writes and cross-surface composition remain out of scope** — they need separate
   authorization (Plane B OAuth scopes) and a multi-bridge router, tracked elsewhere.
 
+## Security notes carried forward (from the Phase A review)
+
+Phase A is pure (no host) and weakens no invariant — the `spill` grid provably reuses the unchanged
+`write-cells` formula screen (`isUnsafeFormula`, whole-write degrade), `SPILL_ROW_CAP` fails loud
+(corrective, never a silent truncation), unadvertised kinds are type-check-rejected before the gate,
+and every new verb stays a gated pipeline terminal. Two forward-looking items the later phases MUST
+honor:
+
+- **Phase B — inverse identity.** A `delete-object` `InverseDescriptor` carries a bare `name`. The
+  undo applier MUST verify the object was the one *this change minted* (match the name recorded at
+  apply-time, scoped to the provenance entry) and degrade on a mismatch — it must NEVER re-resolve an
+  arbitrary name against the live workbook, or an undo could delete a hand-made table/chart. The Phase
+  B security-reviewer pass must assert this explicitly. Likewise, the bridge must keep every new Excel
+  write (incl. spilled grids) routed through `splitFormulaGrid`, never a separate applier that skips
+  the screen.
+- **Phase C — quote parity.** `tokenizeArgs` does not honor `\"` escapes the way `scanQuoted` does (a
+  cosmetic parse-differential on a chart title). Align it with `scanQuoted` when the skill-side parser
+  is mirrored.
+
 ## Open questions (need a decision before Phase A)
 
 1. **`spill` vs. overloading `set`** — a distinct `spill` verb (table→grid) keeps `set` scalar-only

@@ -24,6 +24,8 @@ export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'table',
   'chart',
   'cf',
+  // `spill` consumes a table expression but is itself an effect terminal (you can't pipe out of it).
+  'spill',
 ]);
 
 /** The Phase-1 corrective when the model tries to compose an effect. */

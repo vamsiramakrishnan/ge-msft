@@ -22,7 +22,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **1517 tests across 128 files green** (Vitest) · `npm run lint` clean.
+`npm run typecheck` clean · **1538 tests across 128 files green** (Vitest) · `npm run lint` clean.
 
 ## Packages — built vs planned
 
@@ -167,7 +167,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
 
 ## Testing approach
 
-Vitest across all workspaces (**1517 tests / 128 files**). Bridges are tested against **in-repo Office
+Vitest across all workspaces (**1538 tests / 128 files**). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate

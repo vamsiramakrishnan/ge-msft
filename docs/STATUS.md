@@ -22,7 +22,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **1408 tests across 119 files green** (Vitest) · `npm run lint` clean.
+`npm run typecheck` clean · **1506 tests across 127 files green** (Vitest) · `npm run lint` clean.
 
 ## Packages — built vs planned
 
@@ -150,7 +150,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   (must render exact per-verb usage), `de_stub.read_response` ⇄ the `gemini-client` streamAssist
   reader. The TypeScript side is authoritative; parity is tracked, not yet build-enforced.
 - **Quick actions — built + tested.** The prebuilt-button catalog (`QUICK_ACTIONS` /
-  `QuickActionSchema`, 28 actions) lives in `@ge/contracts`, **closure-filtered per surface**
+  `QuickActionSchema`, 29 actions) lives in `@ge/contracts`, **closure-filtered per surface**
   (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
   `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
   seed). Unit + full-stack interplay tested.
@@ -163,7 +163,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
 
 ## Testing approach
 
-Vitest across all workspaces (**1408 tests / 119 files**). Bridges are tested against **in-repo Office
+Vitest across all workspaces (**1506 tests / 127 files**). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate

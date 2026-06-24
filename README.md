@@ -128,7 +128,7 @@ All four compile to the same path; nothing bypasses the gate.
   actuating verb → the fail-closed `runCommands` plan gate.
 - **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
   `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
-- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (28 actions, `quickActionsForSurface()`
+- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (29 actions, `quickActionsForSurface()`
   closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
   `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc.
 - **Context menus** — a right-click "Ask Gemini about this" (`extensions.contextMenus` in the unified
@@ -229,7 +229,7 @@ Copy `.env.example` to `.env` for the engine/tenant config (project, location, e
 
 ## Status — what's built
 
-Verification baseline: `npm run typecheck` clean · **1408 tests across 119 files green** (Vitest) ·
+Verification baseline: `npm run typecheck` clean · **1506 tests across 127 files green** (Vitest) ·
 `npm run lint` clean.
 
 - **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —

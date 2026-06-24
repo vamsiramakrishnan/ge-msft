@@ -115,6 +115,29 @@ The product's depth is a four-step arc, each ADR building on the last:
    capability the bridge can't do). Gaps (handled but not yet reachable by a verb) are tracked on an
    allow-list, not fatal.
 
+### The command surface — `/` verbs and `@` mentions
+
+A surface-agnostic command pane sits on top of the capability stack. The user types `/` for an
+action and `@` for a source — the two compose on one line (`/review @VendorRiskPolicy on §4–6`):
+
+- **`/` verb → an Intent**, scoped per surface by the `CapabilityManifest` (`/assist`, `/review`,
+  `/resolve-comment`, `/regen-clause`, `/draft-slides`, `/synthesize`, `/meeting-notes`); drives the
+  assist loop or an A2A specialist.
+- **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
+  `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable
+  research-unit chip.
+
+The grammar is carried into Gemini Enterprise as two **skills** (`skill/`), mounted per turn via
+`skillsSpec` (`docs/api/discoveryengine/skills-and-agents.md`):
+
+- **`m365-command-planner`** — the front door: turns a free-text `/verb @mentions …` request into a
+  structured, confirmable ` ```plan ` block (intent · scope · steps · exclusions · grounding).
+- **`m365-surface-commander`** — the executor: takes the confirmed plan + a live `<doc_state>` and
+  emits the ADR-0004 ` ```cmd ` algebra → gate → tracked change / cell / staged draft.
+
+The interaction is mocked in `docs/mockups/6-command-pane.html` (rendered under
+`docs/mockups/screenshots/`).
+
 ### The safety spine
 
 Held identically on every surface, enforced at the boundary:
@@ -160,7 +183,11 @@ packages/
   bridge-outlook/   Outlook: mail capture + reviewable reply + the on-send gate
   teams/            Teams: transcript capture + reviewable post-message + meeting events
 manifests/          m365-unified.manifest.json (Package A) + onenote.manifest.xml (Package B)
-docs/               ADRs (current architecture), design/contracts/conventions, status, capability map
+skill/              Gemini Enterprise skill bundles + create/test tooling — the / + @ command
+                    surface, carried into the engine: m365-surface-commander (executor) and
+                    m365-command-planner (free-text planner)
+docs/               ADRs (current architecture), design/contracts/conventions, status, capability
+                    map, the API knowledge base, the mockups + rendered screenshots
 ```
 
 `web-shell` and `runtime` are the bulk of the client and are **surface-agnostic** — they must not
@@ -252,5 +279,10 @@ The ADRs are the current architecture, in order — each builds on the last.
   `docs/02-design.md`, `docs/03-implementation.md` — the original vision and phasing. These predate
   ADR-0001 and carry **"Superseded / updated by ADR-000X"** banners; read them for the *why*, the
   ADRs for the *what now*.
-- `docs/mockups/*.html` — the clickable UX spec, one per surface.
+- `docs/mockups/*.html` — the clickable UX spec, one per surface, plus `6-command-pane.html`
+  (the `/` + `@` design); rendered to PNGs under `docs/mockups/screenshots/`.
+- `docs/api/discoveryengine/` — the vendored Discovery Engine / Gemini Enterprise API knowledge
+  base, including `skills-and-agents.md` (the verified skill create/mount lifecycle).
+- `skill/` — the two Gemini Enterprise skill bundles (`m365-surface-commander`,
+  `m365-command-planner`) and the create/test tooling, with their own `README.md`.
 - `CLAUDE.md` — the repo constitution and how to work here.

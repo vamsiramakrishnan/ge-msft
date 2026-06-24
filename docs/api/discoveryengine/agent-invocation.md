@@ -1,5 +1,11 @@
 # Invoking agents from the add-in (via StreamAssist)
 
+> **Updated by `skills-and-agents.md`.** This note is correct about `agentsSpec` (it does not
+> exist). But the live `v1alpha` endpoint **does** accept a separate **`skillsSpec`** that mounts a
+> skill-`agent` per turn — deterministic, just absent from the published schema. So "you can't name
+> anything in the request, routing is the assistant's job" holds for *agents* but **not for
+> skills**. Read `skills-and-agents.md` for the verified mechanism.
+
 How the client-direct add-in targets a specific Gemini Enterprise agent. The short version:
 **`v1alpha` `streamAssist` has no `agentsSpec`**, so you don't name an agent in the request body —
 you point at the **assistant/engine** configured to route to it, or let the default assistant route.

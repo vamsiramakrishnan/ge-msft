@@ -340,6 +340,34 @@ describe('compileCommand', () => {
     );
     expect(c).toMatchObject({ error: expect.stringContaining('rule') });
   });
+
+  it('compiles `spill` (resolved cells) → a write-cells grid (ADR-0007 §3)', () => {
+    const c = compileCommand(
+      {
+        verb: 'spill',
+        range: 'Report!A1',
+        cells: [
+          ['Region', 'Revenue'],
+          ['EMEA', '120'],
+        ],
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'write-cells',
+        params: {
+          target: { range: 'Report!A1' },
+          cells: [
+            ['Region', 'Revenue'],
+            ['EMEA', '120'],
+          ],
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
 });
 
 describe('renderGrammarPrompt', () => {

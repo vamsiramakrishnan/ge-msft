@@ -48,6 +48,7 @@ describe('command-grammar — verb map', () => {
       table: 'create-table',
       chart: 'insert-chart',
       cf: 'format-conditional',
+      spill: 'write-cells',
     });
   });
 });
@@ -301,6 +302,26 @@ describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', 
   it('cf needs a rule (range alone is a corrective)', () => {
     expect(parseCommandLine('cf Sales!E2:E200')).toMatchObject({
       error: expect.stringContaining('rule'),
+    });
+  });
+
+  it('parses spill <range> = (<table expr>) into a valueExpr', () => {
+    expect(parseCommandLine('spill Report!A1 = ($top | select Region,Revenue)')).toMatchObject({
+      verb: 'spill',
+      range: 'Report!A1',
+      valueExpr: { kind: 'pipeline' },
+    });
+  });
+
+  it('spill rejects a literal (it is the composition sink, not a verbatim writer)', () => {
+    expect(parseCommandLine('spill Report!A1 = just text')).toMatchObject({
+      error: expect.stringContaining('composed table'),
+    });
+  });
+
+  it('spill needs a range and an expression', () => {
+    expect(parseCommandLine('spill Report!A1')).toMatchObject({
+      error: expect.stringContaining('range'),
     });
   });
 });

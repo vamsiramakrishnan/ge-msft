@@ -988,6 +988,67 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     ]);
   });
 
+  it('resolves a spill valueExpr (table → cell grid) at dry-run (ADR-0007 §3)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nlet $t = read Sales!A1:B5\n```',
+      // The projected table becomes a grid: a header row + one row per data row.
+      '```cmd\nspill Report!A1 = ($t | select region,amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let previewed: PlanEffect[] | undefined;
+    await collectLoop(
+      session.runCommands('materialize the table', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    // spill → write-cells with the header row first, then the data rows.
+    expect(previewed?.[0]?.request).toMatchObject({
+      kind: 'write-cells',
+      params: {
+        target: { range: 'Report!A1' },
+        cells: [
+          ['region', 'amount'],
+          ['East', '100'],
+          ['West', '250'],
+          ['East', '50'],
+        ],
+      },
+    });
+    expect(bridge.applied[0]?.params.cells?.[0]).toEqual(['region', 'amount']);
+  });
+
+  it('rejects a spill whose expression resolves to a scalar (composition guard, ADR-0007)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nlet $t = read Sales!A1:B5\n```',
+      // A scalar terminal (`sum`) is NOT a table — spill must reject it (dual of set's table guard).
+      '```cmd\nspill Report!A1 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('try a scalar spill', { approvePlan: () => true }),
+    );
+    expect(planEvents(events)).toHaveLength(0);
+    expect(bridge.applied).toHaveLength(0); // nothing actuated
+    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
+      | Extract<CommandLoopEvent, { type: 'command' }>
+      | undefined;
+    expect(cmdErr?.compiled).toMatchObject({
+      error: expect.stringContaining('spill needs a table'),
+    });
+  });
+
   it('type-check rejects an unsupported verb before execution (no write)', async () => {
     // Word-only verb `suggest` on an Excel surface that does not advertise tracked-change.
     const bridge = new ComposeBridge();

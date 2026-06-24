@@ -231,7 +231,7 @@ Copy `.env.example` to `.env` for the engine/tenant config (project, location, e
 
 ## Status — what's built
 
-Verification baseline: `npm run typecheck` clean · **1517 tests across 128 files green** (Vitest) ·
+Verification baseline: `npm run typecheck` clean · **1538 tests across 128 files green** (Vitest) ·
 `npm run lint` clean.
 
 - **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —

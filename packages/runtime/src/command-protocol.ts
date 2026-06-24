@@ -166,6 +166,14 @@ export function compileCommand(
         conditional: { range: cmd.range, rule: rule.rule },
       });
     }
+    case 'spill':
+      // ADR-0007 §3 `spill` → write-cells with the resolved grid. The runtime fills `cmd.cells` from
+      // the table expression at dry-run; an unresolved spill (cells absent) is a defensive empty grid
+      // that the bridge degrades, never a silent partial write.
+      return compileWrite(WRITE_VERB_TO_KIND.spill, ctx, {
+        target: { range: cmd.range },
+        cells: cmd.cells ?? [],
+      });
   }
 }
 

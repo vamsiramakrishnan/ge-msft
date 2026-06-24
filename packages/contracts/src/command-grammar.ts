@@ -34,7 +34,7 @@ import {
  * self-corrects on the next turn.
  *
  * SCOPE: `outline · read · search · set · suggest · comment · format · reply · slide · page · mail ·
- * post · compose · table · chart · cf · done · help` (ADR-0007 adds the host-native Excel kinds).
+ * post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the host-native kinds).
  */
 
 /** Read verbs (Layer-B host reads, ADR-0003). Always advertised; never gated. */
@@ -74,6 +74,11 @@ export const WRITE_VERB_TO_KIND = {
   table: 'create-table',
   chart: 'insert-chart',
   cf: 'format-conditional',
+  // `spill` is `write-cells` widened (ADR-0007 §3): its arg is a TABLE expression whose rows are
+  // written as a grid (the missing table→cells sink), vs `set` which writes one scalar. It reuses
+  // the existing write-cells kind/bridge/safety — no new host work — so it advertises wherever
+  // write-cells does. Many verbs → one kind is fine (the map is verb→kind).
+  spill: 'write-cells',
 } satisfies Record<string, ActuationKind>;
 
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
@@ -126,6 +131,10 @@ export type ParsedCommand =
   | { verb: 'table'; range: string; props: Record<string, string> }
   | { verb: 'chart'; chartType: string; range: string; props: Record<string, string> }
   | { verb: 'cf'; range: string; props: Record<string, string> }
+  // ADR-0007 §3 — the table→grid composition sink. `valueExpr` is the source TABLE expression
+  // (pre-resolution); `cells` is the resolved grid (filled by the runtime at dry-run). Spill is
+  // ALWAYS expression-driven — a bare literal grid is not expressible inline.
+  | { verb: 'spill'; range: string; valueExpr?: ParsedExpr; cells?: string[][] }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -189,6 +198,12 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     props: z.record(z.string()),
   }),
   z.object({ verb: z.literal('cf'), range: z.string(), props: z.record(z.string()) }),
+  z.object({
+    verb: z.literal('spill'),
+    range: z.string(),
+    valueExpr: z.lazy(() => ParsedExprSchema).optional(),
+    cells: z.array(z.array(z.string())).optional(),
+  }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -325,6 +340,8 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return parseChart(rest);
     case 'cf':
       return parseCf(rest);
+    case 'spill':
+      return parseSpill(rest);
 
     default:
       return { error: unknownVerbError(verb) };
@@ -513,6 +530,30 @@ function parseCf(rest: string): ParsedCommand | CommandParseError {
     };
   }
   return { verb: 'cf', range, props };
+}
+
+/**
+ * ADR-0007 §3 `spill <range> = <expr>` — write a composed TABLE as a grid. The range is the first
+ * token; the remainder (after the assignment `=`) MUST be an effect-arg expression (a `$var` or a
+ * `( <pipeline> )` resolving to a table). A literal is rejected — spill is the composition sink, not
+ * a verbatim writer (use `set` for a literal cell). The runtime resolves `valueExpr`→grid at dry-run.
+ */
+function parseSpill(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'spill needs a range and a table expression — usage: spill <range> = ($rows)';
+  const sp = rest.search(/\s/);
+  if (sp === -1) return { error: usage };
+  const range = rest.slice(0, sp);
+  const value = rest.slice(sp + 1).trim();
+  if (range === '' || value === '') return { error: usage };
+  const expr = parseEffectArg(value);
+  if (expr === undefined) {
+    return {
+      error:
+        'spill needs a composed table, not a literal — e.g. spill Report!A1 = ($rows) (use set for one cell)',
+    };
+  }
+  if (isExprParseError(expr)) return expr;
+  return { verb: 'spill', range, valueExpr: expr };
 }
 
 /**
@@ -1060,6 +1101,12 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         usage:
           'cf <range> >VALUE [fill=#hex]  OR  cf <range> databar|colorscale  OR  cf <range> top=N',
         hint: 'add a conditional-format rule, e.g. cf Sales!E2:E200 >100000 fill=#C6EFCE',
+      };
+    case 'spill':
+      return {
+        verb: 'spill',
+        usage: 'spill <range> = (<table pipeline>)',
+        hint: 'write a composed table as a grid, e.g. spill Report!A1 = ($top | select Region,Revenue)',
       };
   }
 }

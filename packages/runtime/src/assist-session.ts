@@ -974,7 +974,17 @@ export class AssistSession {
       if ('error' in bullets) return bullets;
       return { command: { verb: 'slide', title: command.title, bullets: bullets.bullets } };
     }
-    // Literal-only verbs (suggest/format) and literal args pass through unchanged.
+    // ADR-0007 §3 — `spill` resolves its TABLE expression to a cell grid (the table→cells sink). It is
+    // the dual of `set`: where `set` rejects a table and demands a scalar terminal, `spill` REQUIRES a
+    // table and rejects a scalar. The grid (header row + data rows) becomes write-cells `params.cells`.
+    if (command.verb === 'spill' && command.valueExpr) {
+      const result = await this.evalExpression(command.valueExpr);
+      if ('error' in result) return result;
+      const grid = valueToGrid(result);
+      if ('error' in grid) return grid;
+      return { command: { verb: 'spill', range: command.range, cells: grid.cells } };
+    }
+    // Literal-only verbs (suggest/format/table/chart/cf) and literal args pass through unchanged.
     return { command };
   }
 
@@ -1462,6 +1472,13 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
           : `${command.verb} ${command.range}`;
       return props ? `${head} ${props}` : head;
     }
+    case 'spill': {
+      // The expression form (the only form) is rendered with the assignment `=`.
+      const src = command.valueExpr
+        ? `= ${renderExprArg(command.valueExpr)}`
+        : `(${(command.cells ?? []).length} rows)`;
+      return `spill ${command.range} ${src}`;
+    }
   }
 }
 
@@ -1480,6 +1497,8 @@ function hasEffectExpr(c: Extract<ParsedCommand, { verb: WriteVerb }>): boolean 
       return c.bodyExpr !== undefined;
     case 'slide':
       return c.bulletsExpr !== undefined;
+    case 'spill':
+      return c.valueExpr !== undefined;
     default:
       return false;
   }
@@ -1563,6 +1582,31 @@ function valueToBullets(value: Value): string[] {
     rows.push(`(+${value.rows.length - SLIDE_BULLET_CAP} more rows)`);
   }
   return rows;
+}
+
+/** Max rows a `spill` writes before it fails LOUD (never a silent truncation, ADR-0007 §5). */
+const SPILL_ROW_CAP = 1000;
+
+/**
+ * Map a composed {@link Value} to a write-cells grid (ADR-0007 §3 — the table→cells sink). A table →
+ * a header row (its columns) followed by its data rows. A scalar is REJECTED with a corrective: spill
+ * is the composition sink for ROWS, so its expression must resolve to a table (a read/filter/select
+ * pipeline), not a `sum`/`count` terminal — use `set` for a single value. Over {@link SPILL_ROW_CAP}
+ * rows fails loud (narrow with head/filter) rather than truncating a write silently.
+ */
+function valueToGrid(value: Value): { cells: string[][] } | { error: string } {
+  if (value.kind !== 'table') {
+    return {
+      error:
+        'spill needs a table — its expression must resolve to rows (a read/filter/select pipeline), not a scalar (use set for one value)',
+    };
+  }
+  if (value.rows.length > SPILL_ROW_CAP) {
+    return {
+      error: `spill is ${value.rows.length} rows — narrow it (head/filter) to ≤ ${SPILL_ROW_CAP} before writing`,
+    };
+  }
+  return { cells: [value.columns, ...value.rows] };
 }
 
 /** Render an effect-arg `ParsedExpr` back to its source form (`$var` or `( <pipeline> )`). */

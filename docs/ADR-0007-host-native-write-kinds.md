@@ -252,3 +252,37 @@ honor:
    prior-state snapshot for in-place kinds like `format-conditional` (heavier, true undo). *Recommend
    snapshot only where the op mutates existing state (CF, spill-over-data); delete-descriptor for pure
    additions (table/chart/pivot).*
+
+## Cross-surface expansion (the locked catalog)
+
+The Excel host-native kinds (`create-table`/`insert-chart`/`format-conditional`) were the first
+instance of a general pattern: **every surface exposes powerful host-native writes we had not
+modeled.** That full map is now locked in **`docs/CAPABILITY-CATALOG.md`** (the authoritative,
+typing-grounded catalog) and in the contract (`ActuationKindSchema` now spans ~85 kinds across all six
+surfaces). The catalog was produced by inventorying each surface against `@types/office-js` + Microsoft
+Graph; no kind is listed without a concrete API behind it.
+
+The expansion does **not** change this ADR's thesis — it generalizes it. Two planes:
+
+- **Plane A (client-direct)** — host writes via Office.js/TeamsJS in the open document/draft. These fit
+  the existing model directly: anchored + reversible (a recorded `InverseDescriptor`) + provenanced +
+  gated. The `InverseDescriptorSchema` grew the ops these need (`restore-text`/`restore-style`/
+  `restore-shape-format`/`restore-slide`/`move-slide`/`apply-layout`/`detach-list`/
+  `restore-content-control`/`restore-doc-properties`/`restore-mail-state`/`not-reversible`), and
+  `delete-object.objectType` widened to the full object set. The **inverse-identity security rule above
+  applies to all of them**: an undo deletes/restores only the object *this change minted*, never an
+  arbitrary host object re-resolved by name.
+- **Plane B (estate)** — writes to the M365 estate via Microsoft Graph (mailbox triage, calendar,
+  Teams channel posts, server-side notebook edits). These need delegated `*.ReadWrite`/`*.Send` scopes
+  **and** a `GraphClient` write path, neither of which exists today (the client is read-only by
+  design). They are catalogued but **deferred to a dedicated estate-write ADR** — they lack the
+  on-send safety net, so they need a distinct per-call confirm gate, and the highest-privilege ones
+  (`create-mail-rule`, `send-activity-notification`) need elevated, explicit warnings.
+
+**Explicitly out of scope / not modeled** (documented in the catalog, not in the enum): Graph
+`sendMail` (escapes the on-send gate — violates no-auto-send), Teams *interactive* Adaptive Cards
+(need Bot Framework server credentials — violates client-direct), and PPT `set-speaker-notes` (no host
+write path in current typings). Honesty about these boundaries is part of locking the map.
+
+Phasing for the expansion lives in the catalog's "Phasing" section: Plane A per surface
+(Excel → Word → PowerPoint → OneNote → Outlook-compose), then Plane B behind the estate-write ADR.

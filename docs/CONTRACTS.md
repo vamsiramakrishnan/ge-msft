@@ -158,6 +158,12 @@ export interface ActionRequest {
 
 ## Capability grammar (CLI verbs ↔ actuation kinds)
 
+> **The complete actuation map is `docs/CAPABILITY-CATALOG.md`** — the authoritative, typing-grounded
+> catalog of every host-native write kind across all six surfaces (~85 kinds; Plane A client-direct +
+> Plane B Graph estate). `ActuationKindSchema` in `packages/contracts/src/capability.ts` is the typed
+> form; the catalog is its human face (per-kind API, requirement set, inverse strategy, gate, verb,
+> phase). A kind is *modeled* in the enum but only *advertised* once a bridge handles it (closure).
+
 The client-direct surfaces expose a small, capability-scoped CLI grammar to the model. Each surface advertises only the verbs it can actually serve, derived from its `CapabilityManifest` (`packages/contracts/src/command-grammar.ts`). Three verb classes:
 
 - **Control verbs** (`done`, `help`) — always advertised; not actuations.

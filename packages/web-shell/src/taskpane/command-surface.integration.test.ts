@@ -30,11 +30,11 @@ afterEach(() => {
   sim = undefined;
 });
 
-function chip(label: string): HTMLButtonElement {
-  const el = [...ui!.container.querySelectorAll<HTMLButtonElement>('button.quick-action')].find(
-    (b) => b.textContent === label,
+function chip(actionId: string): HTMLButtonElement {
+  const el = ui!.container.querySelector<HTMLButtonElement>(
+    `button.quick-action[data-action-id="${actionId}"]`,
   );
-  if (!el) throw new Error(`no quick-action chip labelled "${label}"`);
+  if (!el) throw new Error(`no quick-action chip with data-action-id "${actionId}"`);
   return el;
 }
 
@@ -62,10 +62,11 @@ describe('command surface — quick actions (full-stack)', () => {
 
     const summarize = quickActionsForSurface('word').find((a) => a.id === 'summarize-this')!;
     expect(summarize.output).toBe('chat');
-    await ui.act(() => chip(summarize.label).click());
+    await ui.act(() => chip('summarize-this').click());
     await ui.waitFor(() => (ui!.container.textContent ?? '').includes('99.5% monthly'));
 
-    // It went through `send` with the exact seed the catalog produces (no gate was staged).
+    // It went through `send` with the exact deterministic seed the typed action compiles to
+    // (the chip is the same typed Invocation a composer line is — one unified path, no gate staged).
     expect(sc.queries[0]).toBe(quickActionSeed(summarize));
     expect(ui.controller.getState().pendingPlan).toBeUndefined();
   });
@@ -83,7 +84,8 @@ describe('command surface — quick actions (full-stack)', () => {
 
     const tighten = quickActionsForSurface('word').find((a) => a.id === 'tighten')!;
     expect(tighten.output).toBe('write');
-    await ui.act(() => chip(tighten.label).click());
+    expect(tighten.intent).toBe('rewrite');
+    await ui.act(() => chip('tighten').click());
     await ui.waitFor((s) => s.pendingPlan !== undefined);
 
     // The write surfaced as a plan-approval card (the gate) rather than auto-applying.

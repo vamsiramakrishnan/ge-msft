@@ -1,365 +1,453 @@
 import { z } from 'zod';
-import { IntentSchema, type Intent } from './intent.js';
+import { IntentSchema, CommandScopeSchema, type Intent, type CommandScope } from './intent.js';
 import { SurfaceSchema, type Surface } from './context.js';
+import { INTENT_REQUIRES } from './intent-capability.js';
+import { VERBS_BY_SURFACE } from './command-palette.js';
 
 /**
  * Quick actions — the curated, one-tap verb catalog the panel and the right-click context menu
- * offer per surface. Each entry seeds the assistant with a templated free-text `prompt`, a default
- * set of `@`-grounding sources, the `intent` it dispatches as, and the shape of its `output` (a
- * chat answer, an inline annotation pass, or a write-back). It is the human-friendly front of the
- * same grammar the model emits (ADR-0004) and is scoped by capability closure (ADR-0006) — an
- * action whose intent the surface cannot run is never offered.
+ * offer per surface. Each entry is a legible **preset tuple** (EXPERIENCE.md §5): a general `intent`,
+ * a `scope`, a default `@`-grounding set, and a templated free-text `prompt` — the same artifact the
+ * planner emits and the executor runs. It is scoped by capability closure (ADR-0006); an action whose
+ * intent the surface cannot run is never offered.
  *
- * `ground` defaults: read-only summarize/explain actions ground on `['this']` (the live selection /
- * open item); actions that lean on the research unit ground on `['unit']` (the notebook + federated
- * sources + working document).
+ * `output` is **derivable, not declared**: a write/annotation verb is exactly one with a non-empty
+ * {@link INTENT_REQUIRES} entry (the rule that closes the silent drift the audit found in
+ * `draft-reply`/`risk-column`/`write-formula`). Every action's `output` is set by {@link deriveOutput}
+ * from its intent, so the catalog can never drift from the closure.
+ *
+ * `ground` defaults: read-only chat actions ground on `['this']` (the live scope); actions that lean
+ * on the research unit ground on `['unit']` (the notebook + federated sources + working document).
  */
 
 /** The output shape an action produces: grounded chat, an inline annotation pass, or a write-back. */
 export const QuickActionOutputSchema = z.enum(['chat', 'annotation', 'write']);
 export type QuickActionOutput = z.infer<typeof QuickActionOutputSchema>;
 
-export const QuickActionSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  surfaces: z.array(SurfaceSchema).nonempty(),
-  intent: IntentSchema,
-  prompt: z.string(), // templated free-text seed
-  ground: z.array(z.string()).default([]), // default @-sources, e.g. ['this']
-  output: QuickActionOutputSchema,
-  contextMenu: z.boolean().default(false), // also offered on right-click
-});
+export const QuickActionSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    surfaces: z.array(SurfaceSchema).nonempty(),
+    intent: IntentSchema,
+    scope: CommandScopeSchema, // WHERE the action acts (EXPERIENCE.md §1, Tier 2)
+    prompt: z.string(), // templated free-text seed
+    ground: z.array(z.string()).default([]), // default @-sources, e.g. ['this']
+    output: QuickActionOutputSchema, // MUST equal deriveOutput(intent) — enforced below
+    contextMenu: z.boolean().default(false), // also offered on right-click
+  })
+  // Fail-closed: an action's declared `output` MUST match the closure-derived output for its intent.
+  // The panel routes the gate off the intent (write/annotation → gate), so a tenant-composed catalog
+  // entry with a mismatched output (e.g. {intent:'ask', output:'write'}) is a safety trap; reject it
+  // at parse time rather than only in the factory helpers. (Security review, Finding 1.)
+  .superRefine((a, ctx) => {
+    const expected = deriveOutput(a.intent);
+    if (a.output !== expected) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['output'],
+        message: `output '${a.output}' must equal deriveOutput('${a.intent}') = '${expected}'`,
+      });
+    }
+  });
 export type QuickAction = z.infer<typeof QuickActionSchema>;
 
-/** All six surfaces — the `surfaces` value for a universal action. */
-const ALL_SURFACES: [Surface, ...Surface[]] = [
-  'word',
-  'excel',
-  'powerpoint',
-  'onenote',
-  'outlook',
-  'teams',
-];
+/** All six surfaces — generated from the schema so adding a surface needs no edit here. */
+const ALL_SURFACES = SurfaceSchema.options as [Surface, ...Surface[]];
 
 /**
- * The quick-action catalog. Universal actions head the list; the per-surface blocks follow in the
- * surface order above. Every entry parses {@link QuickActionSchema}; the defaults (`ground: []`,
- * `contextMenu: false`) are written explicitly so the literal stays self-describing.
+ * Derive the `output` shape from the intent: a verb with no required actuation is a chat read; a
+ * `review`/`notes` verb is an annotation pass; any other write verb (`rewrite`/`draft`) lands a
+ * write-back. This is the single source of truth the catalog's literal `output` is asserted against.
  */
-export const QUICK_ACTIONS: QuickAction[] = [
-  // ── Universal (all six surfaces) ───────────────────────────────────────────
-  {
+export function deriveOutput(intent: Intent): QuickActionOutput {
+  if (INTENT_REQUIRES[intent].length === 0) return 'chat';
+  return intent === 'review' || intent === 'notes' ? 'annotation' : 'write';
+}
+
+/** Two common scopes, spelled once. */
+const THIS_ITEM: CommandScope = { kind: 'this-item' };
+const SELECTION: CommandScope = { kind: 'selection' };
+const DOCUMENT: CommandScope = { kind: 'document' };
+
+/** A universal action seed (its `surfaces` and `output` are filled in by {@link universal}). */
+type UniversalSeed = Omit<QuickAction, 'surfaces' | 'output'>;
+
+/**
+ * Expand a universal seed across every `Surface` (EXPERIENCE.md §4), keeping only the surfaces whose
+ * palette actually offers the seed's intent (so a universal `explain` lands on every surface that
+ * has `/explain`, but not on a surface like Teams whose verb set omits it). This keeps the catalog
+ * within capability closure by construction — no surface ever lists an action it cannot run.
+ */
+function universal(seed: UniversalSeed): QuickAction {
+  const surfaces = ALL_SURFACES.filter((s) => VERBS_BY_SURFACE[s].includes(seed.intent));
+  if (surfaces.length === 0) {
+    throw new Error(
+      `universal action '${seed.id}' uses intent '${seed.intent}' offered on no surface`,
+    );
+  }
+  return {
+    ...seed,
+    surfaces: surfaces as [Surface, ...Surface[]],
+    output: deriveOutput(seed.intent),
+  };
+}
+
+/** A surface action seed (its `output` is derived by {@link surfaceAction}). */
+type SurfaceSeed = Omit<QuickAction, 'output'>;
+
+/** Build a surface action, deriving its `output` from the intent. */
+function surfaceAction(seed: SurfaceSeed): QuickAction {
+  return { ...seed, output: deriveOutput(seed.intent) };
+}
+
+/**
+ * The universal block — generated for **every** `Surface` from `SurfaceSchema.options`
+ * (EXPERIENCE.md §4). Adding a surface needs no edit here. All four are chat reads grounded on the
+ * live scope.
+ */
+export const UNIVERSAL_ACTIONS: QuickAction[] = [
+  universal({
     id: 'summarize-this',
     label: 'Summarize this',
-    surfaces: ALL_SURFACES,
-    intent: 'assist',
+    intent: 'summarize',
+    scope: THIS_ITEM,
     prompt: 'Summarize this concisely, keeping the key facts and figures.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: true,
-  },
-  {
+  }),
+  universal({
     id: 'key-points',
     label: 'Key points & action items',
-    surfaces: ALL_SURFACES,
-    intent: 'assist',
+    intent: 'ask',
+    scope: THIS_ITEM,
     prompt: 'List the key points and any action items, with owners where stated.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  universal({
     id: 'explain',
     label: 'Explain / clarify',
-    surfaces: ALL_SURFACES,
-    intent: 'assist',
+    intent: 'explain',
+    scope: THIS_ITEM,
     prompt: 'Explain this in plain language and clarify anything ambiguous.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: true,
-  },
-  {
+  }),
+  universal({
     id: 'find-risks',
     label: 'Find risks & gaps',
-    surfaces: ALL_SURFACES,
-    intent: 'assist',
+    intent: 'ask',
+    scope: THIS_ITEM,
     prompt: 'Identify the risks, gaps, and open questions in this.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
+  }),
+];
 
+/** The genuine per-surface specializations (EXPERIENCE.md §2). */
+export const SURFACE_ACTIONS: QuickAction[] = [
   // ── Word ───────────────────────────────────────────────────────────────────
-  {
-    id: 'review-policy',
-    label: 'Review against policy',
+  surfaceAction({
+    id: 'review-against',
+    label: 'Review against…',
     surfaces: ['word'],
     intent: 'review',
-    prompt: 'Review this document against the grounded policy and flag every breach as a finding.',
+    scope: DOCUMENT,
+    // A general review against a picked @source (policy is just one possible @doc — the
+    // contract-review nouns moved to CONTRACT_REVIEW_PACK).
+    prompt: 'Review this document against {{@source}} and flag every breach as a finding.',
     ground: ['unit'],
-    output: 'annotation',
     contextMenu: false,
-  },
-  {
-    id: 'find-unsupported',
-    label: 'Find unsupported claims',
-    surfaces: ['word'],
-    intent: 'review',
-    prompt: 'Flag claims that are unsupported by the grounded sources.',
-    ground: ['unit'],
-    output: 'annotation',
-    contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'tighten',
     label: 'Tighten / rewrite selection',
     surfaces: ['word'],
-    intent: 'regen-clause',
+    intent: 'rewrite',
+    scope: SELECTION,
     prompt: 'Tighten and rewrite the selected text as a tracked change, preserving its meaning.',
     ground: ['this'],
-    output: 'write',
     contextMenu: true,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'exec-summary',
     label: 'Draft an executive summary',
     surfaces: ['word'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: DOCUMENT,
     prompt: 'Draft a concise executive summary of this document.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'resolve-comment',
     label: 'Resolve this comment',
     surfaces: ['word'],
-    intent: 'resolve-comment',
-    prompt: 'Resolve this comment: edit the anchored text, reply to the thread, and resolve it.',
+    intent: 'rewrite',
+    scope: { kind: 'comment' },
+    prompt: 'Resolve this comment: edit the anchored text as a tracked change.',
     ground: ['this'],
-    output: 'write',
     contextMenu: false,
-  },
+  }),
 
   // ── Excel ────────────────────────────────────────────────────────────────────
-  {
+  surfaceAction({
+    id: 'ge-ask',
+    label: '=GE.ASK in the grid',
+    surfaces: ['excel'],
+    intent: 'ask',
+    scope: { kind: 'range' },
+    prompt: '=GE.ASK("{{prompt}}", {{range}})',
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
     id: 'summarize-range',
     label: 'Summarize this range',
     surfaces: ['excel'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: SELECTION,
     prompt: 'Summarize the selected range, calling out totals, trends, and outliers.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: true,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'explain-formula',
     label: 'Explain this formula',
     surfaces: ['excel'],
-    intent: 'assist',
+    intent: 'explain',
+    scope: SELECTION,
     prompt: 'Explain what the formula in the selected cell does, step by step.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: true,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'risk-column',
     label: 'Add a risk/summary column',
     surfaces: ['excel'],
-    intent: 'assist',
+    intent: 'rewrite',
+    scope: { kind: 'range' },
     prompt: 'Add a risk or summary column derived from the selected range.',
     ground: ['this'],
-    output: 'write',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'find-anomalies',
     label: 'Find anomalies / outliers',
     surfaces: ['excel'],
     intent: 'review',
+    scope: SELECTION,
     prompt: 'Find anomalies and outliers in the selected range and comment on each.',
     ground: ['this'],
-    output: 'annotation',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'write-formula',
     label: 'Write a formula for…',
     surfaces: ['excel'],
-    intent: 'assist',
+    intent: 'rewrite',
+    scope: { kind: 'range' },
     prompt: 'Write a formula for {{describe what to compute}} and place it in the target cell.',
     ground: ['this'],
-    output: 'write',
     contextMenu: false,
-  },
+  }),
 
   // ── PowerPoint ───────────────────────────────────────────────────────────────
-  {
+  surfaceAction({
     id: 'draft-section',
     label: 'Draft a section from the unit',
     surfaces: ['powerpoint'],
-    intent: 'draft-slides',
+    intent: 'draft',
+    scope: DOCUMENT,
     prompt: 'Draft a slide section from the research unit on {{topic}}.',
     ground: ['unit'],
-    output: 'write',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'speaker-notes',
-    label: 'Generate speaker notes',
+    label: 'Draft speaker notes',
     surfaces: ['powerpoint'],
-    intent: 'assist',
-    prompt: 'Generate speaker notes for the current slide.',
+    // No host write path for speaker notes yet (CAPABILITY-MAP: set-speaker-notes is
+    // modeled-not-advertised) — draft them into the pane as chat until the bridge can actuate.
+    intent: 'ask',
+    scope: THIS_ITEM,
+    prompt: 'Draft speaker notes for the current slide.',
     ground: ['this'],
-    output: 'write',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'summarize-deck',
     label: 'Summarize the deck',
     surfaces: ['powerpoint'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: DOCUMENT,
     prompt: 'Summarize the narrative and key takeaways of this deck.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'redesign',
     label: 'Suggest a redesign',
     surfaces: ['powerpoint'],
-    intent: 'assist',
+    intent: 'ask',
+    scope: THIS_ITEM,
     prompt: 'Suggest a redesign for the current slide to make it clearer and tighter.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
+  }),
 
   // ── OneNote ──────────────────────────────────────────────────────────────────
-  {
+  surfaceAction({
     id: 'synthesize-page',
     label: 'Summarize sources onto the page',
     surfaces: ['onenote'],
-    intent: 'synthesize',
+    intent: 'draft',
+    scope: DOCUMENT,
     prompt: 'Synthesize the grounded sources into a cited summary on this page.',
     ground: ['unit'],
-    output: 'write',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
+    id: 'add-sources-to-unit',
+    label: "Add this page's sources to the unit",
+    surfaces: ['onenote'],
+    // OneNote is where the unit is assembled (EXPERIENCE.md §2) — a staged composition action;
+    // it adds to the unit rather than writing host material, so it stays a chat/staged action.
+    intent: 'ask',
+    scope: DOCUMENT,
+    prompt: "Add this page's linked sources to the research unit.",
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
     id: 'audio-overview',
     label: 'Make an audio overview',
     surfaces: ['onenote'],
-    intent: 'assist',
+    intent: 'ask',
+    scope: DOCUMENT,
     prompt: 'Produce an audio-overview script of the grounded sources.',
     ground: ['unit'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'discover-sources',
     label: 'Discover related sources',
     surfaces: ['onenote'],
-    intent: 'assist',
+    intent: 'ask',
+    scope: DOCUMENT,
     prompt: 'Discover sources related to this page from the connected data stores.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
+  }),
 
   // ── Outlook ──────────────────────────────────────────────────────────────────
-  {
+  surfaceAction({
     id: 'summarize-email',
     label: 'Summarize this email / thread',
     surfaces: ['outlook'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: THIS_ITEM,
     prompt: 'Summarize this email or thread, keeping decisions and asks.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: true,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'catch-up',
     label: 'Catch me up',
     surfaces: ['outlook'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: DOCUMENT,
     prompt: 'Catch me up on this conversation: what happened and what needs my attention.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'extract-actions',
     label: 'Extract action items & owners',
     surfaces: ['outlook'],
-    intent: 'assist',
+    intent: 'ask',
+    scope: DOCUMENT,
     prompt: 'Extract the action items and their owners from this email or thread.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'draft-reply',
     label: 'Draft a reply',
     surfaces: ['outlook'],
-    intent: 'assist',
-    prompt: 'Draft a reviewable reply to this email.',
+    intent: 'draft',
+    scope: DOCUMENT,
+    prompt: 'Draft a reviewable reply to this thread.',
     ground: ['this'],
-    output: 'write',
     contextMenu: true,
-  },
-  {
-    id: 'save-to-onenote',
-    label: 'Summarize → save to OneNote',
-    surfaces: ['outlook'],
-    intent: 'synthesize',
-    prompt: 'Summarize this email or thread and save the summary to a OneNote page.',
-    ground: ['this'],
-    output: 'write',
-    contextMenu: false,
-  },
+  }),
 
   // ── Teams ────────────────────────────────────────────────────────────────────
-  {
+  surfaceAction({
     id: 'live-notes',
     label: 'Live notes & recap',
     surfaces: ['teams'],
-    intent: 'meeting-notes',
+    intent: 'notes',
+    scope: DOCUMENT,
     prompt: 'Produce live notes and a recap from the meeting transcript.',
     ground: ['this'],
-    output: 'annotation',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'action-items',
     label: 'Action items',
     surfaces: ['teams'],
-    intent: 'meeting-notes',
+    intent: 'notes',
+    scope: DOCUMENT,
     prompt: 'Extract action items and their owners from the meeting transcript.',
     ground: ['this'],
-    output: 'annotation',
     contextMenu: false,
-  },
-  {
+  }),
+  surfaceAction({
     id: 'catch-up-teams',
     label: 'Catch me up',
     surfaces: ['teams'],
-    intent: 'assist',
+    intent: 'summarize',
+    scope: DOCUMENT,
     prompt: 'Catch me up on this meeting or channel: what happened and what needs my attention.',
     ground: ['this'],
-    output: 'chat',
     contextMenu: false,
-  },
-  {
-    id: 'post-summary',
-    label: 'Post a summary to the channel',
-    surfaces: ['teams'],
-    intent: 'assist',
-    prompt: 'Draft a reviewable summary to post to the channel.',
-    ground: ['this'],
-    output: 'write',
+  }),
+];
+
+/**
+ * The quick-action catalog: the universal block followed by the per-surface specializations. Every
+ * entry's `output` is derived from its intent (no hand-declared drift).
+ */
+export const QUICK_ACTIONS: QuickAction[] = [...UNIVERSAL_ACTIONS, ...SURFACE_ACTIONS];
+
+/**
+ * An optional vertical pack: the contract-review nouns that used to sit in the default Word catalog
+ * (`review-policy` / `find-unsupported`). Kept out of {@link QUICK_ACTIONS} so the default catalog
+ * stays general; a tenant that wants them composes `[...QUICK_ACTIONS, ...CONTRACT_REVIEW_PACK]`.
+ */
+export const CONTRACT_REVIEW_PACK: QuickAction[] = [
+  surfaceAction({
+    id: 'review-policy',
+    label: 'Review against policy',
+    surfaces: ['word'],
+    intent: 'review',
+    scope: DOCUMENT,
+    prompt: 'Review this document against the grounded policy and flag every breach as a finding.',
+    ground: ['unit'],
     contextMenu: false,
-  },
+  }),
+  surfaceAction({
+    id: 'find-unsupported',
+    label: 'Find unsupported claims',
+    surfaces: ['word'],
+    intent: 'review',
+    scope: DOCUMENT,
+    prompt: 'Flag claims that are unsupported by the grounded sources.',
+    ground: ['unit'],
+    contextMenu: false,
+  }),
 ];
 
 /**

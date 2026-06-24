@@ -232,15 +232,7 @@ describe('ProvenancePayload schema', () => {
 
 describe('Intent schema', () => {
   it('accepts every declared verb', () => {
-    for (const verb of [
-      'assist',
-      'review',
-      'resolve-comment',
-      'regen-clause',
-      'draft-slides',
-      'synthesize',
-      'meeting-notes',
-    ]) {
+    for (const verb of ['ask', 'summarize', 'explain', 'rewrite', 'review', 'draft', 'notes']) {
       expect(IntentSchema.parse(verb)).toBe(verb);
     }
   });
@@ -255,7 +247,7 @@ describe('AssistRequest schema', () => {
 
   it('accepts an assist request with a query and target', () => {
     const r = AssistRequestSchema.parse({
-      intent: 'assist',
+      intent: 'ask',
       unit,
       query: 'summarize',
       target: { range: 'A1' },
@@ -265,17 +257,15 @@ describe('AssistRequest schema', () => {
   });
 
   it('rejects a request missing the unit', () => {
-    expect(() => AssistRequestSchema.parse({ intent: 'assist' })).toThrow();
+    expect(() => AssistRequestSchema.parse({ intent: 'ask' })).toThrow();
   });
 
   it('rejects a request whose unit is malformed', () => {
-    expect(() =>
-      AssistRequestSchema.parse({ intent: 'assist', unit: { connectors: [] } }),
-    ).toThrow();
+    expect(() => AssistRequestSchema.parse({ intent: 'ask', unit: { connectors: [] } })).toThrow();
   });
 
   it('rejects a non-string query', () => {
-    expect(() => AssistRequestSchema.parse({ intent: 'assist', unit, query: 123 })).toThrow();
+    expect(() => AssistRequestSchema.parse({ intent: 'ask', unit, query: 123 })).toThrow();
   });
 });
 

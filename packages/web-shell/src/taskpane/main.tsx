@@ -8,9 +8,10 @@ import { PanelController } from '../controller.js';
 import { App } from './components/App.js';
 import { selectBridge, isSupportedSurface } from './select-bridge.js';
 import {
-  ASK_SELECTION_SEED_KEY,
+  askSelectionSeedKey,
   askSelectionQuery,
   isAskSelectionSeed,
+  isAskSelectionSeedFresh,
   type AskSelectionSeed,
 } from '../commands/ask-selection-seed.js';
 import { initialUnit } from './unit.js';
@@ -67,22 +68,22 @@ function resolveSurface(): Surface | undefined {
  * outlives one boot — even if boot later fails — and a foreign/malformed value is rejected rather
  * than trusted. Guarded end-to-end: storage problems just yield null.
  */
-function takeAskSelectionSeed(): AskSelectionSeed | null {
+function takeAskSelectionSeed(surface: Surface): AskSelectionSeed | null {
   try {
+    const key = askSelectionSeedKey(surface);
     const store = (globalThis as { localStorage?: Storage }).localStorage;
-    const raw = store?.getItem(ASK_SELECTION_SEED_KEY);
+    const raw = store?.getItem(key);
     if (!raw) return null;
-    store?.removeItem(ASK_SELECTION_SEED_KEY); // clear-on-read, before we trust the value
+    store?.removeItem(key); // clear-on-read, before we trust the value
     const parsed: unknown = JSON.parse(raw);
-    return isAskSelectionSeed(parsed) ? parsed : null;
+    if (!isAskSelectionSeed(parsed)) return null; // validates kind + version + typed {intent, scope}
+    return isAskSelectionSeedFresh(parsed) ? parsed : null; // drop a stale/replayed seed
   } catch {
     return null;
   }
 }
 
 async function boot(): Promise<void> {
-  // Take (and clear) the seed before anything that can throw, so it never persists across a failed boot.
-  const pendingSeed = takeAskSelectionSeed();
   const surface = resolveSurface();
   if (!isSupportedSurface(surface)) {
     fatal(
@@ -93,6 +94,10 @@ async function boot(): Promise<void> {
     );
     return;
   }
+
+  // Take (and clear) the per-surface seed before anything that can throw, so it never persists
+  // across a failed boot. The key is namespaced by surface so two open hosts can't cross-read.
+  const pendingSeed = takeAskSelectionSeed(surface);
 
   // The surface seam: one host-specific decision, everything downstream is interface-only.
   const bridge = selectBridge(surface);

@@ -113,10 +113,11 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
       <div class="comp">
         <div class="pop">
           <div class="ph2">Commands · Word</div>
-          <div class="opt"><span class="v">/assist</span><span class="d">Grounded chat over the unit</span><span class="wire">streamAssist</span></div>
+          <div class="opt"><span class="v">/ask</span><span class="d">Grounded chat / custom prompt over a scope</span><span class="wire">streamAssist</span></div>
           <div class="opt on"><span class="v">/review</span><span class="d">Inline review pass → findings</span><span class="wire">A2A · review</span></div>
-          <div class="opt"><span class="v">/resolve-comment</span><span class="d">Edit, reply &amp; resolve a comment</span><span class="wire">streamAssist</span></div>
-          <div class="opt"><span class="v">/regen-clause</span><span class="d">Rewrite one content control</span><span class="wire">streamAssist</span></div>
+          <div class="opt"><span class="v">/rewrite</span><span class="d">Apply any instruction → reversible edit</span><span class="wire">runCommands</span></div>
+          <div class="opt"><span class="v">/summarize</span><span class="d">Condense the scope</span><span class="wire">streamAssist</span></div>
+          <div class="opt"><span class="v">/explain</span><span class="d">Clarify the scope in plain language</span><span class="wire">streamAssist</span></div>
           <div class="ft">Verbs come from the bridge’s <b style="color:#5a4b8a;margin:0 3px">CapabilityManifest</b> — only what Word can do shows here.</div>
         </div>
         <div class="cb"><div class="txt"><span class="tok">/</span><span class="cur"></span></div><button class="snd">→</button></div>
@@ -177,8 +178,8 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
   <div class="prerow">
     <div class="prelbl"><span class="sd" style="background:var(--blue)"></span> Outlook</div>
     <div class="prebtns">
-      <div class="pb"><div class="t"><span class="pin">📌</span> Summarize this email</div><div class="cmd"><b>/assist</b> <span class="at">@this</span> · summarize</div></div>
-      <div class="pb"><div class="t"><span class="pin">📌</span> Draft a reply</div><div class="cmd"><b>/assist</b> <span class="at">@this</span> · reply (reviewable)</div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Summarize this email</div><div class="cmd"><b>/summarize</b> <span class="at">@this</span></div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Draft a reply</div><div class="cmd"><b>/draft</b> <span class="at">@this</span> · reply (reviewable)</div></div>
       <div class="pb"><div class="t"><span class="pin">📌</span> Extract action items</div><div class="cmd"><b>/review</b> <span class="at">@this</span> · → findings</div></div>
     </div>
   </div>
@@ -186,7 +187,7 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
     <div class="prelbl"><span class="sd" style="background:var(--host)"></span> Word</div>
     <div class="prebtns">
       <div class="pb"><div class="t"><span class="pin">📌</span> Review against policy</div><div class="cmd"><b>/review</b> <span class="at">@this</span> <span class="at">@unit</span></div></div>
-      <div class="pb"><div class="t"><span class="pin">📌</span> Tighten this</div><div class="cmd"><b>/regen-clause</b> <span class="at">@selection</span></div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Tighten this</div><div class="cmd"><b>/rewrite</b> <span class="at">@selection</span> · “tighten”</div></div>
     </div>
   </div>
 </div>
@@ -203,9 +204,9 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
     </div>
     <div class="menu">
       <div class="mh"><span class="sp"></span> Gemini · on selection</div>
-      <div class="mi on"><span class="gi"></span> Ask Gemini about this <span class="arr">→ /assist</span></div>
+      <div class="mi on"><span class="gi"></span> Ask Gemini about this <span class="arr">→ /ask</span></div>
       <div class="mi"><span class="gi"></span> Review this selection <span class="arr">→ /review</span></div>
-      <div class="mi"><span class="gi"></span> Explain this formula <span class="arr">→ /assist</span></div>
+      <div class="mi"><span class="gi"></span> Explain this formula <span class="arr">→ /explain</span></div>
       <div class="mi sepfoot">item = / command · @this = selection · opens the pane</div>
     </div>
   </div>

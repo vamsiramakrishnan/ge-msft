@@ -10,6 +10,16 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 > server piece is a transparent CORS/audit proxy via `proxyUrl`. Model Armor, agent routing, and
 > grounding are Gemini Enterprise engine config, not our code.
 
+> **Verb/scope reframe (landed, per `docs/EXPERIENCE.md`).** The human-facing intent tier moved from
+> the contract-review task names to a **general capability model**: the seven Copilot-altitude verbs
+> `ask · summarize · explain · rewrite · review · draft · notes`, with **scope**
+> (`CommandScope = selection | document | range | section | comment | this-item`) and **ground**
+> (`GroundSource = this | unit | document | person | datastore | upload`) as orthogonal first-class
+> fields rather than verbs. `regen-clause`, `resolve-comment`, `draft-slides`, `synthesize`, and
+> `meeting-notes` are deleted as verbs (they collapse into a general verb × scope). The capability
+> stack underneath — the `cmd` executor grammar, the expr/skill grammars, the plan→approve→gate loop,
+> the bridges, the closure checker, and the WIF/identity layer — is **unchanged**.
+
 ## Verification baseline
 
 `npm run typecheck` clean · **1408 tests across 119 files green** (Vitest) · `npm run lint` clean.
@@ -113,8 +123,9 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   `commandPaletteFor()` (the per-surface `/`-verb list, closure-scoped), and `CommandPlan` /
   `parsePlanBlock()` (a faithful TS port of the planner skill's `parse_plan.py`). Wired in
   `@ge/web-shell`: the `Composer` opens the `/` verb palette and the `@` mention picker and parses a
-  submit into a structured `ComposerInvocation` (`parseComposerInput`); a bare question or `/assist`
-  routes to `send`, any actuating `/verb` routes to the fail-closed `runCommands` plan gate. `@`
+  submit into a structured `ComposerInvocation` (`parseComposerInput`); a bare question or a chat
+  verb (`/ask`, `/summarize`, `/explain`) routes to `send`, any actuating `/verb` (`/rewrite`,
+  `/review`, `/draft`, `/notes`) routes to the fail-closed `runCommands` plan gate. `@`
   mentions map to real `streamAssist` fields (`query.parts[]`, `toolsSpec.dataStoreSpecs`, `fileIds`).
   Full-stack interplay tests (`taskpane/command-surface.integration.test.ts`) drive the real
   `<App/>` → controller for both routes. Specced in `docs/mockups/6-command-pane.html`.

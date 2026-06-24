@@ -78,8 +78,8 @@ describe('onenote manifest (negative cases)', () => {
 
   it('flags an insecure (http) AppDomain', () => {
     const xml = onenote().replace(
-      'https://REPLACE_GATEWAY_DOMAIN',
-      'http://REPLACE_GATEWAY_DOMAIN',
+      '<AppDomain>https://REPLACE_WEB_SHELL_DOMAIN</AppDomain>',
+      '<AppDomain>http://REPLACE_WEB_SHELL_DOMAIN</AppDomain>',
     );
     const fs = lintOneNoteManifest(xml);
     expect(fs.some((f) => f.code === 'insecure-domain')).toBe(true);
@@ -89,5 +89,17 @@ describe('onenote manifest (negative cases)', () => {
     const xml = onenote().replace('<Host Name="Notebook" />', '');
     const fs = lintOneNoteManifest(xml);
     expect(fs.some((f) => f.code === 'missing-host')).toBe(true);
+  });
+});
+
+describe('client-direct: no gateway token in any manifest (ADR-0001)', () => {
+  // There is no gateway tier; the only origin the add-in trusts is the web-shell. Guard against a
+  // REPLACE_GATEWAY_DOMAIN (or any GATEWAY-bearing token) creeping back into either package.
+  it('the unified manifest contains no GATEWAY token', () => {
+    expect(unified()).not.toMatch(/GATEWAY/);
+  });
+
+  it('the onenote manifest contains no GATEWAY token', () => {
+    expect(onenote()).not.toMatch(/GATEWAY/);
   });
 });

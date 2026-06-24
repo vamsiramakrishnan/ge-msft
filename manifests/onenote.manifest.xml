@@ -16,7 +16,6 @@
   <SupportUrl DefaultValue="https://example.com/support" />
   <AppDomains>
     <AppDomain>https://REPLACE_WEB_SHELL_DOMAIN</AppDomain>
-    <AppDomain>https://REPLACE_GATEWAY_DOMAIN</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Notebook" />

@@ -122,27 +122,31 @@ and they land as reversible writes (§6).
 
 ## 5. Parity map — Copilot verbs to our buttons / IntentSchema
 
-This ties Copilot's per-app expectations to our prebuilt buttons and the `IntentSchema`
-(`packages/contracts/src/intent.ts`: `assist`, `review`, `resolve-comment`, `regen-clause`,
-`draft-slides`, `synthesize`, `meeting-notes`). It is the "yes, we do that too" table — and where we
-do it *differently*, the difference is the pitch.
+This ties Copilot's per-app expectations to our prebuilt buttons and the seven general
+`IntentSchema` verbs (`packages/contracts/src/intent.ts`: `ask`, `summarize`, `explain`, `rewrite`,
+`review`, `draft`, `notes` — see `docs/EXPERIENCE.md`). The old surface-bound task names
+(`resolve-comment`, `regen-clause`, `draft-slides`, `synthesize`, `meeting-notes`) collapse into a
+general verb plus an orthogonal **scope** (`selection | document | range | section | comment |
+this-item`). It is the "yes, we do that too" table — and where we do it *differently*, the difference
+is the pitch.
 
-| Surface | Copilot verb | Our prebuilt button / interaction | `IntentSchema` |
+| Surface | Copilot verb | Our prebuilt button / interaction | Verb × scope |
 |---|---|---|---|
-| **Word** | Summarise / ask about the doc | Ask-about-selection; grounded hover cards | `assist` |
-| **Word** | Rewrite / suggest edits | Inline review → findings as **tracked changes**; "Accept change" | `review` |
-| **Word** | Resolve a comment | Comment thread as agent task queue; edit + reply + resolve | `resolve-comment` |
-| **Word** | Rewrite this clause | Surgical clause regeneration via content control | `regen-clause` |
-| **Excel** | Generate formula / explain range | `=GE.ASK(prompt, range)` streaming custom function; "explain this range" | `assist` |
-| **Excel** | Insights / highlight / sort | Linked-entity cells → enriched cards; `format` actuation | `assist` |
-| **PowerPoint** | Build a deck / add slides | "Draft the risk section" → streamed, source-backed slides | `draft-slides` |
-| **PowerPoint** | Speaker notes | "Generate speaker notes" (modeled; un-advertised per ADR-0006) | `draft-slides` |
-| **Outlook** | Catch-up on a thread | Whole-item capture → grounded summary | `assist` |
-| **Outlook** | Draft / refine a reply | Reviewable reply (`displayReplyForm`), staged not sent | `assist` |
-| **OneNote** | Summarise onto the page | "Summarise sources onto page" with a citation tag per claim | `synthesize` |
-| **OneNote** | Audio/video overview | "Make an audio overview" of the source set | `synthesize` |
-| **Teams** | Live notes / action items | In-meeting live notes + grounded action items | `meeting-notes` |
-| **Teams** | Recap to channel / OneNote | Recap card "Post to channel" / "Save to OneNote" (reviewable) | `meeting-notes` |
+| **Word** | Summarise / ask about the doc | Ask-about-selection; grounded hover cards | `ask` / `summarize` · `scope:selection` |
+| **Word** | Rewrite / suggest edits | Inline review → findings as **tracked changes**; "Accept change" | `review` · `scope:document` |
+| **Word** | Resolve a comment | Comment thread as agent task queue; edit + reply + resolve | `rewrite` · `scope:comment(id)` |
+| **Word** | Rewrite this clause | Surgical clause regeneration (tracked change / content control) | `rewrite` · `scope:section` |
+| **Excel** | Generate formula / explain range | `=GE.ASK(prompt, range)` streaming custom function; "explain this range" | `ask` / `explain` · `scope:range` |
+| **Excel** | Insights / highlight / sort | Linked-entity cells → enriched cards; `format` actuation | `summarize` · `scope:range` |
+| **Excel** | Add a derived/risk column | "Add a column that flags …" → address-anchored, gated cells | `rewrite` · `scope:range` |
+| **PowerPoint** | Build a deck / add slides | "Draft the risk section" → streamed, source-backed slides | `draft` · `scope:deck` |
+| **PowerPoint** | Speaker notes | "Generate speaker notes" (drafts into pane; un-advertised host write per ADR-0006) | `draft` · `output:chat` |
+| **Outlook** | Catch-up on a thread | Whole-item capture → grounded summary | `summarize` · `scope:this-item` |
+| **Outlook** | Draft / refine a reply | Reviewable reply (`displayReplyForm`), staged not sent, with tone control | `draft` · `scope:this-item` |
+| **OneNote** | Summarise onto the page | "Summarise sources onto page" with a citation tag per claim | `draft` · `scope:section` |
+| **OneNote** | Audio/video overview | "Make an audio overview" of the source set | `ask` · `output:chat` |
+| **Teams** | Live notes / action items | In-meeting live notes + grounded action items | `notes` · `scope:this-item` |
+| **Teams** | Recap to channel / OneNote | Recap card "Post to channel" / "Save to OneNote" (reviewable) | `draft` · `scope:this-item` |
 
 Two parity caveats worth stating honestly: we **do not** ship a Loop surface, and our PowerPoint
 speaker-notes and several Outlook/Graph write verbs are *modeled but not advertised* (ADR-0006 capability

@@ -19,13 +19,16 @@ import json
 import re
 import sys
 
+# `scope` is the orthogonal WHERE axis (CommandScope kind):
+#   selection | document | range | section | comment | this-item  (free-text ref ok)
 SCALAR_KEYS = {"intent", "surface", "scope", "confidence"}   # last one wins
 LIST_KEYS = {"ground", "step", "exclude", "clarify"}         # accumulate, in order
 BRACKETS = {"plan", "end"}                                   # optional, ignored
 ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 
-INTENTS = {"assist", "review", "resolve-comment", "regen-clause",
-           "draft-slides", "synthesize", "meeting-notes"}
+# The seven general, Copilot-altitude verbs (see docs/EXPERIENCE.md §1). Scope is a
+# separate orthogonal axis (the `scope` keyword), never a verb.
+INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft", "notes"}
 SURFACES = {"word", "excel", "powerpoint", "onenote", "outlook", "teams"}
 CONFIDENCE = {"high", "medium", "low"}
 
@@ -118,11 +121,10 @@ def parse_plan(model_text: str):
 def _self_test():
     sample = '''**thought** mapping the request to a plan
 ```plan
-intent   review
+intent   rewrite
 surface  word
-scope    §4-6
+scope    section §4-6
 ground   "Vendor Risk Policy v4"
-step     flag clauses in §4-6 that breach APRA CPS 234
 step     rewrite the SLA availability figure to 99.9% as a tracked change
 exclude  the indemnity clause — leave unchanged
 confidence high

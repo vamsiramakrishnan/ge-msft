@@ -23,12 +23,14 @@ import {
 // The seed contract lives in a side-effect-free module so the task pane can read it on boot
 // without importing this file (which registers Office.actions on load).
 import {
-  ASK_SELECTION_SEED_KEY,
+  askSelectionSeedKey,
   buildAskSelectionSeed,
   type AskSelectionSeed,
 } from './ask-selection-seed.js';
+import { surfaceFromHost } from '../host.js';
+import type { Surface } from '@ge/contracts';
 
-export { ASK_SELECTION_SEED_KEY, buildAskSelectionSeed, type AskSelectionSeed };
+export { askSelectionSeedKey, buildAskSelectionSeed, type AskSelectionSeed };
 
 interface OfficeActionsLike {
   actions: { associate(id: string, fn: (event: { completed(): void }) => void): void };
@@ -56,11 +58,20 @@ interface OfficeSelectionLike {
         cb: (result: { status?: unknown; value?: unknown }) => void,
       ) => void;
     };
+    host?: unknown;
     mailbox?: unknown;
   };
   CoercionType?: { Text?: unknown };
   /** Office.js 1.13+: reveal the task pane from a function command. */
   addin?: { showAsTaskpane?: () => Promise<unknown> };
+}
+
+/** Resolve the active surface so the seed is stashed under the per-surface key (Outlook → mailbox). */
+function resolveSurface(office: OfficeSelectionLike | undefined): Surface | undefined {
+  const ctx = office?.context;
+  if (!ctx) return undefined;
+  if (ctx.mailbox) return 'outlook';
+  return surfaceFromHost(ctx.host != null ? String(ctx.host) : undefined);
 }
 
 /** A persistence sink for the seed — `localStorage` in the host, injectable in tests. */
@@ -92,9 +103,9 @@ function readSelectedText(office: OfficeSelectionLike | undefined): Promise<stri
  * the pane. The selection is untrusted host content — it rides as `@this` data, never instructions.
  * Always completes the Office event, even on a read failure, so the command never hangs the host.
  *
- * The task-pane boot (`taskpane/main.tsx`) reads {@link ASK_SELECTION_SEED_KEY} from `localStorage`
- * once on mount, clears it, and seeds the turn via `controller.send(seed.query)` — completing the
- * right-click → pane handoff.
+ * The task-pane boot (`taskpane/main.tsx`) reads the per-surface {@link askSelectionSeedKey} from
+ * `localStorage` once on mount, clears it, validates the version + TTL, and seeds the turn via
+ * `controller.send(askSelectionQuery(seed))` — completing the right-click → pane handoff.
  */
 async function askSelection(
   event: { completed(): void },
@@ -106,8 +117,9 @@ async function askSelection(
   try {
     const selection = await readSelectedText(office);
     const seed = buildAskSelectionSeed(selection);
+    const surface = resolveSurface(office) ?? 'word';
     try {
-      sink?.setItem(ASK_SELECTION_SEED_KEY, JSON.stringify(seed));
+      sink?.setItem(askSelectionSeedKey(surface), JSON.stringify(seed));
     } catch {
       // A full/blocked storage must not abort the reveal — the pane simply opens without a seed.
     }

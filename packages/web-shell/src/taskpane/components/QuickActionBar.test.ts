@@ -61,11 +61,13 @@ describe('QuickActionBar', () => {
   });
 
   it('narrows the catalog by allowed intents (capability closure)', () => {
-    render({ surface: 'word', allowedIntents: ['assist'] });
+    render({ surface: 'word', allowedIntents: ['ask', 'summarize', 'explain'] });
     const labels = chips().map((c) => c.textContent);
-    const expected = quickActionsForSurface('word', ['assist']).map((a) => a.label);
+    const expected = quickActionsForSurface('word', ['ask', 'summarize', 'explain']).map(
+      (a) => a.label,
+    );
     expect(labels).toEqual(expected);
-    // No annotation/write verb survives an assist-only closure.
+    // No annotation/write verb survives a chat-only closure.
     expect(chips().every((c) => c.getAttribute('data-output') === 'chat')).toBe(true);
   });
 
@@ -74,9 +76,11 @@ describe('QuickActionBar', () => {
     const byLabel = (label: string): HTMLButtonElement =>
       chips().find((c) => c.textContent === label)!;
     const tighten = quickActionsForSurface('word').find((a) => a.id === 'tighten') as QuickAction;
+    expect(tighten.intent).toBe('rewrite');
     const el = byLabel(tighten.label);
     expect(el.getAttribute('data-output')).toBe('write');
-    expect(el.getAttribute('data-intent')).toBe(tighten.intent);
+    expect(el.getAttribute('data-intent')).toBe('rewrite');
+    expect(el.getAttribute('data-action-id')).toBe('tighten');
   });
 
   it('hands the full action back to onAction on click', () => {

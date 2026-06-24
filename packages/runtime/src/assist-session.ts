@@ -379,7 +379,7 @@ export class AssistSession {
     }
 
     const req = {
-      intent: 'assist' as const,
+      intent: 'ask' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
@@ -482,7 +482,7 @@ export class AssistSession {
       return; // marked committed when the next ask() completes
     }
     const req = {
-      intent: 'assist' as const,
+      intent: 'ask' as const,
       query: PRIME_INSTRUCTION,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
@@ -1052,7 +1052,7 @@ export class AssistSession {
    */
   private async *streamTurn(query: string, signal?: AbortSignal): AsyncGenerator<SseEvent> {
     const req = {
-      intent: 'assist' as const,
+      intent: 'ask' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };

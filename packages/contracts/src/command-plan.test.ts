@@ -21,8 +21,10 @@ describe('parsePlanBlock', () => {
     expect(plan).not.toBeNull();
     expect(plan!.intent).toBe('review');
     expect(plan!.surface).toBe('word');
-    expect(plan!.scope).toBe('§4-6');
-    expect(plan!.ground).toEqual(['Vendor Risk Policy v4']); // quotes stripped
+    // A free-text scope degrades to a section heading ref.
+    expect(plan!.scope).toEqual({ kind: 'section', ref: '§4-6' });
+    // A named source (quotes stripped) becomes a `document` ground token.
+    expect(plan!.ground).toEqual([{ kind: 'document', ref: 'Vendor Risk Policy v4' }]);
     expect(plan!.steps).toHaveLength(2);
     expect(plan!.excludes).toEqual(['the indemnity clause — leave unchanged']);
     expect(plan!.confidence).toBe('high');
@@ -34,18 +36,26 @@ describe('parsePlanBlock', () => {
   });
 
   it('parses a minimal good plan with no errors', () => {
-    const text = '```plan\nintent assist\nsurface excel\nstep summarize the range\n```';
+    const text = '```plan\nintent ask\nsurface excel\nstep summarize the range\n```';
     const { plan, errors, needsClarification } = parsePlanBlock(text);
     expect(errors).toEqual([]);
     expect(needsClarification).toBe(false);
     expect(plan).toEqual({
-      intent: 'assist',
+      intent: 'ask',
       surface: 'excel',
       ground: [],
       steps: ['summarize the range'],
       excludes: [],
       clarify: [],
     });
+  });
+
+  it('parses a bare ground token and a function-form scope', () => {
+    const text =
+      '```plan\nintent rewrite\nsurface word\nscope section(§4)\nground unit\nground this\nstep tighten\n```';
+    const { plan } = parsePlanBlock(text);
+    expect(plan!.scope).toEqual({ kind: 'section', ref: '§4' });
+    expect(plan!.ground).toEqual([{ kind: 'unit' }, { kind: 'this' }]);
   });
 
   it('flags an unknown keyword with a did-you-mean', () => {

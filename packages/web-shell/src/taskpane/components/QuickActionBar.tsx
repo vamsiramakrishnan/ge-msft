@@ -37,6 +37,7 @@ export function QuickActionBar({
           key={action.id}
           type="button"
           className="quick-action"
+          data-action-id={action.id}
           data-output={action.output}
           data-intent={action.intent}
           disabled={busy}

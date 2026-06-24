@@ -14,16 +14,29 @@ The authoritative boundary between the surface-agnostic core and the per-surface
 
 ## Intents
 
+The verb tier is **seven general, Copilot-altitude capabilities** (see `docs/EXPERIENCE.md`). Surface-
+and demo-bound task names (`regen-clause`, `resolve-comment`, `draft-slides`, `synthesize`,
+`meeting-notes`) are **deleted as verbs** — they collapse into a general verb plus an orthogonal
+`scope`. `scope` (WHERE) and `ground` (WHAT IT'S GROUNDED ON) are now first-class orthogonal fields,
+never verbs.
+
 ```ts
 export type Intent =
-  | 'assist'           // grounded chat over the unit (StreamAssist)
-  | 'review'           // inline review pass → Finding[]  (A2A Review agent)
-  | 'resolve-comment'  // edit + reply + resolve a comment
-  | 'regen-clause'     // rewrite one content control
-  | 'draft-slides'     // generate slides from the unit
-  | 'synthesize'       // OneNote page synthesis from the notebook
-  | 'meeting-notes';   // Teams live notes + action items
+  | 'ask'         // grounded chat / a custom free-text prompt over a scope (the rename of 'assist')
+  | 'summarize'   // condense the scope                                              → chat
+  | 'explain'     // clarify the scope in plain language                             → chat
+  | 'rewrite'     // apply ANY instruction to the scope → a reversible edit          → write
+  | 'review'      // whole-scope pass emitting N findings → N gated annotations      → annotation
+  | 'draft'       // generate NEW material from the unit (slides, page, reply, col)  → write
+  | 'notes';      // transcript → live notes + action items (Teams)                  → annotation
 ```
+
+`ask`/`summarize`/`explain` are single-shot reads that route to `send`; `rewrite`/`review`/`draft`/
+`notes` write or annotate and route through the `runCommands` plan gate (a `rewrite` must **never**
+reach `send`). `rewrite` is the load-bearing generalization: it carries a free-text `instruction` +
+a `scope` and compiles to whatever reversible write the scope×surface affords (Word tracked change,
+Excel `set`/`format`, PPT slide-body replace). `resolve-comment` is just `rewrite`/`review` with
+`scope: { kind: 'comment', ref }`.
 
 ## The research unit
 
@@ -279,17 +292,38 @@ export interface CapabilityClosureReport {
 The typed front of the `/` + `@` pane. All three compile to the same routes — a grounded `send` or
 the fail-closed `runCommands` plan gate — so the pane never opens a new actuation path.
 
+### `CommandScope` and `GroundSource` (the two orthogonal axes)
+
+Scope (WHERE the verb acts) and ground (WHAT it is grounded on) are first-class typed fields, never
+verbs:
+
+```ts
+export const CommandScopeSchema = z.object({
+  kind: z.enum(['selection', 'document', 'range', 'section', 'comment', 'this-item']),
+  ref: z.string().optional(),   // e.g. an A1/named range, a heading, a comment id
+});
+export type CommandScope = z.infer<typeof CommandScopeSchema>;
+
+export const GroundSourceSchema = z.enum(['this', 'unit', 'document', 'person', 'datastore', 'upload']);
+export type GroundSource = z.infer<typeof GroundSourceSchema>;
+```
+
+`GroundSource` unifies the former `ground` strings and `mentionKinds` into one vocabulary — they were
+always the same concept (each `@`-mention is a ground token). Surface-specific scope **labels**
+("range | sheet | table" vs "slide | deck") never leak into the surface-agnostic core; they ride as
+data on the palette's `scopeOptions` (see below), consumed by the `Composer`.
+
 ### `QuickAction` (`packages/contracts/src/quick-actions.ts`)
 
-A prebuilt button: `{ id, label, surfaces: Surface[], intent: Intent, prompt, ground: string[], output: 'chat' | 'annotation' | 'write', contextMenu: boolean }`. `QUICK_ACTIONS` is the catalog (28); `quickActionsForSurface(surface, allowedIntents?)` filters by surface **and** by capability closure (ADR-0006) so a surface never offers a button it can't honour. `output` decides the route (`chat` → `send`; `write`/`annotation` → the gate); `ground` (e.g. `['this']`, `['unit']`) is prepended as `@`-mentions to form the seed (`quickActionSeed`).
+A prebuilt button — a visible, editable `verb × scope × ground × instruction` tuple: `{ id, label, surfaces: Surface[], intent: Intent, scope?: CommandScope, prompt, ground: GroundSource[], output: 'chat' | 'annotation' | 'write', contextMenu: boolean }`. `output` is **derivable** from `intent` (write/annotation verbs carry a non-empty `INTENT_REQUIRES`). `QUICK_ACTIONS` is the catalog; `quickActionsForSurface(surface, allowedIntents?)` filters by surface **and** by capability closure (ADR-0006) so a surface never offers a button it can't honour. `output` decides the route (`chat` → `send`; `write`/`annotation` → the gate); `ground` (e.g. `['this']`, `['unit']`) is prepended as `@`-mentions to form the seed (`quickActionSeed`).
 
 ### `CommandPaletteSpec` (`packages/contracts/src/command-palette.ts`)
 
-The `/`-verb list + `@`-mention kinds the input affords: `{ surface, verbs: { intent, label, description }[], mentionKinds: ('document'|'person'|'datastore'|'this'|'upload')[] }`. `commandPaletteFor(surface, allowedIntents?)` returns it, closure-scoped. Each `Intent` maps to a `/label` (`review → /review`, `regen-clause → /rewrite`, `resolve-comment → /resolve`, `draft-slides → /draft`, `meeting-notes → /notes`).
+The `/`-verb list + `@`-mention vocabulary + per-surface scope labels the input affords: `{ surface, verbs: { intent, label, description }[], groundKinds: GroundSource[], scopeOptions: { kind: CommandScope['kind']; label: string }[] }`. `commandPaletteFor(surface, allowedIntents?)` returns it, closure-scoped. Each `Intent` maps to a `/label` 1:1 (`ask → /ask`, `summarize → /summarize`, `explain → /explain`, `rewrite → /rewrite`, `review → /review`, `draft → /draft`, `notes → /notes`). `scopeOptions` supplies the segmented control next to Send (e.g. PowerPoint → `slide | deck`; Excel → `range | sheet | table`) as **data**, so `web-shell` stays surface-agnostic.
 
 ### `CommandPlan` (`packages/contracts/src/command-plan.ts`)
 
-The structured plan the **planner skill** emits, and its parser — a faithful TS port of `skill/m365-command-planner/scripts/parse_plan.py` (kept in lockstep). `CommandPlanSchema = { intent: Intent, surface: Surface, scope?, ground: string[], steps: string[], excludes: string[], clarify: string[], confidence?: 'high'|'medium'|'low' }`. `parsePlanBlock(text) → { plan, errors, needsClarification }`: extracts the ` ```plan ` fence (tolerating an unclosed one), validates intent/surface, accumulates the repeatable keywords, reports unknown keywords with a did-you-mean, and returns a `null` plan on a missing/invalid `intent`/`surface`. A `clarify` line substitutes for a required `step`.
+The structured plan the **planner skill** emits, and its parser — a faithful TS port of `skill/m365-command-planner/scripts/parse_plan.py` (kept in lockstep). `CommandPlanSchema = { intent: Intent, surface: Surface, scope?: CommandScope, ground: GroundSource[], steps: string[], excludes: string[], clarify: string[], confidence?: 'high'|'medium'|'low' }`. `parsePlanBlock(text) → { plan, errors, needsClarification }`: extracts the ` ```plan ` fence (tolerating an unclosed one), validates intent/surface, accumulates the repeatable keywords, reports unknown keywords with a did-you-mean, and returns a `null` plan on a missing/invalid `intent`/`surface`. A `clarify` line substitutes for a required `step`.
 
 ## A2A agent interface (`services/agents`)
 

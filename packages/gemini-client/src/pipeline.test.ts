@@ -20,7 +20,7 @@ P1 incidents get a 1 hour response.`;
 
   const cfg = { assistant: { project: 'p', location: 'eu', engine: 'e' }, identity: 'u@acme' };
   const req: AssistRequest = {
-    intent: 'assist',
+    intent: 'ask',
     query: 'Is the SLA below our floor?',
     unit: { connectors: [], surfaceContext: { kind: 'word' } },
   };

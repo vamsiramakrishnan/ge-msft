@@ -24,7 +24,7 @@ function cfg(overrides: Partial<GeminiClientConfig> = {}): GeminiClientConfig {
 
 function assistReq(query = 'What is the SLA?'): AssistRequest {
   return {
-    intent: 'assist',
+    intent: 'ask',
     query,
     unit: {
       connectors: [],
@@ -86,7 +86,7 @@ describe('buildStreamAssistRequest', () => {
   });
   it('passes session + model + notebook filter when present', () => {
     const req: AssistRequest = {
-      intent: 'assist',
+      intent: 'ask',
       query: 'q',
       unit: {
         notebookId: 'nb_1',

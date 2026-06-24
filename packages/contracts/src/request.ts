@@ -9,7 +9,7 @@ import { UnitDescriptorSchema } from './unit.js';
 export const AssistRequestSchema = z.object({
   intent: IntentSchema,
   unit: UnitDescriptorSchema,
-  query: z.string().optional(), // for 'assist'
+  query: z.string().optional(), // for 'ask'
   target: z
     .object({
       contentControlId: z.string().optional(),

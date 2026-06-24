@@ -42,7 +42,7 @@ describe('SessionContext', () => {
 
 describe('buildStreamAssistRequest with live context', () => {
   const req: AssistRequest = {
-    intent: 'assist',
+    intent: 'ask',
     query: 'Summarize the risk',
     unit: { connectors: [], surfaceContext: { kind: 'word', selection: 'ignored when parts set' } },
   };

@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { IntentSchema, type Intent } from './intent.js';
+import {
+  IntentSchema,
+  CommandScopeSchema,
+  GroundSourceSchema,
+  type Intent,
+  type CommandScope,
+} from './intent.js';
 import { SurfaceSchema, type Surface } from './context.js';
 
 /**
@@ -22,17 +28,59 @@ const INTENTS = new Set(IntentSchema.options);
 const SURFACES = new Set(SurfaceSchema.options);
 const CONFIDENCE = new Set(['high', 'medium', 'low']);
 
+/** One grounding token in a plan: its {@link GroundSource} kind plus an optional named ref. */
+export const PlanGroundSchema = z.object({
+  kind: GroundSourceSchema,
+  ref: z.string().optional(),
+});
+export type PlanGround = z.infer<typeof PlanGroundSchema>;
+
 export const CommandPlanSchema = z.object({
   intent: IntentSchema,
   surface: SurfaceSchema,
-  scope: z.string().optional(),
-  ground: z.array(z.string()).default([]),
+  scope: CommandScopeSchema.optional(),
+  ground: z.array(PlanGroundSchema).default([]),
   steps: z.array(z.string()),
   excludes: z.array(z.string()).default([]),
   clarify: z.array(z.string()).default([]),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
 });
 export type CommandPlan = z.infer<typeof CommandPlanSchema>;
+
+const SCOPE_KINDS = new Set(CommandScopeSchema.shape.kind.options);
+const GROUND_KINDS = new Set(GroundSourceSchema.options);
+
+/**
+ * Parse a raw `scope` line into a {@link CommandScope}. A bare scope keyword (`selection`,
+ * `document`, `this-item`, …) maps to that kind; `range(A1:D9)` / `section(§4)` / `comment(c1)`
+ * carry a ref; any other free text degrades to a `section` heading ref (the common "§4-6" case).
+ */
+export function parseScope(raw: string): CommandScope {
+  const trimmed = raw.trim();
+  const fn = trimmed.match(/^(range|section|comment)\s*\(\s*(.+?)\s*\)$/i);
+  if (fn) {
+    return { kind: fn[1]!.toLowerCase() as CommandScope['kind'], ref: fn[2]! };
+  }
+  const bare = trimmed.toLowerCase();
+  if (SCOPE_KINDS.has(bare as CommandScope['kind'])) {
+    return { kind: bare as CommandScope['kind'] };
+  }
+  return { kind: 'section', ref: trimmed };
+}
+
+/**
+ * Parse a raw `ground` line into a {@link PlanGround}. A bare {@link GroundSource} token (`unit`,
+ * `this`, …) maps to that kind; anything else is a named source (`document` + ref) — e.g. a policy
+ * title like `"Vendor Risk Policy v4"`.
+ */
+export function parseGround(raw: string): PlanGround {
+  const trimmed = raw.trim();
+  const bare = trimmed.toLowerCase();
+  if (GROUND_KINDS.has(bare as PlanGround['kind'])) {
+    return { kind: bare as PlanGround['kind'] };
+  }
+  return { kind: 'document', ref: trimmed };
+}
 
 const _FENCE = /```plan[^\S\n]*\r?\n([\s\S]*?)```/i;
 const _FENCE_OPEN = /```plan[^\S\n]*\r?\n([\s\S]*)$/i;
@@ -131,9 +179,9 @@ export function parsePlanBlock(text: string): {
   const errors: string[] = [];
   let intent: string | undefined;
   let surface: string | undefined;
-  let scope: string | undefined;
+  let scope: CommandScope | undefined;
   let confidence: string | undefined;
-  const ground: string[] = [];
+  const ground: PlanGround[] = [];
   const steps: string[] = [];
   const excludes: string[] = [];
   const clarify: string[] = [];
@@ -155,13 +203,13 @@ export function parsePlanBlock(text: string): {
         surface = rec.value.toLowerCase();
         break;
       case 'scope':
-        scope = rec.value;
+        scope = parseScope(rec.value);
         break;
       case 'confidence':
         confidence = rec.value.toLowerCase();
         break;
       case 'ground':
-        ground.push(rec.value);
+        ground.push(parseGround(rec.value));
         break;
       case 'step':
         steps.push(rec.value);

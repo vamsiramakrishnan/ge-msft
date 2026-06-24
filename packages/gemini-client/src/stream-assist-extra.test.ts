@@ -11,7 +11,7 @@ function cfg(overrides: Partial<GeminiClientConfig> = {}): GeminiClientConfig {
 
 function assistReq(query = 'What is the SLA?'): AssistRequest {
   return {
-    intent: 'assist',
+    intent: 'ask',
     query,
     unit: {
       connectors: [],

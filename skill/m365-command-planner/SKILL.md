@@ -53,18 +53,42 @@ Minimal shape of a turn:
 ```plan
 intent   review
 surface  word
+scope    section §4–6
 step     find clauses in §4–6 that fall below the Vendor Risk policy standard
 ground   "Vendor Risk Policy v4"
 ```
 ````
+
+## The seven verbs (general capabilities, surface-agnostic)
+
+The verb is the WHAT; **scope** is a separate orthogonal axis (WHERE) and **ground** is a
+separate orthogonal axis (what it is grounded on). The same seven verbs apply on every
+surface — never invent a surface- or task-specific verb (no `regen-clause`, `draft-slides`,
+`synthesize`, `meeting-notes`, `resolve-comment`; those are scopes/closures of these seven).
+
+| Verb        | Means                                                              | Lands as     |
+| ----------- | ------------------------------------------------------------------ | ------------ |
+| `ask`       | a custom free-text prompt / grounded chat over the scope           | chat         |
+| `summarize` | condense the scope                                                 | chat         |
+| `explain`   | clarify the scope in plain language                                | chat         |
+| `rewrite`   | apply **any instruction** to the scope → a reversible edit         | write        |
+| `review`    | whole-scope pass emitting N findings → N gated annotations         | annotation   |
+| `draft`     | generate **new** material (slides, a page, a reply, a column)      | write        |
+| `notes`     | transcript → live notes + action items (Teams)                     | annotation   |
+
+`resolve-comment` is just `rewrite` or `review` with `scope comment <id>`. "Make formal",
+"tighten", "rewrite this clause to match the policy" are all `rewrite` + free text in a
+`step`. Generating slides or a OneNote page is `draft` with `scope deck`/`scope page`.
 
 ## What you are given each turn
 
 The host supplies, in the prompt:
 
 - `surface` — the active app (word, excel, powerpoint, onenote, outlook, teams).
-- `<verbs>` — the action verbs available on this surface (the `/` commands). Map the
-  request onto one of these as the `intent`. If none fits, set `intent assist`.
+- `<verbs>` — the seven general action verbs (the `/` commands), drawn from
+  `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Map the request
+  onto one of these as the `intent`. If none fits, set `intent ask` — `ask` is the
+  custom free-text prompt over the chosen scope (the catch-all read verb).
 - `<sources>` — the `@`-mentions the user pinned, already resolved (titles + kind). Echo the
   ones your plan actually relies on as `ground` lines; do not invent sources.
 - the user's raw request (verb + free text).
@@ -76,9 +100,9 @@ filters in plain language; the executor resolves them against the live document.
 
 ```
 plan                                   open the block (optional; the fence implies it)
-intent   <verb>                        one of the available <verbs>; assist if none fits
+intent   <verb>                        one of ask|summarize|explain|rewrite|review|draft|notes; ask if none fits
 surface  <app>                         echo the active surface
-scope    <where>                       OPTIONAL — section/range/slide/"whole"; plain language ok
+scope    <where>                       OPTIONAL — selection|document|range|section|comment|this-item; plain ref ok
 ground   "<source>"                    REPEATABLE — a pinned @source this plan needs (verbatim title)
 step     <what to do, in order>        REPEATABLE — one intention per line, executor-shaped but NL
 exclude  <what to leave alone>         REPEATABLE — explicit carve-outs
@@ -119,17 +143,30 @@ Rules:
 ## Worked example
 
 User (Word): `/review @"Vendor Risk Policy v4" §4–6 — only clauses that breach APRA CPS 234,
-rewrite the SLA to our 99.9% standard, but leave the indemnity clause as-is`
+but leave the indemnity clause as-is`
 
 ````text
 ```plan
 intent   review
 surface  word
-scope    §4–6
+scope    section §4–6
 ground   "Vendor Risk Policy v4"
 step     flag clauses in §4–6 that breach APRA CPS 234, grounded on the policy
-step     rewrite the SLA availability figure to 99.9% as a tracked change
 exclude  the indemnity clause — leave unchanged
+confidence high
+```
+````
+
+A free-text edit is `rewrite` (the verb is the WHAT; the instruction lives in the `step`):
+
+User (Word): `/rewrite the SLA availability figure to our 99.9% standard, as a tracked change`
+
+````text
+```plan
+intent   rewrite
+surface  word
+scope    selection
+step     rewrite the SLA availability figure to 99.9% as a tracked change
 confidence high
 ```
 ````
@@ -140,7 +177,7 @@ If the control were ambiguous, instead:
 ```plan
 intent   review
 surface  word
-scope    §4–6
+scope    section §4–6
 ground   "Vendor Risk Policy v4"
 clarify  "breach APRA CPS 234" — the whole standard, or specifically §35 (offshore access)?
 confidence low

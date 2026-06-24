@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildAskSelectionSeed, askSelection, ASK_SELECTION_SEED_KEY } from './commands.js';
+import { buildAskSelectionSeed, askSelection, askSelectionSeedKey } from './commands.js';
 import { askSelectionQuery, isAskSelectionSeed } from './ask-selection-seed.js';
+
+const WORD_KEY = askSelectionSeedKey('word');
 
 /**
  * Tests for the right-click "Ask Gemini about this" function-command. The load-bearing behavior:
@@ -20,6 +22,7 @@ function fakeOffice(
   return {
     CoercionType: { Text: 'text' },
     context: {
+      host: 'Word',
       document: {
         getSelectedDataAsync: (
           _coercion: unknown,
@@ -44,6 +47,8 @@ describe('buildAskSelectionSeed', () => {
   it('records a selection without persisting the selected text', () => {
     const seed = buildAskSelectionSeed('The vendor SLA is 99.5%.');
     expect(seed.kind).toBe('ask-selection');
+    expect(seed.intent).toBe('ask');
+    expect(seed.scope).toEqual({ kind: 'selection' });
     expect(seed.hasSelection).toBe(true);
     // The raw selected text must NOT ride in the seed (it crosses localStorage).
     expect(JSON.stringify(seed)).not.toContain('99.5');
@@ -67,9 +72,15 @@ describe('askSelection', () => {
 
     expect(setItem).toHaveBeenCalledTimes(1);
     const [key, json] = setItem.mock.calls[0]!;
-    expect(key).toBe(ASK_SELECTION_SEED_KEY);
+    expect(key).toBe(WORD_KEY); // stashed under the per-surface key
     const seed = JSON.parse(json as string);
-    expect(seed).toEqual({ kind: 'ask-selection', hasSelection: true });
+    expect(seed).toMatchObject({
+      kind: 'ask-selection',
+      intent: 'ask',
+      scope: { kind: 'selection' },
+      hasSelection: true,
+    });
+    expect(isAskSelectionSeed(seed)).toBe(true);
     expect(json).not.toContain('renewal'); // the selected text never crosses the channel
     expect(showAsTaskpane).toHaveBeenCalledTimes(1);
     expect(completed).toHaveBeenCalledTimes(1);
@@ -83,7 +94,7 @@ describe('askSelection', () => {
     await askSelection({ completed }, { office, sink: { setItem } });
 
     const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
-    expect(seed).toEqual({ kind: 'ask-selection', hasSelection: false });
+    expect(seed).toMatchObject({ kind: 'ask-selection', hasSelection: false });
     expect(completed).toHaveBeenCalledTimes(1);
   });
 
@@ -117,7 +128,7 @@ describe('askSelection', () => {
     await askSelection({ completed }, { office: {}, sink: { setItem } });
 
     const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
-    expect(seed).toEqual({ kind: 'ask-selection', hasSelection: false });
+    expect(seed).toMatchObject({ kind: 'ask-selection', hasSelection: false });
     expect(completed).toHaveBeenCalledTimes(1);
   });
 });
@@ -136,7 +147,7 @@ describe('askSelection → pane handoff', () => {
       { office: fakeOffice({ selection: 'Salary: $480,000; renews Nov 26' }), sink },
     );
 
-    const raw = store.get(ASK_SELECTION_SEED_KEY)!;
+    const raw = store.get(WORD_KEY)!;
     expect(raw).not.toContain('480,000'); // confidential selection text stays out of storage
     const parsed: unknown = JSON.parse(raw);
     expect(isAskSelectionSeed(parsed)).toBe(true);

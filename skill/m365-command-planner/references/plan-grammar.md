@@ -9,9 +9,9 @@ to the user for a one-tap confirm before anything runs.
 
 | Keyword      | Repeatable | Required | Meaning                                                                                                                                 |
 | ------------ | :--------: | :------: | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `intent`     |     no     |   yes    | The action verb, one of the surface's available `<verbs>` (the `/` commands). Use `assist` if none fits.                                |
+| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.  |
 | `surface`    |     no     |   yes    | The active app: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                           |
-| `scope`      |     no     |    no    | Where the work applies — a section, range, slide, or `whole`. Plain language is fine (`§4–6`, `Sales!A:C`, `slide:3`, `the open mail`). |
+| `scope`      |     no     |    no    | Where the work applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow (`section §4–6`, `range Sales!A:C`, `comment c-12`). |
 | `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                               |
 | `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                          |
 | `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                   |
@@ -20,6 +20,28 @@ to the user for a one-tap confirm before anything runs.
 
 `plan` and `end` lines are optional brackets; the fence itself delimits the block. Lines
 starting with `#` are comments. Unknown keywords are reported back as a corrective error.
+
+## The verb is general; scope and ground are orthogonal
+
+The seven verbs are **general capabilities**, identical on every surface — the verb says
+WHAT, `scope` says WHERE, `ground` says what it is grounded on. Do not smuggle a surface or a
+task into the verb (no `regen-clause`, `draft-slides`, `synthesize`, `meeting-notes`,
+`resolve-comment` — those are scopes/closures of the seven):
+
+| Verb        | Means                                                       | Route          |
+| ----------- | ----------------------------------------------------------- | -------------- |
+| `ask`       | a custom free-text prompt / grounded chat over the scope    | chat (read)    |
+| `summarize` | condense the scope                                          | chat (read)    |
+| `explain`   | clarify the scope in plain language                         | chat (read)    |
+| `rewrite`   | apply any instruction to the scope → a reversible edit      | write (gated)  |
+| `review`    | whole-scope pass → N findings → N gated annotations         | annotation     |
+| `draft`     | generate new material (slides, page, reply, column)         | write (gated)  |
+| `notes`     | transcript → live notes + action items (Teams)              | annotation     |
+
+`rewrite` is the load-bearing generalization: "tighten", "make formal", "rewrite to match
+the policy" are all `rewrite` + a free-text `step`, compiling to whatever reversible write
+the scope×surface affords (a Word tracked change, an Excel cell, a slide-body replace).
+`rewrite scope comment <id>` is how a comment thread is actioned (the old `resolve-comment`).
 
 ## How `step` maps per surface
 

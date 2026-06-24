@@ -24,6 +24,9 @@ export const ActuationKindSchema = z.enum([
   'comment-reply', // Word/Excel/PPT: reply to (and optionally resolve) a comment
   'write-cells', // Excel: write values/formulas to a range
   'format-cells', // Excel: apply formatting (bold/fill/numberFormat) to a range (ADR-0004 `format`)
+  'create-table', // Excel: promote a range to a native Table (ADR-0007 `table` verb)
+  'insert-chart', // Excel: add a chart over a source range (ADR-0007 `chart` verb)
+  'format-conditional', // Excel: add a conditional-format rule to a range (ADR-0007 `cf` verb)
   'set-entity-card', // Excel: attach a linked-entity card to a cell
   'insert-slide', // PowerPoint: add a slide
   'set-speaker-notes', // PowerPoint: set a slide's speaker notes
@@ -74,6 +77,46 @@ export const ActuationParamsSchema = z.object({
       numberFormat: z.string().optional(), // e.g. "$#,##0.00"
     })
     .optional(),
+  /** create-table (ADR-0007): promote `range` to a native Table. */
+  table: z
+    .object({
+      range: z.string(),
+      hasHeaders: z.boolean().default(true),
+      name: z.string().optional(), // table name; the bridge mints one if absent
+    })
+    .optional(),
+  /** insert-chart (ADR-0007): a chart over `sourceRange`. */
+  chart: z
+    .object({
+      chartType: z.enum(['column', 'bar', 'line', 'pie', 'scatter', 'area']),
+      sourceRange: z.string(),
+      seriesBy: z.enum(['rows', 'columns', 'auto']).default('auto'),
+      title: z.string().optional(),
+    })
+    .optional(),
+  /** format-conditional (ADR-0007): one conditional-format rule applied to `range`. */
+  conditional: z
+    .object({
+      range: z.string(),
+      rule: z.discriminatedUnion('kind', [
+        z.object({
+          kind: z.literal('cellValue'),
+          operator: z.enum(['gt', 'lt', 'ge', 'le', 'eq', 'ne', 'between']),
+          value: z.string(),
+          value2: z.string().optional(), // upper bound for `between`
+          fill: z.string().optional(), // highlight color, e.g. "#C6EFCE"
+        }),
+        z.object({ kind: z.literal('dataBar') }),
+        z.object({ kind: z.literal('colorScale') }),
+        z.object({
+          kind: z.literal('top'),
+          rank: z.number(), // top/bottom N
+          bottom: z.boolean().default(false),
+          fill: z.string().optional(),
+        }),
+      ]),
+    })
+    .optional(),
   slide: z
     .object({ title: z.string(), bullets: z.array(z.string()), notes: z.string().optional() })
     .optional(),
@@ -98,11 +141,41 @@ export const ActuationRequestSchema = z.object({
 });
 export type ActuationRequest = z.infer<typeof ActuationRequestSchema>;
 
+/**
+ * The recorded INVERSE of an actuation (ADR-0007). Reversibility is an explicit, recorded operation
+ * rather than an implicit property of a tracked change: when a bridge lands a write it reports HOW to
+ * undo it. Pure additions (table/chart/pivot) carry a `delete-object` descriptor keyed by the object
+ * name the host minted; in-place mutations (conditional formatting, a grid spilled over existing data)
+ * carry the prior state needed to restore it. The descriptor is persisted alongside provenance so an
+ * undo is auditable and does not depend on host-session undo state.
+ */
+export const InverseDescriptorSchema = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('delete-object'),
+    objectType: z.enum(['table', 'chart', 'pivot']),
+    name: z.string(), // the host object name to delete
+  }),
+  z.object({
+    op: z.literal('restore-values'),
+    range: z.string(),
+    values: z.array(z.array(z.string())), // prior cell values to write back
+  }),
+  z.object({
+    op: z.literal('clear-conditional'),
+    range: z.string(),
+    ruleOrdinal: z.number(), // index of the added rule within the range's CF collection
+  }),
+]);
+export type InverseDescriptor = z.infer<typeof InverseDescriptorSchema>;
+
 export const ActuationResultSchema = z.object({
   ok: z.boolean(),
   changeId: ChangeIdSchema,
   kind: ActuationKindSchema,
   location: z.string().optional(), // where it landed (range, slide #, comment id, draft id)
+  // How to reverse this write (ADR-0007). Populated by the bridge at apply-time once it knows the
+  // minted object name / prior state; persisted with provenance so undo is recorded, not implicit.
+  inverse: InverseDescriptorSchema.optional(),
   degraded: z.boolean().optional(), // e.g. anchor drifted → applied as a panel item
   // Observability: the reversible write LANDED but its durable provenance could not be persisted
   // (host metadata write failed / unavailable). The change is real but unprovenanced — surface it so

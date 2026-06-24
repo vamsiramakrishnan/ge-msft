@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   ActuationRequestSchema,
+  ActuationResultSchema,
   CapabilityManifestSchema,
   ContextRefSchema,
+  InverseDescriptorSchema,
   ResolvedContextSchema,
 } from './index.js';
 
@@ -72,6 +74,62 @@ describe('context + capability model', () => {
       ],
     });
     expect(manifest.actuations).toHaveLength(2);
+  });
+
+  it('validates the ADR-0007 host-native write params (table / chart / conditional)', () => {
+    expect(() =>
+      ActuationRequestSchema.parse({
+        changeId: 'c',
+        kind: 'create-table',
+        surface: 'excel',
+        params: { table: { range: 'Report!A1:C12', hasHeaders: true, name: 'Top' } },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      ActuationRequestSchema.parse({
+        changeId: 'c',
+        kind: 'insert-chart',
+        surface: 'excel',
+        params: { chart: { chartType: 'column', sourceRange: 'A1:B11', seriesBy: 'auto' } },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      ActuationRequestSchema.parse({
+        changeId: 'c',
+        kind: 'format-conditional',
+        surface: 'excel',
+        params: {
+          conditional: {
+            range: 'E2:E200',
+            rule: { kind: 'cellValue', operator: 'gt', value: '1000', fill: '#C6EFCE' },
+          },
+        },
+      }),
+    ).not.toThrow();
+    // A bad chart type is rejected.
+    expect(() =>
+      ActuationRequestSchema.parse({
+        changeId: 'c',
+        kind: 'insert-chart',
+        surface: 'excel',
+        params: { chart: { chartType: 'donut', sourceRange: 'A1:B2' } },
+      }),
+    ).toThrow();
+  });
+
+  it('validates the ADR-0007 recorded inverse on a result (delete-object / restore / clear-rule)', () => {
+    for (const inverse of [
+      { op: 'delete-object', objectType: 'table', name: 'Tbl1' },
+      { op: 'restore-values', range: 'A1:B2', values: [['1', '2']] },
+      { op: 'clear-conditional', range: 'E2:E20', ruleOrdinal: 0 },
+    ]) {
+      expect(() => InverseDescriptorSchema.parse(inverse)).not.toThrow();
+      expect(() =>
+        ActuationResultSchema.parse({ ok: true, changeId: 'c', kind: 'create-table', inverse }),
+      ).not.toThrow();
+    }
+    // An unknown inverse op is rejected.
+    expect(() => InverseDescriptorSchema.parse({ op: 'nuke', name: 'x' })).toThrow();
   });
 
   it('rejects an unknown actuation kind', () => {

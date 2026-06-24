@@ -20,6 +20,10 @@ export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'post',
   // Outlook create-mail (compose a new draft) — also an effect, never a pipeline source.
   'compose',
+  // ADR-0007 host-native Excel kinds — effects, never a pipeline source.
+  'table',
+  'chart',
+  'cf',
 ]);
 
 /** The Phase-1 corrective when the model tries to compose an effect. */

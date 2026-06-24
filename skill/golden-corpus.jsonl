@@ -18,6 +18,19 @@
 {"name": "mail-flat", "input": "mail \"Thanks, will follow up by Friday.\"", "expect": {"verbs": ["mail"]}}
 {"name": "post-flat", "input": "post \"Summary posted to the channel.\"", "expect": {"verbs": ["post"]}}
 {"name": "compose-flat", "input": "compose \"Follow-up on Q3\" \"Here is the recap.\"", "expect": {"verbs": ["compose"]}}
+{"name": "table-flat", "input": "table Report!A1:C12 headers", "expect": {"verbs": ["table"]}}
+{"name": "table-named", "input": "table Report!A1:C12 headers name=TopRegions", "expect": {"verbs": ["table"]}}
+{"name": "chart-flat", "input": "chart column Report!A1:B11 title=\"Top regions\"", "expect": {"verbs": ["chart"]}}
+{"name": "cf-inline-op", "input": "cf Sales!E2:E200 >100000 fill=#C6EFCE", "expect": {"verbs": ["cf"]}}
+{"name": "cf-databar", "input": "cf Sales!E2:E200 databar", "expect": {"verbs": ["cf"]}}
+{"name": "spill-var", "input": "spill Report!A1 = ($top)", "expect": {"verbs": ["spill"]}}
+{"name": "spill-pipeline", "input": "spill Report!A1 = ($top | select Region,Revenue)", "expect": {"verbs": ["spill"]}}
+{"name": "table-missing-range", "input": "table", "expect": {"error_substring": "table needs a range"}}
+{"name": "chart-missing-range", "input": "chart column", "expect": {"error_substring": "chart needs a type and a range"}}
+{"name": "cf-missing-rule", "input": "cf Sales!E2:E200", "expect": {"error_substring": "cf needs a rule"}}
+{"name": "spill-literal-rejected", "input": "spill Report!A1 = East region", "expect": {"error_substring": "not a literal"}}
+{"name": "block-spill-grid-complete", "input": "```cmd\nspill Report!A1 = ($top | filter Quarter=Q3 | select Region,Revenue)\ntable Report!A1:B11 headers\nchart column Report!A1:B11 title=\"Top regions\"\ndone\n```", "expect": {"verbs": ["spill", "table", "chart", "done"], "complete": true}}
+{"name": "block-chart-no-range-done-error", "input": "```cmd\nchart column\ndone\n```", "expect": {"has_error": true, "complete": false}}
 {"name": "done-flat", "input": "done", "expect": {"verbs": ["done"]}}
 {"name": "help-flat", "input": "help", "expect": {"verbs": ["help"]}}
 {"name": "comment-only", "input": "# just a comment line", "expect": {"verbs": []}}

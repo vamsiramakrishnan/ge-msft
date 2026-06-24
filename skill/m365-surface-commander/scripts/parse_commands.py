@@ -23,6 +23,9 @@ CONTROL_VERBS = {"done", "help"}
 WRITE_VERBS = {
     "set", "suggest", "comment", "format", "reply",
     "slide", "page", "mail", "post", "compose",
+    # ADR-0007 host-native Excel kinds — table/chart/cf take a literal range + props
+    # (the `format`-style grammar); spill is the table→grid composition sink (`set` widened).
+    "table", "chart", "cf", "spill",
 }
 ALL_VERBS = READ_VERBS | CONTROL_VERBS | WRITE_VERBS
 
@@ -70,6 +73,41 @@ def _scan_quoted(rest: str):
         return None
     val = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
     return val, rest.strip()[m.end():].strip()
+
+
+# Split a verb's argument string into positional tokens + key=value props, keeping `key="quoted
+# value"` (with spaces) intact — mirrors the TS `tokenizeArgs` used by table/chart/cf. A
+# `key="quoted"` / `key=bare` match yields a prop; anything else is positional (a range, a chart
+# type, a bare CF mode like `databar`).
+_TOKENIZE = re.compile(r'(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|(\S+)')
+
+
+def _tokenize_args(rest: str):
+    positional = []
+    props = {}
+    for m in _TOKENIZE.finditer(rest):
+        if m.group(1) is not None:
+            props[m.group(1)] = m.group(2)
+        elif m.group(3) is not None:
+            props[m.group(3)] = m.group(4)
+        elif m.group(5) is not None:
+            positional.append(m.group(5))
+        else:
+            positional.append(m.group(6))
+    return positional, props
+
+
+def _is_effect_expr(value: str) -> bool:
+    """Mirror the TS `parseEffectArg` accept-set: an effect-arg EXPRESSION is a bare `$var` or a
+    parenthesized pipeline `( ... )`. A literal (anything else) is rejected by `spill`.
+
+    Like the TS parser, strip a leading assignment `=` ONLY when followed by whitespace (the
+    `spill <range> = (expr)` form) — a `=formula` with no space stays a literal.
+    """
+    v = value.strip()
+    if re.match(r"^=\s", v):
+        v = v[1:].strip()
+    return v.startswith("$") or v.startswith("(")
 
 
 def _did_you_mean(verb: str):
@@ -190,6 +228,63 @@ def parse_line(line: str):
         if not qs:
             return {"error": 'slide needs a quoted title — usage: slide "Title" "bullet" ...'}
         return {"verb": "slide", "title": qs[0], "bullets": qs[1:]}
+
+    # ADR-0007 `table <range> [headers] [name=...]` — promote a range to a native Table.
+    if verb == "table":
+        positional, props = _tokenize_args(rest)
+        if not positional:
+            return {"error": "table needs a range — usage: table <range> [headers] [name=...]"}
+        rng = positional[0]
+        # A bare `headers` flag is sugar for headers=true (the common case).
+        if "headers" in positional[1:]:
+            props["headers"] = "true"
+        return {"verb": "table", "range": rng, "props": props}
+
+    # ADR-0007 `chart <type> <range> [title="…"] [series=rows|columns]` — a chart over a range.
+    if verb == "chart":
+        usage = ("chart needs a type and a range — usage: chart "
+                 "<column|bar|line|pie|scatter|area> <range> [title=\"…\"] [series=rows|columns]")
+        positional, props = _tokenize_args(rest)
+        if len(positional) < 2:
+            return {"error": usage}
+        return {"verb": "chart", "chartType": positional[0].lower(),
+                "range": positional[1], "props": props}
+
+    # ADR-0007 `cf <range> <rule>` — one conditional-format rule. Tolerant of an inline operator
+    # (`>1000`), a bare mode (`databar`/`colorscale`), or `top=N`. Only collects props.
+    if verb == "cf":
+        positional, props = _tokenize_args(rest)
+        if not positional:
+            return {"error": "cf needs a range and a rule — usage: cf <range> >VALUE [fill=#hex] | "
+                             "cf <range> databar|colorscale | cf <range> top=N"}
+        rng = positional[0]
+        for tok in positional[1:]:
+            op = re.match(r"(>=|<=|!=|>|<|=)(.+)$", tok)
+            if op:
+                props["op"] = op.group(1)
+                props["value"] = op.group(2)
+            else:
+                props[tok.lower()] = "true"  # a bare mode: databar / colorscale
+        if not props:
+            return {"error": "cf needs a rule — usage: cf <range> >VALUE [fill=#hex] | "
+                             "cf <range> databar|colorscale | cf <range> top=N"}
+        return {"verb": "cf", "range": rng, "props": props}
+
+    # ADR-0007 §3 `spill <range> = <expr>` — write a composed TABLE as a grid. The range is the
+    # first token; the remainder MUST be a `$var` / `( pipeline )` expression — a literal is
+    # rejected (spill is the composition sink, not a verbatim writer; use `set` for one cell).
+    if verb == "spill":
+        usage = "spill needs a range and a table expression — usage: spill <range> = ($rows)"
+        sp = re.search(r"\s", rest)
+        if not sp:
+            return {"error": usage}
+        rng, value = rest[: sp.start()], rest[sp.start():].strip()
+        if not rng or not value:
+            return {"error": usage}
+        if not _is_effect_expr(value):
+            return {"error": "spill needs a composed table, not a literal — e.g. "
+                             "spill Report!A1 = ($rows) (use set for one cell)"}
+        return {"verb": "spill", "range": rng, "value": value}
 
     return {"error": f"unhandled verb '{verb}'"}
 

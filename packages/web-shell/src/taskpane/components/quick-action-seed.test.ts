@@ -33,6 +33,19 @@ describe('quickActionToInvocation', () => {
     expect(inv.mentions).toEqual([{ kind: 'this' }]);
     expect(inv.instruction).toBe('Sum.');
   });
+
+  it('substitutes `{{name}}` slots from the collected values (H)', () => {
+    const inv = quickActionToInvocation(
+      action({ intent: 'draft', prompt: 'Draft on {{topic}}.' }),
+      { topic: 'Q3 GTM' },
+    );
+    expect(inv.instruction).toBe('Draft on Q3 GTM.');
+  });
+
+  it('leaves an unprovided slot intact (the fail-closed guard catches it downstream)', () => {
+    const inv = quickActionToInvocation(action({ intent: 'draft', prompt: 'Draft on {{topic}}.' }));
+    expect(inv.instruction).toBe('Draft on {{topic}}.');
+  });
 });
 
 describe('invocationToSeed (deterministic string for the controller seam)', () => {

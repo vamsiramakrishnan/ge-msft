@@ -24,6 +24,50 @@ import { VERBS_BY_SURFACE } from './command-palette.js';
 export const QuickActionOutputSchema = z.enum(['chat', 'annotation', 'write']);
 export type QuickActionOutput = z.infer<typeof QuickActionOutputSchema>;
 
+/**
+ * A fill-in slot in an action's `prompt`, referenced as `{{name}}` (EXPERIENCE.md §5, Workstream H).
+ * A parameterized action is NEVER dispatched with its template literal — the panel collects every
+ * declared value first, so a raw `{{topic}}` can never reach the model. `name` is the token; `label`
+ * is what the fill field shows; `hint` is an example placeholder. `name` must be a clean token (no
+ * braces/whitespace) so the parity check below can match it against the template.
+ */
+export const QuickActionParamSchema = z.object({
+  name: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/i, 'parameter name must be a bare token (no braces or spaces)'),
+  label: z.string().min(1),
+  hint: z.string().optional(),
+});
+export type QuickActionParam = z.infer<typeof QuickActionParamSchema>;
+
+/** Every distinct `{{name}}` token in a prompt, in order of first appearance (deduped). */
+export function promptPlaceholders(prompt: string): string[] {
+  const seen = new Set<string>();
+  for (const m of prompt.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)) {
+    const name = (m[1] ?? '').trim();
+    if (name) seen.add(name);
+  }
+  return [...seen];
+}
+
+/** The declared parameters of an action, normalized to an array (the field is optional). */
+export function actionParameters(action: Pick<QuickAction, 'parameters'>): QuickActionParam[] {
+  return action.parameters ?? [];
+}
+
+/** Substitute every `{{name}}` in `prompt` with `values[name]`; unprovided names are left intact. */
+export function fillPrompt(prompt: string, values: Readonly<Record<string, string>>): string {
+  return prompt.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (whole, raw: string) => {
+    const name = raw.trim();
+    return Object.prototype.hasOwnProperty.call(values, name) ? values[name]! : whole;
+  });
+}
+
+/** True iff `text` still carries an unfilled `{{…}}` placeholder — the fail-closed dispatch guard. */
+export function hasUnfilledPlaceholder(text: string): boolean {
+  return /\{\{\s*[^}]+?\s*\}\}/.test(text);
+}
+
 export const QuickActionSchema = z
   .object({
     id: z.string(),
@@ -31,10 +75,11 @@ export const QuickActionSchema = z
     surfaces: z.array(SurfaceSchema).nonempty(),
     intent: IntentSchema,
     scope: CommandScopeSchema, // WHERE the action acts (EXPERIENCE.md §1, Tier 2)
-    prompt: z.string(), // templated free-text seed
+    prompt: z.string(), // templated free-text seed; `{{name}}` slots are declared in `parameters`
     ground: z.array(z.string()).default([]), // default @-sources, e.g. ['this']
     output: QuickActionOutputSchema, // MUST equal deriveOutput(intent) — enforced below
     contextMenu: z.boolean().default(false), // also offered on right-click
+    parameters: z.array(QuickActionParamSchema).optional(), // typed `{{name}}` fill slots (H)
   })
   // Fail-closed: an action's declared `output` MUST match the closure-derived output for its intent.
   // The panel routes the gate off the intent (write/annotation → gate), so a tenant-composed catalog
@@ -48,6 +93,30 @@ export const QuickActionSchema = z
         path: ['output'],
         message: `output '${a.output}' must equal deriveOutput('${a.intent}') = '${expected}'`,
       });
+    }
+    // Template ↔ parameter parity (H): every `{{name}}` slot in the prompt MUST be a declared
+    // parameter, and every declared parameter MUST appear in the prompt. This makes it structurally
+    // impossible to ship an action that leaks a literal `{{…}}` to the model (an undeclared slot) or
+    // that prompts for a value it never uses (a dangling param).
+    const slots = new Set(promptPlaceholders(a.prompt));
+    const params = new Set((a.parameters ?? []).map((p) => p.name));
+    for (const slot of slots) {
+      if (!params.has(slot)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['parameters'],
+          message: `prompt slot '{{${slot}}}' has no declared parameter`,
+        });
+      }
+    }
+    for (const name of params) {
+      if (!slots.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['parameters'],
+          message: `parameter '${name}' is not referenced as '{{${name}}}' in the prompt`,
+        });
+      }
     }
   });
 export type QuickAction = z.infer<typeof QuickActionSchema>;
@@ -154,11 +223,14 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     surfaces: ['word'],
     intent: 'review',
     scope: DOCUMENT,
-    // A general review against a picked @source (policy is just one possible @doc — the
+    // A general review against a named standard (policy is just one possible target — the
     // contract-review nouns moved to CONTRACT_REVIEW_PACK).
-    prompt: 'Review this document against {{@source}} and flag every breach as a finding.',
+    prompt: 'Review this document against {{standard}} and flag every breach as a finding.',
     ground: ['unit'],
     contextMenu: false,
+    parameters: [
+      { name: 'standard', label: 'Review against', hint: 'e.g. the master agreement, ISO 27001' },
+    ],
   }),
   surfaceAction({
     id: 'tighten',
@@ -193,14 +265,22 @@ export const SURFACE_ACTIONS: QuickAction[] = [
 
   // ── Excel ────────────────────────────────────────────────────────────────────
   surfaceAction({
+    // READ-ONLY BY CONTRACT: `intent: 'ask'` → `output: 'chat'` → routes to `send`, never a cell
+    // write. So the `=GE.ASK("…")` text is only the model-facing task, and `fillPrompt`'s naked
+    // (unescaped) substitution into the formula string is safe. If a formula-shaped prompt ever gains
+    // a WRITE path, add a formula-slot encoder (escape `"`, reject newlines) first (security review H).
     id: 'ge-ask',
     label: '=GE.ASK in the grid',
     surfaces: ['excel'],
     intent: 'ask',
     scope: { kind: 'range' },
-    prompt: '=GE.ASK("{{prompt}}", {{range}})',
+    prompt: '=GE.ASK("{{question}}", {{range}})',
     ground: ['this'],
     contextMenu: false,
+    parameters: [
+      { name: 'question', label: 'Question', hint: 'e.g. which region grew fastest?' },
+      { name: 'range', label: 'Cell range', hint: 'e.g. A1:D20' },
+    ],
   }),
   surfaceAction({
     id: 'summarize-range',
@@ -248,9 +328,12 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     surfaces: ['excel'],
     intent: 'rewrite',
     scope: { kind: 'range' },
-    prompt: 'Write a formula for {{describe what to compute}} and place it in the target cell.',
+    prompt: 'Write a formula for {{goal}} and place it in the target cell.',
     ground: ['this'],
     contextMenu: false,
+    parameters: [
+      { name: 'goal', label: 'Compute', hint: 'e.g. variance of column B against forecast' },
+    ],
   }),
 
   // ── PowerPoint ───────────────────────────────────────────────────────────────
@@ -263,6 +346,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     prompt: 'Draft a slide section from the research unit on {{topic}}.',
     ground: ['unit'],
     contextMenu: false,
+    parameters: [{ name: 'topic', label: 'Topic', hint: 'e.g. Q3 go-to-market strategy' }],
   }),
   surfaceAction({
     id: 'speaker-notes',

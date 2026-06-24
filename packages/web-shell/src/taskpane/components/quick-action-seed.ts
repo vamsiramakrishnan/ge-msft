@@ -1,4 +1,4 @@
-import type { CommandScope, QuickAction } from '@ge/contracts';
+import { fillPrompt, type CommandScope, type QuickAction } from '@ge/contracts';
 import type { ComposerInvocation, ComposerMention } from './Composer.js';
 
 /**
@@ -51,9 +51,15 @@ function scopeToken(scope: CommandScope): string {
 /**
  * Turn a {@link QuickAction} into a typed {@link ComposerInvocation} — the SAME typed shape a
  * composer submit produces, so a chip and a typed line share one downstream path. The action's
- * `ground` defaults become typed mentions and its `scope`/`intent`/`prompt` carry through verbatim.
+ * `ground` defaults become typed mentions and its `scope`/`intent` carry through verbatim. A
+ * parameterized action's `{{name}}` slots are substituted from `values` (Workstream H) BEFORE the
+ * instruction is built — the panel collects every value first, so a raw `{{topic}}` never reaches the
+ * model; an unprovided slot is left intact for the fail-closed dispatch guard to catch.
  */
-export function quickActionToInvocation(action: QuickAction): ComposerInvocation {
+export function quickActionToInvocation(
+  action: QuickAction,
+  values: Readonly<Record<string, string>> = {},
+): ComposerInvocation {
   const mentions: ComposerMention[] = action.ground.map((g) => ({
     kind: g as ComposerMention['kind'],
   }));
@@ -63,7 +69,7 @@ export function quickActionToInvocation(action: QuickAction): ComposerInvocation
     intent: action.intent,
     scope: { ...action.scope },
     mentions,
-    instruction: action.prompt.trim(),
+    instruction: fillPrompt(action.prompt, values).trim(),
     raw: '',
   };
 }

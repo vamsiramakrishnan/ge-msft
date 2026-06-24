@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   deriveOutput,
+  actionParameters,
+  hasUnfilledPlaceholder,
   GROUND_SOURCE_TO_SELECTION_KIND,
   type Surface,
   type ChangeId,
@@ -20,6 +22,7 @@ import { MessageThread } from './MessageThread.js';
 import { Composer, type ComposerInvocation, type ComposerMention } from './Composer.js';
 import { QuickActionBar } from './QuickActionBar.js';
 import { invocationToSeed, quickActionToInvocation } from './quick-action-seed.js';
+import { QuickActionParamForm } from './QuickActionParamForm.js';
 import { ProposalCard } from './ProposalCard.js';
 import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
@@ -125,6 +128,8 @@ export function invocationToGrounding(
  */
 export function App({ controller, surface, agentLabel, allowedIntents }: AppProps): JSX.Element {
   const state = usePanelState(controller);
+  // The parameterized action awaiting its `{{name}}` fill values (Workstream H), or undefined.
+  const [paramFill, setParamFill] = useState<QuickAction | undefined>(undefined);
 
   // Load the attachable-context chips once on mount.
   useEffect(() => {
@@ -144,6 +149,10 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
   // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
     const seed = invocationToSeed(inv);
+    // Fail-closed (Workstream H): a typed `{{name}}` slot must be filled before dispatch — never send
+    // a literal placeholder to the model. A parameterized chip is collected via QuickActionParamForm
+    // first, so this guard only fires on a defective seed; drop it rather than actuate on raw braces.
+    if (hasUnfilledPlaceholder(seed)) return;
     const grounding = invocationToGrounding(inv);
     // EXPERIENCE.md §F — the planner-confirm front door, enforced ONLY for complex free-text: a
     // composer-typed (raw ≠ '') actuating instruction with constraints first proposes a confirmable
@@ -159,8 +168,21 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
   };
 
   // A chip is the same typed Invocation a composer line is — pre-filled, then dispatched through the
-  // one shared `dispatch`. (`action.output` and `isActuating` agree by construction, ADR-0006.)
-  const onQuickAction = (action: QuickAction): void => dispatch(quickActionToInvocation(action));
+  // one shared `dispatch`. (`action.output` and `isActuating` agree by construction, ADR-0006.) A
+  // parameterized action (Workstream H) opens the fill form FIRST instead of dispatching, so its
+  // `{{name}}` slots are collected before the typed invocation is built.
+  const onQuickAction = (action: QuickAction): void => {
+    if (actionParameters(action).length > 0) setParamFill(action);
+    else dispatch(quickActionToInvocation(action));
+  };
+
+  // Dispatch a parameterized action once its fill values are collected: substitute the values into
+  // the prompt, build the SAME typed invocation a bare chip would (scope/intent/grounding intact),
+  // and route it through the one shared `dispatch`.
+  const onParamFillSubmit = (action: QuickAction, values: Record<string, string>): void => {
+    setParamFill(undefined);
+    dispatch(quickActionToInvocation(action, values));
+  };
 
   // A structured composer submit (`/verb` intent + scope + `@`-mentions + instruction) → the same path.
   const onInvoke = (inv: ComposerInvocation): void => dispatch(inv);
@@ -249,11 +271,23 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
         onAction={onQuickAction}
       />
 
+      <QuickActionParamForm
+        key={paramFill?.id}
+        action={paramFill}
+        onSubmit={onParamFillSubmit}
+        onCancel={() => setParamFill(undefined)}
+      />
+
       <Composer
         busy={state.busy}
         surface={surface}
         allowedIntents={allowedIntents}
-        onSend={(q) => void controller.send(q)}
+        // The plain-string fallback (unreachable while `onInvoke` is set, since Composer prefers it).
+        // Still guarded against an unfilled `{{…}}` so this is not a second un-guarded `send` seam if a
+        // refactor ever drops `onInvoke` (security review H, LOW).
+        onSend={(q) => {
+          if (!hasUnfilledPlaceholder(q)) void controller.send(q);
+        }}
         onCancel={() => controller.cancel()}
         onInvoke={onInvoke}
         placeholder={SURFACE_PLACEHOLDER[surface]}

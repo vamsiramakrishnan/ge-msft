@@ -8,6 +8,10 @@ import {
   QuickActionSchema,
   deriveOutput,
   quickActionsForSurface,
+  promptPlaceholders,
+  actionParameters,
+  fillPrompt,
+  hasUnfilledPlaceholder,
 } from './quick-actions.js';
 import { INTENT_REQUIRES } from './intent-capability.js';
 import { VERBS_BY_SURFACE } from './command-palette.js';
@@ -86,9 +90,70 @@ describe('re-tagged actions (the audit fixes)', () => {
     expect(byId('speaker-notes').output).toBe('chat');
   });
 
+  it('every prompt slot is a declared parameter and vice versa (template↔param parity)', () => {
+    for (const action of QUICK_ACTIONS) {
+      const slots = new Set(promptPlaceholders(action.prompt));
+      const params = new Set(actionParameters(action).map((p) => p.name));
+      expect([...slots].sort()).toEqual([...params].sort());
+    }
+  });
+
+  it('the parameterized actions declare their fill slots', () => {
+    expect(actionParameters(byId('write-formula')).map((p) => p.name)).toEqual(['goal']);
+    expect(actionParameters(byId('draft-section')).map((p) => p.name)).toEqual(['topic']);
+    expect(actionParameters(byId('ge-ask')).map((p) => p.name)).toEqual(['question', 'range']);
+    expect(actionParameters(byId('review-against')).map((p) => p.name)).toEqual(['standard']);
+  });
+
+  it('rejects an action whose prompt slot has no declared parameter', () => {
+    expect(() =>
+      QuickActionSchema.parse({
+        id: 'leaky',
+        label: 'Leaky',
+        surfaces: ['word'],
+        intent: 'rewrite',
+        scope: { kind: 'selection' },
+        prompt: 'Rewrite for {{tone}}.', // {{tone}} undeclared
+        ground: [],
+        output: 'write',
+        contextMenu: false,
+      }),
+    ).toThrow(/no declared parameter/);
+  });
+
+  it('rejects an action that declares a parameter it never references', () => {
+    expect(() =>
+      QuickActionSchema.parse({
+        id: 'dangling',
+        label: 'Dangling',
+        surfaces: ['word'],
+        intent: 'rewrite',
+        scope: { kind: 'selection' },
+        prompt: 'Rewrite this.', // no {{tone}} slot
+        ground: [],
+        output: 'write',
+        contextMenu: false,
+        parameters: [{ name: 'tone', label: 'Tone' }],
+      }),
+    ).toThrow(/not referenced/);
+  });
+
+  it('fillPrompt substitutes provided slots and leaves the rest intact', () => {
+    expect(fillPrompt('Draft on {{topic}}.', { topic: 'GTM' })).toBe('Draft on GTM.');
+    expect(
+      fillPrompt('=GE.ASK("{{question}}", {{range}})', { question: 'growth?', range: 'A1:B2' }),
+    ).toBe('=GE.ASK("growth?", A1:B2)');
+    expect(fillPrompt('Draft on {{topic}}.', {})).toBe('Draft on {{topic}}.'); // unprovided left intact
+  });
+
+  it('hasUnfilledPlaceholder flags a leftover slot (the fail-closed dispatch guard)', () => {
+    expect(hasUnfilledPlaceholder('Draft on {{topic}}.')).toBe(true);
+    expect(hasUnfilledPlaceholder('Draft on GTM.')).toBe(false);
+  });
+
   it('exposes the general Review against… and a =GE.ASK Excel action', () => {
     expect(byId('review-against').intent).toBe('review');
-    expect(byId('review-against').prompt).toContain('@source');
+    expect(byId('review-against').prompt).toContain('{{standard}}');
     expect(byId('ge-ask').intent).toBe('ask');
     expect(byId('ge-ask').prompt).toContain('GE.ASK');
   });

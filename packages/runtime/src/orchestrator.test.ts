@@ -94,6 +94,73 @@ describe('Orchestrator — react to events', () => {
     orch.stop();
     expect(bridge.emit).toBeNull();
   });
+
+  it('start() is idempotent — a second start does not re-subscribe', () => {
+    let watchCount = 0;
+    class CountingBridge extends FakeBridge {
+      override watch(emit: (e: HostEvent) => void): () => void {
+        watchCount += 1;
+        return super.watch(emit);
+      }
+    }
+    const bridge = new CountingBridge();
+    const orch = new Orchestrator(bridge, new TriggerRegistry(), {});
+    orch.start();
+    orch.start(); // no-op: already started
+    expect(watchCount).toBe(1);
+  });
+
+  it('start() is a no-op when the bridge cannot observe events (no watch)', () => {
+    // A bridge WITHOUT watch — start must not throw and must not subscribe.
+    class NoWatchBridge extends FakeBridge {}
+    const bridge = new NoWatchBridge();
+    // Remove the inherited watch so the orchestrator's `!this.bridge.watch` guard trips.
+    (bridge as { watch?: unknown }).watch = undefined;
+    const orch = new Orchestrator(bridge, new TriggerRegistry(), {});
+    expect(() => orch.start()).not.toThrow();
+    // No watcher was wired, so emit was never assigned.
+    expect(bridge.emit).toBeNull();
+    // stop() on a never-started orchestrator is safe too.
+    expect(() => orch.stop()).not.toThrow();
+  });
+
+  it('forwards a suggestion outcome WITH its detail and query through onSuggest', async () => {
+    const bridge = new FakeBridge();
+    const reg = new TriggerRegistry();
+    reg.register({
+      id: 'rich',
+      on: 'mail-received',
+      handle: () => ({
+        kind: 'suggest',
+        title: 'Triage',
+        detail: 'Looks urgent',
+        query: 'summarize this thread',
+      }),
+    });
+    const onSuggest = vi.fn();
+    const orch = new Orchestrator(bridge, reg, { onSuggest });
+    orch.start();
+
+    bridge.emit?.({ type: 'mail-received', id: 'm9' });
+    await tick();
+    expect(onSuggest).toHaveBeenCalledWith({
+      title: 'Triage',
+      detail: 'Looks urgent',
+      query: 'summarize this thread',
+    });
+  });
+
+  it('routes every event to onContext, independent of whether a trigger matches', async () => {
+    const bridge = new FakeBridge();
+    const reg = new TriggerRegistry(); // no triggers registered
+    const onContext = vi.fn();
+    const orch = new Orchestrator(bridge, reg, { onContext });
+    orch.start();
+
+    bridge.emit?.({ type: 'mail-received', id: 'm1' });
+    await tick();
+    expect(onContext).toHaveBeenCalledWith({ type: 'mail-received', id: 'm1' });
+  });
 });
 
 describe('AssistSession actuation gate (PreToolUse analog)', () => {

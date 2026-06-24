@@ -655,16 +655,29 @@ describe('OfficeWordHost.registerHandlers (wiring + single-owner teardown)', () 
     expect(rec.removeHandlerCalls).toBe(officeRemovesAfterFirst);
   });
 
-  it('forwards document edits with the host-supplied coauthor source untouched', async () => {
+  it('forwards add+delete paragraph edits with the host-supplied coauthor source untouched', async () => {
     const rec = setup({ requirements: { WordApi: 6 } });
     const handlers = noopHandlers();
     new OfficeWordHost().registerHandlers(handlers);
     await Promise.resolve();
     await Promise.resolve();
-    // The fake records that handlers attached; assert the wiring count rather than reaching into
-    // the closure — the bridge-level mapping of source→origin is covered in word-bridge.test.ts.
-    expect(rec.wordHandlerCount).toBe(4);
-    expect(handlers.onDocumentChanged).not.toHaveBeenCalled(); // not fired yet
+
+    // The onParagraphChanged forwarding is pinned below; here cover the *other two* paragraph
+    // events sharing the same onDocChange callback, and assert the raw source value is passed
+    // through verbatim (no normalization to a Local/Remote enum or origin label at this seam).
+    const fireAdded = rec.wordHandlerCallbacks.get('paraAdded');
+    const fireDeleted = rec.wordHandlerCallbacks.get('paraDeleted');
+    expect(fireAdded).toBeDefined();
+    expect(fireDeleted).toBeDefined();
+
+    await fireAdded?.({ source: 'Local' } as never);
+    expect(handlers.onDocumentChanged).toHaveBeenLastCalledWith({ source: 'Local' });
+
+    await fireDeleted?.({ source: 'Remote' } as never);
+    expect(handlers.onDocumentChanged).toHaveBeenLastCalledWith({ source: 'Remote' });
+
+    // Exactly one forwarded call per fired event — no duplicate emission across the three handlers.
+    expect(handlers.onDocumentChanged).toHaveBeenCalledTimes(2);
   });
 
   it('maps the comment event args (source + each of commentId/id/ids) through to onCommentAdded', async () => {
@@ -769,15 +782,22 @@ describe('OfficeWordHost.registerHandlers (wiring + single-owner teardown)', () 
   });
 
   it('survives a Word.run rejection during registration without throwing', async () => {
-    setup({ wordRunThrows: true });
+    const rec = setup({ wordRunThrows: true });
     const host = new OfficeWordHost();
     let unsub: (() => void) | undefined;
     expect(() => {
       unsub = host.registerHandlers(noopHandlers());
     }).not.toThrow();
     await Promise.resolve();
-    // teardown must also be safe even though nothing Word-side registered.
+    await Promise.resolve();
+    // The Word.run rejection is swallowed: no object-model handler ever attached.
+    expect(rec.wordHandlerCount).toBe(0);
+    // The selection handler is registered via the Office seam (not Word.run), so it still attached
+    // and must still be torn down exactly once even though the Word-side registration rejected.
     expect(() => unsub?.()).not.toThrow();
     await Promise.resolve();
+    await Promise.resolve();
+    expect(rec.removeHandlerCalls).toBe(1);
+    expect(rec.wordHandlerRemovals).toBe(0);
   });
 });

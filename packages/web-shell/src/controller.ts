@@ -20,6 +20,9 @@ import {
 import type { HostEvent } from '@ge/triggers';
 import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
 import { renderCommandLine } from './render-command.js';
+import { assertNever } from './assert-never.js';
+import { TurnQueue } from './turn-queue.js';
+import { ApprovalCoordinator } from './approval-coordinator.js';
 
 /**
  * One actuation in a composed plan (ADR-0005 §3 Planner/Executor) — the CANONICAL runtime
@@ -300,25 +303,6 @@ const EMPTY_STATE: PanelState = {
 };
 
 /**
- * A TURN queued while another is in flight (Finding #3). The single-slot queue is LATEST-WINS, but
- * it is now TYPED by mode so a queued turn drains through the SAME route it was requested on — a
- * queued `commands` turn re-enters {@link PanelController.runCommands} (the fail-closed plan/approval
- * loop), NEVER {@link PanelController.send} (plain grounded chat). Collapsing every queued turn into
- * a string and re-sending it through `send()` (the prior `pendingQuery?: string`) silently downgraded
- * a queued write/annotation turn into a chat turn, bypassing actuation — this discriminated union
- * makes that impossible: the mode is carried through the drain.
- */
-type QueuedTurn =
-  | { mode: 'ask'; query: string; grounding?: ResolvedGrounding }
-  | { mode: 'commands'; task: string; grounding?: ResolvedGrounding }
-  | { mode: 'skill'; name: string; args: Record<string, string> };
-
-/** Exhaustiveness guard: a compile error if a `QueuedTurn`/event variant is left unhandled. */
-function assertNever(x: never): never {
-  throw new Error(`unexpected variant: ${JSON.stringify(x)}`);
-}
-
-/**
  * The surface-agnostic panel logic — the brain behind the task pane. It drives the assist loop
  * (attach context → ask → stream → review/apply), keeps the immutable `PanelState` a thin React
  * view renders, and exposes `onContext`/`onSuggest`/`onAutomate` so the event Orchestrator feeds
@@ -337,33 +321,22 @@ export class PanelController {
    * provenance, and `applyProposal` stamps the proposal's OWN captured provenance — never a leftover.
    */
   private currentTurnProvenance: ProvenancePayload | undefined;
-  /**
-   * Single-slot queue (latest wins), TYPED by mode (Finding #3): a turn requested while another is
-   * streaming. It drains through its OWN route (ask→send, commands→runCommands, skill→invokeSkill),
-   * so a queued write/annotation turn is never downgraded to plain chat.
-   */
-  private pendingTurn: QueuedTurn | undefined;
   /** Aborts the in-flight turn's network/stream; cleared when the turn settles. */
   private inflight: AbortController | undefined;
   /**
-   * The approval id (changeId) of the write currently staged for decision (Finding #6). A decision
-   * (`approve`/`reject`) that arrives for a DIFFERENT id than this — a late click on a superseded
-   * card — is ignored, so it can never apply a request the loop has already moved past.
+   * The single-slot, mode-typed turn queue (E-full): a turn requested while another is streaming,
+   * drained back through its OWN route so a queued mode is never downgraded (Finding #3).
    */
-  private pendingWriteId: ChangeId | undefined;
+  private readonly turnQueue = new TurnQueue();
   /**
-   * Resolves the `approveWrite` promise the command loop is awaiting. Set while a `pendingWrite` is
-   * staged; `approvePendingWrite()`/`rejectPendingWrite()` call it. Fail-closed: if the loop is
-   * abandoned (cancel/teardown) without a decision, we resolve `false` so no write actuates.
+   * The fail-closed approval state machine (E-full): owns the per-write changeId + the two resolver
+   * promises the loop awaits (Finding #6). The `pendingWrite`/`pendingPlan` VIEW slice stays in
+   * `PanelState`, pushed here via the `set` callbacks below.
    */
-  private resolvePendingWrite: ((approved: boolean) => void) | undefined;
-  /**
-   * Resolves the `approvePlan` promise the command loop is awaiting for a composed plan (ADR-0005).
-   * Set while a `pendingPlan` is staged; `approvePlan()`/`rejectPlan()` call it. Fail-closed: if the
-   * plan is abandoned (cancel/teardown/error) without a decision, we resolve `false` so the WHOLE
-   * plan is blocked and no effect actuates.
-   */
-  private resolvePendingPlan: ((approved: boolean) => void) | undefined;
+  private readonly approvals = new ApprovalCoordinator(
+    (write) => this.set({ pendingWrite: write }),
+    (plan) => this.set({ pendingPlan: plan }),
+  );
 
   constructor(
     private readonly session: AssistLike,
@@ -434,7 +407,7 @@ export class PanelController {
     // opt-in automated turn is never silently dropped. Queued AS AN ASK so it drains back through
     // send() (Finding #3) — not collapsed into a string a later drain might mis-route.
     if (this.state.busy) {
-      this.pendingTurn = { mode: 'ask', query: q, ...(grounding ? { grounding } : {}) };
+      this.turnQueue.enqueue({ mode: 'ask', query: q, ...(grounding ? { grounding } : {}) });
       return;
     }
 
@@ -504,7 +477,7 @@ export class PanelController {
     if (!t) return;
     if (this.state.busy) {
       // Mid-stream: don't lose it — queue as a commands turn (the executor, still gated).
-      this.pendingTurn = { mode: 'commands', task: t, ...(grounding ? { grounding } : {}) };
+      this.turnQueue.enqueue({ mode: 'commands', task: t, ...(grounding ? { grounding } : {}) });
       return;
     }
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
@@ -564,7 +537,7 @@ export class PanelController {
   }
 
   /**
-   * Cancel the in-flight turn's network/stream. No-op when idle. A queued turn (`pendingTurn`) still
+   * Cancel the in-flight turn's network/stream. No-op when idle. A queued turn (the `turnQueue` slot) still
    * drains afterwards THROUGH ITS OWN ROUTE — cancelling the current turn should run the one the user
    * lined up behind it, in the mode they requested, not discard it or downgrade it. Office.js host
    * writes already under way are not aborted (not abortable); this targets the assist stream only.
@@ -574,8 +547,7 @@ export class PanelController {
     // A loop gated on the user when cancelled must release fail-closed, so its awaited approval
     // resolves `false` and nothing actuates after the abort — for both the per-write gate and the
     // ADR-0005 plan-level gate.
-    this.settlePendingWrite(false);
-    this.settlePendingPlan(false);
+    this.approvals.releaseAwaiting();
   }
 
   // ---- command loop (ADR-0004) --------------------------------------------
@@ -593,7 +565,7 @@ export class PanelController {
     // Queued AS A COMMANDS turn (Finding #3): it drains back through runCommands — the fail-closed
     // plan/approval loop — NEVER through send(). A queued write turn is never downgraded to chat.
     if (this.state.busy) {
-      this.pendingTurn = { mode: 'commands', task: t, ...(grounding ? { grounding } : {}) };
+      this.turnQueue.enqueue({ mode: 'commands', task: t, ...(grounding ? { grounding } : {}) });
       return;
     }
 
@@ -605,30 +577,16 @@ export class PanelController {
     this.inflight = controller;
     const sources: SourceRef[] = [];
 
-    // The per-write approver (ADR-0004): stage the compiled request and await the user's decision.
+    // The per-write approver (ADR-0004) and the plan-level approver (ADR-0005) both delegate to the
+    // ApprovalCoordinator, which owns the staged-decision state and is fail-closed by construction.
     const approveWrite: ApproveWrite = (request) =>
-      new Promise<boolean>((resolve) => {
-        // Defensive: if a prior decision is somehow still open, release it false first.
-        this.settlePendingWrite(false);
-        this.resolvePendingWrite = resolve;
-        this.pendingWriteId = request.changeId;
-        this.set({
-          pendingWrite: {
-            changeId: request.changeId,
-            kind: request.kind,
-            command: renderCommandLine(request),
-          },
-        });
-      });
+      this.approvals.awaitWrite(
+        { changeId: request.changeId, kind: request.kind, command: renderCommandLine(request) },
+        request.changeId,
+      );
 
-    // The plan-level approver (ADR-0005): stage the full dry-run effect-set and await ONE decision.
-    // Fail-closed: nothing here resolves `true` except an explicit `approvePlan()`.
     const approvePlan: ApprovePlan = (effects) =>
-      new Promise<boolean>((resolve) => {
-        this.settlePendingPlan(false);
-        this.resolvePendingPlan = resolve;
-        this.set({ pendingPlan: { effects, summary: summarizeEffects(effects) } });
-      });
+      this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
 
     const opts: RunCommandsOptions = {
       signal: controller.signal,
@@ -650,15 +608,10 @@ export class PanelController {
         this.addStep('error', errorText(err));
       }
     } finally {
-      // Any write or plan still AWAITING a decision releases fail-closed (never default-accept).
-      this.settlePendingWrite(false);
-      this.settlePendingPlan(false);
-      // Finding #6: clear the approval cards on EVERY terminal path — including ones `settle*` skips
-      // because the decision was ALREADY consumed (an approval whose execution then THREW, or a
-      // write that produced no write-result). `settle*` only clears while a resolver is still open;
-      // these unconditional clears guarantee no card lingers after the loop returns or throws here.
-      this.clearPendingWrite();
-      this.clearPendingPlan();
+      // Finding #6: release any awaiting decision fail-closed AND drop both cards on EVERY terminal
+      // path — including ones where the decision was ALREADY consumed (an approval whose execution
+      // then THREW, or a write with no write-result), so no card lingers after the loop returns/throws.
+      this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false, changes: this.store.list() });
@@ -719,8 +672,8 @@ export class PanelController {
         return;
       case 'write-result':
         this.addStep('write-result', writeStepText(ev));
-        // The decision has been consumed by the loop; clear the staged pending write.
-        this.clearPendingWrite();
+        // The decision has been consumed by the loop; drop the staged pending-write card.
+        this.approvals.consumeWriteResult();
         return;
       case 'no-fence':
         this.addStep('no-fence', `Turn ${ev.turn}: no command block — re-prompting`);
@@ -753,34 +706,12 @@ export class PanelController {
    * request the loop has already moved past. Omit the id to approve whatever is staged (legacy).
    */
   approvePendingWrite(changeId?: ChangeId): void {
-    if (this.isSupersededWriteDecision(changeId)) return;
-    this.settlePendingWrite(true);
+    this.approvals.approveWrite(changeId);
   }
 
   /** Reject the staged write — resolves the loop's `approveWrite` with `false`; nothing actuates. */
   rejectPendingWrite(changeId?: ChangeId): void {
-    if (this.isSupersededWriteDecision(changeId)) return;
-    this.settlePendingWrite(false);
-  }
-
-  /** True when a UI decision carries an id that no longer matches the staged write (superseded). */
-  private isSupersededWriteDecision(changeId: ChangeId | undefined): boolean {
-    return changeId !== undefined && changeId !== this.pendingWriteId;
-  }
-
-  /** Resolve the awaited decision (if any) and stop showing the approval card. */
-  private settlePendingWrite(approved: boolean): void {
-    const resolve = this.resolvePendingWrite;
-    if (!resolve) return;
-    this.resolvePendingWrite = undefined;
-    // On reject, drop the card now; on approve, keep it until the `write-result` narrates outcome.
-    if (!approved) this.clearPendingWrite();
-    resolve(approved);
-  }
-
-  private clearPendingWrite(): void {
-    this.pendingWriteId = undefined;
-    if (this.state.pendingWrite) this.set({ pendingWrite: undefined });
+    this.approvals.rejectWrite(changeId);
   }
 
   /**
@@ -788,26 +719,12 @@ export class PanelController {
    * the executor runs the previewed effect-set (each effect still gated/provenanced one-by-one).
    */
   approvePlan(): void {
-    this.settlePendingPlan(true);
+    this.approvals.approvePlan();
   }
 
   /** Reject the staged plan — resolves `approvePlan` with `false`; the WHOLE plan is blocked. */
   rejectPlan(): void {
-    this.settlePendingPlan(false);
-  }
-
-  /** Resolve the awaited plan decision (if any) and stop showing the plan-approval card. */
-  private settlePendingPlan(approved: boolean): void {
-    const resolve = this.resolvePendingPlan;
-    if (!resolve) return;
-    this.resolvePendingPlan = undefined;
-    // Drop the card on a decision either way: the executor's per-effect outcomes narrate as steps.
-    this.clearPendingPlan();
-    resolve(approved);
-  }
-
-  private clearPendingPlan(): void {
-    if (this.state.pendingPlan) this.set({ pendingPlan: undefined });
+    this.approvals.rejectPlan();
   }
 
   private addStep(kind: RunStep['kind'], text: string): void {
@@ -927,7 +844,7 @@ export class PanelController {
     // Finding #3: if a turn is in flight, queue AS A SKILL so the drain re-invokes invokeSkill (which
     // re-renders the call against the live registry) rather than collapsing it into a stale string.
     if (this.state.busy) {
-      this.pendingTurn = { mode: 'skill', name, args };
+      this.turnQueue.enqueue({ mode: 'skill', name, args });
       return;
     }
     await this.runCommands(renderSkillCall(skill, args));
@@ -952,22 +869,11 @@ export class PanelController {
    * re-enter synchronously while the just-settled turn is unwinding. Exhaustive via {@link assertNever}.
    */
   private drainPendingTurn(): void {
-    const next = this.pendingTurn;
-    if (!next) return;
-    this.pendingTurn = undefined;
-    switch (next.mode) {
-      case 'ask':
-        void this.send(next.query, next.grounding);
-        return;
-      case 'commands':
-        void this.runCommands(next.task, next.grounding);
-        return;
-      case 'skill':
-        void this.invokeSkill(next.name, next.args);
-        return;
-      default:
-        assertNever(next);
-    }
+    this.turnQueue.drain({
+      ask: (query, grounding) => void this.send(query, grounding),
+      commands: (task, grounding) => void this.runCommands(task, grounding),
+      skill: (name, args) => void this.invokeSkill(name, args),
+    });
   }
 
   private set(patch: Partial<PanelState>): void {

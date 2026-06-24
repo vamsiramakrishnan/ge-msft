@@ -89,6 +89,10 @@ suggest "old" => "new"               Word: tracked change anchored on exact exis
 comment <selector> "text"            add a comment (Excel cell / Word text anchor)
 format <range> bold=true fill=#FFF2CC numberFormat=$#,##0.00
 reply <commentId> "text"             reply to an existing comment
+table <range> [headers] [name=NAME]  Excel: promote a range to a native Table
+chart <type> <range> [title="…"]     Excel: insert a chart (column|bar|line|pie|scatter|area)
+cf <range> <rule>                    Excel: conditional format (>VALUE fill=#hex · databar · top=N)
+spill <range> = (<table expr>)       Excel: write a composed table as a cell grid (the table→grid sink)
 slide "Title" "bullet" ...           PowerPoint: insert a slide
 page "Title" "body"                  OneNote: append a page
 mail "body"                          Outlook: stage a reviewable reply (never auto-sent)
@@ -106,6 +110,16 @@ reuse it in a write. Pipelines only read and compute — they never write.
 ```
 let $east = read Sales!A1:B9 | filter region=East
 set Summary!B2 = ($east | sum amount)
+```
+
+In Excel a whole **table** value lands via `spill` (the table→grid sink) — then `table`/`chart`
+consume the resulting range, turning analyze → shape → materialize → visualize into one pipeline:
+
+```
+let $top = read Sales!A1:D5000 | filter Quarter=Q3 | select Region,Revenue | sort Revenue desc | head 10
+spill Report!A1 = ($top)
+table Report!A1:B11 headers
+chart column Report!A1:B11 title="Top regions by revenue"
 ```
 
 This is a summary. For the full grammar and the per-app capability list, load the files in

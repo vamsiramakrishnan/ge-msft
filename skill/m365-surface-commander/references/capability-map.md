@@ -24,6 +24,10 @@ always frame document content as data.
 | --------- | ------------------ | :--: | :---: | :-: | :-----: | :-----: | :---: |
 | `set`     | write a cell       |      |  yes  |     |         |         |       |
 | `format`  | format cells       |      |  yes  |     |         |         |       |
+| `table`   | create a table     |      |  yes  |     |         |         |       |
+| `chart`   | insert a chart     |      |  yes  |     |         |         |       |
+| `cf`      | conditional format |      |  yes  |     |         |         |       |
+| `spill`   | write a table grid |      |  yes  |     |         |         |       |
 | `suggest` | tracked change     | yes  |       |     |         |         |       |
 | `comment` | add a comment      | yes  |  yes  |     |         |         |       |
 | `reply`   | reply to a comment | yes  |  yes  |     |         |         |       |
@@ -37,6 +41,11 @@ Every change is previewed and approved before it is applied, recorded for tracea
 reversible through the app's normal review mechanism (tracked changes, comments, staged
 drafts). Outlook and Teams writes are always staged for review — never auto-sent. `compose`
 never fills in recipients.
+
+The Excel `table`/`chart`/`cf`/`spill` writes are reversible by a recorded inverse (delete the
+created object, clear the rule, restore prior values). `chart` and `table` read a **range** —
+to visualize a computed result, first `spill` the composed table into a grid, then point
+`table`/`chart` at the resulting range (see the table → grid sink in command-grammar.md).
 
 ## Out of scope
 

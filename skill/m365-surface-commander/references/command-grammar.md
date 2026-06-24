@@ -40,6 +40,10 @@ that support it (see [capability-map.md](capability-map.md)).
 | `mail`    | stage a reply      | Outlook     | `mail "body"` — reviewable, never auto-sent                         |
 | `compose` | draft a new email  | Outlook     | `compose "Subject" "body"` — recipients left to the user            |
 | `post`    | stage a chat post  | Teams       | `post "text"` — reviewable, never auto-sent                         |
+| `table`   | create a table     | Excel       | `table <range> [headers] [name=NAME]` — promote a range to a native Table |
+| `chart`   | insert a chart     | Excel       | `chart <type> <range> [title="…"] [series=rows\|columns]` — types: `column bar line pie scatter area` |
+| `cf`      | conditional format | Excel       | `cf <range> >VALUE [fill=#hex]` · `cf <range> databar\|colorscale` · `cf <range> top=N` |
+| `spill`   | write a table grid | Excel       | `spill <range> = (<table expr>)` — write a composed table as a cell grid |
 
 ## Control commands
 
@@ -85,6 +89,34 @@ set B3 = $total
 
 All writes in a turn are previewed together as one set of changes, approved once, then
 applied and recorded one by one.
+
+### The table → grid sink (Excel): analyze → shape → materialize → visualize
+
+A pipeline value is usually a number or text. The **`spill`** verb is the one place a whole
+**table** value lands in the document: it writes the table's rows as a **cell grid** (the dual
+of `set`, which writes one scalar). That single sink turns "analyze → shape → materialize →
+visualize" into one pure, gated pipeline — `spill` materializes the grid, then `table` and
+`chart` consume the resulting **range** (never a table value directly, so the anchor stays a
+concrete range).
+
+```
+# 1 · analyze + shape — bind the top 10 regions by revenue (pure; nothing written yet)
+let $top = read Sales!A1:D5000 | filter Quarter=Q3 | select Region,Revenue | sort Revenue desc | head 10
+
+# 2 · materialize — spill the composed table into a grid (the table → grid sink)
+spill Report!A1 = ($top)
+
+# 3 · promote the spilled grid to a native Table (headers in row 1)
+table Report!A1:B11 headers
+
+# 4 · visualize the same range as a chart
+chart column Report!A1:B11 title="Top regions by revenue"
+done
+```
+
+`spill`'s argument MUST be a table expression — a `$var` or a parenthesized pipeline
+`( read … | select … )`. A literal is rejected: use `set` to write one cell, `spill` to write a
+table. You can also select columns inline, e.g. `spill Report!A1 = ($top | select Region,Revenue)`.
 
 ## Reusable named commands
 

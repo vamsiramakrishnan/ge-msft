@@ -20,10 +20,25 @@ surface-agnostic.
 | **Function command** | A ribbon button that runs a JS function (no UI) in a shared runtime. | All Office | ◻ for quick actions / commands |
 | **Custom functions** | `=NS.FUNC(...)` worksheet functions, incl. **streaming** (`@streaming`). | Excel | ◻ planned (`=GE.ASK` streaming cell) |
 | **Event-based activation** | Code that runs on a host *event* without the pane open (a "launch event"). | Outlook (compose/send/new-message), Excel (autorun) | ✅ Outlook on-send gate (`on-send.ts`) |
+| **Context menu** | A right-click (shortcut-menu) item that opens the pane or runs a function on the selection. | Word, Excel, PowerPoint (web + Win/Mac M365, perpetual 2021+) | ◻ designed/next |
 | **Dialog API** (`displayDialogAsync`) | A modal dialog for auth/consent or rich flows; cross-domain messaging back to the pane. | All Office | ◻ auth fallback when NAA isn't available |
 | **Content add-in** | An object embedded *in* the document body. | Excel, PowerPoint | ✕ not used |
 | **Contextual / pinnable panes** | Outlook task pane pinned across items; reacts to `ItemChanged`. | Outlook | ✅ `watch()` uses `ItemChanged` |
 | **Adaptive Cards / message extension / bot** | Teams surfaces beyond a tab. | Teams | 🟡 `post-message` actuation stages a card; bot/ME not built |
+
+### Context menus (right-click)
+
+A shortcut-menu item gives the selection a fast lane into the add-in. Two action types: **open the
+task pane** (`openPage`) or **run a function** with no UI (`executeFunction`). The unified manifest
+declares them under `extensions.contextMenus` (a peer of `extensions.ribbons`, schema **v1.23+**);
+the legacy XML manifest uses an `ExtensionPoint xsi:type="ContextMenu"` with an `OfficeMenu` target.
+Either way the item shares the **same runtime** as the pane — feeding the open pane means going
+through the shared runtime and calling `Office.addin.showAsTaskpane()` so the click lands in the
+already-mounted `web-shell` rather than a cold load. Hosts are **Word, Excel, PowerPoint** (web +
+Win/Mac M365, perpetual 2021+); items are **static** (declared in the manifest, not built at
+runtime), only **specific built-in menus** are extendable, and there is **no iPad/mobile** support.
+Each item is a `/` command **seeded with the selection as `@this`** — closure-scoped to the surface's
+capability set per ADR-0006, so a right-click never offers a verb the bridge can't honor.
 
 ## 2. Office.js host object models — read / write / events
 

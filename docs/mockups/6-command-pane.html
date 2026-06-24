@@ -60,6 +60,36 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
 .st .v b{color:#5a4b8a}.st .v .g{color:var(--ins)}
 .legend{display:flex;gap:18px;margin-top:14px;flex-wrap:wrap;font-size:11px;color:var(--psoft)}
 .legend b{color:var(--ink)}
+/* prebuilt buttons strip */
+.pre{margin-top:20px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);padding:15px 18px}
+.pre h3{font-size:12px;margin:0 0 4px;letter-spacing:.04em;text-transform:uppercase;color:var(--psoft);font-weight:700}
+.pre .lead{font-size:11.5px;color:var(--psoft);margin:0 0 14px;line-height:1.5}
+.prerow{display:flex;align-items:flex-start;gap:14px;padding:11px 0;border-top:1px solid #f0eff4}
+.prerow:first-of-type{border-top:none;padding-top:2px}
+.prelbl{flex:none;width:108px;display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:700;color:#2b2d3c;padding-top:5px}
+.prelbl .sd{width:8px;height:8px;border-radius:2px}
+.prebtns{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:9px}
+.pb{display:inline-flex;flex-direction:column;gap:4px;background:var(--fill);border:1px solid var(--pl);border-radius:11px;padding:8px 11px;max-width:215px}
+.pb .t{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:#2b2d3c}
+.pb .pin{font-size:10px;color:#b9a8f2}
+.pb .cmd{font-family:ui-monospace,monospace;font-size:10px;color:#9aa}
+.pb .cmd b{color:#5a4b8a;font-weight:600}.pb .cmd .at{color:#1f4db8}
+/* context menu */
+.ctx{margin-top:20px;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--sh);padding:15px 18px}
+.ctx h3{font-size:12px;margin:0 0 4px;letter-spacing:.04em;text-transform:uppercase;color:var(--psoft);font-weight:700}
+.ctx .lead{font-size:11.5px;color:var(--psoft);margin:0 0 14px;line-height:1.5}
+.ctxstage{position:relative;background:repeating-linear-gradient(135deg,#f5f4f8,#f5f4f8 9px,#f0eff4 9px,#f0eff4 18px);border:1px solid var(--pl);border-radius:11px;padding:22px 20px;min-height:188px;display:flex;align-items:flex-start;gap:18px}
+.doc{flex:1;min-width:0;background:#fff;border:1px solid var(--pl);border-radius:7px;padding:13px 15px;font-size:11.5px;color:#5a5b6c;line-height:1.7;box-shadow:0 2px 6px rgba(16,18,40,.05)}
+.doc .sel{background:#cfe0ff;color:#1f1f24;border-radius:2px;padding:0 2px;box-shadow:0 0 0 1px #9bbcff}
+.doc .ln{display:block}
+.menu{flex:none;width:236px;background:#fff;border:1px solid var(--pl);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.menu .mh{padding:6px 12px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--psoft);background:var(--fill);border-bottom:1px solid var(--pl);display:flex;align-items:center;gap:7px}
+.menu .mh .sp{width:13px;height:13px;border-radius:50%;background:var(--grad)}
+.mi{display:flex;align-items:center;gap:9px;padding:8px 12px;font-size:12px;color:#2b2d3c;border-bottom:1px solid #f4f4f8}
+.mi:last-child{border-bottom:none}.mi.on{background:#f1edfb}
+.mi .gi{width:18px;height:18px;border-radius:5px;background:var(--grad);flex:none;position:relative}.mi .gi::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:9px}
+.mi .arr{margin-left:auto;color:#c3c0cf;font-size:11px}
+.mi.sepfoot{font-family:ui-monospace,monospace;font-size:10px;color:#9aa;background:var(--fill);border-top:1px solid var(--pl)}
 </style></head>
 <body><div class="wrap">
 <div class="hd"><span class="sp"></span><h1>Command pane — <span style="font-family:ui-monospace,monospace">/</span> verbs &amp; <span style="font-family:ui-monospace,monospace">@</span> mentions</h1><span class="tag">Spec · surface-agnostic web-shell</span></div>
@@ -137,6 +167,47 @@ body{font-family:var(--pf);background:#e7e6ea;color:var(--ink);-webkit-font-smoo
     <span><b>/</b> = action (Intent verb, surface-scoped via CapabilityManifest)</span>
     <span><b>@</b> = grounding source (maps to real request fields)</span>
     <span><b>skill</b> = engine-side carrier of the CLI algebra (auto-loaded, not selected) → shows as <code>invokedSkills</code></span>
+  </div>
+</div>
+
+<!-- ===================== prebuilt buttons strip ===================== -->
+<div class="pre">
+  <h3>Prebuilt buttons — pinned <span style="font-family:ui-monospace,monospace;text-transform:none;letter-spacing:0;color:#5a4b8a">/</span> commands</h3>
+  <p class="lead">A quick-action button is just a saved slash command seeded with <code>@this</code> (the active mail, selection or document). One click compiles the same <code>streamAssist</code> request — no new code path, only what the surface’s <b style="color:#5a4b8a">CapabilityManifest</b> allows.</p>
+  <div class="prerow">
+    <div class="prelbl"><span class="sd" style="background:var(--blue)"></span> Outlook</div>
+    <div class="prebtns">
+      <div class="pb"><div class="t"><span class="pin">📌</span> Summarize this email</div><div class="cmd"><b>/assist</b> <span class="at">@this</span> · summarize</div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Draft a reply</div><div class="cmd"><b>/assist</b> <span class="at">@this</span> · reply (reviewable)</div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Extract action items</div><div class="cmd"><b>/review</b> <span class="at">@this</span> · → findings</div></div>
+    </div>
+  </div>
+  <div class="prerow">
+    <div class="prelbl"><span class="sd" style="background:var(--host)"></span> Word</div>
+    <div class="prebtns">
+      <div class="pb"><div class="t"><span class="pin">📌</span> Review against policy</div><div class="cmd"><b>/review</b> <span class="at">@this</span> <span class="at">@unit</span></div></div>
+      <div class="pb"><div class="t"><span class="pin">📌</span> Tighten this</div><div class="cmd"><b>/regen-clause</b> <span class="at">@selection</span></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== right-click context menu ===================== -->
+<div class="ctx">
+  <h3>Right-click — context menu = a seeded <span style="font-family:ui-monospace,monospace;text-transform:none;letter-spacing:0;color:#5a4b8a">/</span> command</h3>
+  <p class="lead">Each menu item on a Word/Excel selection is a slash command with the highlighted range pre-bound as <span class="at" style="color:#1f4db8;font-family:ui-monospace,monospace;font-size:11px">@this</span>. Picking one opens the pane and runs through the same shared runtime — the menu is a launcher, not a second engine.</p>
+  <div class="ctxstage">
+    <div class="doc">
+      <span class="ln">…the Supplier shall maintain insurance coverage</span>
+      <span class="ln"><span class="sel">in an amount not less than the limits set forth in §4.2, for the duration of the Term</span>,</span>
+      <span class="ln">and shall name the Company as an additional insured…</span>
+    </div>
+    <div class="menu">
+      <div class="mh"><span class="sp"></span> Gemini · on selection</div>
+      <div class="mi on"><span class="gi"></span> Ask Gemini about this <span class="arr">→ /assist</span></div>
+      <div class="mi"><span class="gi"></span> Review this selection <span class="arr">→ /review</span></div>
+      <div class="mi"><span class="gi"></span> Explain this formula <span class="arr">→ /assist</span></div>
+      <div class="mi sepfoot">item = / command · @this = selection · opens the pane</div>
+    </div>
   </div>
 </div>
 </div></body></html>

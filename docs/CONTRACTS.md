@@ -274,6 +274,23 @@ export interface CapabilityClosureReport {
 
 `packages/contracts/src/capability.ts` introduces a `Capability` descriptor — `{ name, surface, kind: 'read' | 'pure' | 'effect', signature?, gatePolicy? }` — as the eventual single source from which the manifest, the verb→kind map, and dispatch are derived. It is a **typed scaffold only this wave**: no migration is required; the closure conformance gate is what makes incremental migration safe. `signature` and `gatePolicy` are deliberately open (`unknown`) and narrowed in later waves.
 
+## Command surface (quick actions · palette · plan)
+
+The typed front of the `/` + `@` pane. All three compile to the same routes — a grounded `send` or
+the fail-closed `runCommands` plan gate — so the pane never opens a new actuation path.
+
+### `QuickAction` (`packages/contracts/src/quick-actions.ts`)
+
+A prebuilt button: `{ id, label, surfaces: Surface[], intent: Intent, prompt, ground: string[], output: 'chat' | 'annotation' | 'write', contextMenu: boolean }`. `QUICK_ACTIONS` is the catalog (28); `quickActionsForSurface(surface, allowedIntents?)` filters by surface **and** by capability closure (ADR-0006) so a surface never offers a button it can't honour. `output` decides the route (`chat` → `send`; `write`/`annotation` → the gate); `ground` (e.g. `['this']`, `['unit']`) is prepended as `@`-mentions to form the seed (`quickActionSeed`).
+
+### `CommandPaletteSpec` (`packages/contracts/src/command-palette.ts`)
+
+The `/`-verb list + `@`-mention kinds the input affords: `{ surface, verbs: { intent, label, description }[], mentionKinds: ('document'|'person'|'datastore'|'this'|'upload')[] }`. `commandPaletteFor(surface, allowedIntents?)` returns it, closure-scoped. Each `Intent` maps to a `/label` (`review → /review`, `regen-clause → /rewrite`, `resolve-comment → /resolve`, `draft-slides → /draft`, `meeting-notes → /notes`).
+
+### `CommandPlan` (`packages/contracts/src/command-plan.ts`)
+
+The structured plan the **planner skill** emits, and its parser — a faithful TS port of `skill/m365-command-planner/scripts/parse_plan.py` (kept in lockstep). `CommandPlanSchema = { intent: Intent, surface: Surface, scope?, ground: string[], steps: string[], excludes: string[], clarify: string[], confidence?: 'high'|'medium'|'low' }`. `parsePlanBlock(text) → { plan, errors, needsClarification }`: extracts the ` ```plan ` fence (tolerating an unclosed one), validates intent/surface, accumulates the repeatable keywords, reports unknown keywords with a did-you-mean, and returns a `null` plan on a missing/invalid `intent`/`surface`. A `clarify` line substitutes for a required `step`.
+
 ## A2A agent interface (`services/agents`)
 
 Each specialist agent is an ADK agent exposed as an A2A server with an agent card. The gateway calls it as a remote A2A agent (not via StreamAssist `agentsSpec`). Agents accept the resolved unit context + intent and return intent-appropriate output: `review` → `Finding[]`; `resolve-comment` → `{ editedText, replyText, sources }`; `regen-clause` → `{ text, sources }`; `draft-slides` → a stream of slide events; `synthesize` → a stream of tokens + citations. Agents must emit `sources` for every claim; an assertion without a source is a contract violation.

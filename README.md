@@ -117,26 +117,36 @@ The product's depth is a four-step arc, each ADR building on the last:
 
 ### The command surface — `/` verbs and `@` mentions
 
-A surface-agnostic command pane sits on top of the capability stack. The user types `/` for an
-action and `@` for a source — the two compose on one line (`/review @VendorRiskPolicy on §4–6`):
+A surface-agnostic command pane sits on top of the capability stack. The user acts three ways — a
+`/` verb, an `@` mention, a prebuilt button — and a right-click does the same from inside the host.
+All four compile to the same path; nothing bypasses the gate.
 
-- **`/` verb → an Intent**, scoped per surface by the `CapabilityManifest` (`/assist`, `/review`,
-  `/resolve-comment`, `/regen-clause`, `/draft-slides`, `/synthesize`, `/meeting-notes`); drives the
-  assist loop or an A2A specialist.
+- **`/` verb → an Intent**, scoped per surface by the `CapabilityManifest` (`commandPaletteFor()` in
+  `contracts`: `/assist`, `/review`, `/resolve`, `/rewrite`, `/draft`, `/synthesize`, `/notes`). The
+  `Composer` opens the verb palette on `/` and the mention picker on `@`, and `parseComposerInput`
+  turns a submit into a typed `ComposerInvocation`. A bare question or `/assist` → `send`; any
+  actuating verb → the fail-closed `runCommands` plan gate.
 - **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
-  `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable
-  research-unit chip.
+  `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
+- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (28 actions, `quickActionsForSurface()`
+  closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
+  `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc.
+- **Context menus** — a right-click "Ask Gemini about this" (`extensions.contextMenus` in the unified
+  manifest, `ExtensionPoint` in the OneNote XML) reads the selection and seeds the open pane with it
+  as `@this`. The selection rides as data, never instructions; the handoff seed carries no raw text.
 
-The grammar is carried into Gemini Enterprise as two **skills** (`skill/`), mounted per turn via
+The grammar is also carried into Gemini Enterprise as two **skills** (`skill/`), mounted per turn via
 `skillsSpec` (`docs/api/discoveryengine/skills-and-agents.md`):
 
 - **`m365-command-planner`** — the front door: turns a free-text `/verb @mentions …` request into a
-  structured, confirmable ` ```plan ` block (intent · scope · steps · exclusions · grounding).
+  structured, confirmable ` ```plan ` block (intent · scope · steps · exclusions · grounding). Its
+  `parse_plan.py` is mirrored by `parsePlanBlock()` / `CommandPlan` in `contracts`.
 - **`m365-surface-commander`** — the executor: takes the confirmed plan + a live `<doc_state>` and
   emits the ADR-0004 ` ```cmd ` algebra → gate → tracked change / cell / staged draft.
 
 The interaction is mocked in `docs/mockups/6-command-pane.html` (rendered under
-`docs/mockups/screenshots/`).
+`docs/mockups/screenshots/`); the competitive baseline vs Microsoft Copilot is in
+`docs/COMPETITIVE-COPILOT.md`.
 
 ### The safety spine
 
@@ -219,7 +229,7 @@ Copy `.env.example` to `.env` for the engine/tenant config (project, location, e
 
 ## Status — what's built
 
-Verification baseline: `npm run typecheck` clean · **~714 tests across 73 files green** (Vitest) ·
+Verification baseline: `npm run typecheck` clean · **1408 tests across 119 files green** (Vitest) ·
 `npm run lint` clean.
 
 - **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —
@@ -235,8 +245,12 @@ Verification baseline: `npm run typecheck` clean · **~714 tests across 73 files
 - **The event engine** — per-bridge `watch()` → `HostEvent` → `Orchestrator`, with the fail-closed
   gate handling the rare protective moments (on-send veto, pre-actuation veto).
 - **The React/Vite task pane** — the panel components (`App`, `ContextTray`, `MessageThread`,
-  `Composer`, `PlanApprovalCard`, `WriteApprovalCard`, `ProposalCard`, `ProvenanceDetail`,
-  `RunSteps`, `SkillsPanel`), MSAL bootstrap, and the standalone preview harness.
+  `Composer`, `QuickActionBar`, `PlanApprovalCard`, `WriteApprovalCard`, `ProposalCard`,
+  `ProvenanceDetail`, `RunSteps`, `SkillsPanel`), MSAL bootstrap, and the standalone preview harness.
+- **The `/` + `@` command surface** — `QUICK_ACTIONS` + `CommandPaletteSpec` + `CommandPlan` in
+  `contracts`; the `QuickActionBar` and the `Composer` `/`-verb / `@`-mention palettes in `web-shell`;
+  right-click context menus in both manifests with a hardened `askSelection` → pane seed. Unit +
+  full-stack interplay tested; `security-reviewer` run on the selection-seed flow.
 
 **Partial / deferred** (called out honestly): durable host-metadata provenance writes are wired for
 **Word + Excel** but not yet for PowerPoint/OneNote/Outlook/Teams, and the observability/audit sink

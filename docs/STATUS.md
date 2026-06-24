@@ -126,6 +126,12 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   command parser, `parse_plan.py` ⇄ a `CommandPlan` schema (to add), `capability-map.md` ⇄ the
   `CapabilityManifest` (must render exact per-verb usage), `de_stub.read_response` ⇄ the
   `gemini-client` streamAssist reader. The TypeScript side is authoritative.
+- **Quick actions — typed in contracts.** The prebuilt-button catalog (`QUICK_ACTIONS` /
+  `QuickActionSchema`) now lives in `@ge/contracts`, **closure-filtered per surface** so a surface
+  only ever offers buttons its capability set can honor.
+- **Context menus — designed/partial.** The right-click items are wired into **both manifests**
+  (additive, unified `extensions.contextMenus` + legacy `ExtensionPoint`), and an `askSelection`
+  handler is stubbed in `web-shell` to seed the open pane with the selection as `@this`.
 
 ## Testing approach
 

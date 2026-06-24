@@ -48,6 +48,22 @@
               </Group>
             </OfficeTab>
           </ExtensionPoint>
+          <ExtensionPoint xsi:type="ContextMenu">
+            <OfficeMenu id="ContextMenuText">
+              <Control xsi:type="Button" id="GeminiAskCtx">
+                <Label resid="Gemini.Ask" />
+                <Supertip>
+                  <Title resid="Gemini.Ask" />
+                  <Description resid="Gemini.Desc" />
+                </Supertip>
+                <Icon><bt:Image size="16" resid="Icon.16" /><bt:Image size="32" resid="Icon.32" /></Icon>
+                <Action xsi:type="ShowTaskpane">
+                  <TaskpaneId>GeminiPane</TaskpaneId>
+                  <SourceLocation resid="Taskpane.Url" />
+                </Action>
+              </Control>
+            </OfficeMenu>
+          </ExtensionPoint>
         </DesktopFormFactor>
       </Host>
     </Hosts>
@@ -62,6 +78,7 @@
       <bt:ShortStrings>
         <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
         <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+        <bt:String id="Gemini.Ask" DefaultValue="Ask Gemini about this" />
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="Gemini.Desc" DefaultValue="Capture and synthesize research grounded on your unit." />

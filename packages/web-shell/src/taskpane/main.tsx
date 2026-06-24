@@ -7,6 +7,12 @@ import { composeSession } from '../compose.js';
 import { PanelController } from '../controller.js';
 import { App } from './components/App.js';
 import { selectBridge, isSupportedSurface } from './select-bridge.js';
+import {
+  ASK_SELECTION_SEED_KEY,
+  askSelectionQuery,
+  isAskSelectionSeed,
+  type AskSelectionSeed,
+} from '../commands/ask-selection-seed.js';
 import { initialUnit } from './unit.js';
 import { createMsal } from './msal.js';
 import {
@@ -55,7 +61,28 @@ function resolveSurface(): Surface | undefined {
   return surfaceFromHost(fromQuery);
 }
 
+/**
+ * Read + CLEAR any context-menu "Ask Gemini about this" seed left by the `askSelection` command,
+ * returning it (validated) or null. Clearing happens unconditionally and up front so a seed never
+ * outlives one boot — even if boot later fails — and a foreign/malformed value is rejected rather
+ * than trusted. Guarded end-to-end: storage problems just yield null.
+ */
+function takeAskSelectionSeed(): AskSelectionSeed | null {
+  try {
+    const store = (globalThis as { localStorage?: Storage }).localStorage;
+    const raw = store?.getItem(ASK_SELECTION_SEED_KEY);
+    if (!raw) return null;
+    store?.removeItem(ASK_SELECTION_SEED_KEY); // clear-on-read, before we trust the value
+    const parsed: unknown = JSON.parse(raw);
+    return isAskSelectionSeed(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 async function boot(): Promise<void> {
+  // Take (and clear) the seed before anything that can throw, so it never persists across a failed boot.
+  const pendingSeed = takeAskSelectionSeed();
   const surface = resolveSurface();
   if (!isSupportedSurface(surface)) {
     fatal(
@@ -87,6 +114,8 @@ async function boot(): Promise<void> {
     const controller = new PanelController(session, bridge);
 
     mount(<App controller={controller} surface={surface} />);
+    // The selection was re-grounded as @this by the bridge; the query is a fixed template.
+    if (pendingSeed) void controller.send(askSelectionQuery(pendingSeed));
   } catch (err) {
     fatal('Could not start Gemini Enterprise', err instanceof Error ? err.message : String(err));
   }

@@ -1,6 +1,6 @@
 {
-  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
-  "manifestVersion": "1.19",
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.23/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.23",
   "id": "REPLACE_WITH_APP_GUID",
   "version": "0.1.0",
   "name": { "short": "Gemini Enterprise", "full": "Gemini Enterprise for Microsoft 365" },
@@ -91,7 +91,8 @@
           "lifetime": "short",
           "actions": [
             { "id": "openGemini", "type": "executeFunction" },
-            { "id": "onMessageSend", "type": "executeFunction" }
+            { "id": "onMessageSend", "type": "executeFunction" },
+            { "id": "askSelection", "type": "executeFunction" }
           ]
         }
       ],
@@ -119,6 +120,23 @@
                   ]
                 }
               ]
+            }
+          ]
+        }
+      ],
+      "contextMenus": [
+        {
+          "requirements": { "scopes": ["document", "workbook", "presentation"] },
+          "menus": [
+            {
+              "id": "geminiAskMenu",
+              "type": "menuItem",
+              "label": "Ask Gemini about this",
+              "supertip": {
+                "title": "Ask Gemini",
+                "description": "Summarize or review the current selection in the Gemini pane."
+              },
+              "actionId": "askSelection"
             }
           ]
         }

@@ -10,12 +10,34 @@ ge-skill-tooling/
 ├── test_skill.py              # multi-surface live test harness (+ offline self-check)
 ├── de_stub.py                 # streamAssist response stub + robust reader (thoughts/citations/…)
 ├── fixtures.py                # mock M365 docs: Excel analysis, Outlook thread, Word contract
-├── build_zip.sh               # (re)build the skill bundle zip
+├── build_zip.sh               # (re)build a skill bundle zip: ./build_zip.sh <skill-dir>
 ├── requirements.txt
-└── m365-surface-commander/    # the skill bundle these tools create & test (agentskills.io format)
+├── m365-surface-commander/    # EXECUTOR bundle — emits the ```cmd algebra (agentskills.io format)
+│   ├── SKILL.md
+│   └── references/  scripts/  assets/
+└── m365-command-planner/      # PLANNER bundle — free text -> a confirmable ```plan block
     ├── SKILL.md
-    ├── references/  scripts/  assets/
+    └── references/  scripts/
 ```
+
+## The two skills
+
+The command surface (`/` verbs + `@` mentions in the add-in) is carried into Gemini Enterprise as
+**two skills, mounted per-turn via `skillsSpec`**:
+
+- **`m365-command-planner`** — the **front door**. Turns a free-text `/verb @mentions …` request
+  into a structured, parseable ` ```plan ` block (intent · scope · ordered steps · exclusions ·
+  grounding), which the add-in renders for a one-tap confirm. It never touches the document.
+- **`m365-surface-commander`** — the **executor**. Takes the confirmed plan + a live document
+  snapshot and emits the ` ```cmd ` command algebra the add-in applies as reviewable changes.
+
+Route by complexity: a simple `verb + mentions` request goes straight to the executor; free text
+with constraints/exclusions goes through the planner first. Build either bundle with
+`./build_zip.sh <skill-dir>` and create it with `create_skill.py --zip <skill-dir>.zip`.
+
+See `../docs/api/discoveryengine/skills-and-agents.md` for the verified create/mount lifecycle and
+the **skill ↔ workspace parity** tasks (keep `parse_commands.py` / `parse_plan.py` in lockstep with
+`packages/contracts` + `packages/runtime`; the TypeScript side is authoritative).
 
 ## Prerequisites
 

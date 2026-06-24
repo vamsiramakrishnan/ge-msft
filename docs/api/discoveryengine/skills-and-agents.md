@@ -7,10 +7,12 @@ proto (verified: `StreamAssistRequest` = `session, actionSpec, query, userMetada
 generationSpec`; no `skills_spec`, no `agentsSpec`; the only skill field is `invokedSkills[]` on
 the **response**).
 
-It is **not** the whole live surface. The authenticated `discoveryengine.googleapis.com/v1alpha`
-endpoint exposes an **`agents`** resource and accepts a **`skillsSpec`** on `streamAssist` that the
-published schema omits. This was verified end-to-end against a live engine (see
-`skill/` tooling: `create_skill.py`, `test_skill.py`, README "What we learned"). Treat the
+It is **not** the whole live surface. The `engines.assistants.agents.*` CRUD methods **are**
+published (they appear in `methods-index.md`: `agents.create/get/list/patch/delete` and
+`agents.files.import`). What the published schema **omits** is the skill-specific shape on top of
+them — the `skillAgentDefinition` payload on an Agent, the raw `files:upload` endpoint, and the
+**`skillsSpec`** field on `streamAssist`. Those three were verified end-to-end against a live engine
+(see `skill/` tooling: `create_skill.py`, `test_skill.py`, README "What we learned"). Treat the
 published doc as a **subset** of what the endpoint accepts.
 
 ## The real skill lifecycle (verified)
@@ -31,8 +33,10 @@ A "skill" is modelled as a GE **agent** with a `skillAgentDefinition`, under the
 | **Delete** | `DELETE {assistant}/agents/<id>` |
 
 This mirrors the GE web UI import flow (create → `files:upload` → get) but with a plain OAuth
-bearer token instead of browser/widget auth. The `agents` resource is **undocumented in the
-public discovery doc**; the endpoints work regardless.
+bearer token instead of browser/widget auth. The `agents` CRUD is published; the
+`skillAgentDefinition` payload and the raw `files:upload` route are the undocumented part — they
+work regardless (verified). Note `agents.files.import` (published) is a *different*, No-Code-only
+file route; the bundle path used here is the raw `/upload/v1alpha/.../files:upload`.
 
 ## Mounting a skill per turn — `skillsSpec` (the load-bearing correction)
 

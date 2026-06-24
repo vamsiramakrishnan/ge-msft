@@ -105,6 +105,28 @@ The defining work since the last status: the document became a programmable envi
   bridge-selection wiring; **`npm run preview -w packages/web-shell`** mounts `<App/>` over scripted
   fixtures with no Office host.
 
+## The command surface (`/` + `@`) and GE skills
+
+The human-facing layer over the capability stack, and how the grammar reaches the engine.
+
+- **`/` + `@` command pane — designed.** `/` = an Intent verb scoped per surface by the
+  `CapabilityManifest`; `@` = a grounding source mapped to real `streamAssist` fields
+  (`query.parts[]`, `toolsSpec.dataStoreSpecs`, `fileIds`). The interaction is specced in
+  `docs/mockups/6-command-pane.html` (rendered under `docs/mockups/screenshots/`). The typed
+  `CommandPaletteSpec` / `CommandPlan` wiring in `contracts` + `web-shell` is **next, not yet built**.
+- **Two Gemini Enterprise skills — authored + upload-verified (`skill/`).**
+  - **`m365-surface-commander`** (executor) — emits the ADR-0004 ` ```cmd ` algebra; reads, writes,
+    pipelines (`let`/`|`/`def`), per-surface capability map; ships with `parse_commands.py` and a
+    multi-surface live/offline test harness.
+  - **`m365-command-planner`** (planner) — turns a free-text `/verb @mentions …` request into a
+    confirmable ` ```plan ` block; ships with `parse_plan.py`.
+  - Both are created as `agents`/`skillAgentDefinition` and **mounted per-turn via `skillsSpec`**
+    (verified on a live engine — `docs/api/discoveryengine/skills-and-agents.md`).
+- **Skill ↔ workspace parity — tracked, not yet enforced.** `parse_commands.py` ⇄ the runtime
+  command parser, `parse_plan.py` ⇄ a `CommandPlan` schema (to add), `capability-map.md` ⇄ the
+  `CapabilityManifest` (must render exact per-verb usage), `de_stub.read_response` ⇄ the
+  `gemini-client` streamAssist reader. The TypeScript side is authoritative.
+
 ## Testing approach
 
 Vitest across all workspaces (~740 tests / 74 files). Bridges are tested against **in-repo Office

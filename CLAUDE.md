@@ -35,7 +35,7 @@ grounding are Gemini Enterprise engine config, not our code.
 
 ```
 packages/
-  contracts/        Shared TypeScript types + Zod schemas (the gateway↔client boundary)
+  contracts/        Shared TypeScript types + Zod schemas (the core↔client boundary; no gateway)
   content/          Native-first content processing: host object model → blocks → budgeted chunks
   gemini-client/    Client-direct Discovery Engine: WIF token exchange, streamAssist, search/rank/grounding
   graph-client/     Microsoft Graph reader (Plane B / estate), delegated, client-direct
@@ -45,12 +45,21 @@ packages/
   bridge-word/      Word DocBridge: native capture + content-anchored tracked changes + watch()
   bridge-excel/     Excel DocBridge: range capture + address-anchored write-cells + watch()
   bridge-outlook/   Outlook DocBridge: mail capture + reviewable reply + the on-send gate
-  bridge-powerpoint/PowerPoint: deck composer + speaker notes (planned)
-  bridge-onenote/   OneNote page synthesis (web-only, legacy manifest) (planned)
+  bridge-powerpoint/PowerPoint: slide capture + deck composer + watch()
+  bridge-onenote/   OneNote page synthesis + inline citation tags (web-only, legacy manifest)
   teams/            Teams DocBridge: transcript capture + reviewable post-message + meeting events
 manifests/          m365-unified.manifest.json (Package A) + onenote.manifest.xml (Package B)
-docs/               Design, architecture, implementation, contracts, conventions, build plan, mockups
+skill/              Gemini Enterprise skill bundles + create/test tooling — the / + @ command
+                    surface carried into the engine: m365-surface-commander (executor, emits the
+                    ```cmd algebra) + m365-command-planner (turns free text into a confirmable plan)
+docs/               Design, architecture, implementation, contracts, conventions, build plan,
+                    mockups (+ screenshots/), and the discoveryengine API knowledge base
 ```
+
+The `skill/` bundles are **mounted into Gemini Enterprise per-turn via `skillsSpec`** (an
+`agents`/`skillAgentDefinition` resource — see `docs/api/discoveryengine/skills-and-agents.md`).
+They mirror the runtime's grammar: keep `scripts/parse_commands.py` and `scripts/parse_plan.py` in
+lockstep with `packages/contracts` + `packages/runtime` (the TS side is authoritative).
 
 `web-shell` and `runtime` are the bulk of the client and are **surface-agnostic** — they must not
 contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*` and `teams/`,

@@ -29,7 +29,12 @@ stores are configured **in the Gemini Enterprise engine/assistant**, not in our 
 - `context-mechanisms.md` — how to attach context (`query.parts[]`, reference-over-inline) and scope
   connectors (`toolsSpec.dataStoreSpecs` + `filter` + `boost`), `actionSpec`, sessions.
 - `agent-invocation.md` — targeting a specific agent (no `agentsSpec` in `v1alpha`; assistant
-  targeting + `actionSpec`; A2A-direct caveats).
+  targeting + `actionSpec`; A2A-direct caveats). **Superseded in part by `skills-and-agents.md`.**
+- `skills-and-agents.md` — the **verified** skill lifecycle: skills are `agents` with a
+  `skillAgentDefinition`, created/uploaded/shared on the live `v1alpha` endpoint and **mounted
+  per-turn via `skillsSpec`** (the field is real on the wire though absent from the published
+  schema). Where the `/` + `@` command skills (`skill/`) plug in, plus the skill↔workspace parity
+  tasks.
 - `a2ui.md` — A2UI agent-authored interactive UI and how the add-in maps its actions to host
   actuations.
 - `files-and-limits.md` — inline context vs session context files (`addContextFile`), **code

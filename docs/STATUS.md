@@ -12,7 +12,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **~740 tests across 74 files green** (Vitest) · `npm run lint` clean.
+`npm run typecheck` clean · **1408 tests across 119 files green** (Vitest) · `npm run lint` clean.
 
 ## Packages — built vs planned
 
@@ -109,11 +109,15 @@ The defining work since the last status: the document became a programmable envi
 
 The human-facing layer over the capability stack, and how the grammar reaches the engine.
 
-- **`/` + `@` command pane — designed.** `/` = an Intent verb scoped per surface by the
-  `CapabilityManifest`; `@` = a grounding source mapped to real `streamAssist` fields
-  (`query.parts[]`, `toolsSpec.dataStoreSpecs`, `fileIds`). The interaction is specced in
-  `docs/mockups/6-command-pane.html` (rendered under `docs/mockups/screenshots/`). The typed
-  `CommandPaletteSpec` / `CommandPlan` wiring in `contracts` + `web-shell` is **next, not yet built**.
+- **`/` + `@` command pane — built + tested.** Typed in `@ge/contracts`: `CommandPaletteSpec` /
+  `commandPaletteFor()` (the per-surface `/`-verb list, closure-scoped), and `CommandPlan` /
+  `parsePlanBlock()` (a faithful TS port of the planner skill's `parse_plan.py`). Wired in
+  `@ge/web-shell`: the `Composer` opens the `/` verb palette and the `@` mention picker and parses a
+  submit into a structured `ComposerInvocation` (`parseComposerInput`); a bare question or `/assist`
+  routes to `send`, any actuating `/verb` routes to the fail-closed `runCommands` plan gate. `@`
+  mentions map to real `streamAssist` fields (`query.parts[]`, `toolsSpec.dataStoreSpecs`, `fileIds`).
+  Full-stack interplay tests (`taskpane/command-surface.integration.test.ts`) drive the real
+  `<App/>` → controller for both routes. Specced in `docs/mockups/6-command-pane.html`.
 - **Two Gemini Enterprise skills — authored + upload-verified (`skill/`).**
   - **`m365-surface-commander`** (executor) — emits the ADR-0004 ` ```cmd ` algebra; reads, writes,
     pipelines (`let`/`|`/`def`), per-surface capability map; ships with `parse_commands.py` and a
@@ -122,20 +126,25 @@ The human-facing layer over the capability stack, and how the grammar reaches th
     confirmable ` ```plan ` block; ships with `parse_plan.py`.
   - Both are created as `agents`/`skillAgentDefinition` and **mounted per-turn via `skillsSpec`**
     (verified on a live engine — `docs/api/discoveryengine/skills-and-agents.md`).
-- **Skill ↔ workspace parity — tracked, not yet enforced.** `parse_commands.py` ⇄ the runtime
-  command parser, `parse_plan.py` ⇄ a `CommandPlan` schema (to add), `capability-map.md` ⇄ the
-  `CapabilityManifest` (must render exact per-verb usage), `de_stub.read_response` ⇄ the
-  `gemini-client` streamAssist reader. The TypeScript side is authoritative.
-- **Quick actions — typed in contracts.** The prebuilt-button catalog (`QUICK_ACTIONS` /
-  `QuickActionSchema`) now lives in `@ge/contracts`, **closure-filtered per surface** so a surface
-  only ever offers buttons its capability set can honor.
-- **Context menus — designed/partial.** The right-click items are wired into **both manifests**
-  (additive, unified `extensions.contextMenus` + legacy `ExtensionPoint`), and an `askSelection`
-  handler is stubbed in `web-shell` to seed the open pane with the selection as `@this`.
+- **Skill ↔ workspace parity.** `parse_commands.py` ⇄ the runtime command parser, **`parse_plan.py`
+  ⇄ the `CommandPlan` schema (now built + tested)**, `capability-map.md` ⇄ the `CapabilityManifest`
+  (must render exact per-verb usage), `de_stub.read_response` ⇄ the `gemini-client` streamAssist
+  reader. The TypeScript side is authoritative; parity is tracked, not yet build-enforced.
+- **Quick actions — built + tested.** The prebuilt-button catalog (`QUICK_ACTIONS` /
+  `QuickActionSchema`, 28 actions) lives in `@ge/contracts`, **closure-filtered per surface**
+  (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
+  `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
+  seed). Unit + full-stack interplay tested.
+- **Context menus — built (manifests + handler), real-host-unverified.** Right-click items are wired
+  into **both manifests** (unified `extensions.contextMenus`, bumped to schema v1.23; legacy
+  `ExtensionPoint`). The `askSelection` function command reads the host selection, hands a hardened
+  one-shot seed (enum `kind` + `hasSelection` only — never the raw text or a free query) to the pane
+  over `localStorage`; the pane validates + clears it on boot and starts a fixed `@this` turn.
+  Seeding-from-untrusted-selection passed `security-reviewer`. Not yet sideloaded in a live host.
 
 ## Testing approach
 
-Vitest across all workspaces (~740 tests / 74 files). Bridges are tested against **in-repo Office
+Vitest across all workspaces (**1408 tests / 119 files**). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate

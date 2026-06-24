@@ -85,3 +85,98 @@ export function chooseAnchorIndex(hitTexts: string[], contextHint?: string): num
   }
   return hitTexts.length > 0 ? 0 : -1;
 }
+
+/**
+ * Pure plan for an `insert-text` actuation (ADR-0007 host-native write). Inserts plain `text` either
+ * at a content anchor (`target.matchText` + `contextHint`, re-resolved via `body.search` at
+ * apply-time — same discipline as a tracked change) or, when no anchor is given, at the current
+ * selection. `anchored` distinguishes the two so the bridge can fail-closed on a missing anchor only
+ * when one was *intended* but malformed, and otherwise fall through to the selection path. `hasText`
+ * lets the bridge reject an empty insert before touching the host.
+ */
+export interface InsertTextPlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  text: string;
+  hasText: boolean;
+}
+
+export function planInsertText(req: ActuationRequest): InsertTextPlan {
+  const p = req.params;
+  const text = p.text ?? '';
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    text,
+    hasText: text.length > 0,
+  };
+}
+
+/**
+ * Pure plan for a `replace-selection` actuation (ADR-0007): overwrite the current selection with
+ * `text`. There is no content anchor — the target is whatever the user has selected — so the plan is
+ * just the text plus an `hasText` guard for the empty-insert fail-closed check.
+ */
+export interface ReplaceSelectionPlan {
+  text: string;
+  hasText: boolean;
+}
+
+export function planReplaceSelection(req: ActuationRequest): ReplaceSelectionPlan {
+  const text = req.params.text ?? '';
+  return { text, hasText: text.length > 0 };
+}
+
+/**
+ * Pure plan for an `insert-ooxml` actuation (ADR-0007): insert rich `ooxml` either at a content
+ * anchor (`target.matchText` + `contextHint`, re-resolved at apply-time) or at the current selection.
+ * `anchored`/`hasOoxml` mirror {@link InsertTextPlan} so the bridge can apply the identical
+ * fail-closed + degrade discipline. NOTE: the OOXML is host/model-derived → untrusted; the bridge
+ * passes it to `range.insertOoxml` as data, never interpreting it.
+ */
+export interface InsertOoxmlPlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  ooxml: string;
+  hasOoxml: boolean;
+}
+
+export function planInsertOoxml(req: ActuationRequest): InsertOoxmlPlan {
+  const p = req.params;
+  const ooxml = p.ooxml ?? '';
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    ooxml,
+    hasOoxml: ooxml.length > 0,
+  };
+}
+
+/**
+ * Pure plan for a `fill-content-control` actuation (ADR-0007): populate the content control named by
+ * `target.contentControlId` with `text`. Unlike the other kinds this is anchored by an explicit host
+ * id (a content control is a stable, named container) rather than by matched content, so the plan
+ * surfaces `contentControlId` + `hasId`. `hasText` guards the empty-fill case.
+ */
+export interface FillContentControlPlan {
+  contentControlId?: string;
+  hasId: boolean;
+  text: string;
+  hasText: boolean;
+}
+
+export function planFillContentControl(req: ActuationRequest): FillContentControlPlan {
+  const p = req.params;
+  const id = p.target?.contentControlId;
+  const text = p.text ?? '';
+  return {
+    ...(id ? { contentControlId: id } : {}),
+    hasId: Boolean(id),
+    text,
+    hasText: text.length > 0,
+  };
+}

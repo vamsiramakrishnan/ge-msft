@@ -43,6 +43,43 @@ export type CommentReplyOutcome =
   | { readonly status: 'replied'; readonly location: string }
   | { readonly status: 'gone' };
 
+/**
+ * The outcome of a direct (non-tracked) content insert — ADR-0007 `insert-text` / `insert-ooxml`.
+ * On success it carries `location` (where the write landed) plus the prior-state needed to reverse
+ * the DIRECT edit: an insertion has no prior text, so reversibility is "delete the range that was
+ * inserted", anchored back by the very content that was written (`insertedText` for plain text, or a
+ * caller-supplied anchor for OOXML where the rendered text isn't known). `drift` degrades a stale
+ * content anchor to a panel item, exactly like {@link TrackedChangeOutcome}.
+ */
+export type InsertOutcome =
+  | {
+      readonly status: 'applied';
+      readonly location: string;
+      /** Prior-state for the inverse: the text that was inserted (for re-finding the range to delete). */
+      readonly insertedText?: string;
+    }
+  | { readonly status: 'drift' }; // anchor intended but no live hit
+
+/**
+ * The outcome of a `replace-selection` (ADR-0007). On success it carries the prior selection text so
+ * the edit is reversible by writing `priorText` back over the new selection. `empty` signals that
+ * nothing was selected (no range to replace) — the bridge fails closed rather than inserting at an
+ * undefined location.
+ */
+export type ReplaceSelectionOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly priorText: string }
+  | { readonly status: 'empty' };
+
+/**
+ * The outcome of a `fill-content-control` (ADR-0007). On success it carries the content control's
+ * PRIOR text so the fill is reversible by restoring it. `gone` signals the control with that id no
+ * longer exists (a stale id is the content-control analogue of anchor drift), so the bridge degrades
+ * to a panel item rather than throwing.
+ */
+export type FillContentControlOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly priorText: string }
+  | { readonly status: 'gone' };
+
 /** Raw paragraph-edit handler args at the host boundary (coauthor source is untrusted). */
 export interface WordEditArgs {
   readonly source: unknown;
@@ -99,6 +136,44 @@ export interface WordHost {
 
   /** Reply to the comment with `commentId`; optionally resolve it. `gone` if it no longer exists. */
   replyToComment(commentId: string, reply: string, resolve: boolean): Promise<CommentReplyOutcome>;
+
+  /**
+   * ADR-0007 `insert-text`: insert plain `text` directly (NOT a tracked change). When `query` is
+   * given, re-resolve it via `body.search` and let `choose` pick the read-back hit, inserting after
+   * the chosen range (degrading to `drift` when there's no live hit) — the same content-anchoring
+   * discipline as {@link applyTrackedChange}. When `query` is `undefined`, insert at the current
+   * selection. Returns the prior-state (`insertedText`) the bridge records for the inverse.
+   */
+  insertText(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    text: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome>;
+
+  /**
+   * ADR-0007 `replace-selection`: replace the current selection's text with `text`, CAPTURING the
+   * prior selection text first so the edit is reversible. `empty` when nothing is selected.
+   */
+  replaceSelection(text: string): Promise<ReplaceSelectionOutcome>;
+
+  /**
+   * ADR-0007 `insert-ooxml`: insert rich `ooxml` directly via `range.insertOoxml`, anchored exactly
+   * like {@link insertText} (content anchor + `choose`, else the selection). The OOXML is untrusted
+   * data passed straight to the host. Returns the anchor used so the bridge can record the inverse.
+   */
+  insertOoxml(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    ooxml: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome>;
+
+  /**
+   * ADR-0007 `fill-content-control`: populate the content control with `contentControlId`, CAPTURING
+   * its prior text first so the fill is reversible. `gone` when no control with that id exists.
+   */
+  fillContentControl(contentControlId: string, text: string): Promise<FillContentControlOutcome>;
 
   /**
    * Attach a Word comment carrying `text` to the range matching `query` (re-resolved at
@@ -271,6 +346,92 @@ export class OfficeWordHost implements WordHost {
       if (resolve) comment.resolved = true;
       await ctx.sync();
       return { status: 'replied', location: `comment:${commentId}` };
+    });
+  }
+
+  async insertText(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    text: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome> {
+    return Word.run(async (ctx) => {
+      if (query === undefined) {
+        // No anchor → insert at the current selection (replace its content with the new text).
+        const sel = ctx.document.getSelection();
+        sel.insertText(text, Word.InsertLocation.replace);
+        await ctx.sync();
+        return { status: 'applied', location: 'selection', insertedText: text };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      // Read-then-write: re-resolve the anchor before inserting so a drifted finding degrades.
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      // Insert AFTER the anchored range (a direct edit appends to the matched content).
+      range.insertText(text, Word.InsertLocation.after);
+      await ctx.sync();
+      return { status: 'applied', location: 'insert-text', insertedText: text };
+    });
+  }
+
+  async replaceSelection(text: string): Promise<ReplaceSelectionOutcome> {
+    return Word.run(async (ctx) => {
+      const sel = ctx.document.getSelection();
+      // Capture the prior selection text BEFORE overwriting — this is the inverse's restore payload.
+      sel.load('text');
+      await ctx.sync();
+      const priorText = sel.text;
+      if (priorText.length === 0) return { status: 'empty' };
+      sel.insertText(text, Word.InsertLocation.replace);
+      await ctx.sync();
+      return { status: 'applied', location: 'selection', priorText };
+    });
+  }
+
+  async insertOoxml(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    ooxml: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome> {
+    return Word.run(async (ctx) => {
+      if (query === undefined) {
+        const sel = ctx.document.getSelection();
+        sel.insertOoxml(ooxml, Word.InsertLocation.replace);
+        await ctx.sync();
+        return { status: 'applied', location: 'selection' };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      range.insertOoxml(ooxml, Word.InsertLocation.after);
+      await ctx.sync();
+      return { status: 'applied', location: 'insert-ooxml' };
+    });
+  }
+
+  async fillContentControl(
+    contentControlId: string,
+    text: string,
+  ): Promise<FillContentControlOutcome> {
+    return Word.run(async (ctx) => {
+      // `getByIdOrNullObject` resolves the named container; a stale id yields a null object (no
+      // throw), which we degrade to `gone` — the content-control analogue of anchor drift.
+      const cc = ctx.document.contentControls.getByIdOrNullObject(Number(contentControlId));
+      cc.load('text,isNullObject');
+      await ctx.sync();
+      if (cc.isNullObject) return { status: 'gone' };
+      // Capture the prior text BEFORE replacing — the inverse restores it.
+      const priorText = cc.text;
+      cc.insertText(text, Word.InsertLocation.replace);
+      await ctx.sync();
+      return { status: 'applied', location: `content-control:${contentControlId}`, priorText };
     });
   }
 

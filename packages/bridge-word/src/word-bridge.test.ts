@@ -7,6 +7,9 @@ import type { WordSearchHit } from './capture.js';
 import type {
   ChooseHit,
   CommentReplyOutcome,
+  FillContentControlOutcome,
+  InsertOutcome,
+  ReplaceSelectionOutcome,
   TrackedChangeOutcome,
   WordHandlers,
   WordHost,
@@ -29,11 +32,24 @@ class FakeWordHost implements WordHost {
   textHits = new Map<string, WordSearchHit[]>();
   /** Comment ids that currently exist. */
   comments = new Set<string>();
+  /** Content controls that currently exist: id → current text. */
+  contentControls = new Map<string, string>();
 
   // Recorded effects, for assertions.
   readonly inserts: Array<{ query: string; matchCase: boolean; text: string; chosen: string }> = [];
   readonly replies: Array<{ commentId: string; reply: string; resolve: boolean }> = [];
   readonly addedComments: Array<{ query: string; matchCase: boolean; text: string }> = [];
+  /** Direct text/ooxml inserts (ADR-0007), for assertions. */
+  readonly directInserts: Array<{
+    query?: string;
+    text?: string;
+    ooxml?: string;
+    chosen?: string;
+  }> = [];
+  /** replace-selection writes (ADR-0007), for assertions. */
+  readonly selectionReplaces: Array<{ text: string; priorText: string }> = [];
+  /** fill-content-control writes (ADR-0007), for assertions. */
+  readonly filledControls: Array<{ id: string; text: string; priorText: string }> = [];
   /** Durable provenance XML parts persisted via the port (BUILD-PLAN 1.6). */
   readonly persistedProvenance: string[] = [];
   /** When true, the next addComment reports failure (unsupported / anchor gone). */
@@ -89,6 +105,64 @@ class FakeWordHost implements WordHost {
     return Promise.resolve({ status: 'replied', location: `comment:${commentId}` });
   }
 
+  insertText(
+    query: string | undefined,
+    opts: { matchCase: boolean },
+    text: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome> {
+    if (query === undefined) {
+      this.directInserts.push({ text });
+      return Promise.resolve({ status: 'applied', location: 'selection', insertedText: text });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    void opts;
+    this.directInserts.push({ query, text, chosen });
+    return Promise.resolve({ status: 'applied', location: 'insert-text', insertedText: text });
+  }
+
+  replaceSelection(text: string): Promise<ReplaceSelectionOutcome> {
+    const priorText = this.selectionText;
+    if (priorText.length === 0) return Promise.resolve({ status: 'empty' });
+    this.selectionReplaces.push({ text, priorText });
+    this.selectionText = text;
+    return Promise.resolve({ status: 'applied', location: 'selection', priorText });
+  }
+
+  insertOoxml(
+    query: string | undefined,
+    opts: { matchCase: boolean },
+    ooxml: string,
+    choose: ChooseHit,
+  ): Promise<InsertOutcome> {
+    if (query === undefined) {
+      this.directInserts.push({ ooxml });
+      return Promise.resolve({ status: 'applied', location: 'selection' });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    void opts;
+    this.directInserts.push({ query, ooxml, chosen });
+    return Promise.resolve({ status: 'applied', location: 'insert-ooxml' });
+  }
+
+  fillContentControl(contentControlId: string, text: string): Promise<FillContentControlOutcome> {
+    const priorText = this.contentControls.get(contentControlId);
+    if (priorText === undefined) return Promise.resolve({ status: 'gone' });
+    this.filledControls.push({ id: contentControlId, text, priorText });
+    this.contentControls.set(contentControlId, text);
+    return Promise.resolve({
+      status: 'applied',
+      location: `content-control:${contentControlId}`,
+      priorText,
+    });
+  }
+
   registerHandlers(handlers: WordHandlers): () => void {
     this.lastHandlers = handlers;
     return () => {
@@ -103,6 +177,22 @@ function trackedChange(params: ActuationRequest['params'], id = 'c1'): Actuation
 
 function addComment(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'add-comment', surface: 'word', params };
+}
+
+function insertTextReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-text', surface: 'word', params };
+}
+
+function replaceSelectionReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'replace-selection', surface: 'word', params };
+}
+
+function insertOoxmlReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-ooxml', surface: 'word', params };
+}
+
+function fillCcReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'fill-content-control', surface: 'word', params };
 }
 
 const PROVENANCE: ActuationRequest['provenance'] = {
@@ -523,6 +613,209 @@ describe('WordBridge orchestration (against a fake host)', () => {
       });
       expect(res.ok).toBe(true);
       expect(host.persistedProvenance).toHaveLength(0);
+    });
+  });
+
+  describe('actuate insert-text (ADR-0007)', () => {
+    it('inserts at the current selection when no anchor is given, returning ok + same changeId', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(insertTextReq({ text: 'hello' }, 'chg-i'));
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-i'),
+        kind: 'insert-text',
+        location: 'selection',
+        provenanceMissing: true,
+      });
+      expect(host.directInserts).toEqual([{ text: 'hello' }]);
+    });
+
+    it('inserts at a content anchor, picking the contextHint hit', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['intro 99.5%', 'Availability: 99.5% uptime']);
+      const res = await new WordBridge(host).actuate(
+        insertTextReq({
+          text: ' (revised)',
+          target: { matchText: '99.5%', contextHint: 'Availability' },
+        }),
+      );
+      expect(res.ok).toBe(true);
+      expect(res.location).toBe('insert-text');
+      expect(host.directInserts).toEqual([
+        { query: '99.5%', text: ' (revised)', chosen: 'Availability: 99.5% uptime' },
+      ]);
+    });
+
+    it('degrades (anchor_drift) when an intended anchor is gone, writing nothing', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', []); // drift
+      const res = await new WordBridge(host).actuate(
+        insertTextReq({ text: 'x', target: { matchText: '99.5%' } }, 'chg-d'),
+      );
+      expect(res).toMatchObject({
+        ok: false,
+        changeId: asChangeId('chg-d'),
+        kind: 'insert-text',
+        degraded: true,
+        error: { code: 'anchor_drift' },
+      });
+      expect(host.directInserts).toHaveLength(0);
+    });
+
+    it('fails closed on empty text before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'insertText');
+      const res = await new WordBridge(host).actuate(insertTextReq({ text: '' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_text' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('persists durable provenance after a successful insert', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate({
+        ...insertTextReq({ text: 'hi' }, 'chg-ip'),
+        provenance: PROVENANCE,
+      });
+      expect(res.ok).toBe(true);
+      expect(host.persistedProvenance).toHaveLength(1);
+    });
+  });
+
+  describe('actuate replace-selection (ADR-0007)', () => {
+    it('captures prior text and replaces the selection, returning ok + same changeId', async () => {
+      const host = new FakeWordHost();
+      host.selectionText = 'old value';
+      const res = await new WordBridge(host).actuate(
+        replaceSelectionReq({ text: 'new value' }, 'chg-r'),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-r'),
+        kind: 'replace-selection',
+        location: 'selection',
+        provenanceMissing: true,
+      });
+      // The prior text was captured (for the inverse) before the overwrite.
+      expect(host.selectionReplaces).toEqual([{ text: 'new value', priorText: 'old value' }]);
+    });
+
+    it('degrades (no_selection) when nothing is selected', async () => {
+      const host = new FakeWordHost();
+      host.selectionText = '';
+      const res = await new WordBridge(host).actuate(replaceSelectionReq({ text: 'x' }, 'chg-e'));
+      expect(res).toMatchObject({
+        ok: false,
+        changeId: asChangeId('chg-e'),
+        kind: 'replace-selection',
+        degraded: true,
+        error: { code: 'no_selection' },
+      });
+      expect(host.selectionReplaces).toHaveLength(0);
+    });
+
+    it('fails closed on empty text before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'replaceSelection');
+      const res = await new WordBridge(host).actuate(replaceSelectionReq({ text: '' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_text' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('actuate insert-ooxml (ADR-0007)', () => {
+    it('inserts ooxml at the selection when no anchor is given', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(insertOoxmlReq({ ooxml: '<w:p/>' }, 'chg-o'));
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-o'),
+        kind: 'insert-ooxml',
+        location: 'selection',
+        provenanceMissing: true,
+      });
+      expect(host.directInserts).toEqual([{ ooxml: '<w:p/>' }]);
+    });
+
+    it('inserts ooxml at a content anchor', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('Summary', ['Summary section']);
+      const res = await new WordBridge(host).actuate(
+        insertOoxmlReq({ ooxml: '<w:tbl/>', target: { matchText: 'Summary' } }),
+      );
+      expect(res.ok).toBe(true);
+      expect(res.location).toBe('insert-ooxml');
+      expect(host.directInserts).toEqual([
+        { query: 'Summary', ooxml: '<w:tbl/>', chosen: 'Summary section' },
+      ]);
+    });
+
+    it('degrades (anchor_drift) when the anchor is gone', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('Summary', []);
+      const res = await new WordBridge(host).actuate(
+        insertOoxmlReq({ ooxml: '<w:p/>', target: { matchText: 'Summary' } }, 'chg-od'),
+      );
+      expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'anchor_drift' } });
+      expect(host.directInserts).toHaveLength(0);
+    });
+
+    it('fails closed on empty ooxml before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'insertOoxml');
+      const res = await new WordBridge(host).actuate(insertOoxmlReq({ ooxml: '' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_ooxml' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('actuate fill-content-control (ADR-0007)', () => {
+    it('captures prior text and fills the control, returning ok + same changeId', async () => {
+      const host = new FakeWordHost();
+      host.contentControls.set('42', 'placeholder');
+      const res = await new WordBridge(host).actuate(
+        fillCcReq({ target: { contentControlId: '42' }, text: 'filled' }, 'chg-f'),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-f'),
+        kind: 'fill-content-control',
+        location: 'content-control:42',
+        provenanceMissing: true,
+      });
+      expect(host.filledControls).toEqual([{ id: '42', text: 'filled', priorText: 'placeholder' }]);
+    });
+
+    it('degrades (content_control_gone) when the control no longer exists', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(
+        fillCcReq({ target: { contentControlId: '99' }, text: 'x' }, 'chg-g'),
+      );
+      expect(res).toMatchObject({
+        ok: false,
+        changeId: asChangeId('chg-g'),
+        kind: 'fill-content-control',
+        degraded: true,
+        error: { code: 'content_control_gone' },
+      });
+      expect(host.filledControls).toHaveLength(0);
+    });
+
+    it('fails closed on a missing contentControlId before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'fillContentControl');
+      const res = await new WordBridge(host).actuate(fillCcReq({ text: 'x' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_content_control' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on empty text', async () => {
+      const host = new FakeWordHost();
+      host.contentControls.set('42', 'placeholder');
+      const res = await new WordBridge(host).actuate(
+        fillCcReq({ target: { contentControlId: '42' }, text: '' }),
+      );
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_text' } });
+      expect(host.filledControls).toHaveLength(0);
     });
   });
 

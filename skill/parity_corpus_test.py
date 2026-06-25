@@ -180,11 +180,44 @@ def _documented_verbs() -> set:
     return verbs
 
 
+def _check_manifest_parity() -> list:
+    """ADR-0008 §4: the generated language manifest is the SINGLE SOURCE. Assert it agrees with
+    BOTH the Python parser (which loads from it) and the capability-map doc — so the TS grammar →
+    manifest → parser/doc chain has no drift at any hop. Skipped (with a note) if the manifest is
+    absent (a stripped sandbox running on the hardcoded fallback)."""
+    failures = []
+    manifest_path = parse_commands._MANIFEST_PATH
+    if not manifest_path.exists():
+        print("  [manifest] note: bundled manifest absent — parser on hardcoded fallback")
+        return failures
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_all = set(data["verbs"]["read"]) | set(data["verbs"]["control"]) | set(data["verbs"]["write"])
+    manifest_write = set(data["verbs"]["write"])
+
+    # 1. parser ≡ manifest (guards the loader + that the fallback never silently diverges).
+    if set(ALL_VERBS) != manifest_all:
+        failures.append(f"  [manifest] parser ALL_VERBS != manifest verbs: "
+                        f"parser-only {sorted(set(ALL_VERBS) - manifest_all)}, "
+                        f"manifest-only {sorted(manifest_all - set(ALL_VERBS))}")
+    # 2. every manifest write verb has a parse arm (drift gate, the other direction).
+    if parse_commands.HANDLED_WRITE_VERBS != manifest_write:
+        failures.append(f"  [manifest] write verbs without a parse arm: "
+                        f"{sorted(manifest_write - parse_commands.HANDLED_WRITE_VERBS)}")
+    # 3. doc ≡ manifest (the human capability-map matches the generated source).
+    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - {"outline", "read", "search"}
+    if doc_write != manifest_write:
+        failures.append(f"  [manifest] capability-map writes != manifest writes: "
+                        f"doc-only {sorted(doc_write - manifest_write)}, "
+                        f"manifest-only {sorted(manifest_write - doc_write)}")
+    return failures
+
+
 def main() -> int:
     failures = []
     failures += _run_corpus()
     failures += _check_done_with_error_invariant()
     failures += _check_verb_set_parity()
+    failures += _check_manifest_parity()
 
     if failures:
         print("PARITY CORPUS FAIL")
@@ -193,7 +226,7 @@ def main() -> int:
         return 1
 
     n = len(_load_cases())
-    print(f"PARITY CORPUS OK — {n} golden cases, fail-closed `done` invariant, verb-set equality")
+    print(f"PARITY CORPUS OK — {n} golden cases, fail-closed `done`, verb-set + manifest parity")
     return 0
 
 

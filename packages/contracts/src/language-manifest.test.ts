@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   buildLanguageManifest,
@@ -57,5 +59,16 @@ describe('language manifest (ADR-0008 single source)', () => {
       writeVerbToKind: { ...manifest.writeVerbToKind, set: 'no-such-kind' },
     };
     expect(() => assertManifestConsistent(broken)).toThrow(/unknown kind "no-such-kind"/);
+  });
+
+  it('the committed JSON the skill bundles matches the emitter (drift gate)', () => {
+    // ADR-0008 §4: the skill's Python preflight loads this committed file. If the grammar changes
+    // without re-running `npm run emit:language`, this fails — the committed artifact can never drift
+    // from the TS source of truth.
+    const jsonPath = fileURLToPath(
+      new URL('../../../skill/m365-surface-commander/scripts/m365-cli-1.0.json', import.meta.url),
+    );
+    const committed = JSON.parse(readFileSync(jsonPath, 'utf8'));
+    expect(committed).toEqual(manifest);
   });
 });

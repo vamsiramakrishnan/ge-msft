@@ -17,16 +17,64 @@ Usage:
 import json
 import re
 import sys
+from pathlib import Path
 
-READ_VERBS = {"outline", "read", "search"}
-CONTROL_VERBS = {"done", "help"}
-WRITE_VERBS = {
+# ADR-0008 §4 — the verb/transform/kind tables are LOADED from the generated language manifest
+# (`m365-cli-<v>.json`, emitted from @ge/contracts), NOT hand-maintained here. This is the
+# anti-drift hinge: the TS grammar → the manifest → these tables, so the Python preflight can never
+# diverge from the runtime parser. The hardcoded fallback below only runs if the bundled manifest is
+# missing (a stripped sandbox); the parity test asserts fallback == manifest, so it cannot drift.
+_MANIFEST_PATH = Path(__file__).with_name("m365-cli-1.0.json")
+
+# The write verbs `parse_line` has an explicit arg-parsing arm for. The manifest gives the verb SET
+# and verb→kind map; the per-verb arg grammar is logic the manifest doesn't encode, so it lives here.
+# The self-test asserts this equals the manifest's write verbs — adding a verb to the manifest without
+# a Python arm here is a caught drift, not a silent "unhandled verb".
+HANDLED_WRITE_VERBS = {
     "set", "suggest", "comment", "format", "reply",
     "slide", "page", "mail", "post", "compose",
     # ADR-0007 host-native Excel kinds — table/chart/cf take a literal range + props
     # (the `format`-style grammar); spill is the table→grid composition sink (`set` widened).
     "table", "chart", "cf", "spill",
 }
+
+
+def _load_language():
+    """Load (read, control, write, transforms, effects, kinds, version) from the bundled manifest."""
+    try:
+        data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+        return (
+            set(data["verbs"]["read"]),
+            set(data["verbs"]["control"]),
+            set(data["verbs"]["write"]),
+            set(data.get("transforms", [])),
+            set(data.get("effectVerbs", [])),
+            set(data.get("actuationKinds", [])),
+            data.get("version", "unknown"),
+        )
+    except (OSError, KeyError, ValueError):
+        # Fallback: the manifest is absent (stripped sandbox) — fall back to HANDLED_WRITE_VERBS so the
+        # checker still runs. Parity asserts this matches the manifest, so the fallback can't rot.
+        return (
+            {"outline", "read", "search"},
+            {"done", "help"},
+            set(HANDLED_WRITE_VERBS),
+            {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
+            set(HANDLED_WRITE_VERBS),
+            set(),
+            "fallback",
+        )
+
+
+(
+    READ_VERBS,
+    CONTROL_VERBS,
+    WRITE_VERBS,
+    TRANSFORM_NAMES,
+    EFFECT_VERBS,
+    ACTUATION_KINDS,
+    LANGUAGE_VERSION,
+) = _load_language()
 ALL_VERBS = READ_VERBS | CONTROL_VERBS | WRITE_VERBS
 
 _FENCE = re.compile(r"```cmd[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
@@ -358,6 +406,13 @@ done
     # A no-arg verb with a trailing token is a reported error, not a silent drop.
     if "error" not in (parse_line("done now please") or {}):
         failures.append("`done now please` did not error on its trailing tokens")
+
+    # ADR-0008 §4 drift gate: every manifest write verb MUST have a parse arm here (and vice-versa),
+    # so growing the manifest without a Python arm is caught — never a silent "unhandled verb".
+    if HANDLED_WRITE_VERBS != WRITE_VERBS:
+        missing = sorted(WRITE_VERBS - HANDLED_WRITE_VERBS)
+        extra = sorted(HANDLED_WRITE_VERBS - WRITE_VERBS)
+        failures.append(f"manifest/parse-arm drift — manifest-only: {missing}; arm-only: {extra}")
 
     if failures:
         print("SELF-TEST FAIL", file=sys.stderr)

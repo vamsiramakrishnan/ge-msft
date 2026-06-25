@@ -162,14 +162,18 @@ needs them, so you keep context small.
 | [references/algebra.md](references/algebra.md)                     | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                     |
 | [references/composition-rules.md](references/composition-rules.md) | you're composing more than a direct command — the operational laws, the decision procedure, the OBSERVE→DERIVE→EFFECT→VERIFY normal form, and when to break a program |
 | [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>` |
-| [references/command-grammar.md](references/command-grammar.md)     | you need exact selector syntax per app, the full transform list, composed writes, or how to define a reusable named command                                           |
+| [references/command-grammar.md](references/command-grammar.md)     | you need exact selector syntax per app, the full transform list, composed writes, or how to define a recipe (a reusable named command)         |
 | [references/capability-map.md](references/capability-map.md)       | you need to confirm which read/write commands a specific app supports and their limits                                                                                |
 
 **`patterns/` — reasoning templates (read for shape, then write the turn's actual algebra):**
 
-| File                                                 | Intent                                                            |
-| ---------------------------------------------------- | ----------------------------------------------------------------- |
-| [patterns/top-n-report.md](patterns/top-n-report.md) | top N by a measure → spilled table + chart over the derived range |
+| File                                                                       | Intent                                                               |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [patterns/top-n-report.md](patterns/top-n-report.md)                       | top N by a measure → spilled table + chart over the derived range   |
+| [patterns/anomaly-review.md](patterns/anomaly-review.md)                   | find outliers in a range → highlight (cf) or comment them           |
+| [patterns/evidence-backed-redline.md](patterns/evidence-backed-redline.md) | fix claims (tracked changes) + flag unsourced ones (comments)       |
+| [patterns/meeting-summary.md](patterns/meeting-summary.md)                 | transcript → a synthesized summary + action items (page/post)       |
+| [patterns/executive-brief.md](patterns/executive-brief.md)                 | Excel analysis → PowerPoint slide (a two-phase cross-surface handoff) |
 
 **`assets/` — worked transcripts; read the one matching the current app for a concrete pattern:**
 

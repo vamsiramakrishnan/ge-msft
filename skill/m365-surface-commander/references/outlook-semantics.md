@@ -17,7 +17,7 @@ passes through the on-send veto gate. So every compose write is inherently draft
 
 **Gotchas:** **importance and follow-up flags are Graph-only** (not in the compose API) — setting them
 is a Plane-B estate write that needs estate auth, not a `/`-on-the-draft. `/add-categories` on a
-*received* item commits **immediately** (no on-send safety net) and the category must already exist in
+_received_ item commits **immediately** (no on-send safety net) and the category must already exist in
 the master list. The URI for `/add-attachment` is untrusted — it must be allowlisted. Server-side
 `sendMail` is intentionally **not** modeled (it bypasses the on-send gate); the reviewable path is
 `mail`/`compose` + the gate.

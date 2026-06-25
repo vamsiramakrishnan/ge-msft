@@ -12,15 +12,15 @@ any parse error is never honored as `done` (fail-closed: you must clear the erro
 
 ## The error families and how to recover
 
-| You see | What it means | Recover by |
-| --- | --- | --- |
-| `unknown verb "writ" — did you mean "write"?` | a typo'd or unavailable verb | use the suggestion; if it's an *unavailable* verb, it isn't in this turn's `<capabilities>` — pick one that is |
-| `unknown capability "/insert-imag" — did you mean "/insert-image"?` | a `/`-surface kind name typo | use the suggested `ActuationKind` |
-| `… is not supported on this surface` | the verb/`/<kind>` isn't advertised this turn | the surface can't do it — choose an advertised capability or stop (`done`) and say why |
-| `set needs a cell and a value …` | missing/garbled arguments | re-emit with the usage shown |
-| `spill needs a composed table, not a literal` | you passed a literal where a table expression is required | bind a table and spill it (`spill R = ($t)`), or use `set` for one scalar |
-| `$x used before it is bound` | a `$var` referenced before its `let` | move the `let` above its use (`normalize` does this) |
-| a degraded annotation (anchor drifted) | the exact text you anchored on changed | re-`read`/`search` for the current text and re-anchor; never anchor on guessed text |
+| You see                                                             | What it means                                             | Recover by                                                                                                     |
+| ------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `unknown verb "writ" — did you mean "write"?`                       | a typo'd or unavailable verb                              | use the suggestion; if it's an _unavailable_ verb, it isn't in this turn's `<capabilities>` — pick one that is |
+| `unknown capability "/insert-imag" — did you mean "/insert-image"?` | a `/`-surface kind name typo                              | use the suggested `ActuationKind`                                                                              |
+| `… is not supported on this surface`                                | the verb/`/<kind>` isn't advertised this turn             | the surface can't do it — choose an advertised capability or stop (`done`) and say why                         |
+| `set needs a cell and a value …`                                    | missing/garbled arguments                                 | re-emit with the usage shown                                                                                   |
+| `spill needs a composed table, not a literal`                       | you passed a literal where a table expression is required | bind a table and spill it (`spill R = ($t)`), or use `set` for one scalar                                      |
+| `$x used before it is bound`                                        | a `$var` referenced before its `let`                      | move the `let` above its use (`normalize` does this)                                                           |
+| a degraded annotation (anchor drifted)                              | the exact text you anchored on changed                    | re-`read`/`search` for the current text and re-anchor; never anchor on guessed text                            |
 
 ## Stale anchors degrade, they don't break
 
@@ -37,7 +37,7 @@ turns at a semantic boundary. Run `surface_cli budget` first when you're near a 
 
 ## Preflight to avoid the round-trip
 
-Most of the above is catchable *before* you emit, with `surface_cli check` (unknown/out-of-signature
+Most of the above is catchable _before_ you emit, with `surface_cli check` (unknown/out-of-signature
 verbs, unbound `$vars`, wrong dependencies) and `surface_cli budget`. The runtime parser is still the
 authority — the preflight just saves a correction turn. See the invocation policy in
 [SKILL.md](../SKILL.md).

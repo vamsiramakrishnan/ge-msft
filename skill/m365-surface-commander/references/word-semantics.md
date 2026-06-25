@@ -21,5 +21,5 @@ never a silent change.
 `/insert-note` (foot/endnote), `/find-replace`, `/set-doc-properties`, `/insert-paragraph`.
 
 **Gotchas:** Word has **no chart and no equation API** — embed those via OOXML (`/insert-ooxml`) or as
-an image. `/set-page-layout` and accept/reject-*all* revisions are desktop-only (degrade on the web).
+an image. `/set-page-layout` and accept/reject-_all_ revisions are desktop-only (degrade on the web).
 `/resolve-revisions` is **irreversible** — it discards the alternative text; it warns hard.

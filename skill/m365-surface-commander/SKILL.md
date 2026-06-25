@@ -77,6 +77,12 @@ task is done.
 
 ## Commands (quick reference)
 
+This list is an **illustrative starter, not the authority.** The verbs and operators that actually
+exist **this turn** are the injected `<capabilities>` signature (machine-readable in
+`scripts/m365-cli-1.0.json`); the model underneath is the [value algebra](references/algebra.md)
+(reads produce values · pure operators compose · effects terminate). Use this table to recognize the
+shapes; consult the signature for what's live and `references/` for exact syntax.
+
 ```
 # read (batch freely)
 outline                              show the document/workbook structure
@@ -122,9 +128,10 @@ table Report!A1:B11 headers
 chart column Report!A1:B11 title="Top regions by revenue"
 ```
 
-This is a summary. For the full grammar and the per-app capability list, load the files in
-`references/` (see **Bundled resources** below) — don't rely on memory for selector syntax or
-which commands an app supports.
+This is a summary. The model under it is the [value algebra](references/algebra.md) and its
+[composition rules](references/composition-rules.md) — load those to compose well, and the per-app
+[capability map](references/capability-map.md) for exact syntax. Don't rely on memory for selector
+syntax or which commands an app supports.
 
 ## Output protocol (follow exactly)
 
@@ -146,10 +153,18 @@ needs them, so you keep context small.
 
 **`references/` — read when you need exact detail:**
 
-| File                                                           | Read it when…                                                                                                               |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| [references/command-grammar.md](references/command-grammar.md) | you need exact selector syntax per app, the full transform list, composed writes, or how to define a reusable named command |
-| [references/capability-map.md](references/capability-map.md)   | you need to confirm which read/write commands a specific app supports and their limits                                      |
+| File                                                               | Read it when…                                                                                                                                                         |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [references/algebra.md](references/algebra.md)                     | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                     |
+| [references/composition-rules.md](references/composition-rules.md) | you're composing more than a direct command — the operational laws, the decision procedure, the OBSERVE→DERIVE→EFFECT→VERIFY normal form, and when to break a program |
+| [references/command-grammar.md](references/command-grammar.md)     | you need exact selector syntax per app, the full transform list, composed writes, or how to define a reusable named command                                           |
+| [references/capability-map.md](references/capability-map.md)       | you need to confirm which read/write commands a specific app supports and their limits                                                                                |
+
+**`patterns/` — reasoning templates (read for shape, then write the turn's actual algebra):**
+
+| File                                                 | Intent                                                            |
+| ---------------------------------------------------- | ----------------------------------------------------------------- |
+| [patterns/top-n-report.md](patterns/top-n-report.md) | top N by a measure → spilled table + chart over the derived range |
 
 **`assets/` — worked transcripts; read the one matching the current app for a concrete pattern:**
 

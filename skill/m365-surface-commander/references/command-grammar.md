@@ -118,10 +118,12 @@ done
 `( read … | select … )`. A literal is rejected: use `set` to write one cell, `spill` to write a
 table. You can also select columns inline, e.g. `spill Report!A1 = ($top | select Region,Revenue)`.
 
-## Reusable named commands
+## Recipes (reusable named commands)
 
-Define a parameterized command once, then call it by name. A name cannot reuse a built-in
-command; an argument can only fill a declared `$param` (it cannot inject a new line).
+A **recipe** is a parameterized command you define once with `def … end`, then call by name. (We call
+these in-language definitions _recipes_ — "skill" is reserved for the Agent Skill bundle this file
+lives in.) A recipe name cannot reuse a built-in command; an argument can only fill a declared
+`$param` (it cannot inject a new line).
 
 ```
 def reconcile($a $b):

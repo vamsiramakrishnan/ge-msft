@@ -29,14 +29,14 @@ confirm a write, do it after the result block, in the next turn.
 Keep one coherent OBSERVE→DERIVE→EFFECT chain in **one** program. Start a **new** program/turn only
 when one of these holds — never merely because the script got long:
 
-| Boundary | Why it's a break |
-| --- | --- |
-| **Fresh observation required** | You write, the host recalculates, and you need the *new* values (write formulas → read computed results → chart). The values don't exist until the first effect lands — a second OBSERVE phase. |
-| **Host-minted id consumed downstream** | An effect produces a non-deterministic id you must then target. An effect-result dependency, not pure composition (the deferred Option-B case, ADR-0008 §3). |
-| **Approval authority changes** | An in-document edit and an externally-visible send (mail/post) must not ride one approval just because they share a script. |
-| **Artifact / surface changes** | Excel analysis → PowerPoint creation is a signed handoff, not one transaction across two add-in instances. |
-| **Failure domains differ** | A reversible formatting change and an irreversible external post are not one atomic unit. |
-| **Effect budget exceeded** | A plan that would mint hundreds of comments is partitioned or rejected before approval, even if algebraically valid. |
+| Boundary                               | Why it's a break                                                                                                                                                                                |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Fresh observation required**         | You write, the host recalculates, and you need the _new_ values (write formulas → read computed results → chart). The values don't exist until the first effect lands — a second OBSERVE phase. |
+| **Host-minted id consumed downstream** | An effect produces a non-deterministic id you must then target. An effect-result dependency, not pure composition (the deferred Option-B case, ADR-0008 §3).                                    |
+| **Approval authority changes**         | An in-document edit and an externally-visible send (mail/post) must not ride one approval just because they share a script.                                                                     |
+| **Artifact / surface changes**         | Excel analysis → PowerPoint creation is a signed handoff, not one transaction across two add-in instances.                                                                                      |
+| **Failure domains differ**             | A reversible formatting change and an irreversible external post are not one atomic unit.                                                                                                       |
+| **Effect budget exceeded**             | A plan that would mint hundreds of comments is partitioned or rejected before approval, even if algebraically valid.                                                                            |
 
 These are exactly the `approvalClass` / `reversible` / dependency boundaries the runtime's effect DAG
 encodes — the model expresses the program; the compiler infers the groups; the gate enforces the

@@ -447,6 +447,73 @@ describe('AssistSession.runCommands — approvePlan defensive + actuate failure'
   });
 });
 
+/* ─────────────────── dependency DAG enforcement (ADR-0008 §7) ─────────────── */
+
+describe('AssistSession.runCommands — dependency DAG enforcement (ADR-0008 §7)', () => {
+  // A bridge that FAILS write-cells (ok:false) but succeeds format-cells, recording every actuate
+  // call so we can prove a skipped effect never reached the bridge.
+  class DagBridge implements DocBridge {
+    readonly surface = 'excel' as const;
+    actuated: ActuationRequest[] = [];
+    getCapabilities(): CapabilityManifest {
+      return {
+        surface: 'excel',
+        contextKinds: [],
+        actuations: [
+          { kind: 'write-cells', surface: 'excel', title: 'set', reversible: true },
+          { kind: 'format-cells', surface: 'excel', title: 'format', reversible: true },
+        ],
+      };
+    }
+    listContext(): Promise<ContextRef[]> {
+      return Promise.resolve([]);
+    }
+    resolveContext(): Promise<ResolvedContext[]> {
+      return Promise.resolve([]);
+    }
+    actuate(req: ActuationRequest): Promise<ActuationResult> {
+      this.actuated.push(req);
+      if (req.kind === 'write-cells') {
+        return Promise.resolve({
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: { code: 'boom', message: 'cells failed' },
+        });
+      }
+      return Promise.resolve({ ok: true, changeId: req.changeId, kind: req.kind });
+    }
+  }
+
+  it('skips a dependent effect when its prerequisite fails; an independent effect still runs', async () => {
+    const bridge = new DagBridge();
+    // e1 set Report!A1 (write-cells) — will FAIL.
+    // e2 format Report!A1:B2 — overlaps A1 ⇒ depends on e1 ⇒ must be SKIPPED, never actuated.
+    // e3 format Other!Z9 — independent ⇒ must still run.
+    const program =
+      '```cmd\nset Report!A1 5\nformat Report!A1:B2 bold=true\nformat Other!Z9 bold=true\n```';
+    const { fetch } = scriptedFetch([program, '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const results = writeResults(
+      await collectLoop(session.runCommands('go', { approvePlan: () => true })),
+    ).map((e) => e.result);
+
+    expect(results[0]?.ok).toBe(false); // e1 actuated, failed
+    expect(results[0]?.error?.code).toBe('boom');
+    expect(results[1]?.ok).toBe(false); // e2 skipped (depends on the failed e1)
+    expect(results[1]?.error?.code).toBe('prerequisite_failed');
+    expect(results[2]?.ok).toBe(true); // e3 independent, ran
+
+    // The skipped dependent NEVER reached the bridge; the failed prereq and the independent did.
+    const ranges = bridge.actuated.map((r) => r.params.target?.range);
+    expect(ranges).toContain('Report!A1');
+    expect(ranges).toContain('Other!Z9');
+    expect(ranges).not.toContain('Report!A1:B2');
+  });
+});
+
 /* ─────────────────── command-block cap (truncation) ──────────────────────── */
 
 describe('AssistSession.runCommands — per-turn command cap truncation', () => {

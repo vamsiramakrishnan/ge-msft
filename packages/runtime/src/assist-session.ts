@@ -1065,7 +1065,17 @@ export class AssistSession {
     // else: no approvePlan but approveWrite present ⇒ fall back to per-write (planApproved stays
     // undefined; each effect goes through applyRequest with approveWrite, ADR-0004 Track A).
 
-    for (const { index, effect } of planSlots) {
+    // ADR-0008 §7 — enforce the dependency DAG as a saga with bounded compensation: when an effect
+    // fails (or is skipped), its dependents are NOT actuated — they record `prerequisite_failed`.
+    // Independent effects still run. `dag[k]` aligns with `planSlots[k]` (same order); `dependsOn`
+    // references earlier node ids (`e1`…). Inferred by the compiler — never authored by the model.
+    const dag = analyseEffectDependencies(effects.map((e) => e.request));
+    const failedNodes = new Set<string>();
+
+    for (let k = 0; k < planSlots.length; k++) {
+      const { index, effect } = planSlots[k]!;
+      const nodeId = dag[k]?.id ?? `e${k + 1}`;
+      const failedPrereqs = (dag[k]?.dependsOn ?? []).filter((d) => failedNodes.has(d));
       let result: ActuationResult;
       if (planApproved === false) {
         result = {
@@ -1074,6 +1084,17 @@ export class AssistSession {
           kind: effect.request.kind,
           error: { code: 'plan_unapproved', message: 'plan requires approval (none granted)' },
         };
+      } else if (failedPrereqs.length > 0) {
+        // A prerequisite effect did not succeed — skip this dependent WITHOUT actuating it.
+        result = {
+          ok: false,
+          changeId: effect.request.changeId,
+          kind: effect.request.kind,
+          error: {
+            code: 'prerequisite_failed',
+            message: `skipped — depends on ${failedPrereqs.join(', ')}, which did not succeed`,
+          },
+        };
       } else if (planApproved === true) {
         // Plan-approved: run the existing gate + provenance, pre-approved (no per-write re-prompt).
         result = await this.applyRequest(effect.request, turnProvenance, () => true);
@@ -1081,6 +1102,8 @@ export class AssistSession {
         // Per-write fallback (ADR-0004 Track A): approveWrite present, no approvePlan.
         result = await this.applyRequest(effect.request, turnProvenance, opts.approveWrite);
       }
+      // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
+      if (!result.ok) failedNodes.add(nodeId);
       results[index] = result;
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
     }

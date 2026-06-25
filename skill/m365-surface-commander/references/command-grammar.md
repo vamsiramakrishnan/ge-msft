@@ -28,22 +28,22 @@ reviewable change.
 Each write command produces one reviewable change. A command is only available in apps
 that support it (see [capability-map.md](capability-map.md)).
 
-| Command   | Effect             | Apps        | Usage                                                               |
-| --------- | ------------------ | ----------- | ------------------------------------------------------------------- |
-| `set`     | write a cell       | Excel       | `set <A1> <value\|=formula>` — e.g. `set Sales!F2 =C2-D2`           |
-| `suggest` | tracked change     | Word        | `suggest "old text" => "new text"` (anchored on exact text)         |
-| `comment` | add a comment      | Word, Excel | `comment <cell> "text"` or `comment "anchor" "text"`                |
-| `format`  | format cells       | Excel       | `format <range> k=v …` — keys: `bold italic fill numberFormat`      |
-| `reply`   | reply to a comment | Word, Excel | `reply <commentId> "text"`                                          |
-| `slide`   | insert a slide     | PowerPoint  | `slide "Title" "bullet" …` or `slide "Title" ($rows \| select a,b)` |
-| `page`    | append a page      | OneNote     | `page "Title" "body"`                                               |
-| `mail`    | stage a reply      | Outlook     | `mail "body"` — reviewable, never auto-sent                         |
-| `compose` | draft a new email  | Outlook     | `compose "Subject" "body"` — recipients left to the user            |
-| `post`    | stage a chat post  | Teams       | `post "text"` — reviewable, never auto-sent                         |
-| `table`   | create a table     | Excel       | `table <range> [headers] [name=NAME]` — promote a range to a native Table |
+| Command   | Effect             | Apps        | Usage                                                                                                 |
+| --------- | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `set`     | write a cell       | Excel       | `set <A1> <value\|=formula>` — e.g. `set Sales!F2 =C2-D2`                                             |
+| `suggest` | tracked change     | Word        | `suggest "old text" => "new text"` (anchored on exact text)                                           |
+| `comment` | add a comment      | Word, Excel | `comment <cell> "text"` or `comment "anchor" "text"`                                                  |
+| `format`  | format cells       | Excel       | `format <range> k=v …` — keys: `bold italic fill numberFormat`                                        |
+| `reply`   | reply to a comment | Word, Excel | `reply <commentId> "text"`                                                                            |
+| `slide`   | insert a slide     | PowerPoint  | `slide "Title" "bullet" …` or `slide "Title" ($rows \| select a,b)`                                   |
+| `page`    | append a page      | OneNote     | `page "Title" "body"`                                                                                 |
+| `mail`    | stage a reply      | Outlook     | `mail "body"` — reviewable, never auto-sent                                                           |
+| `compose` | draft a new email  | Outlook     | `compose "Subject" "body"` — recipients left to the user                                              |
+| `post`    | stage a chat post  | Teams       | `post "text"` — reviewable, never auto-sent                                                           |
+| `table`   | create a table     | Excel       | `table <range> [headers] [name=NAME]` — promote a range to a native Table                             |
 | `chart`   | insert a chart     | Excel       | `chart <type> <range> [title="…"] [series=rows\|columns]` — types: `column bar line pie scatter area` |
-| `cf`      | conditional format | Excel       | `cf <range> >VALUE [fill=#hex]` · `cf <range> databar\|colorscale` · `cf <range> top=N` |
-| `spill`   | write a table grid | Excel       | `spill <range> = (<table expr>)` — write a composed table as a cell grid |
+| `cf`      | conditional format | Excel       | `cf <range> >VALUE [fill=#hex]` · `cf <range> databar\|colorscale` · `cf <range> top=N`               |
+| `spill`   | write a table grid | Excel       | `spill <range> = (<table expr>)` — write a composed table as a cell grid                              |
 
 ## Control commands
 

@@ -4,7 +4,7 @@ Tooling to **create** a Gemini Enterprise custom skill programmatically and **te
 against the `streamAssist` API in isolation (no other data sources connected). Built and verified
 end-to-end against a live GE engine.
 
-```
+````
 ge-skill-tooling/
 ├── create_skill.py            # create/upload a skill via the authenticated GE API
 ├── test_skill.py              # multi-surface live test harness (+ offline self-check)
@@ -18,7 +18,7 @@ ge-skill-tooling/
 └── m365-command-planner/      # PLANNER bundle — free text -> a confirmable ```plan block
     ├── SKILL.md
     └── references/  scripts/
-```
+````
 
 ## The two skills
 

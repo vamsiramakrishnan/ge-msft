@@ -66,15 +66,15 @@ separate orthogonal axis (what it is grounded on). The same seven verbs apply on
 surface — never invent a surface- or task-specific verb (no `regen-clause`, `draft-slides`,
 `synthesize`, `meeting-notes`, `resolve-comment`; those are scopes/closures of these seven).
 
-| Verb        | Means                                                              | Lands as     |
-| ----------- | ------------------------------------------------------------------ | ------------ |
-| `ask`       | a custom free-text prompt / grounded chat over the scope           | chat         |
-| `summarize` | condense the scope                                                 | chat         |
-| `explain`   | clarify the scope in plain language                                | chat         |
-| `rewrite`   | apply **any instruction** to the scope → a reversible edit         | write        |
-| `review`    | whole-scope pass emitting N findings → N gated annotations         | annotation   |
-| `draft`     | generate **new** material (slides, a page, a reply, a column)      | write        |
-| `notes`     | transcript → live notes + action items (Teams)                     | annotation   |
+| Verb        | Means                                                         | Lands as   |
+| ----------- | ------------------------------------------------------------- | ---------- |
+| `ask`       | a custom free-text prompt / grounded chat over the scope      | chat       |
+| `summarize` | condense the scope                                            | chat       |
+| `explain`   | clarify the scope in plain language                           | chat       |
+| `rewrite`   | apply **any instruction** to the scope → a reversible edit    | write      |
+| `review`    | whole-scope pass emitting N findings → N gated annotations    | annotation |
+| `draft`     | generate **new** material (slides, a page, a reply, a column) | write      |
+| `notes`     | transcript → live notes + action items (Teams)                | annotation |
 
 `resolve-comment` is just `rewrite` or `review` with `scope comment <id>`. "Make formal",
 "tighten", "rewrite this clause to match the policy" are all `rewrite` + free text in a

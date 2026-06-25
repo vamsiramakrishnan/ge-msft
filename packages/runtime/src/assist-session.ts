@@ -1,8 +1,10 @@
+import { approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type {
   ActuationKind,
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  ApprovalClass,
   EffectPlanNode,
   CapabilityManifest,
   ChangeId,
@@ -137,7 +139,16 @@ export type CommandLoopEvent =
    * plan-level approval. Emitted only when the turn produced at least one resolvable effect.
    * Dry-run has actuated NOTHING at this point; the user approves/rejects the whole set.
    */
-  | { type: 'plan-preview'; turn: number; effects: PlanEffect[]; dag: EffectPlanNode[] }
+  | {
+      type: 'plan-preview';
+      turn: number;
+      effects: PlanEffect[];
+      dag: EffectPlanNode[];
+      // ADR-0008 §break-boundaries (audit §H) — the DISTINCT approval authorities present in this
+      // plan, severity-ordered. `length > 1` means the plan mixes authorities (e.g. an in-document
+      // edit + an external post): the approval surface must NOT bundle them into one silent decision.
+      approvalClasses: ApprovalClass[];
+    }
   /** One write gated + actuated (or blocked). */
   | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
   /** A turn produced no ```cmd fence — the loop re-prompts once. */
@@ -168,6 +179,14 @@ export interface PlanEffect {
    * effects, whose command line already shows exactly what lands.
    */
   dryRun?: { target?: string; resolved?: string };
+  /**
+   * ADR-0008 §break-boundaries (audit §H) — the approval AUTHORITY of this effect
+   * (`in-document` < `external` < `estate` < `irreversible`), and whether it is reversible. The
+   * approval surface MUST see these so distinct authorities are never SILENTLY bundled into one
+   * approval (the `plan-preview` event also carries the distinct `approvalClasses` in the plan).
+   */
+  approvalClass: ApprovalClass;
+  reversible: boolean;
 }
 
 /**
@@ -704,7 +723,12 @@ export class AssistSession {
         // ADR-0008 §7 — infer the dependency DAG so the approval preview shows dependent GROUPS
         // (spill ← table/chart), their approval classes, and reversibility, not a flat list.
         const dag = analyseEffectDependencies(effects.map((e) => e.request));
-        yield { type: 'plan-preview', turn, effects, dag };
+        // Surface the distinct approval authorities (severity-ordered) so the approver can never
+        // SILENTLY bundle, say, a workbook edit and an external post under one decision (audit §H).
+        const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
+        const present = new Set(effects.map((e) => e.approvalClass));
+        const approvalClasses = order.filter((c) => present.has(c));
+        yield { type: 'plan-preview', turn, effects, dag, approvalClasses };
         for await (const ev of this.executePlan(turn, planSlots, opts, results, turnProvenance))
           yield ev;
       }
@@ -919,7 +943,12 @@ export class AssistSession {
       if (compiled.kind !== 'write')
         return { error: `"${command.verb}" did not compile to a write` };
 
-      const effect: PlanEffect = { request: compiled.request, command: renderCommandLine(command) };
+      const effect: PlanEffect = {
+        request: compiled.request,
+        command: renderCommandLine(command),
+        approvalClass: approvalClassOf(compiled.request.kind),
+        reversible: isReversibleKind(compiled.request.kind),
+      };
       // If the value came from an expression, surface the RESOLVED value so the approver sees the
       // concrete content that will land — not just the formula over (possibly untrusted) doc data.
       if (hasEffectExpr(command)) {

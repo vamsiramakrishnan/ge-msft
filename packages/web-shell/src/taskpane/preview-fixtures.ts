@@ -1,5 +1,5 @@
 import type { Surface } from '@ge/contracts';
-import { asChangeId } from '@ge/contracts';
+import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type { ProvenancePayload } from '@ge/contracts';
 import type {
   ChatMessage,
@@ -115,6 +115,8 @@ const planEffect = (
 ): PlanEffect => ({
   command,
   request: { changeId: asChangeId(id), kind, surface: 'excel', params },
+  approvalClass: approvalClassOf(kind),
+  reversible: isReversibleKind(kind),
   ...(dryRun ? { dryRun } : {}),
 });
 

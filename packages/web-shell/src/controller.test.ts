@@ -9,7 +9,7 @@ import type {
   ProvenancePayload,
   SseEvent,
 } from '@ge/contracts';
-import { asChangeId } from '@ge/contracts';
+import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type { CommandLoopEvent } from '@ge/runtime';
 import type { ResolvedGrounding } from '@ge/gemini-client';
 import type { HostEvent } from '@ge/triggers';
@@ -63,7 +63,12 @@ const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
 
 const planEffect = (changeId: string): PlanEffect => {
   const request = writeReq(changeId);
-  return { request, command: `set Sales!F2 =C2-D2 [${changeId}]` };
+  return {
+    request,
+    command: `set Sales!F2 =C2-D2 [${changeId}]`,
+    approvalClass: approvalClassOf(request.kind),
+    reversible: isReversibleKind(request.kind),
+  };
 };
 
 const writeReq = (changeId: string): ActuationRequest => ({
@@ -725,6 +730,8 @@ describe('PanelController — plan loop (ADR-0005 plan-level approval)', () => {
         params: { target: { matchText: 'SLA' }, text: 'check this' },
       },
       command: 'comment "SLA" "check this"',
+      approvalClass: 'in-document',
+      reversible: true,
     };
     assist.commandScript = [{ plan: [write, comment, comment] }];
     const c = new PanelController(assist, lister([]));

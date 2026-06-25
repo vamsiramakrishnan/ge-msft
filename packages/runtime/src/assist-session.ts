@@ -3,6 +3,7 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  EffectPlanNode,
   CapabilityManifest,
   ChangeId,
   ContextKind,
@@ -43,6 +44,7 @@ import {
   type ReadIntent,
 } from './command-protocol.js';
 import { evalExpr, renderValue, type RunRead, type Value } from './compose.js';
+import { analyseEffectDependencies } from './planning.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
 
@@ -135,7 +137,7 @@ export type CommandLoopEvent =
    * plan-level approval. Emitted only when the turn produced at least one resolvable effect.
    * Dry-run has actuated NOTHING at this point; the user approves/rejects the whole set.
    */
-  | { type: 'plan-preview'; turn: number; effects: PlanEffect[] }
+  | { type: 'plan-preview'; turn: number; effects: PlanEffect[]; dag: EffectPlanNode[] }
   /** One write gated + actuated (or blocked). */
   | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
   /** A turn produced no ```cmd fence — the loop re-prompts once. */
@@ -699,7 +701,10 @@ export class AssistSession {
       // execute each effect through the existing gate + provenance. Fail-closed throughout.
       if (planSlots.length > 0) {
         const effects = planSlots.map((s) => s.effect);
-        yield { type: 'plan-preview', turn, effects };
+        // ADR-0008 §7 — infer the dependency DAG so the approval preview shows dependent GROUPS
+        // (spill ← table/chart), their approval classes, and reversibility, not a flat list.
+        const dag = analyseEffectDependencies(effects.map((e) => e.request));
+        yield { type: 'plan-preview', turn, effects, dag };
         for await (const ev of this.executePlan(turn, planSlots, opts, results, turnProvenance))
           yield ev;
       }

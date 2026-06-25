@@ -11,9 +11,10 @@ capabilities, executes code, or mutates anything (ADR-0008 §4). It reuses the m
 (`parse_commands.py`) so it can never disagree with the runtime on the verb set.
 
 Usage:
-  surface_cli.py check   --surface excel [--capabilities a,b,c] < program
-  surface_cli.py budget  --max-effects 8 --max-reads 8 --max-cells 10000 < program
-  surface_cli.py plan    < program
+  surface_cli.py check     --surface excel [--capabilities a,b,c] < program
+  surface_cli.py budget    --max-effects 8 --max-reads 8 --max-cells 10000 < program
+  surface_cli.py plan      < program
+  surface_cli.py normalize < program     # reorder into OBSERVE -> DERIVE -> EFFECT canonical form
   surface_cli.py --self-test
 """
 
@@ -239,6 +240,52 @@ def analyze(program_text: str, capabilities=None):
     }
 
 
+# ───────────────────────────── normalize ─────────────────────────────
+
+
+def _phase_of(line: str) -> str:
+    """Classify a program line into its canonical phase: OBSERVE / DERIVE / EFFECT / CONTROL."""
+    if _is_expr_line(line):
+        return "DERIVE"  # a `let $x = …` binding or a bare pure pipeline
+    rec = parse_line(line)
+    if rec is None or "error" in rec:
+        return "EFFECT"  # keep unknowns where the model put them (in the effect tail)
+    verb = rec["verb"]
+    if verb in ("outline", "read", "search"):
+        return "OBSERVE"
+    if verb in ("done", "help"):
+        return "CONTROL"
+    return "EFFECT"  # every write verb + /<kind> invoke
+
+
+def normalize(program_text: str):
+    """Reorder a program into the OBSERVE -> DERIVE -> EFFECT -> CONTROL normal form (ADR-0008 §3),
+    preserving the original order WITHIN each phase (binding and effect dependencies are
+    order-sensitive). Returns (lines, notes). A read that appears AFTER an effect is a fresh-observation
+    signal — it is kept in OBSERVE but a note flags that it may belong in a separate VERIFY turn."""
+    inner, _closed = extract_command_block_meta(program_text)
+    if inner is None:
+        inner = program_text
+    buckets = {"OBSERVE": [], "DERIVE": [], "EFFECT": [], "CONTROL": []}
+    notes = []
+    seen_effect = False
+    for raw in inner.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        phase = _phase_of(line)
+        if phase == "EFFECT":
+            seen_effect = True
+        elif phase == "OBSERVE" and seen_effect:
+            notes.append(
+                f"'{line}' reads after an effect — a read of post-write state belongs in a separate "
+                "VERIFY turn (fresh observation), not this program."
+            )
+        buckets[phase].append(line)
+    lines = buckets["OBSERVE"] + buckets["DERIVE"] + buckets["EFFECT"] + buckets["CONTROL"]
+    return lines, notes
+
+
 # ───────────────────────────── rendering ─────────────────────────────
 
 
@@ -301,7 +348,7 @@ def _budget_exceeded(result, limits) -> bool:
 
 def _run(argv):
     ap = argparse.ArgumentParser(prog="surface_cli", description="m365-cli preflight compiler")
-    ap.add_argument("command", choices=["check", "budget", "plan", "explain"], nargs="?")
+    ap.add_argument("command", choices=["check", "budget", "plan", "explain", "normalize"], nargs="?")
     ap.add_argument("--surface")
     ap.add_argument("--capabilities", help="comma-separated verbs live this turn (optional scope)")
     ap.add_argument("--max-effects", type=int, default=8)
@@ -316,7 +363,18 @@ def _run(argv):
 
     caps = set(args.capabilities.split(",")) if args.capabilities else None
     limits = {"max_effects": args.max_effects, "max_reads": args.max_reads, "max_cells": args.max_cells}
-    result = analyze(sys.stdin.read(), caps)
+    source = sys.stdin.read()
+
+    # `normalize` reorders the program into canonical form; it does not analyze/budget.
+    if args.command == "normalize":
+        lines, notes = normalize(source)
+        for line in lines:
+            print(line)
+        for note in notes:
+            print(f"# note: {note}", file=sys.stderr)
+        return 0
+
+    result = analyze(source, caps)
 
     if args.json:
         print(json.dumps({**result, "budgetExceeded": _budget_exceeded(result, limits)}, indent=2))
@@ -404,12 +462,26 @@ done
     if not any("unknown capability" in e for e in rbad["errors"]):
         failures.append("unknown /kind not rejected")
 
+    # 9. normalize hoists DERIVE above EFFECT, keeps `done` last (OBSERVE→DERIVE→EFFECT→CONTROL).
+    nlines, _ = normalize(
+        "```cmd\nspill Report!A1 = ($top)\nlet $top = read Sales!A1:D9 | head 10\ndone\n```"
+    )
+    if nlines != ["let $top = read Sales!A1:D9 | head 10", "spill Report!A1 = ($top)", "done"]:
+        failures.append(f"normalize did not reorder to OBSERVE→DERIVE→EFFECT: {nlines}")
+
+    # 10. a read AFTER an effect is flagged as a fresh-observation (VERIFY) boundary.
+    _, nnotes = normalize("```cmd\nset A1 5\nread B1\ndone\n```")
+    if not any("VERIFY" in n for n in nnotes):
+        failures.append("normalize did not flag read-after-effect as a VERIFY boundary")
+
     if failures:
         print("SURFACE-CLI SELF-TEST FAIL", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print("SURFACE-CLI SELF-TEST OK — check/budget/plan, capability scope, dep inference, risk")
+    print(
+        "SURFACE-CLI SELF-TEST OK — check/budget/plan/normalize, capability scope, dep inference, risk"
+    )
     return 0
 
 

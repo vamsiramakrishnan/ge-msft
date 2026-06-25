@@ -46,3 +46,4 @@ export {
   type OrchestratorHandlers,
   type OrchestratorOptions,
 } from './orchestrator.js';
+export { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';

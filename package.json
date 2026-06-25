@@ -16,7 +16,8 @@
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts"
+    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts",
+    "emit:language": "tsc -b packages/contracts && node packages/contracts/scripts/emit-language-manifest.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

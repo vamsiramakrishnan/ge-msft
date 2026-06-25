@@ -512,6 +512,28 @@ describe('AssistSession.runCommands — dependency DAG enforcement (ADR-0008 §7
     expect(ranges).toContain('Other!Z9');
     expect(ranges).not.toContain('Report!A1:B2');
   });
+
+  it('plan-preview surfaces the distinct approval classes so authorities are not silently bundled (§H)', async () => {
+    const bridge = new FlexBridge('excel', {
+      actuations: [
+        { kind: 'write-cells', surface: 'excel', title: 'set', reversible: true },
+        { kind: 'post-message', surface: 'excel', title: 'post', reversible: true },
+      ],
+    });
+    // An in-document edit + an external post in one plan — the preview must expose BOTH authorities.
+    const { fetch } = scriptedFetch(['```cmd\nset A1 5\npost "hi"\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('go', { approvePlan: () => true }));
+    const preview = events.find((e) => e.type === 'plan-preview') as Extract<
+      CommandLoopEvent,
+      { type: 'plan-preview' }
+    >;
+    expect(preview).toBeDefined();
+    expect(preview.approvalClasses).toEqual(['in-document', 'external']);
+    expect(preview.effects.map((e) => e.approvalClass)).toEqual(['in-document', 'external']);
+  });
 });
 
 /* ─────────────────── command-block cap (truncation) ──────────────────────── */

@@ -215,5 +215,20 @@ class TestTestSkillLiveGuard(unittest.TestCase):
             self.assertNotIn(needle, src, f"live default {needle!r} still baked into test_skill.py")
 
 
+# ---------------------------------------------------------------------------
+# surface_cli.py: the deterministic preflight compiler (ADR-0008 §4). Its --self-test
+# covers check/budget/plan, capability scope, dependency inference, and risk.
+# ---------------------------------------------------------------------------
+class TestSurfaceCliPreflight(unittest.TestCase):
+    def test_self_test_passes(self):
+        import subprocess
+
+        script = HERE / "m365-surface-commander" / "scripts" / "surface_cli.py"
+        proc = subprocess.run(
+            [sys.executable, str(script), "--self-test"], capture_output=True, text=True
+        )
+        self.assertEqual(proc.returncode, 0, f"surface_cli self-test failed:\n{proc.stderr}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

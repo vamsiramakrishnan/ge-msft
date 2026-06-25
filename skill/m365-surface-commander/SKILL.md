@@ -162,9 +162,35 @@ needs them, so you keep context small.
 
 **`scripts/` — run only if you need to verify a block before relying on it:**
 
-| File                                                   | Purpose                                                                                                                                                                                     |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [scripts/parse_commands.py](scripts/parse_commands.py) | dependency-free checker: extracts the `cmd` block from a reply and parses each line into a structured record, flagging malformed commands (`python3 scripts/parse_commands.py --self-test`) |
+| File                                                   | Purpose                                                                                                                                                                                               |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [scripts/parse_commands.py](scripts/parse_commands.py) | dependency-free checker: extracts the `cmd` block from a reply and parses each line into a structured record, flagging malformed commands (`python3 scripts/parse_commands.py --self-test`)           |
+| [scripts/surface_cli.py](scripts/surface_cli.py)       | the **preflight compiler**: `check` (parse + capability scope + inferred binding types), `budget` (reads/effects/cells vs limits), `plan` (effect dependency groups). Pure — never runs Office/Graph. |
+
+### Preflight a program with `surface_cli` (when it's worth it)
+
+`surface_cli` is the deterministic check between writing the program and emitting it — it catches
+**structural** mistakes (unknown verb, a verb not available this turn, an unbound `$var`, a budget
+overrun, a wrong dependency) that are easy to get wrong by hand. Pipe the `cmd` body to it:
+
+```
+printf '<your program>' | python3 scripts/surface_cli.py check --surface excel --capabilities set,table,chart,cf,spill
+```
+
+When to run it (don't bother for trivial actions):
+
+| Program shape                               | Run                  |
+| ------------------------------------------- | -------------------- |
+| one direct effect                           | skip                 |
+| one pure pipeline + one effect              | skip (unless unsure) |
+| more than one `let` binding                 | `check`              |
+| more than two effects                       | `check` + `budget`   |
+| any dependent materialization (spill→table) | `check` + `plan`     |
+| near a policy limit                         | `check` + `budget`   |
+| a parser correction turn                    | `check`              |
+
+A non-zero exit means a real defect — fix it before emitting. The runtime parser remains
+authoritative; this only catches errors earlier.
 
 ## Common mistakes
 

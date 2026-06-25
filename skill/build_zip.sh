@@ -15,7 +15,7 @@ OUT="$SKILL_DIR.zip"
 
 # include only the bundle subdirs that exist (the planner has no assets/, etc.)
 INCLUDE=(SKILL.md)
-for d in references scripts assets; do
+for d in references patterns scripts assets; do
   [ -d "$SKILL_DIR/$d" ] && INCLUDE+=("$d")
 done
 

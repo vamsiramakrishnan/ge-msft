@@ -157,15 +157,15 @@ needs them, so you keep context small.
 
 **`references/` — read when you need exact detail:**
 
-| File                                                                             | Read it when…                                                                                                                                                         |
-| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [references/algebra.md](references/algebra.md)                                   | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                     |
-| [references/composition-rules.md](references/composition-rules.md)               | you're composing more than a direct command — the operational laws + the composition decision procedure                                                              |
-| [references/planning-normal-form.md](references/planning-normal-form.md)         | you're planning a multi-step program — the OBSERVE→DERIVE→EFFECT→VERIFY normal form and the six semantic break boundaries                                             |
-| [references/errors-and-recovery.md](references/errors-and-recovery.md)           | you got a corrective `error:` — the error families and how to repair each (typos, out-of-signature verbs, unbound vars, stale anchors, budget)                        |
-| [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`      |
-| [references/command-grammar.md](references/command-grammar.md)                   | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                        |
-| [references/capability-map.md](references/capability-map.md)                     | you need the cross-surface table of which read/write commands each app supports and their limits                                                                      |
+| File                                                                             | Read it when…                                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [references/algebra.md](references/algebra.md)                                   | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                        |
+| [references/composition-rules.md](references/composition-rules.md)               | you're composing more than a direct command — the operational laws + the composition decision procedure                                                                  |
+| [references/planning-normal-form.md](references/planning-normal-form.md)         | you're planning a multi-step program — the OBSERVE→DERIVE→EFFECT→VERIFY normal form and the six semantic break boundaries                                                |
+| [references/errors-and-recovery.md](references/errors-and-recovery.md)           | you got a corrective `error:` — the error families and how to repair each (typos, out-of-signature verbs, unbound vars, stale anchors, budget)                           |
+| [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`         |
+| [references/command-grammar.md](references/command-grammar.md)                   | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                           |
+| [references/capability-map.md](references/capability-map.md)                     | you need the cross-surface table of which read/write commands each app supports and their limits                                                                         |
 | `references/<surface>-semantics.md`                                              | load the ONE matching the active surface (excel / word / powerpoint / outlook / teams / onenote) for its reading/anchoring model, surface verbs + `/`-kinds, and gotchas |
 
 **`patterns/` — reasoning templates (read for shape, then write the turn's actual algebra):**
@@ -178,14 +178,14 @@ needs them, so you keep context small.
 | [patterns/meeting-summary.md](patterns/meeting-summary.md)                 | transcript → a synthesized summary + action items (page/post)         |
 | [patterns/executive-brief.md](patterns/executive-brief.md)                 | Excel analysis → PowerPoint slide (a two-phase cross-surface handoff) |
 
-**`assets/` — worked transcripts; read the one matching the current app for a concrete pattern:**
+**`assets/example-sessions/` — worked transcripts; read the one matching the current app for a concrete pattern:**
 
-| File                                                                         | App                                                                 |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [assets/example-session-excel.md](assets/example-session-excel.md)           | Excel — read a range, compute, write a formula, comment an outlier  |
-| [assets/example-session-word.md](assets/example-session-word.md)             | Word — find claims, propose tracked changes, comment unsourced text |
-| [assets/example-session-powerpoint.md](assets/example-session-powerpoint.md) | PowerPoint — read slides, insert a summary slide                    |
-| [assets/example-session-outlook.md](assets/example-session-outlook.md)       | Outlook — read the open mail, stage a reply or a new draft          |
+| File                                                                                                           | App                                                                 |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [assets/example-sessions/example-session-excel.md](assets/example-sessions/example-session-excel.md)           | Excel — read a range, compute, write a formula, comment an outlier  |
+| [assets/example-sessions/example-session-word.md](assets/example-sessions/example-session-word.md)             | Word — find claims, propose tracked changes, comment unsourced text |
+| [assets/example-sessions/example-session-powerpoint.md](assets/example-sessions/example-session-powerpoint.md) | PowerPoint — read slides, insert a summary slide                    |
+| [assets/example-sessions/example-session-outlook.md](assets/example-sessions/example-session-outlook.md)       | Outlook — read the open mail, stage a reply or a new draft          |
 
 **`scripts/` — run only if you need to verify a block before relying on it:**
 

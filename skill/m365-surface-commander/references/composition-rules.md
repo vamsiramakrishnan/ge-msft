@@ -43,38 +43,12 @@ For each turn, in order:
 8. If the program crosses the complexity threshold, **preflight it** (`surface_cli`, below).
 9. Output **exactly one** `cmd` program.
 
-## Canonical normal form
+## Normal form & break boundaries
 
-Structure every non-trivial program in four phases, in this order:
-
-```
-OBSERVE   read / search / outline            — get the data
-DERIVE    let bindings + pure transforms     — compute purely
-EFFECT    bounded, concrete host mutations   — the smallest effect set
-VERIFY    (optional) read-after-write later  — confirm, in a *later* turn
-```
-
-This is more useful than "keep it under N lines." A program that reads, derives, then emits a tight
-effect set is correct by construction; one that interleaves is where bugs live.
-
-## When to break a program (semantic boundaries, not line count)
-
-Keep a coherent OBSERVE→DERIVE→EFFECT chain in **one** program. Start a **new** program/turn only
-when one of these is true:
-
-- **A fresh observation is required.** You write, the host recalculates, and you need the _new_
-  values (e.g. write formulas → read the computed results → chart them). The new values don't exist
-  until the first effect lands — that's a second OBSERVE phase, a new turn.
-- **A host-minted id is consumed downstream.** An effect produces a non-deterministic id you must
-  then target. That's an effect-result dependency, not pure composition.
-- **Approval authority changes.** An in-document edit and an externally-visible send (mail/post)
-  should not ride one approval just because they're in one script.
-- **The artifact or surface changes.** Excel analysis → PowerPoint creation is a handoff, not one
-  transaction across two add-in instances.
-- **Failure domains differ.** A reversible formatting change and an irreversible external post should
-  not be one atomic unit.
-- **An effect budget is exceeded.** A plan that would mint hundreds of comments must be partitioned
-  or rejected before approval, even if it is algebraically valid.
+Structure every non-trivial program as **OBSERVE → DERIVE → EFFECT → VERIFY**, and break into a new
+turn only at a semantic boundary (fresh observation, host-minted id, approval-authority change,
+artifact change, failure-domain change, effect budget). The full treatment — the four phases and the
+six break boundaries — is in [planning-normal-form.md](planning-normal-form.md).
 
 ## Preflight with `surface_cli`
 

@@ -185,7 +185,7 @@ needs them, so you keep context small.
 | File                                                   | Purpose                                                                                                                                                                                               |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [scripts/parse_commands.py](scripts/parse_commands.py) | dependency-free checker: extracts the `cmd` block from a reply and parses each line into a structured record, flagging malformed commands (`python3 scripts/parse_commands.py --self-test`)           |
-| [scripts/surface_cli.py](scripts/surface_cli.py)       | the **preflight compiler**: `check` (parse + capability scope + inferred binding types), `budget` (reads/effects/cells vs limits), `plan` (effect dependency groups). Pure — never runs Office/Graph. |
+| [scripts/surface_cli.py](scripts/surface_cli.py)       | the **preflight compiler**: `check` (parse + capability scope + inferred binding types), `budget` (reads/effects/cells vs limits), `plan` (effect dependency groups), `normalize` (reorder into OBSERVE→DERIVE→EFFECT form). Pure — never runs Office/Graph. |
 
 ### Preflight a program with `surface_cli` (when it's worth it)
 
@@ -206,6 +206,7 @@ When to run it (don't bother for trivial actions):
 | more than one `let` binding                 | `check`              |
 | more than two effects                       | `check` + `budget`   |
 | any dependent materialization (spill→table) | `check` + `plan`     |
+| program reads/derives/writes out of order   | `normalize`          |
 | near a policy limit                         | `check` + `budget`   |
 | a parser correction turn                    | `check`              |
 

@@ -164,6 +164,23 @@ def _did_you_mean(verb: str):
     return f" — did you mean '{near[0]}'?" if near else ""
 
 
+def _parse_invoke(verb: str, rest: str):
+    """ADR-0008 §two-tier — `/<kind> positional… key=value…` (the specialized surface). The kind must
+    be an ActuationKind from the catalogue (loaded from the manifest); an unknown kind yields a
+    did-you-mean. Per-surface availability is checked downstream, not here."""
+    import difflib
+
+    kind = verb[1:].lower()
+    if not kind:
+        return {"error": "a / command needs a capability name — usage: /<capability> key=value ..."}
+    if ACTUATION_KINDS and kind not in ACTUATION_KINDS:
+        near = difflib.get_close_matches(kind, sorted(ACTUATION_KINDS), n=1)
+        tail = f" — did you mean '/{near[0]}'?" if near else ""
+        return {"error": f"unknown capability '/{kind}'{tail} (the / surface names an ActuationKind)"}
+    positional, props = _tokenize_args(rest)
+    return {"verb": "invoke", "kind": kind, "props": props, "args": positional}
+
+
 def parse_line(line: str):
     """Parse one command line → a dict record, or {'error': '...'} (the corrective contract)."""
     line = line.strip()
@@ -172,6 +189,11 @@ def parse_line(line: str):
     parts = line.split(None, 1)
     verb = parts[0]
     rest = parts[1].strip() if len(parts) > 1 else ""
+
+    # ADR-0008 §two-tier — a `/<kind>` line is the SPECIALIZED surface (the long-tail catalogue),
+    # dispatched before the core-verb check. The command name IS the ActuationKind (drift-free).
+    if verb.startswith("/"):
+        return _parse_invoke(verb, rest)
 
     if verb not in ALL_VERBS:
         return {"error": f"unknown verb '{verb}'{_did_you_mean(verb)} (run 'help')"}
@@ -413,6 +435,14 @@ done
         missing = sorted(WRITE_VERBS - HANDLED_WRITE_VERBS)
         extra = sorted(HANDLED_WRITE_VERBS - WRITE_VERBS)
         failures.append(f"manifest/parse-arm drift — manifest-only: {missing}; arm-only: {extra}")
+
+    # ADR-0008 §two-tier: the /<kind> specialized surface parses a catalogue kind into an invoke,
+    # and rejects an unknown kind with a did-you-mean.
+    inv = parse_line('/insert-image base64=AAA alt="chart"')
+    if inv != {"verb": "invoke", "kind": "insert-image", "props": {"base64": "AAA", "alt": "chart"}, "args": []}:
+        failures.append(f"/insert-image did not parse to an invoke: {inv}")
+    if ACTUATION_KINDS and "error" not in (parse_line("/insert-imag base64=AAA") or {}):
+        failures.append("unknown /kind did not error")
 
     if failures:
         print("SELF-TEST FAIL", file=sys.stderr)

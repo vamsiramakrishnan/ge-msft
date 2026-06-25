@@ -1,4 +1,5 @@
 import type {
+  ActuationKind,
   ActuationParams,
   ActuationRequest,
   ActuationResult,
@@ -844,7 +845,11 @@ export class AssistSession {
       const capped: ActuationResult = {
         ok: false,
         changeId: asChangeId(crypto.randomUUID()),
-        kind: WRITE_VERB_TO_KIND[command.verb],
+        // ADR-0008 §two-tier: a `/<kind>` invoke carries its kind directly; core verbs map via the table.
+        kind:
+          command.verb === 'invoke'
+            ? (command.kind as ActuationKind)
+            : WRITE_VERB_TO_KIND[command.verb],
         error: { code: 'write_cap', message: `write cap (${plan.maxWrites}/turn) reached` },
       };
       plan.results[slotIndex] = capped;
@@ -880,14 +885,20 @@ export class AssistSession {
    * compile each yields a corrective `{ error }` — never a throw, never a write.
    */
   private async resolveEffect(
-    command: Extract<ParsedCommand, { verb: WriteVerb }>,
+    command: Extract<ParsedCommand, { verb: WriteVerb | 'invoke' }>,
   ): Promise<PlanEffect | { error: string }> {
     try {
-      // Type-check: the verb must map to an advertised actuation kind for this surface.
-      const kind = WRITE_VERB_TO_KIND[command.verb];
+      // Type-check: the verb must map to an advertised actuation kind for this surface. A `/<kind>`
+      // invoke carries its kind directly (ADR-0008 §two-tier); the availability check is identical —
+      // the specialized kind must be advertised in this surface's manifest this turn.
+      const kind =
+        command.verb === 'invoke'
+          ? (command.kind as ActuationKind)
+          : WRITE_VERB_TO_KIND[command.verb];
       const supported = new Set(this.capabilityKinds);
       if (!supported.has(kind)) {
-        return { error: `verb "${command.verb}" (${kind}) is not supported on this surface` };
+        const label = command.verb === 'invoke' ? `/${command.kind}` : `verb "${command.verb}"`;
+        return { error: `${label} (${kind}) is not supported on this surface` };
       }
 
       // Dry-run resolve any effect-arg expression to a concrete literal param (the keystone:
@@ -930,7 +941,7 @@ export class AssistSession {
    * (no `*Expr`) passes through unchanged (ADR-0004 back-compat). An eval error → a corrective.
    */
   private async resolveEffectArgs(
-    command: Extract<ParsedCommand, { verb: WriteVerb }>,
+    command: Extract<ParsedCommand, { verb: WriteVerb | 'invoke' }>,
   ): Promise<{ command: ParsedCommand } | { error: string }> {
     if (command.verb === 'set' && command.valueExpr) {
       const value = await this.evalEffectArg(command.valueExpr);
@@ -1413,7 +1424,9 @@ function errMsg(err: unknown): string {
  * expression is rendered, not its (yet-unresolved) literal slot — so the card shows exactly what the
  * model asked for, e.g. `set Summary!B2 = ($anz | sum Revenue)`.
  */
-function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>): string {
+function renderCommandLine(
+  command: Extract<ParsedCommand, { verb: WriteVerb | 'invoke' }>,
+): string {
   switch (command.verb) {
     case 'set': {
       // The expression form is written with an assignment `=` (`set B2 = ($t | sum X)`); a literal
@@ -1479,11 +1492,22 @@ function renderCommandLine(command: Extract<ParsedCommand, { verb: WriteVerb }>)
         : `(${(command.cells ?? []).length} rows)`;
       return `spill ${command.range} ${src}`;
     }
+    case 'invoke': {
+      // ADR-0008 §two-tier — `/<kind> positional… key=value…`.
+      const parts = [
+        `/${command.kind}`,
+        ...command.args,
+        ...Object.entries(command.props).map(([k, v]) =>
+          /\s/.test(v) ? `${k}="${v}"` : `${k}=${v}`,
+        ),
+      ];
+      return parts.join(' ');
+    }
   }
 }
 
 /** True when the effect's value/text/bullets came from a composed expression (not a literal). */
-function hasEffectExpr(c: Extract<ParsedCommand, { verb: WriteVerb }>): boolean {
+function hasEffectExpr(c: Extract<ParsedCommand, { verb: WriteVerb | 'invoke' }>): boolean {
   switch (c.verb) {
     case 'set':
       return c.valueExpr !== undefined;

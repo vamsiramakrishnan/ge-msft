@@ -729,3 +729,34 @@ describe('command-grammar — ADR-0006 CLI parity verbs (slide/page/mail/post)',
     expect(parseCommandLine('post "say \\"hi\\""')).toEqual({ verb: 'post', text: 'say "hi"' });
   });
 });
+
+describe('command-grammar — the /<kind> specialized surface (ADR-0008 §two-tier)', () => {
+  it('parses /<kind> into an invoke with props + positional args', () => {
+    expect(parseCommandLine('/insert-image base64=AAA alt="Q3 chart"')).toEqual({
+      verb: 'invoke',
+      kind: 'insert-image',
+      props: { base64: 'AAA', alt: 'Q3 chart' },
+      args: [],
+    });
+  });
+
+  it('the command name IS the ActuationKind (case-insensitive)', () => {
+    expect(parseCommandLine('/SET-PAGE-TITLE title="Q3"')).toMatchObject({
+      verb: 'invoke',
+      kind: 'set-page-title',
+    });
+  });
+
+  it('rejects an unknown capability with a catalogue did-you-mean', () => {
+    const r = parseCommandLine('/insert-imag base64=AAA');
+    expect(isCommandParseError(r)).toBe(true);
+    if (isCommandParseError(r)) {
+      expect(r.error).toContain('unknown capability');
+      expect(r.error).toContain('insert-image');
+    }
+  });
+
+  it('a bare / is corrective', () => {
+    expect(isCommandParseError(parseCommandLine('/'))).toBe(true);
+  });
+});

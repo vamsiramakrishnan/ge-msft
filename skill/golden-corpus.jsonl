@@ -48,3 +48,7 @@
 {"name": "block-clean-done-complete", "input": "```cmd\nread Sales!C2:C7\ndone\n```", "expect": {"verbs": ["read", "done"], "complete": true}}
 {"name": "block-no-done-not-complete", "input": "```cmd\nread Sales!C2:C7\n```", "expect": {"verbs": ["read"], "complete": false}}
 {"name": "block-no-fence", "input": "I will read the sheet and compute totals.", "expect": {"no_block": true}}
+{"name": "invoke-insert-image", "input": "/insert-image base64=AAA alt=\"Q3 chart\"", "expect": {"verbs": ["invoke"]}}
+{"name": "invoke-fill-cc", "input": "/fill-content-control id=Title text=\"Q3 Report\"", "expect": {"verbs": ["invoke"]}}
+{"name": "invoke-unknown-kind", "input": "/insert-imag base64=AAA", "expect": {"error_substring": "unknown capability"}}
+{"name": "invoke-bare-slash", "input": "/", "expect": {"error_substring": "needs a capability name"}}

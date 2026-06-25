@@ -50,6 +50,14 @@ export const LanguageManifestSchema = z.object({
   effectVerbs: z.array(z.string()),
   /** The full actuation-kind catalogue (the verb→kind values must be a subset of this). */
   actuationKinds: z.array(z.string()),
+  /**
+   * The `/<kind>` SPECIALIZED surface (ADR-0008 §two-tier): catalogue kinds NOT already reachable by
+   * a core composable verb. These are named, typed, non-composing effect terminals invoked as
+   * `/<kind> k=v …` — the long-tail capability surface. The `/` command name IS the ActuationKind,
+   * so this set is drift-free against the catalogue. `core` (verb-reachable) ∪ `specialized` =
+   * `actuationKinds`, and the two are disjoint.
+   */
+  specializedKinds: z.array(z.string()),
 });
 export type LanguageManifest = z.infer<typeof LanguageManifestSchema>;
 
@@ -72,6 +80,11 @@ export function buildLanguageManifest(): LanguageManifest {
     transforms: [...TRANSFORM_NAMES].sort(),
     effectVerbs: [...EFFECT_VERBS].sort(),
     actuationKinds: [...ActuationKindSchema.options].sort(),
+    // Specialized `/`-surface = catalogue kinds NOT covered by a core composable verb.
+    specializedKinds: (() => {
+      const core = new Set<string>(Object.values(WRITE_VERB_TO_KIND));
+      return [...ActuationKindSchema.options].filter((k) => !core.has(k)).sort();
+    })(),
   };
 }
 
@@ -97,6 +110,20 @@ export function assertManifestConsistent(
   }
   for (const name of transforms) {
     if (effects.has(name)) errors.push(`"${name}" is both a transform and an effect terminal`);
+  }
+
+  // The `/`-surface partition: core (verb-reachable) and specialized are disjoint and together
+  // cover the whole catalogue — no kind is both, none is unreachable.
+  const coreKinds = new Set(Object.values(parsed.writeVerbToKind));
+  const specialized = new Set(parsed.specializedKinds);
+  for (const k of specialized) {
+    if (coreKinds.has(k)) errors.push(`kind "${k}" is both core-verb-reachable and specialized`);
+    if (!kinds.has(k)) errors.push(`specialized kind "${k}" is not in the catalogue`);
+  }
+  for (const k of kinds) {
+    if (!coreKinds.has(k) && !specialized.has(k)) {
+      errors.push(`kind "${k}" is reachable by neither a core verb nor the / surface`);
+    }
   }
 
   if (errors.length > 0) {

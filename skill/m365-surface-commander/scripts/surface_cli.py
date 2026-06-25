@@ -94,6 +94,15 @@ def _cell_count(rng) -> int:
 # Effects that touch the recipient/host externally (vs an in-document change) — surfaced as risk.
 _EXTERNAL = {"mail", "post", "compose"}
 
+# Specialized `/<kind>` capabilities that reach the estate / an external recipient (Plane B + sends) —
+# surfaced as external risk on the preflight, same as the core external verbs.
+_EXTERNAL_KINDS = {
+    "post-chat-message", "post-channel-message", "reply-channel-message", "update-message",
+    "send-activity-notification", "create-online-meeting", "create-event", "create-task",
+    "move-message", "copy-message", "categorize-message", "flag-message", "delete-message",
+    "create-mail-rule", "graph-create-page", "graph-patch-page", "graph-create-section",
+}
+
 
 def _is_expr_line(line: str) -> bool:
     """A `let $x = …` binding or a bare pipeline (a top-level ` | `), mirroring expr-grammar."""
@@ -178,6 +187,18 @@ def analyze(program_text: str, capabilities=None):
             reads.append(line)
             continue
         if verb in ("done", "help"):
+            continue
+
+        # ADR-0008 §two-tier — a `/<kind>` invoke is a specialized effect terminal. It is scoped by
+        # its KIND (the command name), not a core verb, and has no composable range.
+        if verb == "invoke":
+            kind = rec["kind"]
+            if capabilities is not None and kind not in capabilities:
+                errors.append(f'/{kind} is not in this turn\'s capabilities')
+            effects.append(
+                {"verb": f"/{kind}", "target": None, "range": None,
+                 "external": kind in _EXTERNAL_KINDS, "refs": []}
+            )
             continue
 
         # An effect. Capability-scope it against this turn's signature, if one was supplied.
@@ -365,6 +386,23 @@ done
     rerr = analyze("```cmd\nset A1\ndone\n```")
     if not rerr["errors"]:
         failures.append("malformed `set A1` did not error")
+
+    # 7. The /<kind> specialized surface: scoped by KIND, flagged external when it reaches the estate.
+    rinv = analyze(
+        '```cmd\n/insert-image base64=AAA alt="chart"\n/post-channel-message text="hi"\ndone\n```',
+        capabilities={"insert-image"},
+    )
+    if not any("post-channel-message" in e for e in rinv["errors"]):
+        failures.append("/ surface did not scope an unavailable kind")
+    if not any(e["external"] for e in rinv["effects"]):
+        failures.append("/post-channel-message not flagged external")
+    if len([e for e in rinv["effects"] if e["verb"].startswith("/")]) != 2:
+        failures.append("/ invokes not counted as effects")
+
+    # 8. An unknown /<kind> is a parse error (did-you-mean from parse_commands).
+    rbad = analyze("```cmd\n/insert-imag base64=AAA\ndone\n```")
+    if not any("unknown capability" in e for e in rbad["errors"]):
+        failures.append("unknown /kind not rejected")
 
     if failures:
         print("SURFACE-CLI SELF-TEST FAIL", file=sys.stderr)

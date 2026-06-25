@@ -229,6 +229,15 @@ class TestSurfaceCliPreflight(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, f"surface_cli self-test failed:\n{proc.stderr}")
 
+    def test_eval_recall_and_no_false_positives(self):
+        # ADR-0008 §10 — the offline eval gate: surface_cli must catch every seeded defect (recall
+        # 100%) and never flag a valid program. Guards the helper's quality as the language evolves.
+        import subprocess
+
+        harness = HERE / "eval" / "eval_harness.py"
+        proc = subprocess.run([sys.executable, str(harness)], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"eval gate failed:\n{proc.stdout}\n{proc.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

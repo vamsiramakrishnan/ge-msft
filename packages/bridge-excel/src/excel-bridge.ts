@@ -24,7 +24,10 @@ import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from '.
 import {
   formatSourceComment,
   planAddComment,
+  planConditional,
+  planCreateTable,
   planFormatCells,
+  planInsertChart,
   planWriteCells,
   splitFormulaGrid,
 } from './actuate-plan.js';
@@ -37,6 +40,9 @@ import { provenanceRecord } from './provenance-record.js';
 export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
   'write-cells',
   'format-cells',
+  'create-table',
+  'insert-chart',
+  'format-conditional',
   'add-comment',
   'comment-reply',
 ];
@@ -238,6 +244,12 @@ export class ExcelBridge implements DocBridge {
         return this.applyWriteCells(req);
       case 'format-cells':
         return this.applyFormatCells(req);
+      case 'create-table':
+        return this.applyCreateTable(req);
+      case 'insert-chart':
+        return this.applyInsertChart(req);
+      case 'format-conditional':
+        return this.applyConditional(req);
       case 'add-comment':
         return this.applyAddComment(req);
       case 'comment-reply':
@@ -482,6 +494,240 @@ export class ExcelBridge implements DocBridge {
       range.load('address');
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
+    });
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
+    }
+    return result;
+  }
+
+  /**
+   * `create-table` (ADR-0007 `table` verb): promote `params.table.range` to a native Excel Table.
+   * Fails closed when the range is absent. Gated on `ExcelApi 1.1` (`TableCollection.add` — typings
+   * l.41116); an older host degrades rather than throwing. SECURITY (ADR-0007 §inverse-identity):
+   * the recorded inverse deletes the name Excel MINTED for THIS table (`table.load('name')`, read
+   * back post-sync) — never `params.table.name`, so an undo can only ever delete the object this
+   * change created, not a re-resolved arbitrary table.
+   */
+  private async applyCreateTable(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planCreateTable(req);
+    if (!plan.hasTable || !plan.address) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'create-table needs params.table.range' },
+      };
+    }
+    // `TableCollection.add` → ExcelApi 1.1; gate so an undetectably-old host degrades, not throws.
+    if (!isSet('ExcelApi', '1.1')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported_host',
+          message: 'This host cannot create tables (ExcelApi < 1.1).',
+        },
+      };
+    }
+    const result = await Excel.run(async (ctx) => {
+      const { sheetName } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      // `tables.add(address, hasHeaders)` — pass the full (sheet-qualified) address so the table
+      // lands on the intended sheet regardless of the active sheet.
+      const table = sheet.tables.add(plan.address as string, plan.hasHeaders);
+      const range = table.getRange();
+      // Read back the MINTED name + landed address. The minted name is the inverse identity — we
+      // never trust `params.table.name`. `getRange().address` gives the canonical location.
+      table.load('name');
+      range.load('address');
+      await ctx.sync();
+      return {
+        ok: true as const,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        inverse: {
+          op: 'delete-object' as const,
+          objectType: 'table' as const,
+          name: table.name, // the host-minted name, scoped to THIS change
+        },
+      };
+    });
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
+    }
+    return result;
+  }
+
+  /**
+   * `insert-chart` (ADR-0007 `chart` verb): add a chart over `params.chart.sourceRange` on its
+   * sheet. Fails closed when the source range is absent. Gated on `ExcelApi 1.1`
+   * (`ChartCollection.add` — typings l.42999); an older host degrades. SECURITY (ADR-0007
+   * §inverse-identity): the inverse deletes the host-MINTED chart name (`chart.load('name')`, read
+   * back post-sync), never a model-chosen label.
+   */
+  private async applyInsertChart(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertChart(req);
+    if (!plan.hasChart || !plan.address) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'insert-chart needs params.chart.sourceRange' },
+      };
+    }
+    // `ChartCollection.add` → ExcelApi 1.1; gate so an older host degrades rather than throwing.
+    if (!isSet('ExcelApi', '1.1')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported_host',
+          message: 'This host cannot add charts (ExcelApi < 1.1).',
+        },
+      };
+    }
+    const result = await Excel.run(async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      // `charts.add(type, sourceData, seriesBy)`. The host enums are erased to strings at runtime;
+      // the plan already mapped the agent enums → the `Excel.ChartType`/`ChartSeriesBy` strings.
+      const chart = sheet.charts.add(
+        plan.chartType as Excel.ChartType,
+        sheet.getRange(rangeAddress),
+        plan.seriesBy as Excel.ChartSeriesBy,
+      );
+      if (plan.title !== undefined) chart.title.text = plan.title;
+      // Read back the MINTED chart name for the inverse identity.
+      chart.load('name');
+      await ctx.sync();
+      return {
+        ok: true as const,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: chart.name,
+        inverse: {
+          op: 'delete-object' as const,
+          objectType: 'chart' as const,
+          name: chart.name, // the host-minted name, scoped to THIS change
+        },
+      };
+    });
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
+    }
+    return result;
+  }
+
+  /**
+   * `format-conditional` (ADR-0007 `cf` verb): add one conditional-format rule to
+   * `params.conditional.range`. Fails closed when the range is absent. Gated on `ExcelApi 1.6`
+   * (`Range.conditionalFormats.add` — typings l.51149); an older host degrades. The rule is added
+   * at the FIRST/top priority, so we read the collection count BEFORE the add and record the new
+   * rule's ordinal (count-before) for the `clear-conditional` inverse — the undo clears exactly the
+   * rule this change appended, by index, not by re-resolving an arbitrary rule.
+   *
+   * Known limitation (index-based CF addressing): if a COAUTHOR adds/removes a CF rule on the same
+   * range between this change and its undo, the recorded ordinal can shift, so the undo could clear a
+   * neighboring rule. This is inherent to ordinal addressing; acceptable for a best-effort inverse.
+   */
+  private async applyConditional(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planConditional(req);
+    if (!plan.hasConditional || !plan.address || !plan.rule) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'format-conditional needs params.conditional.range' },
+      };
+    }
+    // Security (ADR-0003 §untrusted boundary): a cellValue rule whose threshold formula is an
+    // untrusted active-content vector must NOT be written — Excel evaluates a CF formula. Degrade,
+    // parity with the write-cells `unsafe_formula` path; never silently evaluate it.
+    if (plan.unsafe) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsafe_formula',
+          message:
+            'Refusing to write a conditional-format rule whose value is an unsafe formula (web/data/DDE/external reference).',
+        },
+      };
+    }
+    // `ConditionalFormatCollection.add` → ExcelApi 1.6; gate so an older host degrades.
+    if (!isSet('ExcelApi', '1.6')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported_host',
+          message: 'This host cannot add conditional formats (ExcelApi < 1.6).',
+        },
+      };
+    }
+    const rule = plan.rule;
+    const result = await Excel.run(async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const range = sheet.getRange(rangeAddress);
+      // Read the rule count BEFORE the add: `add()` inserts the new rule, so its index within the
+      // range's CF collection (the inverse ordinal) is the prior count.
+      const cfs = range.conditionalFormats;
+      const priorCount = cfs.getCount();
+      range.load('address');
+      await ctx.sync();
+      const ruleOrdinal = priorCount.value;
+
+      const cf = cfs.add(rule.cfType as Excel.ConditionalFormatType);
+      if (rule.kind === 'cellValue') {
+        cf.cellValue.rule = {
+          formula1: rule.formula1,
+          ...(rule.formula2 !== undefined ? { formula2: rule.formula2 } : {}),
+          operator: rule.operator as Excel.ConditionalCellValueOperator,
+        };
+        if (rule.fill !== undefined) cf.cellValue.format.fill.color = rule.fill;
+      } else if (rule.kind === 'top') {
+        cf.topBottom.rule = {
+          rank: rule.rank,
+          type: rule.criterion as Excel.ConditionalTopBottomCriterionType,
+        };
+        if (rule.fill !== undefined) cf.topBottom.format.fill.color = rule.fill;
+      }
+      // dataBar / colorScale: the bare `add(type)` is the whole rule; nothing else to configure.
+      await ctx.sync();
+      return {
+        ok: true as const,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        inverse: {
+          op: 'clear-conditional' as const,
+          range: range.address,
+          ruleOrdinal, // index of the rule this change appended in the range's CF collection
+        },
+      };
     });
     if (result.ok) {
       const flags = provFlags(req, await this.persistProvenance(req));

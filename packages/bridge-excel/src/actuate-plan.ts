@@ -162,6 +162,176 @@ export function splitFormulaGrid(values: string[][]): FormulaGrid {
   return { formulas, values: valueGrid, hasFormulas, rejected };
 }
 
+/* ─────────────────────── ADR-0007 grid-object writes ────────────────────── */
+
+/**
+ * Pure plan for a `create-table` actuation (ADR-0007 `table` verb): promote a range to a native
+ * Excel Table. Located by `params.table.range`; `hasHeaders` decides whether the first row is the
+ * header (Excel synthesizes one when false). `params.table.name` is a *requested* label only — it
+ * is NEVER the inverse identity (the bridge records the name Excel actually mints at apply-time;
+ * see ADR-0007 §inverse-identity). `hasTable` lets the bridge fail closed before touching the host.
+ */
+export interface CreateTablePlan {
+  address?: string;
+  hasHeaders: boolean;
+  /** Requested table name (host may rename); informational only, not the inverse identity. */
+  requestedName?: string;
+  hasTable: boolean;
+}
+
+export function planCreateTable(req: ActuationRequest): CreateTablePlan {
+  const t = req.params.table;
+  const range = t?.range;
+  return {
+    ...(range ? { address: range } : {}),
+    hasHeaders: t?.hasHeaders ?? true,
+    ...(t?.name ? { requestedName: t.name } : {}),
+    hasTable: Boolean(range),
+  };
+}
+
+/** The Excel chart-type string this verb supports → the `Excel.ChartType` enum value. */
+export type ExcelChartTypeName = 'column' | 'bar' | 'line' | 'pie' | 'scatter' | 'area';
+const CHART_TYPE: Record<ExcelChartTypeName, string> = {
+  column: 'ColumnClustered',
+  bar: 'BarClustered',
+  line: 'Line',
+  pie: 'Pie',
+  scatter: 'XYScatter',
+  area: 'Area',
+};
+const CHART_SERIES_BY: Record<'rows' | 'columns' | 'auto', string> = {
+  rows: 'Rows',
+  columns: 'Columns',
+  auto: 'Auto',
+};
+
+/**
+ * Pure plan for an `insert-chart` actuation (ADR-0007 `chart` verb): a chart over `sourceRange`.
+ * The agent-facing chart type / seriesBy enums are mapped here to their `Excel.ChartType` /
+ * `Excel.ChartSeriesBy` string values (host enums are erased strings at runtime), so the host
+ * wiring just passes through. `hasChart` lets the bridge fail closed when `sourceRange` is absent.
+ */
+export interface InsertChartPlan {
+  address?: string;
+  /** Mapped `Excel.ChartType` string (e.g. "ColumnClustered"). */
+  chartType: string;
+  /** Mapped `Excel.ChartSeriesBy` string (e.g. "Auto"). */
+  seriesBy: string;
+  title?: string;
+  hasChart: boolean;
+}
+
+export function planInsertChart(req: ActuationRequest): InsertChartPlan {
+  const c = req.params.chart;
+  const sourceRange = c?.sourceRange;
+  const chartType = c ? (CHART_TYPE[c.chartType] ?? 'ColumnClustered') : 'ColumnClustered';
+  const seriesBy = CHART_SERIES_BY[c?.seriesBy ?? 'auto'];
+  return {
+    ...(sourceRange ? { address: sourceRange } : {}),
+    chartType,
+    seriesBy,
+    ...(c?.title ? { title: c.title } : {}),
+    hasChart: Boolean(sourceRange),
+  };
+}
+
+const CF_OPERATOR: Record<'gt' | 'lt' | 'ge' | 'le' | 'eq' | 'ne' | 'between', string> = {
+  gt: 'GreaterThan',
+  lt: 'LessThan',
+  ge: 'GreaterThanOrEqual',
+  le: 'LessThanOrEqual',
+  eq: 'EqualTo',
+  ne: 'NotEqualTo',
+  between: 'Between',
+};
+const CF_TYPE: Record<'cellValue' | 'dataBar' | 'colorScale' | 'top', string> = {
+  cellValue: 'CellValue',
+  dataBar: 'DataBar',
+  colorScale: 'ColorScale',
+  top: 'TopBottom',
+};
+
+/**
+ * Pure plan for a `format-conditional` actuation (ADR-0007 `cf` verb): one conditional-format rule
+ * over `range`. The discriminated `rule` is mapped here to its `Excel.ConditionalFormatType` string
+ * and (per kind) the host rule shape — a `cellValue` rule carries `formula1`/`formula2?`/`operator`
+ * (mapped from the agent operator) plus an optional `fill`; a `top` rule carries `rank`, the
+ * `Excel.ConditionalTopBottomCriterionType` string (Top/Bottom × Items), plus an optional `fill`;
+ * `dataBar`/`colorScale` are bare. `hasConditional` fails the bridge closed on a missing range.
+ */
+export type ConditionalCellValuePlan = {
+  kind: 'cellValue';
+  cfType: string;
+  operator: string;
+  formula1: string;
+  formula2?: string;
+  fill?: string;
+};
+export type ConditionalTopPlan = {
+  kind: 'top';
+  cfType: string;
+  rank: number;
+  criterion: string;
+  fill?: string;
+};
+export type ConditionalBarePlan = { kind: 'dataBar' | 'colorScale'; cfType: string };
+export type ConditionalRulePlan =
+  | ConditionalCellValuePlan
+  | ConditionalTopPlan
+  | ConditionalBarePlan;
+
+export interface ConditionalPlan {
+  address?: string;
+  rule?: ConditionalRulePlan;
+  hasConditional: boolean;
+  /**
+   * Security (ADR-0003 §untrusted boundary): a `cellValue` rule whose `formula1`/`formula2` is an
+   * untrusted active-content vector (WEBSERVICE/DDE/external-ref/…). Excel evaluates a CF rule's
+   * formula, so — exactly like a `=`-cell in {@link splitFormulaGrid} — an unsafe one must NOT be
+   * written; the bridge degrades the format instead. Set only for `cellValue`.
+   */
+  unsafe?: boolean;
+}
+
+export function planConditional(req: ActuationRequest): ConditionalPlan {
+  const c = req.params.conditional;
+  if (!c || !c.range) {
+    return { ...(c?.range ? { address: c.range } : {}), hasConditional: false };
+  }
+  const r = c.rule;
+  let rule: ConditionalRulePlan;
+  if (r.kind === 'cellValue') {
+    rule = {
+      kind: 'cellValue',
+      cfType: CF_TYPE.cellValue,
+      operator: CF_OPERATOR[r.operator],
+      formula1: r.value,
+      ...(r.value2 !== undefined ? { formula2: r.value2 } : {}),
+      ...(r.fill !== undefined ? { fill: r.fill } : {}),
+    };
+  } else if (r.kind === 'top') {
+    rule = {
+      kind: 'top',
+      cfType: CF_TYPE.top,
+      rank: r.rank,
+      criterion: r.bottom ? 'BottomItems' : 'TopItems',
+      ...(r.fill !== undefined ? { fill: r.fill } : {}),
+    };
+  } else {
+    rule = { kind: r.kind, cfType: CF_TYPE[r.kind] };
+  }
+  // Screen a cellValue rule's formula(s) the same way `splitFormulaGrid` screens `=`-cells: Excel
+  // evaluates a CF formula, so an untrusted active-content payload (WEBSERVICE/DDE/external-ref) must
+  // degrade the write rather than be evaluated. `isUnsafeFormula` matches the function/payload by
+  // content (a leading `=` is not required), so a bare `WEBSERVICE(...)` threshold is still caught.
+  const unsafe =
+    rule.kind === 'cellValue' &&
+    (isUnsafeFormula(rule.formula1) ||
+      (rule.formula2 !== undefined && isUnsafeFormula(rule.formula2)));
+  return { address: c.range, rule, hasConditional: true, ...(unsafe ? { unsafe: true } : {}) };
+}
+
 /** Collapse control chars + whitespace to one line so a source can't forge extra comment lines. */
 function oneLineSource(text: string): string {
   const stripped = Array.from(text, (ch) => {

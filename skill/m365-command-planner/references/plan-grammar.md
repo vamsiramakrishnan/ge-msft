@@ -7,16 +7,16 @@ to the user for a one-tap confirm before anything runs.
 
 ## Keywords
 
-| Keyword      | Repeatable | Required | Meaning                                                                                                                                 |
-| ------------ | :--------: | :------: | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.  |
-| `surface`    |     no     |   yes    | The active app: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                           |
+| Keyword      | Repeatable | Required | Meaning                                                                                                                                                                          |
+| ------------ | :--------: | :------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                                           |
+| `surface`    |     no     |   yes    | The active app: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                                                    |
 | `scope`      |     no     |    no    | Where the work applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow (`section §4–6`, `range Sales!A:C`, `comment c-12`). |
-| `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                               |
-| `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                          |
-| `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                   |
-| `clarify`    |    yes     |    no    | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                         |
-| `confidence` |     no     |    no    | `high` / `medium` / `low` — your read of how well-specified the request is.                                                             |
+| `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                                        |
+| `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                                   |
+| `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                                                            |
+| `clarify`    |    yes     |    no    | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                                  |
+| `confidence` |     no     |    no    | `high` / `medium` / `low` — your read of how well-specified the request is.                                                                                                      |
 
 `plan` and `end` lines are optional brackets; the fence itself delimits the block. Lines
 starting with `#` are comments. Unknown keywords are reported back as a corrective error.
@@ -28,15 +28,15 @@ WHAT, `scope` says WHERE, `ground` says what it is grounded on. Do not smuggle a
 task into the verb (no `regen-clause`, `draft-slides`, `synthesize`, `meeting-notes`,
 `resolve-comment` — those are scopes/closures of the seven):
 
-| Verb        | Means                                                       | Route          |
-| ----------- | ----------------------------------------------------------- | -------------- |
-| `ask`       | a custom free-text prompt / grounded chat over the scope    | chat (read)    |
-| `summarize` | condense the scope                                          | chat (read)    |
-| `explain`   | clarify the scope in plain language                         | chat (read)    |
-| `rewrite`   | apply any instruction to the scope → a reversible edit      | write (gated)  |
-| `review`    | whole-scope pass → N findings → N gated annotations         | annotation     |
-| `draft`     | generate new material (slides, page, reply, column)         | write (gated)  |
-| `notes`     | transcript → live notes + action items (Teams)              | annotation     |
+| Verb        | Means                                                    | Route         |
+| ----------- | -------------------------------------------------------- | ------------- |
+| `ask`       | a custom free-text prompt / grounded chat over the scope | chat (read)   |
+| `summarize` | condense the scope                                       | chat (read)   |
+| `explain`   | clarify the scope in plain language                      | chat (read)   |
+| `rewrite`   | apply any instruction to the scope → a reversible edit   | write (gated) |
+| `review`    | whole-scope pass → N findings → N gated annotations      | annotation    |
+| `draft`     | generate new material (slides, page, reply, column)      | write (gated) |
+| `notes`     | transcript → live notes + action items (Teams)           | annotation    |
 
 `rewrite` is the load-bearing generalization: "tighten", "make formal", "rewrite to match
 the policy" are all `rewrite` + a free-text `step`, compiling to whatever reversible write

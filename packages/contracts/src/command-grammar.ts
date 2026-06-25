@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ActuationKind, CapabilityManifest } from './capability.js';
+import { ActuationKindSchema, type ActuationKind, type CapabilityManifest } from './capability.js';
 import {
   ParsedExprSchema,
   isExpressionLine,
@@ -135,6 +135,12 @@ export type ParsedCommand =
   // (pre-resolution); `cells` is the resolved grid (filled by the runtime at dry-run). Spill is
   // ALWAYS expression-driven — a bare literal grid is not expressible inline.
   | { verb: 'spill'; range: string; valueExpr?: ParsedExpr; cells?: string[][] }
+  // ADR-0008 §two-tier — the `/<kind>` SPECIALIZED surface. A named, non-composing effect terminal
+  // for the long-tail catalogue (`/insert-image base64=… alt="…"`). `kind` is the `ActuationKind`
+  // itself (no alias table → drift-free); `props`/`args` are the typed/positional arguments the
+  // runtime compiles into the kind's `ActuationParams`. Per-surface availability is checked at
+  // compile, not here (the parser stays structural).
+  | { verb: 'invoke'; kind: string; props: Record<string, string>; args: string[] }
   | { verb: 'done' }
   | { verb: 'help' };
 
@@ -204,6 +210,12 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     valueExpr: z.lazy(() => ParsedExprSchema).optional(),
     cells: z.array(z.array(z.string())).optional(),
   }),
+  z.object({
+    verb: z.literal('invoke'),
+    kind: z.string(),
+    props: z.record(z.string()),
+    args: z.array(z.string()),
+  }),
   z.object({ verb: z.literal('done') }),
   z.object({ verb: z.literal('help') }),
 ]);
@@ -263,6 +275,10 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
   const rawVerb = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
   const verb = rawVerb.toLowerCase();
   const rest = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
+
+  // ADR-0008 §two-tier — a `/<kind>` line is the SPECIALIZED surface (the long-tail catalogue),
+  // dispatched before the core-verb switch. The bare verbs stay the composable algebra.
+  if (rawVerb.startsWith('/')) return parseInvoke(rawVerb, rest);
 
   switch (verb) {
     case 'outline':
@@ -554,6 +570,45 @@ function parseSpill(rest: string): ParsedCommand | CommandParseError {
   }
   if (isExprParseError(expr)) return expr;
   return { verb: 'spill', range, valueExpr: expr };
+}
+
+/** The set of valid `/`-surface capability names — the `ActuationKind` catalogue (drift-free). */
+const ACTUATION_KINDS: ReadonlySet<string> = new Set(ActuationKindSchema.options);
+
+/**
+ * ADR-0008 §two-tier — `/<kind> k=v … positional …` (the specialized surface). `kind` must be an
+ * `ActuationKind` (the command name IS the kind — no alias table). Args reuse the `format`-style
+ * `tokenizeArgs` (quoted props + positional). An unknown kind yields a did-you-mean over the
+ * catalogue. Per-surface availability (is this kind handled THIS turn) is enforced at compile, not
+ * here — the parser stays structural and surface-agnostic.
+ */
+function parseInvoke(rawVerb: string, rest: string): ParsedCommand | CommandParseError {
+  const kind = rawVerb.slice(1).toLowerCase();
+  if (kind === '') {
+    return { error: 'a / command needs a capability name — usage: /<capability> key=value ...' };
+  }
+  if (!ACTUATION_KINDS.has(kind)) {
+    const near = nearestKind(kind);
+    const tail = near ? ` — did you mean "/${near}"?` : '';
+    return { error: `unknown capability "/${kind}"${tail} (the / surface names an ActuationKind)` };
+  }
+  const { positional, props } = tokenizeArgs(rest);
+  return { verb: 'invoke', kind, props, args: positional };
+}
+
+/** The closest catalogue kind within an edit-distance threshold, for the `/`-surface did-you-mean. */
+function nearestKind(kind: string): string | undefined {
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const candidate of ACTUATION_KINDS) {
+    const d = levenshtein(kind, candidate);
+    if (d < bestDist) {
+      bestDist = d;
+      best = candidate;
+    }
+  }
+  const threshold = Math.min(4, Math.max(2, Math.ceil(kind.length / 2)));
+  return best !== undefined && bestDist <= threshold ? best : undefined;
 }
 
 /**

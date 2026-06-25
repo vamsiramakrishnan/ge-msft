@@ -105,6 +105,10 @@ mail "body"                          Outlook: stage a reviewable reply (never au
 compose "Subject" "body"             Outlook: draft a new email (recipients left to user)
 post "text"                          Teams: stage a reviewable post (never auto-sent)
 
+# specialized (the long-tail catalogue — reach a host-native capability by name)
+/<kind> [key=value ...]              e.g. /insert-image base64=… alt="chart" · /add-attachment name=…
+                                     the name IS the ActuationKind; only those advertised this turn
+
 # control
 done                                 the task is complete
 help                                 list available commands
@@ -157,6 +161,7 @@ needs them, so you keep context small.
 | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [references/algebra.md](references/algebra.md)                     | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                     |
 | [references/composition-rules.md](references/composition-rules.md) | you're composing more than a direct command — the operational laws, the decision procedure, the OBSERVE→DERIVE→EFFECT→VERIFY normal form, and when to break a program |
+| [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>` |
 | [references/command-grammar.md](references/command-grammar.md)     | you need exact selector syntax per app, the full transform list, composed writes, or how to define a reusable named command                                           |
 | [references/capability-map.md](references/capability-map.md)       | you need to confirm which read/write commands a specific app supports and their limits                                                                                |
 

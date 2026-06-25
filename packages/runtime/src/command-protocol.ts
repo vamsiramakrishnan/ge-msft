@@ -174,7 +174,65 @@ export function compileCommand(
         target: { range: cmd.range },
         cells: cmd.cells ?? [],
       });
+    case 'invoke':
+      // ADR-0008 §two-tier — the `/<kind>` specialized surface. The kind was validated against the
+      // catalogue at parse; per-surface availability is enforced by the plan type-check (its kind must
+      // be in manifest.actuations). Map the typed args into the kind's `ActuationParams`.
+      return compileWrite(
+        cmd.kind as ActuationKind,
+        ctx,
+        paramsFromInvoke(cmd.kind, cmd.props, cmd.args),
+      );
   }
+}
+
+/**
+ * Map a `/<kind>` invocation's `props`/`args` into the kind's `ActuationParams`. Universal string
+ * fields (`text`/`html`/`ooxml`/`sources`) map generically; handler-backed kinds get an explicit
+ * nested shaping so they execute end-to-end. A kind without an explicit shape still produces a valid
+ * request from the generic fields — the bridge degrades if a required param is missing, never a
+ * silent wrong write. (Filling out every kind's arg spec is the remaining bridge-integration work.)
+ */
+function paramsFromInvoke(
+  kind: string,
+  props: Record<string, string>,
+  args: string[],
+): ActuationRequest['params'] {
+  const p: Record<string, unknown> = {};
+  if (props.text !== undefined) p.text = props.text;
+  if (props.html !== undefined) p.html = props.html;
+  if (props.ooxml !== undefined) p.ooxml = props.ooxml;
+
+  switch (kind) {
+    case 'insert-image':
+      p.image = { base64: props.base64 ?? '', ...(props.alt ? { altText: props.alt } : {}) };
+      break;
+    case 'fill-content-control':
+      p.target = { contentControlId: props.id ?? props.cc ?? '' };
+      break;
+    case 'insert-hyperlink':
+      p.hyperlink = {
+        url: props.url ?? args[0] ?? '',
+        ...(props.text ? { displayText: props.text } : {}),
+      };
+      break;
+    case 'add-attachment':
+      p.attachment = {
+        ...(props.name ? { name: props.name } : {}),
+        ...(props.base64 ? { base64: props.base64 } : {}),
+        ...(props.uri ? { uri: props.uri } : {}),
+      };
+      break;
+    case 'set-page-title':
+      p.pageTitle = props.title ?? args[0] ?? '';
+      break;
+    case 'add-note-tag':
+      p.noteTag = { type: props.type ?? args[0] ?? 'toDo', status: props.status ?? 'unknown' };
+      break;
+    default:
+      break;
+  }
+  return p as ActuationRequest['params'];
 }
 
 type ChartType = NonNullable<ActuationRequest['params']['chart']>['chartType'];

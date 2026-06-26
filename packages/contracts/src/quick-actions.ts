@@ -262,6 +262,16 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     ground: ['this'],
     contextMenu: false,
   }),
+  surfaceAction({
+    id: 'comment-on-issues',
+    label: 'Comment on issues',
+    surfaces: ['word'],
+    intent: 'review',
+    scope: DOCUMENT,
+    prompt: 'Review this document and add comments for the most important issues.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
 
   // ── Excel ────────────────────────────────────────────────────────────────────
   surfaceAction({
@@ -323,6 +333,17 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     contextMenu: false,
   }),
   surfaceAction({
+    id: 'create-chart',
+    label: 'Create a chart',
+    surfaces: ['excel'],
+    intent: 'visualize',
+    scope: { kind: 'range' },
+    prompt:
+      'Create an appropriate chart from the selected range. Read the range first, choose a supported chart type, and use the chart command.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
     id: 'write-formula',
     label: 'Write a formula for…',
     surfaces: ['excel'],
@@ -347,6 +368,17 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     ground: ['unit'],
     contextMenu: false,
     parameters: [{ name: 'topic', label: 'Topic', hint: 'e.g. Q3 go-to-market strategy' }],
+  }),
+  surfaceAction({
+    id: 'draft-slide',
+    label: 'Draft a slide',
+    surfaces: ['powerpoint'],
+    intent: 'draft',
+    scope: THIS_ITEM,
+    prompt: 'Draft one new slide on {{topic}}, with a clear title and concise bullets.',
+    ground: ['unit'],
+    contextMenu: false,
+    parameters: [{ name: 'topic', label: 'Slide topic', hint: 'e.g. Q4 outlook' }],
   }),
   surfaceAction({
     id: 'speaker-notes',
@@ -465,6 +497,18 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     prompt: 'Draft a reviewable reply to this thread.',
     ground: ['this'],
     contextMenu: true,
+  }),
+  surfaceAction({
+    id: 'draft-new-email',
+    label: 'Draft a new email',
+    surfaces: ['outlook'],
+    intent: 'draft',
+    scope: DOCUMENT,
+    prompt:
+      'Draft a new email with subject {{subject}}. Leave recipients empty unless I provide them.',
+    ground: ['unit'],
+    contextMenu: false,
+    parameters: [{ name: 'subject', label: 'Subject', hint: 'e.g. Follow-up on Q3 planning' }],
   }),
 
   // ── Teams ────────────────────────────────────────────────────────────────────

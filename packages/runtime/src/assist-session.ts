@@ -21,6 +21,7 @@ import type {
 } from '@ge/contracts';
 import {
   asChangeId,
+  CapabilityManifestSchema,
   isCommandParseError,
   isProgramExpr,
   isProgramSkillCall,
@@ -279,6 +280,14 @@ export interface AssistSessionOptions {
    * lazy read-pull, both ephemeral. Defaults: `docState` on, `lazyRead` on (maxReads 4).
    */
   context?: ContextLoopOptions;
+  /**
+   * Optional release-profile / tenant-policy narrowing applied before the model grammar and
+   * executor see a capability set. This makes manually typed commands use the same effective
+   * capability set as the UI.
+   */
+  capabilityFilter?: (
+    manifest: CapabilityManifest,
+  ) => CapabilityManifest | Promise<CapabilityManifest>;
 }
 
 /**
@@ -552,6 +561,7 @@ export class AssistSession {
     for await (const event of this.client.stream(req, {
       session: this.session,
       context: brief.entries,
+      skillRoute: 'default',
       ...(opts.signal ? { signal: opts.signal } : {}),
     })) {
       if (event.type === 'provenance') this.session = event.payload.sessionId ?? this.session;
@@ -630,7 +640,7 @@ export class AssistSession {
     opts: RunCommandsOptions = {},
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
-    const capabilities = await this.bridge.getCapabilities();
+    const capabilities = await this.effectiveCapabilities();
     // Capture the advertised actuation kinds for the ADR-0005 Phase-2 effect type-check.
     this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
 
@@ -655,7 +665,7 @@ export class AssistSession {
       this.currentTurnProvenance = undefined;
       let turnText = '';
       let turnProvenance: ProvenancePayload | undefined;
-      for await (const event of this.streamTurn(query, opts.signal, opts.grounding)) {
+      for await (const event of this.streamTurn(query, opts.signal, opts.grounding, 'command')) {
         if (event.type === 'token') turnText += event.text;
         if (event.type === 'provenance') {
           turnProvenance = event.payload;
@@ -842,6 +852,13 @@ export class AssistSession {
 
     // Control + reads run inline (pure / non-actuating), exactly as ADR-0004.
     if (command.verb === 'done') {
+      if (plan.planSlots.length > 0) {
+        plan.results.push({
+          error:
+            'done cannot be batched with a write command; wait for the write result, then emit a block containing only done.',
+        });
+        return;
+      }
       plan.done = true;
       return;
     }
@@ -1172,7 +1189,7 @@ export class AssistSession {
     task: string,
     opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
   ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
-    const capabilities = await this.bridge.getCapabilities();
+    const capabilities = await this.effectiveCapabilities();
     const protocol = renderPlanPrompt(capabilities.surface);
     const docState = await this.renderAmbientDocState();
     const parts = [protocol];
@@ -1181,7 +1198,12 @@ export class AssistSession {
 
     this.currentTurnProvenance = undefined; // a planner turn must not leave provenance for a later write
     let text = '';
-    for await (const event of this.streamTurn(parts.join('\n\n'), opts.signal, opts.grounding)) {
+    for await (const event of this.streamTurn(
+      parts.join('\n\n'),
+      opts.signal,
+      opts.grounding,
+      'planner',
+    )) {
       if (event.type === 'token') text += event.text;
     }
     return parsePlanBlock(text);
@@ -1211,6 +1233,12 @@ export class AssistSession {
     }
   }
 
+  private async effectiveCapabilities(): Promise<CapabilityManifest> {
+    const raw = await this.bridge.getCapabilities();
+    const filtered = this.options.capabilityFilter ? await this.options.capabilityFilter(raw) : raw;
+    return CapabilityManifestSchema.parse(filtered);
+  }
+
   /**
    * Stream one command-loop turn through the engine within the resident `session`, recording the
    * session id, citations, and provenance exactly as {@link ask} does. No ephemeral context-loop
@@ -1220,13 +1248,17 @@ export class AssistSession {
     query: string,
     signal?: AbortSignal,
     grounding?: ResolvedGrounding,
+    skillRoute: StreamOptionsWithGrounding['skillRoute'] = 'default',
   ): AsyncGenerator<SseEvent> {
     const req = {
       intent: 'ask' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.client.stream(req, this.streamOptions({ grounding, signal }))) {
+    for await (const event of this.client.stream(
+      req,
+      this.streamOptions({ grounding, signal, skillRoute }),
+    )) {
       if (event.type === 'citation') this.citations.push(event.source);
       if (event.type === 'provenance') {
         // Finding #4: the caller (`runCommands`) captures this `provenance` event into a turn-local
@@ -1417,11 +1449,13 @@ export class AssistSession {
    */
   private streamOptions(o: {
     grounding?: ResolvedGrounding;
+    skillRoute?: StreamOptionsWithGrounding['skillRoute'];
     signal?: AbortSignal;
   }): StreamOptionsWithGrounding {
     return {
       session: this.session,
       context: this.context.list(),
+      ...(o.skillRoute ? { skillRoute: o.skillRoute } : {}),
       ...(o.signal ? { signal: o.signal } : {}),
       ...(o.grounding ? { grounding: o.grounding } : {}),
     };

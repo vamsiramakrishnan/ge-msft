@@ -22,6 +22,7 @@ describe('INTENT_REQUIRES', () => {
     expect(INTENT_REQUIRES.explain).toEqual([]);
     expect(INTENT_REQUIRES.rewrite.length).toBeGreaterThan(0);
     expect(INTENT_REQUIRES.review.length).toBeGreaterThan(0);
+    expect(INTENT_REQUIRES.visualize).toEqual(['insert-chart']);
     expect(INTENT_REQUIRES.draft.length).toBeGreaterThan(0);
     expect(INTENT_REQUIRES.notes.length).toBeGreaterThan(0);
   });
@@ -53,6 +54,13 @@ describe('intentsForManifest', () => {
     expect(intentsForManifest(manifest(['replace-selection']))).toContain('rewrite');
     // A comment-only manifest cannot land a rewrite.
     expect(intentsForManifest(manifest(['add-comment']))).not.toContain('rewrite');
+  });
+
+  it('allows visualize only when chart insertion is advertised', () => {
+    expect(intentsForManifest(manifest(['insert-chart']))).toContain('visualize');
+    expect(intentsForManifest(manifest(['write-cells', 'create-table']))).not.toContain(
+      'visualize',
+    );
   });
 
   it('maps surface-specific generators (draft/notes) to their actuations', () => {

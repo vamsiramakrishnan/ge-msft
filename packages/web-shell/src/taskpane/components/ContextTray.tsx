@@ -27,31 +27,39 @@ function Chip({
   onToggle: (id: string, attach: boolean) => void;
 }): JSX.Element {
   const dot = KIND_DOT[chip.kind] ?? '#9aa0b4';
+  const detailId = `ctx-detail-${safeId(chip.id)}`;
   return (
-    <span className={`chip${chip.attached ? ' on' : ''}`} title={chip.preview ?? chip.title}>
-      <span className="dot" style={{ background: dot }} aria-hidden="true" />
-      {!chip.attached ? (
-        <button
-          type="button"
-          className="chip-label"
-          onClick={() => onToggle(chip.id, true)}
-          aria-label={`Attach ${chip.title}`}
-        >
-          {chip.title}
-        </button>
-      ) : (
-        <span className="chip-label">{chip.title}</span>
-      )}
-      {chip.attached && (
-        <button
-          type="button"
-          className="x"
-          onClick={() => onToggle(chip.id, false)}
-          aria-label={`Detach ${chip.title}`}
-        >
-          ×
-        </button>
-      )}
+    <span className="detail-hover chip-wrap">
+      <span className={`chip${chip.attached ? ' on' : ''}`} aria-describedby={detailId}>
+        <span className="dot" style={{ background: dot }} aria-hidden="true" />
+        {!chip.attached ? (
+          <button
+            type="button"
+            className="chip-label"
+            onClick={() => onToggle(chip.id, true)}
+            aria-label={`Attach ${chip.title}`}
+          >
+            {chip.title}
+          </button>
+        ) : (
+          <span className="chip-label">{chip.title}</span>
+        )}
+        {chip.attached && (
+          <button
+            type="button"
+            className="x"
+            onClick={() => onToggle(chip.id, false)}
+            aria-label={`Detach ${chip.title}`}
+          >
+            ×
+          </button>
+        )}
+      </span>
+      <span id={detailId} className="detail-popover" role="tooltip">
+        <strong>{chip.title}</strong>
+        <span>{chip.kind}</span>
+        {chip.preview ? <span>{chip.preview}</span> : null}
+      </span>
     </span>
   );
 }
@@ -103,4 +111,8 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
       </div>
     </section>
   );
+}
+
+function safeId(value: string): string {
+  return value.replace(/[^a-z0-9_-]/gi, '-');
 }

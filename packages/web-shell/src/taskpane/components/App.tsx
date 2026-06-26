@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   deriveOutput,
   actionParameters,
@@ -11,7 +11,10 @@ import {
   type GroundingSelection,
 } from '@ge/contracts';
 import {
+  applyCatalogSelection,
   resolveGrounding,
+  type DiscoveryCatalogClient,
+  type GeminiCatalogSelection,
   type GroundingResolveContext,
   type ResolvedGrounding,
 } from '@ge/gemini-client';
@@ -29,6 +32,8 @@ import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { CommandPlanCard } from './CommandPlanCard.js';
 import { SkillsPanel } from './SkillsPanel.js';
+import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
+import { SurfaceCommandCenter, surfacePrimaryActions } from './SurfaceCommandCenter.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -40,11 +45,15 @@ export interface AppProps {
    * (preview/tests), only the per-surface filter applies.
    */
   allowedIntents?: Iterable<Intent>;
+  catalogClient?: DiscoveryCatalogClient;
+  onCatalogRouting?: (selection: ReturnType<typeof applyCatalogSelection>) => void;
 }
 
 const SURFACE_PLACEHOLDER: Readonly<Record<string, string>> = {
   word: 'Ask about the selection…',
   excel: 'Ask about this range…',
+  powerpoint: 'Ask about this slide…',
+  onenote: 'Ask about this page…',
   outlook: 'Ask about this email…',
   teams: 'Ask about this meeting…',
 };
@@ -77,6 +86,66 @@ export function isComplexInstruction(instruction: string): boolean {
   const t = instruction.trim();
   if (!t) return false;
   return t.split(/\s+/).length >= 12 || CONSTRAINT_MARKERS.test(t);
+}
+
+const EXCEL_CHART_CREATE_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|make|insert|add|build|generate|plot|visuali[sz]e)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
+const EXCEL_CHART_CONVERT_RE =
+  /^\s*(?:please\s+)?(?:turn|convert)\b[\s\S]*\b(?:into|to)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
+const WORD_REWRITE_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:rewrite|revise|tighten|edit|replace|improve)\b[\s\S]*\b(?:selection|selected text|paragraph|text|wording|clause|sentence)\b/i;
+const WORD_REVIEW_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:review|comment|flag|mark)\b[\s\S]*\b(?:issue|issues|risk|risks|gap|gaps|claim|claims|comment|comments)\b/i;
+const POWERPOINT_DRAFT_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|make|insert|add|build|generate|draft)\b[\s\S]*\bslides?\b/i;
+const OUTLOOK_DRAFT_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:draft|write|compose|create)\b[\s\S]*\b(?:reply|email|mail|message)\b/i;
+
+function intentAllowed(intent: Intent, allowedIntents: Iterable<Intent> | undefined): boolean {
+  if (allowedIntents === undefined) return true;
+  for (const allowed of allowedIntents) {
+    if (allowed === intent) return true;
+  }
+  return false;
+}
+
+/**
+ * Narrow natural-language promotion for bridge-backed mutations. Plain "create a chart..." / "draft
+ * a slide..." requests are actuating requests, but historically landed in read-only chat unless the
+ * user knew to type a slash verb. Promote only imperative language, only when the runtime capability
+ * closure includes the matching intent. The promoted turn still enters `runCommands`, so it dry-runs,
+ * previews, and waits for explicit approval before any host mutation.
+ */
+export function inferImplicitIntent(
+  surface: Surface,
+  allowedIntents: Iterable<Intent> | undefined,
+  inv: ComposerInvocation,
+): Intent | undefined {
+  if (inv.intent !== undefined) return inv.intent;
+  const raw = inv.raw.trim();
+  if (!raw || raw.startsWith('/')) return undefined;
+  switch (surface) {
+    case 'excel':
+      return intentAllowed('visualize', allowedIntents) &&
+        (EXCEL_CHART_CREATE_RE.test(raw) || EXCEL_CHART_CONVERT_RE.test(raw))
+        ? 'visualize'
+        : undefined;
+    case 'word':
+      if (intentAllowed('rewrite', allowedIntents) && WORD_REWRITE_RE.test(raw)) return 'rewrite';
+      if (intentAllowed('review', allowedIntents) && WORD_REVIEW_RE.test(raw)) return 'review';
+      return undefined;
+    case 'powerpoint':
+      return intentAllowed('draft', allowedIntents) && POWERPOINT_DRAFT_RE.test(raw)
+        ? 'draft'
+        : undefined;
+    case 'outlook':
+      return intentAllowed('draft', allowedIntents) && OUTLOOK_DRAFT_RE.test(raw)
+        ? 'draft'
+        : undefined;
+    case 'onenote':
+    case 'teams':
+      return undefined;
+  }
 }
 
 /**
@@ -126,10 +195,32 @@ export function invocationToGrounding(
  * tray (attach/detach chips), streamed grounded thread with citations, proposal-review cards, and
  * the composer (send / cancel). No host or network code here — the controller owns all of that.
  */
-export function App({ controller, surface, agentLabel, allowedIntents }: AppProps): JSX.Element {
+export function App({
+  controller,
+  surface,
+  agentLabel,
+  allowedIntents,
+  catalogClient,
+  onCatalogRouting,
+}: AppProps): JSX.Element {
   const state = usePanelState(controller);
   // The parameterized action awaiting its `{{name}}` fill values (Workstream H), or undefined.
   const [paramFill, setParamFill] = useState<QuickAction | undefined>(undefined);
+  const hasBlockingGate = Boolean(
+    state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite,
+  );
+  const actionBlocked = state.busy || hasBlockingGate;
+  const primaryActions = useMemo(
+    () => surfacePrimaryActions(surface, allowedIntents),
+    [allowedIntents, surface],
+  );
+  const primaryActionIds = useMemo(
+    () => primaryActions.map((action) => action.id),
+    [primaryActions],
+  );
+  const attachedCount = state.chips.filter((chip) => chip.attached).length;
+  const availableCount = Math.max(0, state.chips.length - attachedCount);
+  const proposalCount = state.proposals.filter((proposal) => proposal.status === 'pending').length;
 
   // Load the attachable-context chips once on mount.
   useEffect(() => {
@@ -148,7 +239,12 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
   // `invocationToGrounding` → `resolveGrounding`, and passed as the turn's grounding — never discarded
   // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
-    const seed = invocationToSeed(inv);
+    const effectiveIntent = inferImplicitIntent(surface, allowedIntents, inv);
+    const routedInv =
+      effectiveIntent !== undefined && effectiveIntent !== inv.intent
+        ? { ...inv, intent: effectiveIntent, raw: `/${effectiveIntent} ${inv.raw}`.trim() }
+        : inv;
+    const seed = invocationToSeed(routedInv);
     // Fail-closed (Workstream H): a typed `{{name}}` slot must be filled before dispatch — never send
     // a literal placeholder to the model. A parameterized chip is collected via QuickActionParamForm
     // first, so this guard only fires on a defective seed; drop it rather than actuate on raw braces.
@@ -158,9 +254,9 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
     // composer-typed (raw ≠ '') actuating instruction with constraints first proposes a confirmable
     // CommandPlan. A chip/preset (raw === '') or a simple instruction routes straight to the executor.
     const composerOrigin = inv.raw.trim() !== '';
-    if (composerOrigin && isActuating(inv.intent) && isComplexInstruction(inv.instruction)) {
+    if (composerOrigin && isActuating(effectiveIntent) && isComplexInstruction(inv.instruction)) {
       void controller.proposePlan(seed, grounding);
-    } else if (isActuating(inv.intent)) {
+    } else if (isActuating(effectiveIntent)) {
       void controller.runCommands(seed, grounding);
     } else {
       void controller.send(seed, grounding);
@@ -199,10 +295,30 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
         </div>
       </header>
 
+      <SurfaceCommandCenter
+        surface={surface}
+        allowedIntents={allowedIntents}
+        busy={state.busy}
+        hasGate={hasBlockingGate}
+        attachedCount={attachedCount}
+        availableCount={availableCount}
+        messageCount={state.messages.length}
+        proposalCount={proposalCount}
+        onAction={onQuickAction}
+      />
+
       <ContextTray
         chips={state.chips}
         onToggle={onToggle}
         onRefresh={() => void controller.refreshContext()}
+      />
+
+      <GeminiCatalogPanel
+        catalogClient={catalogClient}
+        disabled={actionBlocked}
+        onApply={(selection: GeminiCatalogSelection) => {
+          onCatalogRouting?.(applyCatalogSelection(selection));
+        }}
       />
 
       {state.suggestions.length > 0 && (
@@ -212,6 +328,7 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
               key={s.id}
               type="button"
               className="suggestion"
+              disabled={actionBlocked}
               onClick={() => {
                 if (s.query) controller.onAutomate(s.query);
                 controller.dismissSuggestion(s.id);
@@ -226,31 +343,14 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
 
       <SkillsPanel
         skills={state.skills ?? []}
+        disabled={actionBlocked}
         onInvoke={(name, args) => void controller.invokeSkill(name, args)}
       />
 
       <main className="thread-region" aria-label="Conversation and activity">
-        <MessageThread messages={state.messages} />
+        <MessageThread messages={state.messages} surface={surface} />
 
         <RunSteps steps={state.steps} />
-
-        <CommandPlanCard
-          pending={state.pendingCommandPlan}
-          onConfirm={() => controller.confirmCommandPlan()}
-          onCancel={() => controller.cancelCommandPlan()}
-        />
-
-        <PlanApprovalCard
-          plan={state.pendingPlan}
-          onApprove={() => controller.approvePlan()}
-          onReject={() => controller.rejectPlan()}
-        />
-
-        <WriteApprovalCard
-          pending={state.pendingWrite}
-          onApprove={() => controller.approvePendingWrite()}
-          onReject={() => controller.rejectPendingWrite()}
-        />
 
         <ProposalCard
           proposals={state.proposals}
@@ -264,10 +364,33 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
         )}
       </main>
 
+      {hasBlockingGate && (
+        <section className="gate-rail" aria-label="Decision required">
+          <CommandPlanCard
+            pending={state.pendingCommandPlan}
+            onConfirm={() => controller.confirmCommandPlan()}
+            onCancel={() => controller.cancelCommandPlan()}
+          />
+
+          <PlanApprovalCard
+            plan={state.pendingPlan}
+            onApprove={() => controller.approvePlan()}
+            onReject={() => controller.rejectPlan()}
+          />
+
+          <WriteApprovalCard
+            pending={state.pendingWrite}
+            onApprove={() => controller.approvePendingWrite()}
+            onReject={() => controller.rejectPendingWrite()}
+          />
+        </section>
+      )}
+
       <QuickActionBar
         surface={surface}
         allowedIntents={allowedIntents}
-        busy={state.busy}
+        busy={actionBlocked}
+        excludeIds={primaryActionIds}
         onAction={onQuickAction}
       />
 
@@ -280,6 +403,7 @@ export function App({ controller, surface, agentLabel, allowedIntents }: AppProp
 
       <Composer
         busy={state.busy}
+        disabled={hasBlockingGate}
         surface={surface}
         allowedIntents={allowedIntents}
         // The plain-string fallback (unreachable while `onInvoke` is set, since Composer prefers it).

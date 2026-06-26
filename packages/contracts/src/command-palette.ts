@@ -1,4 +1,4 @@
-import { GroundSourceSchema, type Intent, type CommandScope, type GroundSource } from './intent.js';
+import { type Intent, type CommandScope, type GroundSource } from './intent.js';
 import type { Surface } from './context.js';
 
 /**
@@ -31,8 +31,13 @@ export interface CommandPaletteSpec {
   scopeOptions: ScopeOption[];
 }
 
-/** The fixed `@`-ground kinds offered on every surface's input (one vocabulary with `ground`). */
-const MENTION_KINDS: GroundSource[] = [...GroundSourceSchema.options];
+/**
+ * The fixed `@`-ground kinds offered in the free-text composer. Keep this to reference kinds that
+ * can resolve without an additional object picker. Addressable kinds (`document`, `person`,
+ * `datastore`, `upload`) are still valid in the structured grounding model, but they require a ref
+ * selected from catalog/context UI rather than a bare `@datastore` token that would be dropped.
+ */
+const MENTION_KINDS: GroundSource[] = ['this', 'unit'];
 
 /**
  * Genuine label exceptions only. The default `/label` is `'/' + intent` (EXPERIENCE.md §1); this map
@@ -47,6 +52,7 @@ const DESCRIPTIONS: Record<Intent, string> = {
   explain: 'Clarify the scope in plain language.',
   rewrite: 'Apply an instruction to the scope as a reversible edit.',
   review: 'Whole-scope pass — flag issues as gated findings.',
+  visualize: 'Create a chart or visual object from the scope.',
   draft: 'Generate new material from the unit.',
   notes: 'Live meeting notes and action items.',
 };
@@ -67,7 +73,7 @@ const VERB_BY_INTENT: Record<Intent, CommandVerb> = (Object.keys(DESCRIPTIONS) a
 /** The intents each surface offers in its palette (before any closure narrowing). */
 export const VERBS_BY_SURFACE: Record<Surface, Intent[]> = {
   word: ['ask', 'summarize', 'explain', 'rewrite', 'review'],
-  excel: ['ask', 'summarize', 'explain', 'rewrite', 'review'],
+  excel: ['ask', 'summarize', 'explain', 'rewrite', 'review', 'visualize'],
   powerpoint: ['ask', 'summarize', 'explain', 'draft', 'review'],
   onenote: ['ask', 'summarize', 'explain', 'draft'],
   outlook: ['ask', 'summarize', 'explain', 'draft'],

@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "GE: Dev server for Office web",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev -w packages/web-shell -- --host 0.0.0.0",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "GE: Regenerate web-upload XML manifests",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run manifests:generate -- --profile development && npm run manifests:validate -- --profile development && npm run package:dev",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

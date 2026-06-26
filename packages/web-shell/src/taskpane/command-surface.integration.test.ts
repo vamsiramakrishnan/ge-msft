@@ -3,12 +3,15 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { quickActionsForSurface } from '@ge/contracts';
 import { quickActionSeed } from './components/quick-action-seed.js';
 import {
+  installFakeExcel,
   installFakeWord,
   scriptedClient,
   mountStack,
+  type ExcelSimulator,
   type WordSimulator,
   type MountedStack,
 } from '../test-harness/index.js';
+import { inferImplicitIntent } from './components/App.js';
 
 /**
  * FULL-STACK interplay for the command surface. Each test installs an in-memory Word host, then
@@ -20,7 +23,7 @@ import {
  * No new actuation path is introduced by the chips/palette; they only seed the existing routes.
  */
 
-let sim: WordSimulator | undefined;
+let sim: WordSimulator | ExcelSimulator | undefined;
 let ui: MountedStack | undefined;
 
 afterEach(() => {
@@ -30,19 +33,17 @@ afterEach(() => {
   sim = undefined;
 });
 
-function chip(actionId: string): HTMLButtonElement {
-  const el = ui!.container.querySelector<HTMLButtonElement>(
-    `button.quick-action[data-action-id="${actionId}"]`,
-  );
-  if (!el) throw new Error(`no quick-action chip with data-action-id "${actionId}"`);
+function actionButton(actionId: string): HTMLButtonElement {
+  const el = ui!.container.querySelector<HTMLButtonElement>(`button[data-action-id="${actionId}"]`);
+  if (!el) throw new Error(`no action button with data-action-id "${actionId}"`);
   return el;
 }
 
 async function typeAndSubmit(text: string): Promise<void> {
-  const input = ui!.container.querySelector<HTMLInputElement>('input#ask')!;
+  const input = ui!.container.querySelector<HTMLTextAreaElement>('textarea#ask')!;
   await ui!.act(() => {
     const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
+      window.HTMLTextAreaElement.prototype,
       'value',
     )!.set!;
     setter.call(input, text);
@@ -62,7 +63,7 @@ describe('command surface — quick actions (full-stack)', () => {
 
     const summarize = quickActionsForSurface('word').find((a) => a.id === 'summarize-this')!;
     expect(summarize.output).toBe('chat');
-    await ui.act(() => chip('summarize-this').click());
+    await ui.act(() => actionButton('summarize-this').click());
     await ui.waitFor(() => (ui!.container.textContent ?? '').includes('99.5% monthly'));
 
     // It went through `send` with the exact deterministic seed the typed action compiles to
@@ -85,12 +86,33 @@ describe('command surface — quick actions (full-stack)', () => {
     const tighten = quickActionsForSurface('word').find((a) => a.id === 'tighten')!;
     expect(tighten.output).toBe('write');
     expect(tighten.intent).toBe('rewrite');
-    await ui.act(() => chip('tighten').click());
+    await ui.act(() => actionButton('tighten').click());
     await ui.waitFor((s) => s.pendingPlan !== undefined);
 
     // The write surfaced as a plan-approval card (the gate) rather than auto-applying.
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
-    expect(sim.snapshot().inserts.length).toBe(0); // nothing applied before approval
+    expect((sim as WordSimulator).snapshot().inserts.length).toBe(0); // nothing applied before approval
+  });
+
+  it('an Excel chart chip routes through runCommands and stages an insert-chart gate', async () => {
+    sim = installFakeExcel();
+    ui = mountStack({
+      surface: 'excel',
+      client: scriptedClient([
+        '```cmd\nchart pie Sales!A1:C7 title="Sales mix"\n```',
+        '```cmd\ndone\n```',
+      ]),
+    });
+    await ui.flush();
+
+    const createChart = quickActionsForSurface('excel').find((a) => a.id === 'create-chart')!;
+    expect(createChart.output).toBe('write');
+    expect(createChart.intent).toBe('visualize');
+    await ui.act(() => actionButton('create-chart').click());
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+
+    expect(ui.controller.getState().pendingPlan?.effects[0]?.request.kind).toBe('insert-chart');
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
   });
 });
 
@@ -124,6 +146,108 @@ describe('command surface — composer / and @ (full-stack)', () => {
 
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
   });
+
+  it('an imperative Excel chart request is promoted to the gated visualize command path', async () => {
+    sim = installFakeExcel();
+    ui = mountStack({
+      surface: 'excel',
+      client: scriptedClient([
+        '```cmd\nchart pie Sales!A1:C7 title="Sales mix"\n```',
+        '```cmd\ndone\n```',
+      ]),
+    });
+    await ui.flush();
+
+    await typeAndSubmit('create a pie chart from Sales!A1:C7');
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+
+    expect(ui.controller.getState().pendingPlan?.effects[0]?.request.kind).toBe('insert-chart');
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+  });
+});
+
+describe('command surface — implicit intent inference', () => {
+  const base = {
+    scope: { kind: 'selection' as const },
+    mentions: [],
+    instruction: '',
+  };
+
+  it('promotes only imperative Excel chart creation when visualize is allowed', () => {
+    expect(
+      inferImplicitIntent('excel', ['visualize'], {
+        ...base,
+        raw: 'create a chart from A1:B8',
+        instruction: 'create a chart from A1:B8',
+      }),
+    ).toBe('visualize');
+    expect(
+      inferImplicitIntent('excel', ['visualize'], {
+        ...base,
+        raw: 'why are charts not being created?',
+        instruction: 'why are charts not being created?',
+      }),
+    ).toBeUndefined();
+    expect(
+      inferImplicitIntent('excel', ['ask'], {
+        ...base,
+        raw: 'create a chart from A1:B8',
+        instruction: 'create a chart from A1:B8',
+      }),
+    ).toBeUndefined();
+    expect(
+      inferImplicitIntent('word', undefined, {
+        ...base,
+        raw: 'create a chart from A1:B8',
+        instruction: 'create a chart from A1:B8',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('promotes only clear imperative write requests on Word, PowerPoint, and Outlook', () => {
+    expect(
+      inferImplicitIntent('word', ['rewrite', 'review'], {
+        ...base,
+        raw: 'rewrite the selected text to be more direct',
+        instruction: 'rewrite the selected text to be more direct',
+      }),
+    ).toBe('rewrite');
+    expect(
+      inferImplicitIntent('word', ['rewrite', 'review'], {
+        ...base,
+        raw: 'flag claims that need comments',
+        instruction: 'flag claims that need comments',
+      }),
+    ).toBe('review');
+    expect(
+      inferImplicitIntent('word', ['ask'], {
+        ...base,
+        raw: 'rewrite the selected text',
+        instruction: 'rewrite the selected text',
+      }),
+    ).toBeUndefined();
+    expect(
+      inferImplicitIntent('powerpoint', ['draft'], {
+        ...base,
+        raw: 'add a slide about Q4 outlook',
+        instruction: 'add a slide about Q4 outlook',
+      }),
+    ).toBe('draft');
+    expect(
+      inferImplicitIntent('outlook', ['draft'], {
+        ...base,
+        raw: 'draft a reply to this customer',
+        instruction: 'draft a reply to this customer',
+      }),
+    ).toBe('draft');
+    expect(
+      inferImplicitIntent('outlook', ['draft'], {
+        ...base,
+        raw: 'why is draft reply not working?',
+        instruction: 'why is draft reply not working?',
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe('command surface — planner-confirm for complex free-text (full-stack, §F)', () => {
@@ -150,7 +274,7 @@ describe('command surface — planner-confirm for complex free-text (full-stack,
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain('99.9%');
     expect(ui.controller.getState().pendingPlan).toBeUndefined();
-    expect(sim.snapshot().inserts.length).toBe(0);
+    expect((sim as WordSimulator).snapshot().inserts.length).toBe(0);
 
     // Confirm → the executor runs and stages ITS OWN effect-level gate.
     await ui.act(() =>
@@ -161,7 +285,7 @@ describe('command surface — planner-confirm for complex free-text (full-stack,
     await ui.waitFor((s) => s.pendingPlan !== undefined);
     expect(ui.controller.getState().pendingCommandPlan).toBeUndefined();
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
-    expect(sim.snapshot().inserts.length).toBe(0); // still nothing applied — gated
+    expect((sim as WordSimulator).snapshot().inserts.length).toBe(0); // still nothing applied — gated
   });
 
   it('a SIMPLE /rewrite skips the planner and goes straight to the executor gate', async () => {

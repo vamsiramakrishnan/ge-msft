@@ -150,7 +150,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   (must render exact per-verb usage), `de_stub.read_response` ⇄ the `gemini-client` streamAssist
   reader. The TypeScript side is authoritative; parity is tracked, not yet build-enforced.
 - **Quick actions — built + tested.** The prebuilt-button catalog (`QUICK_ACTIONS` /
-  `QuickActionSchema`, 29 actions) lives in `@ge/contracts`, **closure-filtered per surface**
+  `QuickActionSchema`, 33 actions) lives in `@ge/contracts`, **closure-filtered per surface**
   (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
   `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
   seed). **Typed parameters (H):** an action whose prompt carries `{{name}}` slots declares them as

@@ -86,6 +86,20 @@ describe('re-tagged actions (the audit fixes)', () => {
     expect(byId('risk-column').output).toBe('write');
   });
 
+  it('create-chart is visualize (write), not chat', () => {
+    expect(byId('create-chart').intent).toBe('visualize');
+    expect(byId('create-chart').output).toBe('write');
+  });
+
+  it('surface write affordances expose existing bridge-backed actions', () => {
+    expect(byId('comment-on-issues').intent).toBe('review');
+    expect(byId('comment-on-issues').output).toBe('annotation');
+    expect(byId('draft-slide').intent).toBe('draft');
+    expect(byId('draft-slide').output).toBe('write');
+    expect(byId('draft-new-email').intent).toBe('draft');
+    expect(byId('draft-new-email').output).toBe('write');
+  });
+
   it('PPT speaker-notes is a chat draft (no host write path)', () => {
     expect(byId('speaker-notes').output).toBe('chat');
   });
@@ -101,6 +115,8 @@ describe('re-tagged actions (the audit fixes)', () => {
   it('the parameterized actions declare their fill slots', () => {
     expect(actionParameters(byId('write-formula')).map((p) => p.name)).toEqual(['goal']);
     expect(actionParameters(byId('draft-section')).map((p) => p.name)).toEqual(['topic']);
+    expect(actionParameters(byId('draft-slide')).map((p) => p.name)).toEqual(['topic']);
+    expect(actionParameters(byId('draft-new-email')).map((p) => p.name)).toEqual(['subject']);
     expect(actionParameters(byId('ge-ask')).map((p) => p.name)).toEqual(['question', 'range']);
     expect(actionParameters(byId('review-against')).map((p) => p.name)).toEqual(['standard']);
   });

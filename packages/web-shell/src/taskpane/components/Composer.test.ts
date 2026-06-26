@@ -45,15 +45,15 @@ function render(props: Partial<ComposerProps> = {}): {
   return { onSend, onCancel, onInvoke };
 }
 
-function input(): HTMLInputElement {
-  return container.querySelector<HTMLInputElement>('input#ask')!;
+function input(): HTMLTextAreaElement {
+  return container.querySelector<HTMLTextAreaElement>('textarea#ask')!;
 }
 
 function type(text: string): void {
   const el = input();
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
+      window.HTMLTextAreaElement.prototype,
       'value',
     )!.set!;
     setter.call(el, text);
@@ -131,8 +131,17 @@ describe('Composer', () => {
     const cancel = container.querySelector<HTMLButtonElement>('.snd.cancel');
     expect(cancel).not.toBeNull();
     expect(container.querySelector('button[type="submit"]')).toBeNull();
+    expect(input().disabled).toBe(true);
     act(() => cancel?.click());
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not submit a new turn while busy', () => {
+    const { onSend } = render({ busy: true });
+    input().disabled = false;
+    type('queue this');
+    submitForm();
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
 
@@ -219,7 +228,7 @@ describe('Composer / and @ palette + scope control + structured submit', () => {
     const kinds = [...container.querySelectorAll('.palette-mentions .palette-label')].map(
       (e) => e.textContent,
     );
-    expect(kinds).toEqual(commandPaletteFor('word').mentionKinds.map((k) => `@${k}`));
+    expect(kinds).toEqual(['@this', '@unit']);
   });
 
   it('completing a verb writes the /verb token into the input', () => {

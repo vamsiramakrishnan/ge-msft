@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { actionParameters, type QuickAction } from '@ge/contracts';
 
 export interface QuickActionParamFormProps {
@@ -22,6 +22,10 @@ export function QuickActionParamForm({
   onCancel,
 }: QuickActionParamFormProps): JSX.Element | null {
   const [values, setValues] = useState<Record<string, string>>({});
+  const firstInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (action) firstInputRef.current?.focus();
+  }, [action]);
   if (!action) return null;
 
   const params = actionParameters(action);
@@ -45,6 +49,9 @@ export function QuickActionParamForm({
       className="qa-param-form"
       data-testid="quick-action-param-form"
       aria-label={`Fill in ${action.label}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') cancel();
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         submit();
@@ -55,6 +62,7 @@ export function QuickActionParamForm({
         <label key={p.name} className="qa-param-field">
           <span className="qa-param-label">{p.label}</span>
           <input
+            ref={p === params[0] ? firstInputRef : undefined}
             data-testid={`qa-param-${p.name}`}
             value={values[p.name] ?? ''}
             placeholder={p.hint ?? ''}
@@ -73,9 +81,20 @@ export function QuickActionParamForm({
           data-testid="quick-action-param-submit"
           disabled={!complete}
         >
-          Run
+          {ctaLabel(action)}
         </button>
       </div>
     </form>
   );
+}
+
+function ctaLabel(action: QuickAction): string {
+  switch (action.output) {
+    case 'chat':
+      return 'Ask';
+    case 'annotation':
+      return 'Preview comments';
+    case 'write':
+      return 'Preview write';
+  }
 }

@@ -1,6 +1,6 @@
 import { completeQueryUrl, GeminiClientConfig } from './config.js';
 import { DeCompleteQueryResponseSchema } from './de-search-types.js';
-import { postJson, type FetchLike } from './de-fetch.js';
+import { defaultFetch, postJson, type FetchLike } from './de-fetch.js';
 import type { TokenSource } from './stream-assist.js';
 
 export interface CompleteOptions {
@@ -22,7 +22,7 @@ export class AutocompleteClient {
   constructor(
     private readonly tokens: TokenSource,
     private readonly config: GeminiClientConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
   ) {}
 
   async complete(query: string, opts: CompleteOptions = {}): Promise<string[]> {

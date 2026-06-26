@@ -22,6 +22,8 @@ export interface GraphTokenSource {
 
 type FetchLike = typeof fetch;
 
+const defaultFetch: FetchLike = (input, init) => globalThis.fetch(input, init);
+
 /**
  * Reads the user's Microsoft 365 estate (Plane B) **directly from the add-in**, as the
  * signed-in user, and turns each item into the same `ResolvedContext` the rest of the
@@ -31,7 +33,7 @@ export class GraphClient {
   constructor(
     private readonly tokens: GraphTokenSource,
     private readonly config: GraphConfig = {},
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
   ) {}
 
   // ---- typed reads ----

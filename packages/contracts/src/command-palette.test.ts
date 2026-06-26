@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { IntentSchema, GroundSourceSchema, type Intent } from './intent.js';
+import { IntentSchema, type Intent } from './intent.js';
 import { commandPaletteFor, VERBS_BY_SURFACE } from './command-palette.js';
 
 const SURFACES = ['word', 'excel', 'powerpoint', 'onenote', 'outlook', 'teams'] as const;
@@ -46,13 +46,13 @@ describe('commandPaletteFor', () => {
     }
   });
 
-  it('offers the ground vocabulary as @-mention kinds, as a fresh array each call', () => {
+  it('offers only immediately resolvable @-mention kinds, as a fresh array each call', () => {
     const a = commandPaletteFor('word');
     const b = commandPaletteFor('word');
-    expect(a.mentionKinds).toEqual([...GroundSourceSchema.options]);
+    expect(a.mentionKinds).toEqual(['this', 'unit']);
     // Mutating one palette's array must not bleed into another (no shared module-level reference).
     a.mentionKinds.push('upload');
-    expect(b.mentionKinds).toEqual([...GroundSourceSchema.options]);
+    expect(b.mentionKinds).toEqual(['this', 'unit']);
   });
 
   it('exposes surface-named scope options as data (default is the first entry)', () => {
@@ -81,13 +81,21 @@ describe('commandPaletteFor', () => {
     expect(teams).not.toContain('/explain'); // not in Teams' verb set
   });
 
+  it('offers /visualize on Excel only', () => {
+    const excel = commandPaletteFor('excel').verbs.map((v) => v.label);
+    expect(excel).toContain('/visualize');
+    for (const surface of SURFACES.filter((s) => s !== 'excel')) {
+      expect(commandPaletteFor(surface).verbs.map((v) => v.label)).not.toContain('/visualize');
+    }
+  });
+
   it('narrows the palette by allowed intents (capability closure, ADR-0006)', () => {
     const askOnly = commandPaletteFor('word', ['ask']);
     expect(askOnly.verbs.map((v) => v.intent)).toEqual(['ask']);
     // An empty closure yields no verbs (but mention kinds + scope options remain).
     const none = commandPaletteFor('word', []);
     expect(none.verbs).toEqual([]);
-    expect(none.mentionKinds.length).toBe(GroundSourceSchema.options.length);
+    expect(none.mentionKinds).toEqual(['this', 'unit']);
     expect(none.scopeOptions.length).toBeGreaterThan(0);
   });
 

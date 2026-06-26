@@ -482,13 +482,14 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
 function tokenizeArgs(rest: string): { positional: string[]; props: Record<string, string> } {
   const positional: string[] = [];
   const props: Record<string, string> = {};
-  const re = /(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|(\S+)/g;
+  const re = /(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|'([^']*)'(\S*)|(\S+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(rest)) !== null) {
     if (m[1] !== undefined) props[m[1]] = m[2]!;
     else if (m[3] !== undefined) props[m[3]] = m[4]!;
     else if (m[5] !== undefined) positional.push(m[5]);
-    else positional.push(m[6]!);
+    else if (m[6] !== undefined) positional.push(`'${m[6]}'${m[7] ?? ''}`);
+    else positional.push(m[8]!);
   }
   return { positional, props };
 }

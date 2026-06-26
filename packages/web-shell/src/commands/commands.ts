@@ -24,6 +24,7 @@ import {
 // without importing this file (which registers Office.actions on load).
 import {
   askSelectionSeedKey,
+  ASK_SELECTION_SEED_CHANNEL,
   buildAskSelectionSeed,
   type AskSelectionSeed,
 } from './ask-selection-seed.js';
@@ -79,6 +80,11 @@ interface SeedSink {
   setItem(key: string, value: string): void;
 }
 
+interface SeedBroadcaster {
+  postMessage(message: unknown): void;
+  close?(): void;
+}
+
 /** Read the active host's text selection. Resolves to `''` when no selection API is available (the
  *  Outlook reading pane and unsupported hosts degrade to an empty, still-valid seed). */
 function readSelectedText(office: OfficeSelectionLike | undefined): Promise<string> {
@@ -109,7 +115,7 @@ function readSelectedText(office: OfficeSelectionLike | undefined): Promise<stri
  */
 async function askSelection(
   event: { completed(): void },
-  deps: { office?: OfficeSelectionLike; sink?: SeedSink } = {},
+  deps: { office?: OfficeSelectionLike; sink?: SeedSink; broadcaster?: SeedBroadcaster } = {},
 ): Promise<void> {
   const office =
     deps.office ?? (globalThis as { Office?: OfficeSelectionLike }).Office ?? undefined;
@@ -120,6 +126,7 @@ async function askSelection(
     const surface = resolveSurface(office) ?? 'word';
     try {
       sink?.setItem(askSelectionSeedKey(surface), JSON.stringify(seed));
+      publishSeedWritten(surface, deps.broadcaster);
     } catch {
       // A full/blocked storage must not abort the reveal — the pane simply opens without a seed.
     }
@@ -130,6 +137,23 @@ async function askSelection(
     }
   } finally {
     event.completed();
+  }
+}
+
+function publishSeedWritten(surface: Surface, injected?: SeedBroadcaster): void {
+  const broadcaster =
+    injected ??
+    (() => {
+      const Channel = (globalThis as { BroadcastChannel?: typeof BroadcastChannel })
+        .BroadcastChannel;
+      return Channel ? new Channel(ASK_SELECTION_SEED_CHANNEL) : undefined;
+    })();
+  try {
+    broadcaster?.postMessage({ kind: 'ask-selection-seed-written', surface });
+  } catch {
+    // Best-effort wake-up only; the seed is already in storage for cold-pane boot.
+  } finally {
+    if (!injected) broadcaster?.close?.();
   }
 }
 

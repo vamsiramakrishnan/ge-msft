@@ -1,6 +1,11 @@
-import type { ContextKind, UnitDescriptor } from '@ge/contracts';
-import { asSessionId } from '@ge/contracts';
-import type { AssistantPath, WifConfig } from '@ge/gemini-client';
+import type { ContextKind, ReleaseProfileName, UnitDescriptor } from '@ge/contracts';
+import { asSessionId, filterManifestForReleaseProfile } from '@ge/contracts';
+import type {
+  AssistantPath,
+  GeminiSkillMention,
+  GeminiWidgetConfig,
+  WifConfig,
+} from '@ge/gemini-client';
 import { StreamAssistClient, WifTokenClient } from '@ge/gemini-client';
 import { AssistSession } from '@ge/runtime';
 import type { AuthClient, DocBridge } from '@ge/runtime';
@@ -12,10 +17,23 @@ import type { TriggerRegistry } from '@ge/triggers';
  */
 export interface ShellConfig {
   assistant: AssistantPath;
+  widget?: GeminiWidgetConfig;
   wif: WifConfig;
   modelId?: string;
+  /** Gemini Enterprise skills/agents mounted on ordinary chat turns. */
+  skills?: string[];
+  /** GE widget-style mentions for ordinary chat skills. */
+  skillMentions?: GeminiSkillMention[];
+  /** Planner skill used only for the plan-confirm route. */
+  plannerSkills?: string[];
+  plannerSkillMentions?: GeminiSkillMention[];
+  /** Commander skill used only for the constrained command-loop route. */
+  commandSkills?: string[];
+  commandSkillMentions?: GeminiSkillMention[];
   /** Optional audited/CORS egress proxy (ADR-0001); omitted → call Discovery Engine directly. */
   proxyUrl?: string;
+  /** Release profile that narrows capabilities before UI/model/executor exposure. */
+  releaseProfile?: ReleaseProfileName;
 }
 
 export interface ComposeOptions {
@@ -50,8 +68,19 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     tokens,
     {
       assistant: config.assistant,
+      ...(config.widget ? { widget: config.widget } : {}),
       identity: identity.username,
       ...(config.modelId ? { modelId: config.modelId } : {}),
+      ...(config.skills?.length ? { skills: config.skills } : {}),
+      ...(config.skillMentions?.length ? { skillMentions: config.skillMentions } : {}),
+      ...(config.plannerSkills?.length ? { plannerSkills: config.plannerSkills } : {}),
+      ...(config.plannerSkillMentions?.length
+        ? { plannerSkillMentions: config.plannerSkillMentions }
+        : {}),
+      ...(config.commandSkills?.length ? { commandSkills: config.commandSkills } : {}),
+      ...(config.commandSkillMentions?.length
+        ? { commandSkillMentions: config.commandSkillMentions }
+        : {}),
       ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}),
     },
     opts.fetchImpl,
@@ -62,6 +91,12 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),
+    ...(config.releaseProfile
+      ? {
+          capabilityFilter: (manifest) =>
+            filterManifestForReleaseProfile(manifest, config.releaseProfile!),
+        }
+      : {}),
   });
 
   return { session, tokens, client };

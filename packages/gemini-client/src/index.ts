@@ -13,7 +13,14 @@ export * from './search.js';
 export * from './autocomplete.js';
 export * from './grounding.js';
 export * from './ranking.js';
-export { postJson, type FetchLike } from './de-fetch.js';
+export * from './catalog.js';
+export {
+  defaultFetch,
+  getJson,
+  postJson,
+  postJsonWithHeaders,
+  type FetchLike,
+} from './de-fetch.js';
 export { parseJsonArrayStream } from './json-stream.js';
 export { contentHash } from './hash.js';
 export {

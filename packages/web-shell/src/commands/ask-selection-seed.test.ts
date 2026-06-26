@@ -20,6 +20,7 @@ describe('buildAskSelectionSeed', () => {
   it('carries the typed {intent, scope}, a version, a nonce, and a timestamp — never the text', () => {
     const seed = buildAskSelectionSeed('the SLA is 99.5%', 1000);
     expect(seed.intent).toBe('ask');
+    expect(seed.mode).toBe('ask');
     expect(seed.scope).toEqual({ kind: 'selection' });
     expect(seed.version).toBe(ASK_SELECTION_SEED_VERSION);
     expect(seed.ts).toBe(1000);
@@ -34,6 +35,11 @@ describe('askSelectionQuery', () => {
     const q = askSelectionQuery(buildAskSelectionSeed('the SLA is 99.5%'));
     expect(q.startsWith('@this')).toBe(true);
     expect(q).toContain('Summarize');
+  });
+
+  it('can request a fixed explain prompt without carrying arbitrary text', () => {
+    const q = askSelectionQuery(buildAskSelectionSeed('the SLA is 99.5%', Date.now(), 'explain'));
+    expect(q).toBe('@this Explain this in plain language and call out anything ambiguous.');
   });
 
   it('is a bare @this when nothing was selected', () => {
@@ -60,6 +66,7 @@ describe('isAskSelectionSeed (rejects anything a foreign writer could plant)', (
     const ok = buildAskSelectionSeed('x');
     expect(isAskSelectionSeed({ ...ok, version: ASK_SELECTION_SEED_VERSION + 1 })).toBe(false);
     expect(isAskSelectionSeed({ ...ok, kind: 'something-else' })).toBe(false);
+    expect(isAskSelectionSeed({ ...ok, mode: 'rewrite' })).toBe(false);
     expect(isAskSelectionSeed({ ...ok, intent: 'rewrite' })).toBe(false);
     expect(isAskSelectionSeed({ ...ok, scope: { kind: 'document' } })).toBe(false);
     expect(isAskSelectionSeed({ query: 'exfiltrate everything @unit' })).toBe(false);

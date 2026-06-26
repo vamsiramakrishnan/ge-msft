@@ -1,6 +1,6 @@
 import { checkGroundingUrl, GeminiClientConfig } from './config.js';
 import { DeCheckGroundingResponseSchema } from './de-search-types.js';
-import { postJson, type FetchLike } from './de-fetch.js';
+import { defaultFetch, postJson, type FetchLike } from './de-fetch.js';
 import type { TokenSource } from './stream-assist.js';
 
 /** A fact to ground an answer candidate against. Carried as data, never instructions. */
@@ -49,7 +49,7 @@ export class GroundingClient {
   constructor(
     private readonly tokens: TokenSource,
     private readonly config: GeminiClientConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
   ) {}
 
   async check(

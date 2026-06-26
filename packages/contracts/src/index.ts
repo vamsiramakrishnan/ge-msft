@@ -27,3 +27,4 @@ export * from './expr-grammar.js';
 export * from './language-manifest.js';
 export * from './skill-grammar.js';
 export * from './manifest-lint.js';
+export * from './release-profile.js';

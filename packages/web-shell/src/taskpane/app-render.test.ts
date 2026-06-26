@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { App } from './components/App.js';
 import { makeMockController } from './preview.js';
 import { FIXTURE_STATE } from './preview-fixtures.js';
+import type { Surface } from '@ge/contracts';
 
 /**
  * Render smoke test for the task pane: mount the real <App/> over the fake controller and the full
@@ -20,13 +21,13 @@ import { FIXTURE_STATE } from './preview-fixtures.js';
 let container: HTMLDivElement;
 let root: Root;
 
-function render(): void {
+function render(surface: Surface = 'word'): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   const controller = makeMockController(FIXTURE_STATE);
   act(() => {
-    root.render(createElement(App, { controller, surface: 'word' }));
+    root.render(createElement(App, { controller, surface }));
   });
 }
 
@@ -66,6 +67,28 @@ describe('<App/> render smoke', () => {
     expect(tray?.querySelector('[aria-label="Attached sources"]')).not.toBeNull();
     expect(tray?.querySelector('[aria-label="Available to attach"]')).not.toBeNull();
     expect(container.querySelectorAll('.chip').length).toBe(FIXTURE_STATE.chips.length);
+  });
+
+  it('renders a surface-aware command center above the workstream', () => {
+    render();
+    const center = container.querySelector(
+      '.surface-center[aria-label="Word workspace command center"]',
+    );
+    expect(center).not.toBeNull();
+    expect(center?.querySelector('.surface-title')?.textContent).toBe('Word workspace');
+    expect(center?.querySelectorAll('.surface-action').length).toBe(3);
+    expect(center?.textContent).toContain('Decision needed');
+  });
+
+  it('renders surface-specific primary actions and keeps the secondary row deduplicated', () => {
+    render('excel');
+    const center = container.querySelector(
+      '.surface-center[aria-label="Excel workspace command center"]',
+    );
+    expect(center?.querySelector('[data-action-id="create-chart"]')).not.toBeNull();
+    expect(center?.querySelector('[data-action-id="summarize-range"]')).not.toBeNull();
+    expect(center?.querySelector('[data-action-id="find-anomalies"]')).not.toBeNull();
+    expect(container.querySelector('.quick-actions [data-action-id="create-chart"]')).toBeNull();
   });
 
   it('renders suggestions', () => {
@@ -127,7 +150,7 @@ describe('<App/> render smoke', () => {
 
   it('renders the composer with an accessible ask field', () => {
     render();
-    const input = container.querySelector('input#ask');
+    const input = container.querySelector('textarea#ask');
     expect(input).not.toBeNull();
     // While busy, the send button flips to Cancel.
     expect(container.querySelector('.snd.cancel')).not.toBeNull();

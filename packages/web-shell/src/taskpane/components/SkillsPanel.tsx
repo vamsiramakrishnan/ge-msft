@@ -3,6 +3,7 @@ import type { Skill } from '../../controller.js';
 
 export interface SkillsPanelProps {
   skills: Skill[];
+  disabled?: boolean;
   /** Invoke a registered skill with bound argument values; routes through the agentic loop. */
   onInvoke: (name: string, args: Record<string, string>) => void;
 }
@@ -16,9 +17,11 @@ export interface SkillsPanelProps {
  */
 function SkillCard({
   skill,
+  disabled = false,
   onInvoke,
 }: {
   skill: Skill;
+  disabled?: boolean;
   onInvoke: (name: string, args: Record<string, string>) => void;
 }): JSX.Element {
   const [args, setArgs] = useState<Record<string, string>>(() =>
@@ -53,6 +56,7 @@ function SkillCard({
                   className="skill-param-input"
                   value={args[p.name] ?? ''}
                   placeholder={p.example}
+                  disabled={disabled}
                   onChange={(e) => setArgs((prev) => ({ ...prev, [p.name]: e.target.value }))}
                 />
               </label>
@@ -64,6 +68,7 @@ function SkillCard({
         <button
           type="button"
           className="btn pr"
+          disabled={disabled}
           onClick={() => onInvoke(skill.name, args)}
           aria-label={`Invoke ${skill.name}`}
         >
@@ -80,17 +85,21 @@ function SkillCard({
  * agentic loop, so the headline plan-review gate is reused — this section only lists, confirms
  * registration, binds params, and triggers an invocation. Renders nothing when no skills exist.
  */
-export function SkillsPanel({ skills, onInvoke }: SkillsPanelProps): JSX.Element | null {
+export function SkillsPanel({
+  skills,
+  disabled = false,
+  onInvoke,
+}: SkillsPanelProps): JSX.Element | null {
   if (skills.length === 0) return null;
   return (
-    <section className="skills" aria-label="Skills">
+    <section className="skills" aria-label="Skills" aria-disabled={disabled}>
       <div className="skills-h eyebrow">
         <span className="skills-mark" aria-hidden="true" />
         <span>Skills · in-session programs</span>
       </div>
       <ul className="skills-list">
         {skills.map((skill) => (
-          <SkillCard key={skill.name} skill={skill} onInvoke={onInvoke} />
+          <SkillCard key={skill.name} skill={skill} disabled={disabled} onInvoke={onInvoke} />
         ))}
       </ul>
     </section>

@@ -1,6 +1,6 @@
 import { GeminiClientConfig, rankUrl } from './config.js';
 import { DeRankResponseSchema } from './de-search-types.js';
-import { postJson, type FetchLike } from './de-fetch.js';
+import { defaultFetch, postJson, type FetchLike } from './de-fetch.js';
 import type { TokenSource } from './stream-assist.js';
 
 /** A record to rerank. At least one of title/content must be set. */
@@ -31,7 +31,7 @@ export class RankClient {
   constructor(
     private readonly tokens: TokenSource,
     private readonly config: GeminiClientConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
   ) {}
 
   async rank(

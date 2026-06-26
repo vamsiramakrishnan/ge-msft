@@ -16,6 +16,7 @@ export const INTENT_REQUIRES: Record<Intent, ActuationKind[]> = {
   explain: [],
   rewrite: ['tracked-change', 'replace-selection', 'write-cells', 'fill-content-control'],
   review: ['add-comment', 'tracked-change'],
+  visualize: ['insert-chart'],
   draft: ['insert-slide', 'append-page', 'create-mail', 'reply-mail'],
   notes: ['post-message', 'post-card'],
 };

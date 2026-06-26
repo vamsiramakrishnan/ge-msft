@@ -3,6 +3,8 @@ import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './r
 
 export type FetchLike = typeof fetch;
 
+export const defaultFetch: FetchLike = (input, init) => globalThis.fetch(input, init);
+
 /**
  * POST a JSON body as the signed-in user and return the parsed JSON.
  * Mirrors StreamAssistClient.post: federated bearer token, and on a 401 (token
@@ -60,6 +62,113 @@ export async function postJson(
     } else {
       throw err; // genuine network/transport throw → propagate unchanged.
     }
+  }
+
+  if (res.status === 401 && tokens.invalidate) {
+    tokens.invalidate();
+    res = await send();
+  }
+  if (!res.ok) {
+    const detail = await safeText(res);
+    throw new Error(
+      detail ? `${url} failed (${res.status}): ${detail}` : `request failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
+export async function postJsonWithHeaders(
+  url: string,
+  body: unknown,
+  tokens: TokenSource,
+  fetchImpl: FetchLike,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+  retryOpts: RetryOptions = {},
+): Promise<unknown> {
+  const payload = JSON.stringify(body);
+  const send = async (): Promise<Response> => {
+    const token = await tokens.getAccessToken();
+    return fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: payload,
+      ...(signal ? { signal } : {}),
+    });
+  };
+
+  let lastRes: Response | undefined;
+  const sendWithBackoff = async (): Promise<Response> => {
+    const res = await send();
+    lastRes = res;
+    if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
+      throw new HttpError(res.status, `request failed (${res.status})`);
+    }
+    return res;
+  };
+
+  let res: Response;
+  try {
+    res = await withRetry(sendWithBackoff, retryOpts);
+  } catch (err) {
+    if (err instanceof HttpError && lastRes) res = lastRes;
+    else throw err;
+  }
+
+  if (res.status === 401 && tokens.invalidate) {
+    tokens.invalidate();
+    res = await send();
+  }
+  if (!res.ok) {
+    const detail = await safeText(res);
+    throw new Error(
+      detail ? `${url} failed (${res.status}): ${detail}` : `request failed (${res.status})`,
+    );
+  }
+  return res.json();
+}
+
+/**
+ * GET JSON as the signed-in user. Used for browser-safe Discovery Engine catalog discovery
+ * (assistant agents/skills and data stores). Same token posture as postJson: memory-only
+ * federated bearer token, 401 invalidates once, bounded retries only for idempotent reads.
+ */
+export async function getJson(
+  url: string,
+  tokens: TokenSource,
+  fetchImpl: FetchLike,
+  signal?: AbortSignal,
+  retryOpts: RetryOptions = {},
+): Promise<unknown> {
+  const send = async (): Promise<Response> => {
+    const token = await tokens.getAccessToken();
+    return fetchImpl(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      ...(signal ? { signal } : {}),
+    });
+  };
+
+  let lastRes: Response | undefined;
+  const sendWithBackoff = async (): Promise<Response> => {
+    const res = await send();
+    lastRes = res;
+    if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
+      throw new HttpError(res.status, `request failed (${res.status})`);
+    }
+    return res;
+  };
+
+  let res: Response;
+  try {
+    res = await withRetry(sendWithBackoff, retryOpts);
+  } catch (err) {
+    if (err instanceof HttpError && lastRes) res = lastRes;
+    else throw err;
   }
 
   if (res.status === 401 && tokens.invalidate) {

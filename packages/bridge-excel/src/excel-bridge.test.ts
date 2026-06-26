@@ -1291,6 +1291,45 @@ describe('ExcelBridge.actuate insert-chart (ADR-0007 chart verb)', () => {
     expect(res.location).toBe('Chart 1');
   });
 
+  it("adds a chart over a quoted worksheet name with spaces ('Project schedule'!B5:D30)", async () => {
+    const seed = seedOf({
+      sheets: [
+        {
+          name: 'Project schedule',
+          origin: 'B5',
+          values: [
+            ['Task', 'Progress', 'Duration'],
+            ['Define goals', '0.5', '4'],
+            ['Conduct studies', '0.6', '3'],
+          ],
+        },
+      ],
+      activeSheet: 'Project schedule',
+      selection: "'Project schedule'!B5:D30",
+    });
+    active = installExcel(seed);
+    const res = await new ExcelBridge().actuate(
+      insertChart(
+        {
+          chart: {
+            chartType: 'bar',
+            sourceRange: "'Project schedule'!B5:D30",
+            seriesBy: 'auto',
+            title: 'Task Progress',
+          },
+        },
+        'chg-chart-quoted',
+      ),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(seed.charts[0]).toMatchObject({
+      chartType: 'BarClustered',
+      sourceAddress: 'Project schedule!B5:D30',
+      title: 'Task Progress',
+    });
+  });
+
   it('maps each agent chart type to its Excel.ChartType', async () => {
     const cases: Array<[string, string]> = [
       ['bar', 'BarClustered'],

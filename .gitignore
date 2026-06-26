@@ -4,6 +4,8 @@ dist-web/
 build/
 .env
 .env.local
+.gcloud/
+.azure/
 *.log
 .DS_Store
 coverage/

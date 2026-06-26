@@ -128,7 +128,7 @@ All four compile to the same path; nothing bypasses the gate.
   actuating verb → the fail-closed `runCommands` plan gate.
 - **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
   `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
-- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (29 actions, `quickActionsForSurface()`
+- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (33 actions, `quickActionsForSurface()`
   closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
   `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc. An action
   with `{{name}}` slots declares typed `parameters` and collects them in a fill form before dispatch —
@@ -227,6 +227,9 @@ write, proposals, error, busy) — no network, no host, fully clickable.
 Copy `.env.example` to `.env` for the engine/tenant config (project, location, engine id, optional
 `proxyUrl`) before running against a live engine.
 
+For tenant setup, manifest generation, packaging, Cloudflare dev tunnels, and sideloading choices
+across web/desktop hosts, use the [setup guide](setup/README.md).
+
 ---
 
 ## Status — what's built
@@ -284,6 +287,8 @@ The ADRs are the current architecture, in order — each builds on the last.
 ## Docs index
 
 - **Architecture (current):** the six ADRs above — start there.
+- `setup/` — tenant prerequisites, Entra/WIF configuration, dev tunnel setup, manifest/package
+  generation, sideloading paths, and debugging.
 - `docs/STATUS.md` — the honest "what's built / what's deferred" inventory.
 - `docs/CAPABILITY-MAP.md` — the per-capability read/write/do inventory across the two planes.
 - `docs/CONTRACTS.md` — the authoritative API schemas, the command/expr/skill grammars, closure.

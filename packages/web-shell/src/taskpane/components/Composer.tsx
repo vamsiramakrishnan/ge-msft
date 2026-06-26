@@ -34,6 +34,7 @@ export interface ComposerInvocation {
 
 export interface ComposerProps {
   busy: boolean;
+  disabled?: boolean;
   /** The current surface — scopes the `/` palette verbs offered (capability closure, ADR-0006). */
   surface?: Surface;
   /** The intents the surface can actually run; narrows the `/` palette further (ADR-0006). */
@@ -128,6 +129,7 @@ function offeredElsewhere(verb: string, spec?: CommandPaletteSpec): boolean {
  */
 export function Composer({
   busy,
+  disabled = false,
   surface,
   allowedIntents,
   onSend,
@@ -174,7 +176,7 @@ export function Composer({
 
   const submit = (): void => {
     const q = value.trim();
-    if (!q) return;
+    if (!q || disabled || busy) return;
     if (onInvoke) onInvoke(parseComposerInput(q, scope, palette));
     else onSend(q);
     setValue('');
@@ -204,7 +206,7 @@ export function Composer({
               aria-checked={i === scopeIdx}
               data-scope-kind={opt.scope.kind}
               data-selected={i === scopeIdx ? 'true' : 'false'}
-              disabled={busy}
+              disabled={busy || disabled}
               onClick={() => setScopeIdx(i)}
             >
               {opt.label}
@@ -220,6 +222,7 @@ export function Composer({
                 type="button"
                 className="palette-item"
                 data-intent={v.intent}
+                disabled={busy || disabled}
                 onClick={() => complete(v.label)}
               >
                 <span className="palette-label">{v.label}</span>
@@ -242,6 +245,7 @@ export function Composer({
                 type="button"
                 className="palette-item"
                 data-mention={k}
+                disabled={busy || disabled}
                 onClick={() => complete(`@${k}`)}
               >
                 <span className="palette-label">@{k}</span>
@@ -254,19 +258,32 @@ export function Composer({
         <label className="visually-hidden" htmlFor="ask">
           Ask Gemini
         </label>
-        <input
+        <textarea
           id="ask"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
           placeholder={placeholder ?? 'Ask about the selection…'}
           autoComplete="off"
+          disabled={busy || disabled}
+          rows={2}
         />
         {busy ? (
           <button type="button" className="snd cancel" onClick={onCancel} aria-label="Cancel">
             ◼
           </button>
         ) : (
-          <button type="submit" className="snd" aria-label="Send" disabled={!value.trim()}>
+          <button
+            type="submit"
+            className="snd"
+            aria-label="Send"
+            disabled={disabled || !value.trim()}
+          >
             →
           </button>
         )}

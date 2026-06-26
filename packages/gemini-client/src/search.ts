@@ -1,7 +1,7 @@
 import type { ContextRef, ResolvedContext } from '@ge/contracts';
 import { GeminiClientConfig, searchUrl } from './config.js';
 import { DeSearchResponseSchema } from './de-search-types.js';
-import { postJson, type FetchLike } from './de-fetch.js';
+import { defaultFetch, postJson, type FetchLike } from './de-fetch.js';
 import type { TokenSource } from './stream-assist.js';
 
 /** A single matched indexed document, flattened for UI + the context bridge. */
@@ -72,7 +72,7 @@ export class SearchClient {
   constructor(
     private readonly tokens: TokenSource,
     private readonly config: GeminiClientConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
   ) {}
 
   async search(req: SearchRequest): Promise<SearchResult> {

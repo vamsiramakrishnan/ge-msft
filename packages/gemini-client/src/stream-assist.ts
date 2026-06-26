@@ -6,7 +6,7 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asSessionId } from '@ge/contracts';
-import { GeminiClientConfig, streamAssistUrl } from './config.js';
+import { GeminiClientConfig, streamAssistUrl, type GeminiSkillRoute } from './config.js';
 import {
   DeStreamAssistResponseSchema,
   type DeCitationSource,
@@ -18,6 +18,8 @@ import { contentHash } from './hash.js';
 import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
+import { defaultFetch } from './de-fetch.js';
+import type { ResolvedGrounding } from './resolve-grounding.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
 export interface TokenSource {
@@ -30,6 +32,10 @@ export interface StreamOptions {
   session?: string;
   /** Live host objects attached to the session (from a bridge / SessionContext). */
   context?: ResolvedContext[];
+  /** Which GE skill set, if any, should be mounted for this turn. */
+  skillRoute?: GeminiSkillRoute;
+  /** Structured grounding selected by the composer/context UI. */
+  grounding?: ResolvedGrounding;
   signal?: AbortSignal;
 }
 
@@ -44,8 +50,8 @@ type FetchLike = typeof fetch;
 export class StreamAssistClient {
   constructor(
     private readonly tokens: TokenSource,
-    private readonly config: GeminiClientConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private config: GeminiClientConfig,
+    private readonly fetchImpl: FetchLike = defaultFetch,
     /**
      * Backoff policy for the *initial* POST only. A mid-stream failure is not safely
      * retriable (partial answer already consumed), so retries never cross the stream
@@ -53,6 +59,23 @@ export class StreamAssistClient {
      */
     private readonly retryOpts: RetryOptions = {},
   ) {}
+
+  configureRouting(
+    update: Partial<
+      Pick<
+        GeminiClientConfig,
+        | 'skills'
+        | 'skillMentions'
+        | 'plannerSkills'
+        | 'plannerSkillMentions'
+        | 'commandSkills'
+        | 'commandSkillMentions'
+        | 'dataStores'
+      >
+    >,
+  ): void {
+    this.config = { ...this.config, ...update };
+  }
 
   async *stream(req: AssistRequest, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {
     let res: Response;
@@ -183,7 +206,14 @@ export class StreamAssistClient {
   private async post(req: AssistRequest, opts: StreamOptions): Promise<Response> {
     const url = streamAssistUrl(this.config);
     const body = JSON.stringify(
-      buildStreamAssistRequest(req, this.config, opts.session, opts.context),
+      buildStreamAssistRequest(
+        req,
+        this.config,
+        opts.session,
+        opts.context,
+        opts.skillRoute,
+        opts.grounding,
+      ),
     );
     const send = async (): Promise<Response> => {
       const token = await this.tokens.getAccessToken();
@@ -304,13 +334,37 @@ export function buildStreamAssistRequest(
   cfg: GeminiClientConfig,
   session?: string,
   context?: ResolvedContext[],
+  skillRoute: GeminiSkillRoute = 'default',
+  grounding?: ResolvedGrounding,
 ): Record<string, unknown> {
-  const attached = (context ?? []).map((c) => contextValueToQueryPart(c.value));
-  const out: Record<string, unknown> = { query: buildQuery(req, attached) };
+  const attached = [
+    ...(context ?? []).map((c) => contextValueToQueryPart(c.value)),
+    ...(grounding?.queryParts ?? []),
+  ];
+  const skillSet = skillsForRoute(cfg, skillRoute);
+  const mentionText = skillMentionText(skillSet.mentions);
+  const out: Record<string, unknown> = {
+    query: buildQuery(req, attached, mentionText),
+  };
   if (session) out.session = session;
   if (cfg.modelId) out.generationSpec = { modelId: cfg.modelId };
+  if (skillSet.resources.length) {
+    out.skillsSpec = { skills: skillSet.resources.map((name) => ({ name })) };
+  }
   const filter = unitFilter(req);
-  if (filter) out.toolsSpec = { vertexAiSearchSpec: { filter } };
+  const dataStoreSpecs = [
+    ...(cfg.dataStores ?? []).map((dataStore) => ({ dataStore })),
+    ...(grounding?.dataStoreSpecs ?? []),
+  ];
+  if (filter || dataStoreSpecs.length > 0) {
+    out.toolsSpec = {
+      vertexAiSearchSpec: {
+        ...(filter ? { filter } : {}),
+        ...(dataStoreSpecs.length > 0 ? { dataStoreSpecs } : {}),
+      },
+    };
+  }
+  if (grounding?.fileIds?.length) out.fileIds = [...grounding.fileIds];
   return out;
 }
 
@@ -319,18 +373,22 @@ export function buildStreamAssistRequest(
  * own part (data), then the user's question as a trailing text part. With no attached
  * context we fall back to the surfaceContext-composed single text query.
  */
-function buildQuery(req: AssistRequest, attached: QueryPart[]): Record<string, unknown> {
+function buildQuery(
+  req: AssistRequest,
+  attached: QueryPart[],
+  mentionText?: string,
+): Record<string, unknown> {
   if (attached.length === 0) {
-    return { text: composeQuery(req) };
+    return { text: composeQuery(req, mentionText) };
   }
-  const question = req.query?.trim();
+  const question = withSkillMention(req.query?.trim(), mentionText);
   const parts: QueryPart[] = [...attached];
   if (question) parts.push({ text: question });
   return { parts };
 }
 
-function composeQuery(req: AssistRequest): string {
-  const question = req.query?.trim() ?? '';
+function composeQuery(req: AssistRequest, mentionText?: string): string {
+  const question = withSkillMention(req.query?.trim(), mentionText);
   const ctx = surfaceContextText(req);
   if (!ctx) return question || ' ';
   const label = req.unit.surfaceContext.kind;
@@ -353,6 +411,47 @@ function surfaceContextText(req: AssistRequest): string {
       return sc.sources ? sc.sources.join('\n') : '';
     case 'outlook':
       return [sc.subject, sc.body].filter(Boolean).join('\n');
+  }
+}
+
+function skillMentionText(
+  mentions: GeminiClientConfig['skillMentions'] | undefined,
+): string | undefined {
+  if (!mentions?.length) return undefined;
+  return mentions
+    .map((skill) => `[${skill.label}](mention://?uri=${encodeURIComponent(skill.uri)})`)
+    .join(' ');
+}
+
+function withSkillMention(question: string | undefined, mentionText: string | undefined): string {
+  const trimmed = question?.trim() ?? '';
+  if (!mentionText) return trimmed;
+  return trimmed ? `${mentionText} ${trimmed}` : mentionText;
+}
+
+function skillsForRoute(
+  cfg: GeminiClientConfig,
+  route: GeminiSkillRoute,
+): {
+  resources: string[];
+  mentions?: GeminiClientConfig['skillMentions'];
+} {
+  switch (route) {
+    case 'planner':
+      return {
+        resources: cfg.plannerSkills ?? [],
+        mentions: cfg.plannerSkillMentions,
+      };
+    case 'command':
+      return {
+        resources: cfg.commandSkills ?? [],
+        mentions: cfg.commandSkillMentions,
+      };
+    case 'default':
+      return {
+        resources: cfg.skills ?? [],
+        mentions: cfg.skillMentions,
+      };
   }
 }
 

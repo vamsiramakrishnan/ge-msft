@@ -140,11 +140,11 @@ describe('<App/> onInvoke — structured grounding reaches the controller→sess
     });
 
     // Type `@this` and submit — a chat turn (no actuating verb) routes to send().
-    const input = el.querySelector('input#ask') as HTMLInputElement;
+    const input = el.querySelector('textarea#ask') as HTMLTextAreaElement;
     const form = el.querySelector('form.comp') as HTMLFormElement;
     // React tracks the input value via its own setter; use the native setter so onChange fires.
     const setNativeValue = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
+      window.HTMLTextAreaElement.prototype,
       'value',
     )?.set;
     act(() => {

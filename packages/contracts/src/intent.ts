@@ -12,6 +12,7 @@ import { z } from 'zod';
  * - `explain`   — clarify the scope in plain language.
  * - `rewrite`   — apply any instruction to the scope → a reversible edit.
  * - `review`    — whole-scope pass emitting N findings → N gated annotations.
+ * - `visualize` — create a gated visual object from the scope (Excel charts today).
  * - `draft`     — generate new host material (slides, a page, a reply, a column).
  * - `notes`     — transcript → live notes + action items (Teams).
  */
@@ -21,6 +22,7 @@ export const IntentSchema = z.enum([
   'explain', // clarify the scope in plain language
   'rewrite', // apply any instruction to the scope -> a reversible edit
   'review', // whole-scope pass -> N findings -> N gated annotations
+  'visualize', // create a gated visual object from the scope, e.g. an Excel chart
   'draft', // generate new host material (slides / page / reply / column)
   'notes', // transcript -> live notes + action items (Teams)
 ]);

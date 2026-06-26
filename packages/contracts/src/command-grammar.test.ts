@@ -272,6 +272,15 @@ describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', 
     });
   });
 
+  it('parses chart ranges with single-quoted sheet names', () => {
+    expect(parseCommandLine(`chart bar 'Project schedule'!B5:D30 title="Task Progress"`)).toEqual({
+      verb: 'chart',
+      chartType: 'bar',
+      range: `'Project schedule'!B5:D30`,
+      props: { title: 'Task Progress' },
+    });
+  });
+
   it('chart needs a type and a range', () => {
     expect(parseCommandLine('chart column')).toMatchObject({
       error: expect.stringContaining('range'),

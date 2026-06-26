@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
+import { defaultFetch } from './de-fetch.js';
 
 /**
  * Workforce Identity Federation token exchange, run in the browser/webview.
@@ -56,7 +57,7 @@ export class WifTokenClient {
   constructor(
     private readonly entra: EntraTokenProvider,
     private readonly config: WifConfig,
-    private readonly fetchImpl: FetchLike = fetch,
+    private readonly fetchImpl: FetchLike = defaultFetch,
     private readonly now: () => number = Date.now,
     /** Backoff policy for transient STS failures (network / 429 / 5xx). */
     private readonly retryOpts: RetryOptions = {},

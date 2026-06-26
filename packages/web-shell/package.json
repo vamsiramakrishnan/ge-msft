@@ -13,6 +13,7 @@
     "preview": "vite --config vite.preview.config.ts"
   },
   "dependencies": {
+    "@azure/msal-browser": "^5.15.0",
     "@ge/bridge-excel": "*",
     "@ge/bridge-onenote": "*",
     "@ge/bridge-outlook": "*",

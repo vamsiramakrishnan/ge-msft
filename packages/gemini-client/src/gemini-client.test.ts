@@ -3,7 +3,12 @@ import type { AssistRequest, SseEvent } from '@ge/contracts';
 import {
   assistantResourceName,
   discoveryEngineHost,
+  lookupWidgetConfigUrl,
+  sessionUrl,
+  sessionsUrl,
   streamAssistUrl,
+  widgetListAvailableAgentViewsUrl,
+  widgetStreamAssistUrl,
   type GeminiClientConfig,
 } from './config.js';
 import { contentHash } from './hash.js';
@@ -61,6 +66,23 @@ describe('config', () => {
     );
     expect(streamAssistUrl(cfg())).toContain(':streamAssist');
   });
+  it('builds widget and session endpoints separately from admin endpoints', () => {
+    expect(widgetStreamAssistUrl(cfg())).toBe(
+      'https://content-discoveryengine.googleapis.com/v1alpha/locations/eu/widgetStreamAssist',
+    );
+    expect(widgetListAvailableAgentViewsUrl(cfg())).toBe(
+      'https://content-discoveryengine.googleapis.com/v1alpha/locations/eu/widgetListAvailableAgentViews',
+    );
+    expect(lookupWidgetConfigUrl(cfg())).toBe(
+      'https://content-discoveryengine.googleapis.com/v1alpha/locations/eu/lookupWidgetConfig',
+    );
+    expect(sessionsUrl(cfg())).toBe(
+      'https://discoveryengine.eu.rep.googleapis.com/v1alpha/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions',
+    );
+    expect(sessionUrl(cfg(), 'sess-1')).toBe(
+      'https://discoveryengine.eu.rep.googleapis.com/v1alpha/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1',
+    );
+  });
 });
 
 describe('contentHash', () => {
@@ -99,6 +121,138 @@ describe('buildStreamAssistRequest', () => {
     expect(body.session).toBe('sess_9');
     expect(body.generationSpec).toEqual({ modelId: 'gemini-x' });
     expect(body.toolsSpec).toEqual({ vertexAiSearchSpec: { filter: 'notebookId: ANY("nb_1")' } });
+  });
+
+  it('mounts configured Gemini Enterprise skills per turn', () => {
+    const body = buildStreamAssistRequest(
+      assistReq(),
+      cfg({
+        skills: [
+          'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/m365-surface-commander',
+        ],
+      }),
+    );
+    expect(body.skillsSpec).toEqual({
+      skills: [
+        {
+          name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/m365-surface-commander',
+        },
+      ],
+    });
+  });
+
+  it('mounts only the requested route-specific skill', () => {
+    const body = buildStreamAssistRequest(
+      assistReq('/visualize'),
+      cfg({
+        plannerSkills: ['projects/proj/locations/eu/collections/c/engines/e/assistants/a/agents/1'],
+        plannerSkillMentions: [{ label: 'm365-command-planner', uri: '1' }],
+        commandSkills: ['projects/proj/locations/eu/collections/c/engines/e/assistants/a/agents/2'],
+        commandSkillMentions: [{ label: 'm365-surface-commander', uri: '2' }],
+      }),
+      undefined,
+      undefined,
+      'command',
+    );
+    const text = (body.query as { text: string }).text;
+    expect(body.skillsSpec).toEqual({
+      skills: [
+        { name: 'projects/proj/locations/eu/collections/c/engines/e/assistants/a/agents/2' },
+      ],
+    });
+    expect(text).toContain('[m365-surface-commander](mention://?uri=2)');
+    expect(text).not.toContain('m365-command-planner');
+  });
+
+  it('adds configured planner mention markers only for planner turns', () => {
+    const body = buildStreamAssistRequest(
+      assistReq('REQUEST:\nReview this\nEmit one ```plan block.'),
+      cfg({
+        plannerSkills: [
+          'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/17573173582293271726',
+        ],
+        plannerSkillMentions: [{ label: 'm365-command-planner', uri: '17573173582293271726' }],
+      }),
+      undefined,
+      undefined,
+      'planner',
+    );
+    const text = (body.query as { text: string }).text;
+    expect(text).toContain('[m365-command-planner](mention://?uri=17573173582293271726)');
+    expect(text).toContain('Question: [m365-command-planner]');
+  });
+
+  it('adds configured command mention markers to command-loop turns', () => {
+    const body = buildStreamAssistRequest(
+      assistReq('COMMANDS — one per line.\nPROTOCOL:\n```cmd\n```\nTASK:\n/visualize'),
+      cfg({
+        commandSkills: [
+          'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/7404511736383961129',
+        ],
+        commandSkillMentions: [{ label: 'm365-surface-commander', uri: '7404511736383961129' }],
+      }),
+      undefined,
+      undefined,
+      'command',
+    );
+    const text = (body.query as { text: string }).text;
+    expect(text).toContain('[m365-surface-commander](mention://?uri=7404511736383961129)');
+    expect(text).toContain('Question: [m365-surface-commander]');
+    expect(text).toContain('/visualize');
+  });
+
+  it('does not inject command skill mentions into ordinary chat turns', () => {
+    const body = buildStreamAssistRequest(
+      assistReq('Summarize this workbook'),
+      cfg({
+        commandSkills: [
+          'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/7404511736383961129',
+        ],
+        commandSkillMentions: [{ label: 'm365-surface-commander', uri: '7404511736383961129' }],
+      }),
+    );
+    const text = (body.query as { text: string }).text;
+    expect(text).not.toContain('mention://');
+    expect(text).toContain('Question: Summarize this workbook');
+  });
+
+  it('merges selected connectors and structured grounding into the StreamAssist request', () => {
+    const body = buildStreamAssistRequest(
+      assistReq('Compare @this with @datastore:ds-1'),
+      cfg({
+        dataStores: [
+          'projects/proj/locations/eu/collections/default_collection/dataStores/ds-default',
+        ],
+      }),
+      undefined,
+      undefined,
+      'default',
+      {
+        queryParts: [{ text: 'selected range as data' }],
+        dataStoreSpecs: [
+          {
+            dataStore: 'projects/proj/locations/eu/collections/default_collection/dataStores/ds-1',
+          },
+        ],
+        fileIds: ['file-123'],
+      },
+    );
+    const parts = (body.query as { parts: { text?: string }[] }).parts;
+    expect(parts[0]).toEqual({ text: 'selected range as data' });
+    expect(body.toolsSpec).toEqual({
+      vertexAiSearchSpec: {
+        dataStoreSpecs: [
+          {
+            dataStore:
+              'projects/proj/locations/eu/collections/default_collection/dataStores/ds-default',
+          },
+          {
+            dataStore: 'projects/proj/locations/eu/collections/default_collection/dataStores/ds-1',
+          },
+        ],
+      },
+    });
+    expect(body.fileIds).toEqual(['file-123']);
   });
 });
 

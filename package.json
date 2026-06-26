@@ -1,8 +1,8 @@
 {
   "name": "gemini-m365-addin",
   "private": true,
-  "version": "0.0.0",
-  "description": "Gemini Enterprise multi-surface add-in for Microsoft 365 (Word, Excel, PowerPoint, OneNote, Teams).",
+  "version": "0.1.0",
+  "description": "Gemini Enterprise add-ins for Microsoft 365, with a controlled Word + Excel internal alpha release profile.",
   "workspaces": [
     "packages/*"
   ],
@@ -16,7 +16,15 @@
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts",
+    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts packages/contracts/src/manifest-generation.test.ts",
+    "manifests:generate": "node tools/release/manifests-generate.mjs",
+    "manifests:validate": "node tools/release/manifests-validate.mjs",
+    "package:dev": "node tools/release/package-dev.mjs",
+    "package:alpha": "node tools/release/package-alpha.mjs",
+    "release:check": "node tools/release/release-check.mjs",
+    "release:secret-scan": "node tools/release/secret-scan.mjs",
+    "release:checksums": "node tools/release/checksums.mjs --verify",
+    "coverage": "vitest run --coverage",
     "emit:language": "tsc -b packages/contracts && node packages/contracts/scripts/emit-language-manifest.mjs"
   },
   "devDependencies": {

@@ -379,6 +379,23 @@ describe('renderGrammarPrompt', () => {
     expect(prompt).toContain('```cmd');
   });
 
+  it('advertises chart only when insert-chart is present', () => {
+    expect(renderGrammarPrompt(excelManifest)).not.toContain('chart <column|bar|line|pie');
+    const prompt = renderGrammarPrompt({
+      ...excelManifest,
+      actuations: [
+        ...excelManifest.actuations,
+        {
+          kind: 'insert-chart',
+          surface: 'excel',
+          title: 'Insert chart',
+          reversible: true,
+        },
+      ],
+    });
+    expect(prompt).toContain('chart <column|bar|line|pie|scatter|area>');
+  });
+
   it('advertises suggest for Word and not set', () => {
     const prompt = renderGrammarPrompt(wordManifest);
     expect(prompt).toContain('suggest "old text" => "new text"');

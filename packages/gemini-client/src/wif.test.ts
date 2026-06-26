@@ -18,6 +18,28 @@ function stsOk(token: string, expiresIn = 3600): Response {
 }
 
 describe('WifTokenClient — request shaping', () => {
+  it('uses a receiver-safe default fetch implementation in browser frames', async () => {
+    const receiverSensitiveFetch = vi.fn(function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ) {
+      if (this !== globalThis) throw new TypeError('Illegal invocation');
+      return Promise.resolve(stsOk('goog-bound-fetch'));
+    });
+    vi.stubGlobal('fetch', receiverSensitiveFetch);
+    try {
+      const wif = new WifTokenClient(entra, { poolId: 'p', providerId: 'pr' });
+      expect(await wif.getAccessToken()).toBe('goog-bound-fetch');
+      expect(receiverSensitiveFetch).toHaveBeenCalledWith(
+        'https://sts.googleapis.com/v1/token',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('passes scope override and userProject options in the exchange body', async () => {
     const f = vi.fn(async () => stsOk('goog-1'));
     const wif = new WifTokenClient(

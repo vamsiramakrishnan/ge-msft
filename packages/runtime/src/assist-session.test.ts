@@ -772,6 +772,7 @@ class ComposeBridge implements DocBridge {
       contextKinds: ['range'],
       actuations: [
         { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
+        { kind: 'insert-chart', surface: 'excel', title: 'Insert chart', reversible: true },
         // Advertised so a composition-parity test can resolve `slide`'s bulletsExpr through the loop.
         { kind: 'insert-slide', surface: 'excel', title: 'Insert slide', reversible: true },
       ],
@@ -832,6 +833,33 @@ async function collectLoop(
 }
 
 describe('AssistSession.runCommands — ADR-0005 composition (pure)', () => {
+  it('mounts the configured command skill route for command-loop turns', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch, bodies } = scriptedFetch(['```cmd\ndone\n```']);
+    const client = new StreamAssistClient(
+      tokens,
+      {
+        ...cfg,
+        commandSkills: ['projects/proj/locations/global/agents/7404511736383961129'],
+        commandSkillMentions: [{ label: 'm365-surface-commander', uri: '7404511736383961129' }],
+        plannerSkills: ['projects/proj/locations/global/agents/17573173582293271726'],
+        plannerSkillMentions: [{ label: 'm365-command-planner', uri: '17573173582293271726' }],
+      },
+      fetch,
+    );
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('/visualize @this'));
+
+    const body = bodies[0]!;
+    const query = (body.query as { text?: string }).text ?? '';
+    expect(body.skillsSpec).toEqual({
+      skills: [{ name: 'projects/proj/locations/global/agents/7404511736383961129' }],
+    });
+    expect(query).toContain('[m365-surface-commander](mention://?uri=7404511736383961129)');
+    expect(query).not.toContain('m365-command-planner');
+  });
+
   it('evaluates a read|filter|sum pipeline and feeds the Value back in the next turn', async () => {
     const bridge = new ComposeBridge();
     const { fetch, bodies } = scriptedFetch([
@@ -1134,6 +1162,36 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     // ONE plan approval, three gated actuations.
     expect(calls).toBe(1);
     expect(bridge.applied).toHaveLength(3);
+  });
+
+  it('does not accept done batched after a write in the same command block', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nchart bar \'Project schedule\'!B5:D30 title="Task Progress"\ndone\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('chart then done', { approvePlan: () => true }),
+    );
+
+    const previews = planEvents(events);
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.effects[0]?.request).toMatchObject({
+      kind: 'insert-chart',
+      params: {
+        chart: {
+          chartType: 'bar',
+          sourceRange: "'Project schedule'!B5:D30",
+          title: 'Task Progress',
+        },
+      },
+    });
+    expect(bridge.applied).toHaveLength(1);
+    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 1)).toBe(false);
+    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 2)).toBe(true);
   });
 
   it('no approver ⇒ the whole plan is blocked (fail-closed); nothing actuates', async () => {

@@ -27,6 +27,9 @@ export const ASK_SELECTION_SEED_TTL_MS = 60_000;
 /** The base storage key — namespaced per surface so two open hosts can't read each other's seed. */
 const ASK_SELECTION_SEED_BASE = 'ge:ask-selection-seed';
 
+/** Broadcast channel used to wake an already-open task pane after a function command writes a seed. */
+export const ASK_SELECTION_SEED_CHANNEL = 'ge:ask-selection-seed';
+
 /** The per-surface storage key the task pane reads on boot to pick up a context-menu seed. */
 export function askSelectionSeedKey(surface: Surface): string {
   return `${ASK_SELECTION_SEED_BASE}:${surface}`;
@@ -40,6 +43,8 @@ export function askSelectionSeedKey(surface: Surface): string {
 export interface AskSelectionSeed {
   kind: 'ask-selection';
   version: number;
+  /** Which fixed read-only prompt the Office chrome action requested. */
+  mode: 'ask' | 'summarize' | 'explain';
   /** The verb the pane runs — the right-click entry is a grounded `ask` over `@this`. */
   intent: Intent;
   /** WHERE the verb acts — right-click hard-binds the live `selection`. */
@@ -63,10 +68,12 @@ function makeNonce(): string {
 export function buildAskSelectionSeed(
   selection: string,
   now: number = Date.now(),
+  mode: AskSelectionSeed['mode'] = 'ask',
 ): AskSelectionSeed {
   return {
     kind: 'ask-selection',
     version: ASK_SELECTION_SEED_VERSION,
+    mode,
     intent: 'ask',
     scope: { kind: 'selection' },
     hasSelection: selection.trim().length > 0,
@@ -77,9 +84,14 @@ export function buildAskSelectionSeed(
 
 /** The fixed `ask` query the pane runs for the seed. Always grounds as `@this`, nothing else. */
 export function askSelectionQuery(seed: AskSelectionSeed): string {
-  return seed.hasSelection
-    ? '@this Summarize this concisely, keeping the key facts and figures.'
-    : '@this';
+  if (!seed.hasSelection) return '@this';
+  switch (seed.mode) {
+    case 'explain':
+      return '@this Explain this in plain language and call out anything ambiguous.';
+    case 'summarize':
+    case 'ask':
+      return '@this Summarize this concisely, keeping the key facts and figures.';
+  }
 }
 
 /** True when the seed is within its TTL window (not stale/replayed across a long-idle pane). */
@@ -97,6 +109,7 @@ export function isAskSelectionSeed(value: unknown): value is AskSelectionSeed {
   return (
     v.kind === 'ask-selection' &&
     v.version === ASK_SELECTION_SEED_VERSION &&
+    (v.mode === 'ask' || v.mode === 'summarize' || v.mode === 'explain') &&
     v.intent === 'ask' &&
     typeof v.scope === 'object' &&
     v.scope !== null &&

@@ -15,8 +15,28 @@ export interface AssistantPath {
 
 export interface GeminiClientConfig {
   assistant: AssistantPath;
+  /** Gemini Enterprise web/widget config used for user-visible catalogs and widget-style calls. */
+  widget?: GeminiWidgetConfig;
   /** Optional model override; otherwise the engine's configured default is used. */
   modelId?: string;
+  /**
+   * Gemini Enterprise agent/skill resource names to mount on ordinary chat turns.
+   * Most deployments should leave this empty; planner/executor skills belong on
+   * the explicit route-specific fields below.
+   */
+  skills?: string[];
+  /**
+   * Gemini Enterprise widget-style mention markers for ordinary chat skills.
+   */
+  skillMentions?: GeminiSkillMention[];
+  /** Planner skill(s): used only for the pre-execution `plan()` route. */
+  plannerSkills?: string[];
+  plannerSkillMentions?: GeminiSkillMention[];
+  /** Executor skill(s): used only for the constrained command-loop `runCommands()` route. */
+  commandSkills?: string[];
+  commandSkillMentions?: GeminiSkillMention[];
+  /** Data stores selected as default grounding connectors for turns from this pane. */
+  dataStores?: string[];
   /**
    * If set, requests are POSTed here instead of directly to discoveryengine.googleapis.com.
    * The only reason to run server code: a tenant that blocks browser CORS or wants a single
@@ -27,7 +47,21 @@ export interface GeminiClientConfig {
   identity?: string;
 }
 
+export interface GeminiSkillMention {
+  label: string;
+  uri: string;
+}
+
+export type GeminiSkillRoute = 'default' | 'planner' | 'command';
+
+export interface GeminiWidgetConfig {
+  configId: string;
+  /** Optional widget server token/header if the tenant requires one. Not a Google credential. */
+  serverToken?: string;
+}
+
 const GLOBAL_HOST = 'https://discoveryengine.googleapis.com';
+const CONTENT_GLOBAL_HOST = 'https://content-discoveryengine.googleapis.com';
 
 /**
  * Regional host for residency (e.g. 'eu', 'us', 'asia-northeast1'). Only the explicit value
@@ -75,11 +109,67 @@ export function assistantResourceName(p: AssistantPath): string {
   );
 }
 
+/** Collection resource name (parent of data stores and engines). */
+export function collectionResourceName(p: AssistantPath): string {
+  const collection = p.collection ?? 'default_collection';
+  return `projects/${p.project}/locations/${p.location}/collections/${collection}`;
+}
+
 /** Absolute URL for the `:streamAssist` call (or the proxy, if configured). */
 export function streamAssistUrl(cfg: GeminiClientConfig): string {
   if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/streamAssist`;
   const host = discoveryEngineHost(cfg.assistant.location);
   return `${host}/v1alpha/${assistantResourceName(cfg.assistant)}:streamAssist`;
+}
+
+/** Absolute URL for the GE widget StreamAssist call used by the hosted GE UI. */
+export function widgetStreamAssistUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/widgetStreamAssist`;
+  return `${CONTENT_GLOBAL_HOST}/v1alpha/locations/${cfg.assistant.location}/widgetStreamAssist`;
+}
+
+/** Absolute URL for GE widget user-visible skill catalog discovery. */
+export function widgetListAvailableAgentViewsUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/widgetListAvailableAgentViews`;
+  return `${CONTENT_GLOBAL_HOST}/v1alpha/locations/${cfg.assistant.location}/widgetListAvailableAgentViews`;
+}
+
+/** Absolute URL for GE widget metadata lookup. */
+export function lookupWidgetConfigUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/lookupWidgetConfig`;
+  return `${CONTENT_GLOBAL_HOST}/v1alpha/locations/${cfg.assistant.location}/lookupWidgetConfig`;
+}
+
+/** Absolute URL for listing assistant agents/skills. */
+export function assistantAgentsUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/catalog/agents`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  return `${host}/v1alpha/${assistantResourceName(cfg.assistant)}/agents`;
+}
+
+/** Absolute URL for listing collection data stores/connectors. */
+export function dataStoresUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/catalog/dataStores`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  return `${host}/v1alpha/${collectionResourceName(cfg.assistant)}/dataStores`;
+}
+
+/** Absolute URL for listing engine sessions. */
+export function sessionsUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/sessions`;
+  const host = discoveryEngineHost(cfg.assistant.location);
+  return `${host}/v1alpha/${engineResourceName(cfg.assistant)}/sessions`;
+}
+
+/** Absolute URL for getting one engine session. */
+export function sessionUrl(cfg: GeminiClientConfig, sessionIdOrName: string): string {
+  if (sessionIdOrName.startsWith('projects/')) {
+    const host = cfg.proxyUrl
+      ? proxyBase(cfg.proxyUrl)
+      : discoveryEngineHost(cfg.assistant.location);
+    return `${host}/v1alpha/${sessionIdOrName}`;
+  }
+  return `${sessionsUrl(cfg)}/${encodeURIComponent(sessionIdOrName)}`;
 }
 
 /** Engine resource name (parent of sessions/servingConfigs), for session creation etc. */

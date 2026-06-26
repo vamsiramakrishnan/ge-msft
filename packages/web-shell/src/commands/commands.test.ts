@@ -65,10 +65,11 @@ describe('askSelection', () => {
   it('reads the selection, stashes the seed, reveals the pane, and completes', async () => {
     const completed = vi.fn();
     const setItem = vi.fn();
+    const postMessage = vi.fn();
     const showAsTaskpane = vi.fn().mockResolvedValue(undefined);
     const office = fakeOffice({ selection: 'renewal in March', showAsTaskpane });
 
-    await askSelection({ completed }, { office, sink: { setItem } });
+    await askSelection({ completed }, { office, sink: { setItem }, broadcaster: { postMessage } });
 
     expect(setItem).toHaveBeenCalledTimes(1);
     const [key, json] = setItem.mock.calls[0]!;
@@ -76,12 +77,17 @@ describe('askSelection', () => {
     const seed = JSON.parse(json as string);
     expect(seed).toMatchObject({
       kind: 'ask-selection',
+      mode: 'ask',
       intent: 'ask',
       scope: { kind: 'selection' },
       hasSelection: true,
     });
     expect(isAskSelectionSeed(seed)).toBe(true);
     expect(json).not.toContain('renewal'); // the selected text never crosses the channel
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: 'ask-selection-seed-written',
+      surface: 'word',
+    });
     expect(showAsTaskpane).toHaveBeenCalledTimes(1);
     expect(completed).toHaveBeenCalledTimes(1);
   });
@@ -94,7 +100,7 @@ describe('askSelection', () => {
     await askSelection({ completed }, { office, sink: { setItem } });
 
     const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
-    expect(seed).toMatchObject({ kind: 'ask-selection', hasSelection: false });
+    expect(seed).toMatchObject({ kind: 'ask-selection', mode: 'ask', hasSelection: false });
     expect(completed).toHaveBeenCalledTimes(1);
   });
 
@@ -128,7 +134,7 @@ describe('askSelection', () => {
     await askSelection({ completed }, { office: {}, sink: { setItem } });
 
     const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
-    expect(seed).toMatchObject({ kind: 'ask-selection', hasSelection: false });
+    expect(seed).toMatchObject({ kind: 'ask-selection', mode: 'ask', hasSelection: false });
     expect(completed).toHaveBeenCalledTimes(1);
   });
 });

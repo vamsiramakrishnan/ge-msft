@@ -397,6 +397,8 @@ export function renderGrammarPrompt(manifest: CapabilityManifest): string {
     ``,
     `PROTOCOL:`,
     `- To act, reply with EXACTLY one fenced \`\`\`cmd block of command line(s), then STOP.`,
+    `- Never emit prose, thinking, markdown explanations, or any other fenced block.`,
+    `- \`\`\`python, \`\`\`json, \`\`\`bash, and unlabeled fences are invalid and will be ignored.`,
     `- I reply with a \`\`\`result\`\`\` block (one entry per command, in order). Keep going.`,
     `- A fresh <doc_state> is provided each turn; after you write, it reflects your edits.`,
     `- On an error I return a CLI-style correction; fix the command and continue.`,

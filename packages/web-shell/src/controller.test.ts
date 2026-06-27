@@ -528,6 +528,8 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
         compiled: { kind: 'read', intent: { read: 'range', selector: 'Sales!C2:C7' } },
       }),
       ev({ type: 'read-result', turn: 1, intentLabel: 'Sales!C2:C7', result: [1, 2] }),
+      ev({ type: 'code-execution', language: 'python', code: 'print(12)' }),
+      ev({ type: 'code-execution-result', outcome: 'OUTCOME_OK', output: '12\n' }),
       ev({ type: 'token', text: 'The margin ' }),
       ev({ type: 'token', text: 'is 12%.' }),
       ev({ type: 'done', turn: 1, answer: 'The margin is 12%.' }),
@@ -545,8 +547,11 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
       'turn-start',
       'command',
       'read-result',
+      'code-execution',
+      'code-execution',
       'done',
     ]);
+    expect(c.getState().steps.map((s) => s.text)).toContain('Python code execution completed');
     expect(c.getState().pendingWrite).toBeUndefined();
   });
 

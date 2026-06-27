@@ -90,6 +90,8 @@ describe('SurfaceCommandCenter', () => {
     expect(container?.querySelector('.surface-subtitle')?.textContent).toContain('Threads');
     expect(container?.querySelector('.surface-metrics')?.textContent).toContain('2 attached');
     expect(container?.querySelector('.surface-metrics')?.textContent).toContain('1 proposals');
+    expect(container?.querySelector('.surface-entrypoints')?.textContent).toContain('/ verbs');
+    expect(container?.querySelector('.surface-entrypoints')?.textContent).toContain('Right-click');
   });
 
   it('hands the full promoted action back on click', () => {

@@ -684,8 +684,16 @@ export class AssistSession {
         yield { type: 'no-fence', turn };
         if (pendingNoFenceReprompt) break;
         pendingNoFenceReprompt = true;
-        query =
-          'No ```cmd block found. Reply with EXACTLY one ```cmd block, or `done` if finished.';
+        query = [
+          'No executable ```cmd block found.',
+          'Your reply must contain EXACTLY one fenced ```cmd block and nothing else.',
+          'Do not emit prose, thinking, troubleshooting notes, or ```python/```json/```bash fences.',
+          'If you need data, start with read/outline/search in the cmd block.',
+          'If finished, reply with only:',
+          '```cmd',
+          'done',
+          '```',
+        ].join('\n');
         continue;
       }
       pendingNoFenceReprompt = false;

@@ -17,6 +17,7 @@ interface SurfaceCopy {
   title: string;
   subtitle: string;
   glyph: string;
+  object: string;
 }
 
 const SURFACE_COPY: Record<Surface, SurfaceCopy> = {
@@ -24,31 +25,37 @@ const SURFACE_COPY: Record<Surface, SurfaceCopy> = {
     title: 'Word workspace',
     subtitle: 'Redlines, comments, and document review',
     glyph: 'W',
+    object: 'document',
   },
   excel: {
     title: 'Excel workspace',
     subtitle: 'Ranges, formulas, comments, and charts',
     glyph: 'X',
+    object: 'workbook',
   },
   powerpoint: {
     title: 'PowerPoint workspace',
     subtitle: 'Slide drafting, narrative review, and deck summaries',
     glyph: 'P',
+    object: 'deck',
   },
   onenote: {
     title: 'OneNote workspace',
     subtitle: 'Page synthesis and source collection',
     glyph: 'N',
+    object: 'page',
   },
   outlook: {
     title: 'Outlook workspace',
     subtitle: 'Threads, action items, and reviewable reply drafts',
     glyph: 'O',
+    object: 'message',
   },
   teams: {
     title: 'Teams workspace',
     subtitle: 'Transcript recap and meeting actions',
     glyph: 'T',
+    object: 'meeting',
   },
 };
 
@@ -133,8 +140,27 @@ export function SurfaceCommandCenter({
         </span>
       </div>
 
+      <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
+        {entrypoints(copy.object).map((entry) => (
+          <span key={entry.id} className="detail-hover surface-entry-wrap">
+            <span className="surface-entry" tabIndex={0} aria-describedby={`entry-${entry.id}`}>
+              <span className="surface-entry-dot" aria-hidden="true" />
+              <span>{entry.label}</span>
+            </span>
+            <span
+              id={`entry-${entry.id}`}
+              className="detail-popover surface-entry-detail"
+              role="tooltip"
+            >
+              <strong>{entry.title}</strong>
+              <span>{entry.detail}</span>
+            </span>
+          </span>
+        ))}
+      </div>
+
       <div className="surface-primary-actions">
-        {actions.map((action, index) => (
+        {actions.map((action) => (
           <span key={action.id} className="detail-hover surface-action-wrap">
             <button
               type="button"
@@ -146,8 +172,8 @@ export function SurfaceCommandCenter({
               aria-describedby={`surface-action-detail-${action.id}`}
               onClick={() => onAction(action)}
             >
-              <span className="surface-action-rank" aria-hidden="true">
-                {index + 1}
+              <span className="surface-action-mode" data-output={action.output} aria-hidden="true">
+                {shortMode(action)}
               </span>
               <span className="surface-action-body">
                 <span className="surface-action-label">{action.label}</span>
@@ -164,12 +190,44 @@ export function SurfaceCommandCenter({
               <strong>{action.label}</strong>
               <span>{action.prompt}</span>
               <span>{actionMode(action)}</span>
+              {action.contextMenu ? <span>Also available from the host context menu.</span> : null}
             </span>
           </span>
         ))}
       </div>
     </section>
   );
+}
+
+function entrypoints(
+  object: string,
+): { id: string; label: string; title: string; detail: string }[] {
+  return [
+    {
+      id: 'pane',
+      label: 'Pane',
+      title: 'Task pane',
+      detail: `Use chat, approvals, diagnostics, and grounded actions beside the active ${object}.`,
+    },
+    {
+      id: 'slash',
+      label: '/ verbs',
+      title: 'Command palette',
+      detail: 'Type / to reveal only the commands this host and profile can actually run.',
+    },
+    {
+      id: 'context',
+      label: 'Right-click',
+      title: 'Context menu',
+      detail: `Ask about the current selection without copying content out of the ${object}.`,
+    },
+    {
+      id: 'ribbon',
+      label: 'Ribbon',
+      title: 'Office command surface',
+      detail: 'Open the pane or trigger installed function commands from the add-in ribbon group.',
+    },
+  ];
 }
 
 function outputRank(action: QuickAction): number {
@@ -180,6 +238,17 @@ function outputRank(action: QuickAction): number {
       return 1;
     case 'chat':
       return 2;
+  }
+}
+
+function shortMode(action: QuickAction): string {
+  switch (action.output) {
+    case 'chat':
+      return 'Ask';
+    case 'annotation':
+      return 'Review';
+    case 'write':
+      return 'Change';
   }
 }
 

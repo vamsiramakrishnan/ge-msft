@@ -68,6 +68,19 @@ export const DeAssistantContentSchema = z
     text: z.string().optional(),
     role: z.string().optional(),
     thought: z.boolean().optional(),
+    executableCode: z
+      .object({
+        code: z.string(),
+      })
+      .passthrough()
+      .optional(),
+    codeExecutionResult: z
+      .object({
+        outcome: z.string(),
+        output: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 

@@ -401,6 +401,13 @@ describe('renderGrammarPrompt', () => {
     expect(prompt).toContain('suggest "old text" => "new text"');
     expect(prompt).not.toContain('set <A1');
   });
+
+  it('explicitly rejects non-cmd fences and thinking prose', () => {
+    const prompt = renderGrammarPrompt(excelManifest);
+    expect(prompt).toContain('Never emit prose, thinking');
+    expect(prompt).toContain('```python');
+    expect(prompt).toContain('invalid and will be ignored');
+  });
 });
 
 /* ───────────────────────── loop fixtures ──────────────────────────────── */
@@ -728,6 +735,8 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(loop.some((e) => e.type === 'no-fence')).toBe(true);
     // The re-prompt query nudges for a cmd block.
     expect(queries[1]).toContain('```cmd');
+    expect(queries[1]).toContain('Do not emit prose');
+    expect(queries[1]).toContain('```python');
     expect(bridge.applied).toHaveLength(1); // still completed the write
     expect(loop.at(-1)).toMatchObject({ type: 'done' });
   });

@@ -39,6 +39,9 @@ you act on the document; a prose answer does nothing and is wrong here.
 
 - Do your analysis **through commands** (`read`, `search`, pipelines), not in prose. If you
   already have the data in the snapshot, go straight to the write command.
+- Never reveal thinking, planning notes, "I am analyzing...", or troubleshooting narration.
+- Never emit any fenced block except ` ```cmd `. ` ```python `, ` ```json `, ` ```bash `,
+  and bare markdown fences are invalid output.
 - Write commands as **flat lines** — `verb` then space-separated arguments. **Never** use JSON
   and **never** use function-call syntax `verb(...)`.
   - ✅ `set Sales!F2 =SUMIF(A2:A8,"East",C2:C8)`
@@ -49,8 +52,8 @@ you act on the document; a prose answer does nothing and is wrong here.
   another app — e.g. if only `mail` is available, use `mail`, never `reply`. If unsure which verb
   exists, run `help` first.
 - **Always close the block** with a line containing ` ``` `. An unclosed block is a failure.
-- If you truly cannot act (the task needs a command no app supports), emit a ` ```cmd ` block
-  containing only `done`, and say why in one short line _after_ the closed block.
+- If you truly cannot act because no available command supports the task, emit a ` ```cmd ` block
+  containing only `done`. Do not add prose outside the block.
 
 Minimal shape of every turn:
 
@@ -224,6 +227,9 @@ authoritative; this only catches errors earlier.
 
 - **Writing before reading.** Always `read`/`outline`/`search` first; anchor edits on
   exact content.
+- **Using the wrong fence.** `python`, `json`, `bash`, and unlabeled code blocks are ignored by
+  the add-in. Only `cmd` is executable.
+- **Thinking out loud.** Do not print analysis or troubleshooting. The user sees your reply.
 - **Using an unavailable command.** Only emit verbs listed as available this turn.
 - **Guessing a value.** Compute it (a pipeline or a formula) or read it.
 - **More than one fenced block, or prose inside the fence.** One ` ```cmd ` block,
@@ -233,4 +239,5 @@ authoritative; this only catches errors earlier.
 
 ## Anything you cannot do with a command
 
-Explain it in plain text (no fenced block). Don't invent a verb that isn't listed.
+Emit a ` ```cmd ` block containing only `done`. Don't invent a verb that isn't listed and don't
+explain outside the block.

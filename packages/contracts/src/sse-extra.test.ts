@@ -30,6 +30,8 @@ describe('SSE — every event variant round-trips', () => {
       sources: [{ title: 'src' }],
     },
     { type: 'citation', source: { title: 'Policy', uri: 'https://x' } },
+    { type: 'code-execution', language: 'python', code: 'print(1)' },
+    { type: 'code-execution-result', outcome: 'OUTCOME_OK', output: '1\n' },
     {
       type: 'grounding-support',
       start: 0,
@@ -96,6 +98,18 @@ describe('SSE — schema rejection paths', () => {
 
   it('rejects a token event with a non-string text', () => {
     expect(() => SseEventSchema.parse({ type: 'token', text: 7 })).toThrow();
+  });
+
+  it('rejects code-execution for any language other than python', () => {
+    expect(() =>
+      SseEventSchema.parse({ type: 'code-execution', language: 'javascript', code: 'alert(1)' }),
+    ).toThrow();
+  });
+
+  it('rejects code-execution-result with an unknown outcome', () => {
+    expect(() =>
+      SseEventSchema.parse({ type: 'code-execution-result', outcome: 'OUTCOME_SIDE_EFFECT' }),
+    ).toThrow();
   });
 
   it('rejects an error event missing the message', () => {

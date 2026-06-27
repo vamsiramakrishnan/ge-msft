@@ -39,6 +39,14 @@ function actionButton(actionId: string): HTMLButtonElement {
   return el;
 }
 
+function actionTab(label: string): HTMLButtonElement {
+  const el = [...ui!.container.querySelectorAll<HTMLButtonElement>('button.action-tab')].find(
+    (button) => button.textContent?.includes(label),
+  );
+  if (!el) throw new Error(`no action tab "${label}"`);
+  return el;
+}
+
 async function typeAndSubmit(text: string): Promise<void> {
   const input = ui!.container.querySelector<HTMLTextAreaElement>('textarea#ask')!;
   await ui!.act(() => {
@@ -63,6 +71,7 @@ describe('command surface — quick actions (full-stack)', () => {
 
     const summarize = quickActionsForSurface('word').find((a) => a.id === 'summarize-this')!;
     expect(summarize.output).toBe('chat');
+    await ui.act(() => actionTab('Ask').click());
     await ui.act(() => actionButton('summarize-this').click());
     await ui.waitFor(() => (ui!.container.textContent ?? '').includes('99.5% monthly'));
 

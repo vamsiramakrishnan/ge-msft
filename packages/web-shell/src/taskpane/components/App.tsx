@@ -206,6 +206,10 @@ export function App({
   const state = usePanelState(controller);
   // The parameterized action awaiting its `{{name}}` fill values (Workstream H), or undefined.
   const [paramFill, setParamFill] = useState<QuickAction | undefined>(undefined);
+  // Catalog routing is admin-grade config; it lives behind this settings toggle, not as always-on
+  // chrome, so the default pane stays task-focused (quiet by default). The catalog stays mounted
+  // either way so its default routing still loads on open.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const hasBlockingGate = Boolean(
     state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite,
   );
@@ -288,12 +292,33 @@ export function App({
       <header className="ph">
         <div className="pht">
           <div className="av" aria-hidden="true" />
-          <div>
+          <div className="ph-id">
             <div className="pn">Gemini Enterprise</div>
             <div className="pss">{agentLabel ?? 'Grounded on your research unit'}</div>
           </div>
+          {catalogClient && (
+            <button
+              type="button"
+              className={`ph-settings${settingsOpen ? ' on' : ''}`}
+              aria-label={settingsOpen ? 'Close catalog settings' : 'Open catalog settings'}
+              aria-expanded={settingsOpen}
+              aria-controls="ge-catalog-settings"
+              onClick={() => setSettingsOpen((v) => !v)}
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+          )}
         </div>
       </header>
+
+      <GeminiCatalogPanel
+        catalogClient={catalogClient}
+        open={settingsOpen}
+        disabled={actionBlocked}
+        onApply={(selection: GeminiCatalogSelection) => {
+          onCatalogRouting?.(applyCatalogSelection(selection));
+        }}
+      />
 
       <SurfaceCommandCenter
         surface={surface}
@@ -311,14 +336,6 @@ export function App({
         chips={state.chips}
         onToggle={onToggle}
         onRefresh={() => void controller.refreshContext()}
-      />
-
-      <GeminiCatalogPanel
-        catalogClient={catalogClient}
-        disabled={actionBlocked}
-        onApply={(selection: GeminiCatalogSelection) => {
-          onCatalogRouting?.(applyCatalogSelection(selection));
-        }}
       />
 
       {state.suggestions.length > 0 && (

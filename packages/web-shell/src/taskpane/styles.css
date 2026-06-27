@@ -2343,7 +2343,7 @@ a.cite:hover {
   --ink: #1f1f1f;
   --ink-2: #2d2d2d;
   --soft: #66645f;
-  --psoft: #74716c;
+  --psoft: #6e6b64; /* ~5.1:1 on --bg — was #74716c (~4.66:1); lightest muted tier, now AA-comfortable */
   --muted: #6b6964;
   --bg: #fbfaf8;
   --panel: #ffffff;
@@ -2404,12 +2404,48 @@ body {
   font-weight: 760;
 }
 
+.ph-id {
+  min-width: 0;
+}
+
 .pss {
   max-width: 230px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--soft);
+}
+
+/* header settings (catalog routing) toggle — quiet icon button, host accent on hover/open */
+.ph-settings {
+  margin-left: auto;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--fill-2);
+  color: var(--soft);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+.ph-settings:hover,
+.ph-settings:focus-visible {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  background: color-mix(in srgb, var(--host) 6%, #fff);
+  color: var(--host);
+}
+.ph-settings.on {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  background: color-mix(in srgb, var(--host) 9%, #fff);
+  color: var(--host);
 }
 
 .eyebrow {
@@ -2775,8 +2811,8 @@ body {
 }
 
 .m {
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.62;
 }
 
 .m.a {
@@ -2825,7 +2861,16 @@ body {
 .md-content h4,
 .md-content p,
 .md-content li {
-  font-size: 12.5px;
+  font-size: 13px;
+}
+/* Reading text in the thread leans on the ink end of the ramp; prose gets pretty-wrap to kill orphans. */
+.md-content p,
+.md-content li {
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.md-content li {
+  margin: 3px 0;
 }
 
 .md-table-wrap,
@@ -3280,5 +3325,101 @@ body {
   .gate-rail {
     max-height: 42vh;
     overflow: auto;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Layout optimization (impeccable): collapse the command center so the thread
+ * dominates by default. Primary actions move into a hover/focus/click flyout
+ * behind a compact trigger instead of three always-on rows ("hover & expand,
+ * not default max"). The conversation gets the vertical space back.
+ * ────────────────────────────────────────────────────────────────────────── */
+.surface-center {
+  gap: 8px;
+  padding: 9px 10px;
+}
+.surface-center-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+.surface-actions {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.surface-details {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Compact trigger, shared look with the metrics trigger */
+.surface-actions-trigger {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 1px solid color-mix(in srgb, var(--host) 24%, var(--line));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--host) 6%, #fff);
+  color: var(--host);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: var(--fz-xs);
+  font-weight: 760;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+.surface-actions-trigger:hover,
+.surface-actions-trigger:focus-visible {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  background: color-mix(in srgb, var(--host) 10%, #fff);
+}
+.surface-actions-count {
+  min-width: 17px;
+  min-height: 16px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--host) 14%, #fff);
+  color: var(--host);
+  font-size: 10px;
+  font-weight: 800;
+}
+.tw-caret {
+  margin-left: auto;
+  font-size: var(--fz-sm);
+  line-height: 1;
+}
+/* The actions flyout: wider than a tooltip, single-column action rows inside. */
+.surface-actions-popover {
+  width: min(340px, calc(100vw - 36px));
+  padding: var(--s3);
+}
+.surface-actions-popover .surface-primary-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s2);
+}
+.surface-actions-popover .surface-action {
+  min-height: 44px;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+}
+
+/* Keep the flyouts centered and roomy at preview width too. */
+@media (min-width: 520px) {
+  .surface-actions-popover {
+    left: 50%;
+    right: auto;
+    width: min(420px, calc(100vw - 40px));
+    transform: translateX(-50%);
+  }
+  /* Don't let the wide-screen 3-up rule leak into the narrow flyout. */
+  .surface-actions-popover .surface-primary-actions {
+    grid-template-columns: 1fr;
   }
 }

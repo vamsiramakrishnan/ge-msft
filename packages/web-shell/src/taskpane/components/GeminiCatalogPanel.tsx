@@ -10,6 +10,13 @@ import {
 export interface GeminiCatalogPanelProps {
   catalogClient?: DiscoveryCatalogClient;
   disabled?: boolean;
+  /**
+   * When `false`, the panel stays mounted — so its load-on-mount still lists the catalog and applies
+   * the default routing — but renders nothing. The pane demotes catalog routing behind a settings
+   * affordance, so it is no longer always-on chrome. Defaults to `true` so the component renders on
+   * its own (and in tests) without an explicit opener.
+   */
+  open?: boolean;
   onApply: (selection: GeminiCatalogSelection) => void;
 }
 
@@ -21,6 +28,7 @@ const EMPTY_DATA_STORES: GeminiCatalog['dataStores'] = [];
 export function GeminiCatalogPanel({
   catalogClient,
   disabled = false,
+  open = true,
   onApply,
 }: GeminiCatalogPanelProps): JSX.Element | null {
   const [catalog, setCatalog] = useState<GeminiCatalog | undefined>();
@@ -80,10 +88,13 @@ export function GeminiCatalogPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogClient]);
 
-  if (!catalogClient) return null;
+  // Stay mounted while closed (the load-on-mount above still applies default routing); just render
+  // nothing so catalog routing is settings, not always-on chrome.
+  if (!catalogClient || !open) return null;
 
   return (
     <section
+      id="ge-catalog-settings"
       className="catalog"
       aria-label="Gemini Enterprise catalog"
       aria-disabled={disabled}

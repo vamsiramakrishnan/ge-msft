@@ -6,6 +6,7 @@ build/
 .env.local
 .gcloud/
 .azure/
+.venv-az/
 *.log
 .DS_Store
 coverage/

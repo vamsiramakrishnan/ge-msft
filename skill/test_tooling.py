@@ -19,6 +19,8 @@ in particular is import-lazy in the tooling so this file can import it offline).
     python3 skill/test_tooling.py
 """
 import importlib.util
+import base64
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -39,6 +41,12 @@ def _load(module_name: str, filename: str):
 # Import lazily-dependent modules. These must NOT pull in google.auth / requests at import time.
 create_skill = _load("create_skill", "create_skill.py")
 update_skills = _load("update_skills", "update_skills.py")
+
+
+def _fake_jwt(payload):
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"header.{encoded}.signature"
 
 
 class _FakeResponse:
@@ -259,6 +267,36 @@ class TestRequestHardening(unittest.TestCase):
         self.assertLessEqual(retries, 10)
         self.assertIsInstance(create_skill.HTTP_TIMEOUT, (int, float))
         self.assertGreater(create_skill.HTTP_TIMEOUT, 0)
+
+    def test_widget_session_rejects_gcloud_adc_token_shape(self):
+        env = {
+            **self.ENV,
+            "GE_WIDGET_BEARER_TOKEN": "ya29.local-adc-token",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = create_skill.resolve_live_config()
+            with self.assertRaises(SystemExit) as cm:
+                create_skill.session(cfg, "widget")
+        self.assertIn("not a Vertex AI Search widget JWT", str(cm.exception))
+
+    def test_widget_session_accepts_widget_jwt_shape(self):
+        token = _fake_jwt(
+            {
+                "iss": "https://vertexaisearch.cloud.google",
+                "aud": "https://content-discoveryengine.googleapis.com",
+                "exp": 4102444800,
+            }
+        )
+        env = {
+            **self.ENV,
+            "GE_WIDGET_BEARER_TOKEN": token,
+            "GE_WIDGET_SERVER_TOKEN": "CAMSAh0H",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = create_skill.resolve_live_config()
+            s = create_skill.session(cfg, "widget")
+        self.assertEqual(s.headers["Authorization"], f"Bearer {token}")
+        self.assertEqual(s.headers["x-server-token"], "CAMSAh0H")
 
     def test_widget_create_uses_content_api_and_returns_numeric_agent_name(self):
         env = {

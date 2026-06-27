@@ -59,9 +59,12 @@ Usage:
 """
 
 import argparse
+import base64
+import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,7 +168,50 @@ def _widget_bearer_token() -> str:
             "Use the short-lived Bearer token from an authenticated Gemini Enterprise web request; "
             "do not commit it or paste it into logs."
         )
-    return token.removeprefix("Bearer ").strip()
+    token = token.removeprefix("Bearer ").strip()
+    _validate_widget_bearer_token(token)
+    return token
+
+
+def _jwt_payload(token: str) -> dict:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("token is not a JWT")
+    payload = parts[1]
+    padded = payload + "=" * (-len(payload) % 4)
+    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    parsed = json.loads(raw.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError("JWT payload is not a JSON object")
+    return parsed
+
+
+def _validate_widget_bearer_token(token: str) -> None:
+    try:
+        payload = _jwt_payload(token)
+    except Exception as exc:
+        raise SystemExit(
+            "GE_WIDGET_BEARER_TOKEN is not a Vertex AI Search widget JWT. "
+            "Do not use gcloud/ADC access tokens here; copy the Bearer token from an authenticated "
+            "content-discoveryengine.googleapis.com widget request in the Gemini Enterprise web UI."
+        ) from exc
+
+    issuer = payload.get("iss")
+    audience = payload.get("aud")
+    if issuer != WIDGET_ORIGIN or audience != "https://content-discoveryengine.googleapis.com":
+        raise SystemExit(
+            "GE_WIDGET_BEARER_TOKEN has the wrong issuer/audience for the widget API. "
+            f"Expected iss={WIDGET_ORIGIN!r} and aud='https://content-discoveryengine.googleapis.com'. "
+            "Use the Bearer token from a content-discoveryengine.googleapis.com widget request, "
+            "not gcloud auth print-access-token or Application Default Credentials."
+        )
+
+    exp = payload.get("exp")
+    if isinstance(exp, (int, float)) and exp <= time.time():
+        raise SystemExit(
+            "GE_WIDGET_BEARER_TOKEN is expired. Refresh Gemini Enterprise in the browser, copy a "
+            "fresh Bearer token from a content-discoveryengine.googleapis.com request, and rerun."
+        )
 
 
 def session(cfg: LiveConfig, api_mode: str = "legacy") -> requests.Session:

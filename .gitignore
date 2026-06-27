@@ -16,6 +16,10 @@ coverage/
 # GE skill bundle build artifacts
 skill/**/*.zip
 
+# Local Codex/agent skills installed for development assistance
+.agents/
+skills-lock.json
+
 # Python caches
 __pycache__/
 *.pyc

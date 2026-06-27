@@ -1,5 +1,8 @@
 import type { Intent, QuickAction, Surface } from '@ge/contracts';
 import { quickActionsForSurface } from '@ge/contracts';
+import { useDisclosure } from './useDisclosure.js';
+import { MODE_LABEL, MODE_CTA } from './mode-labels.js';
+import { modeCta, modeLabel } from './mode-labels.js';
 
 export interface SurfaceCommandCenterProps {
   surface: Surface;
@@ -101,12 +104,12 @@ export function SurfaceCommandCenter({
   messageCount,
   proposalCount,
   onAction,
-}: SurfaceCommandCenterProps): JSX.Element | null {
+}: SurfaceCommandCenterProps): JSX.Element {
   const actions = surfacePrimaryActions(surface, allowedIntents);
-  if (actions.length === 0) return null;
   const copy = SURFACE_COPY[surface];
   const status = hasGate ? 'Decision needed' : busy ? 'Working' : 'Ready';
   const state = hasGate ? 'gate' : busy ? 'busy' : 'ready';
+  const { open, toggle, close, containerRef } = useDisclosure<HTMLDivElement>();
 
   return (
     <section className="surface-center" aria-label={`${copy.title} command center`}>
@@ -126,56 +129,65 @@ export function SurfaceCommandCenter({
       </div>
 
       <div className="surface-center-controls">
-        <div className="detail-hover surface-actions">
-          <button
-            type="button"
-            className="surface-actions-trigger"
-            aria-describedby="surface-actions-pop"
-          >
-            <span>Quick actions</span>
-            <span className="surface-actions-count" aria-hidden="true">
-              {actions.length}
-            </span>
-            <span className="tw-caret" aria-hidden="true">
-              ▾
-            </span>
-          </button>
-          <div
-            id="surface-actions-pop"
-            className="detail-popover surface-actions-popover"
-            role="group"
-            aria-label={`Primary actions for ${copy.title}`}
-          >
-            <div className="surface-primary-actions">
-              {actions.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  className="surface-action"
-                  data-action-id={action.id}
-                  data-output={action.output}
-                  data-intent={action.intent}
-                  disabled={busy || hasGate}
-                  onClick={() => onAction(action)}
-                >
-                  <span
-                    className="surface-action-mode"
+        {actions.length > 0 ? (
+          <div className="surface-actions" ref={containerRef} data-open={open ? 'true' : 'false'}>
+            <button
+              type="button"
+              className="surface-actions-trigger"
+              aria-expanded={open}
+              aria-controls="surface-actions-pop"
+              onClick={toggle}
+            >
+              <span>Quick actions</span>
+              <span className="surface-actions-count" aria-hidden="true">
+                {actions.length}
+              </span>
+              <span className="tw-caret" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+            <div
+              id="surface-actions-pop"
+              className="surface-actions-popover"
+              role="group"
+              aria-label={`Primary actions for ${copy.title}`}
+            >
+              <div className="surface-primary-actions">
+                {actions.map((action) => (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className="surface-action"
+                    data-action-id={action.id}
                     data-output={action.output}
-                    aria-hidden="true"
+                    data-intent={action.intent}
+                    disabled={busy || hasGate}
+                    onClick={() => {
+                      onAction(action);
+                      close();
+                    }}
                   >
-                    {shortMode(action)}
-                  </span>
-                  <span className="surface-action-body">
-                    <span className="surface-action-label">{action.label}</span>
-                    <span className="surface-action-meta">
-                      {action.intent} · {action.scope.kind} · {actionMode(action)}
+                    <span
+                      className="surface-action-mode"
+                      data-output={action.output}
+                      aria-hidden="true"
+                    >
+                      {MODE_LABEL[action.output]}
                     </span>
-                  </span>
-                </button>
-              ))}
+                    <span className="surface-action-body">
+                      <span className="surface-action-label">{action.label}</span>
+                      <span className="surface-action-meta">
+                        {action.intent} · {action.scope.kind} · {MODE_CTA[action.output]}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <span className="surface-empty">No quick actions for this host yet.</span>
+        )}
 
         <div className="detail-hover surface-details">
           <button
@@ -275,27 +287,5 @@ function outputRank(action: QuickAction): number {
       return 1;
     case 'chat':
       return 2;
-  }
-}
-
-function shortMode(action: QuickAction): string {
-  switch (action.output) {
-    case 'chat':
-      return 'Ask';
-    case 'annotation':
-      return 'Review';
-    case 'write':
-      return 'Change';
-  }
-}
-
-function actionMode(action: QuickAction): string {
-  switch (action.output) {
-    case 'chat':
-      return 'Answer';
-    case 'annotation':
-      return 'Review gate';
-    case 'write':
-      return 'Preview gate';
   }
 }

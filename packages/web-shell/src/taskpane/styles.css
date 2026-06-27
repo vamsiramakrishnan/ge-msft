@@ -529,8 +529,7 @@ body {
   background: var(--bg);
   box-shadow: var(--sh);
 }
-.unit:hover .context-popover,
-.unit:focus-within .context-popover {
+.unit[data-open='true'] .context-popover {
   display: flex;
 }
 .chips-group {
@@ -770,8 +769,7 @@ body {
   background: var(--bg);
   box-shadow: var(--sh);
 }
-.quick-actions:hover .action-drawer-list,
-.quick-actions:focus-within .action-drawer-list {
+.quick-actions[data-open='true'] .action-drawer-list {
   display: flex;
 }
 .quick-action {
@@ -1508,8 +1506,7 @@ a.cite:hover {
   background: var(--bg);
   box-shadow: var(--sh);
 }
-.skills:hover .skills-popover,
-.skills:focus-within .skills-popover {
+.skills[data-open='true'] .skills-popover {
   display: flex;
 }
 .skill {
@@ -3421,5 +3418,133 @@ body {
   /* Don't let the wide-screen 3-up rule leak into the narrow flyout. */
   .surface-actions-popover .surface-primary-actions {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── Click-toggle disclosures: open on click via [data-open], closed by default.
+ * Replaces the flaky :hover popovers (trigger→popover gap + pointer-events:none
+ * made interactive flyouts drop on reach and refuse clicks). Read-only tooltips
+ * stay on hover; these are the menus you act inside. ─────────────────────────── */
+.surface-actions {
+  position: relative;
+  flex: 0 0 auto;
+}
+.surface-details {
+  flex: 1 1 auto;
+}
+.surface-actions-popover {
+  position: absolute;
+  left: 0;
+  right: auto;
+  top: calc(100% + 6px);
+  z-index: 40;
+  display: none;
+  pointer-events: auto;
+  width: min(320px, calc(100vw - 36px));
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: var(--sh);
+  transform: none;
+}
+.surface-actions[data-open='true'] .surface-actions-popover {
+  display: block;
+}
+.surface-actions-popover .surface-primary-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s2);
+}
+@media (min-width: 520px) {
+  /* keep left-anchored; neutralize the earlier centering rule for this popover */
+  .surface-actions-popover {
+    left: 0;
+    right: auto;
+    transform: none;
+    width: min(360px, calc(100vw - 40px));
+  }
+}
+
+/* Shared caret toggle buttons for the collapsible sections */
+.unit-toggle,
+.skills-toggle,
+.action-drawer-toggle {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--fill-2);
+  color: var(--soft);
+  cursor: pointer;
+  flex: none;
+}
+.unit-toggle {
+  margin-left: 4px;
+}
+.skills-toggle {
+  margin-left: auto;
+}
+.action-drawer-toggle {
+  margin-left: 2px;
+}
+.unit-toggle:hover,
+.skills-toggle:hover,
+.action-drawer-toggle:hover,
+.unit-toggle:focus-visible,
+.skills-toggle:focus-visible,
+.action-drawer-toggle:focus-visible {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  color: var(--host);
+}
+.tw-caret {
+  display: inline-block;
+  font-size: var(--fz-sm);
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+.surface-actions[data-open='true'] .tw-caret,
+.unit[data-open='true'] .unit-toggle .tw-caret,
+.skills[data-open='true'] .skills-toggle .tw-caret,
+.quick-actions[data-open='true'] .action-drawer-toggle .tw-caret {
+  transform: rotate(180deg);
+}
+
+/* Quick-action mode marker: a colored dot keyed on output (replaces ?/+/> glyphs) */
+.quick-action-icon {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--host);
+}
+.quick-action-icon[data-output='write'] {
+  background: var(--ok);
+}
+.quick-action-icon[data-output='annotation'] {
+  background: var(--warn);
+}
+.quick-action-icon[data-output='chat'] {
+  background: var(--host);
+}
+
+/* Empty command-center note (capability-restricted surface keeps its header) */
+.surface-empty {
+  color: var(--soft);
+  font-size: var(--fz-xs);
+  padding: 2px 0;
+}
+
+/* Retune the dead blue→pink brand gradient to the shipped purple identity. */
+:root {
+  --grad: linear-gradient(135deg, #305fce, #6750a4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tw-caret {
+    transition: none;
   }
 }

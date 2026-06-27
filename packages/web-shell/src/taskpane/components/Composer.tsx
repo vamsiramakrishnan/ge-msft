@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Surface, Intent, CommandScope, GroundSource } from '@ge/contracts';
 import {
   commandPaletteFor,
@@ -163,6 +163,33 @@ export function Composer({
     k.toLowerCase().startsWith(mentionFilter),
   );
 
+  // The open palette and its current options — only one of the two can be open at a time.
+  const paletteOpen =
+    (showVerbs && verbMatches.length > 0) || (showMentions && mentionMatches.length > 0);
+  const optionCount = showVerbs ? verbMatches.length : showMentions ? mentionMatches.length : 0;
+
+  // Roving focus for the open palette listbox. Resets to the first option whenever the open
+  // palette's option set changes (open/filter), and is clamped so it never points past the list.
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [showVerbs, showMentions, optionCount]);
+  const clampedActive = optionCount > 0 ? Math.min(activeIndex, optionCount - 1) : 0;
+
+  /** The stable id of the option at `i` in the currently-open palette (for aria-activedescendant). */
+  const optionId = (i: number): string => `comp-opt-${showVerbs ? 'verb' : 'mention'}-${i}`;
+
+  /** Apply the option at `i` of the open palette — the same effect as clicking it. */
+  const selectActiveOption = (i: number): void => {
+    if (showVerbs) {
+      const v = verbMatches[i];
+      if (v) complete(v.label);
+    } else if (showMentions) {
+      const k = mentionMatches[i];
+      if (k) complete(`@${k}`);
+    }
+  };
+
   // A "did you mean…" hint: the leading /verb is a real verb on another surface but not this one.
   // (`offeredElsewhere` already encodes "not on this surface AND offered on some other surface".)
   const leadingVerb = /^\/(\S+)/.exec(value.trim())?.[1]?.toLowerCase();
@@ -215,14 +242,20 @@ export function Composer({
         </div>
       )}
       {showVerbs && verbMatches.length > 0 && (
-        <ul className="palette palette-verbs" role="listbox" aria-label="Commands">
-          {verbMatches.map((v) => (
-            <li key={v.intent} role="option" aria-selected="false">
+        <ul
+          className="palette palette-verbs"
+          role="listbox"
+          aria-label="Commands"
+          aria-activedescendant={optionId(clampedActive)}
+        >
+          {verbMatches.map((v, i) => (
+            <li key={v.intent} id={optionId(i)} role="option" aria-selected={i === clampedActive}>
               <button
                 type="button"
                 className="palette-item"
                 data-intent={v.intent}
                 disabled={busy || disabled}
+                onMouseEnter={() => setActiveIndex(i)}
                 onClick={() => complete(v.label)}
               >
                 <span className="palette-label">{v.label}</span>
@@ -238,14 +271,20 @@ export function Composer({
         </div>
       )}
       {showMentions && mentionMatches.length > 0 && (
-        <ul className="palette palette-mentions" role="listbox" aria-label="Mentions">
-          {mentionMatches.map((k) => (
-            <li key={k} role="option" aria-selected="false">
+        <ul
+          className="palette palette-mentions"
+          role="listbox"
+          aria-label="Mentions"
+          aria-activedescendant={optionId(clampedActive)}
+        >
+          {mentionMatches.map((k, i) => (
+            <li key={k} id={optionId(i)} role="option" aria-selected={i === clampedActive}>
               <button
                 type="button"
                 className="palette-item"
                 data-mention={k}
                 disabled={busy || disabled}
+                onMouseEnter={() => setActiveIndex(i)}
                 onClick={() => complete(`@${k}`)}
               >
                 <span className="palette-label">@{k}</span>
@@ -263,6 +302,31 @@ export function Composer({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
+            if (paletteOpen) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActiveIndex((prev) => (optionCount > 0 ? (prev + 1) % optionCount : 0));
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActiveIndex((prev) =>
+                  optionCount > 0 ? (prev - 1 + optionCount) % optionCount : 0,
+                );
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                selectActiveOption(clampedActive);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                // Drop the open trailing `/`/`@` token to close the palette, keeping prior text.
+                setValue((prev) => prev.replace(/([/@]\S*)$/, ''));
+                return;
+              }
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               submit();
@@ -275,7 +339,9 @@ export function Composer({
         />
         {busy ? (
           <button type="button" className="snd cancel" onClick={onCancel} aria-label="Cancel">
-            ◼
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+            </svg>
           </button>
         ) : (
           <button
@@ -284,7 +350,20 @@ export function Composer({
             aria-label="Send"
             disabled={disabled || !value.trim()}
           >
-            →
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M22 2 11 13" />
+              <path d="M22 2 15 22 11 13 2 9 22 2Z" />
+            </svg>
           </button>
         )}
       </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { actionParameters, type QuickAction } from '@ge/contracts';
+import { modeCta } from './mode-labels.js';
 
 export interface QuickActionParamFormProps {
   /** The action whose `{{name}}` slots need values, or undefined when nothing is being collected. */
@@ -89,12 +90,5 @@ export function QuickActionParamForm({
 }
 
 function ctaLabel(action: QuickAction): string {
-  switch (action.output) {
-    case 'chat':
-      return 'Ask';
-    case 'annotation':
-      return 'Preview comments';
-    case 'write':
-      return 'Preview write';
-  }
+  return modeCta(action);
 }

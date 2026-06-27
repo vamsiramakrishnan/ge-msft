@@ -1,4 +1,5 @@
 import type { ContextChip } from '../../controller.js';
+import { useDisclosure } from './useDisclosure.js';
 
 export interface ContextTrayProps {
   chips: ContextChip[];
@@ -10,8 +11,8 @@ const KIND_DOT: Readonly<Record<string, string>> = {
   document: 'var(--host)',
   selection: 'var(--host)',
   range: 'var(--host)',
-  'mail-item': '#2f6fed',
-  transcript: '#0f9d8c',
+  'mail-item': 'var(--link)',
+  transcript: 'var(--teal)',
 };
 
 /**
@@ -26,7 +27,7 @@ function Chip({
   chip: ContextChip;
   onToggle: (id: string, attach: boolean) => void;
 }): JSX.Element {
-  const dot = KIND_DOT[chip.kind] ?? '#9aa0b4';
+  const dot = KIND_DOT[chip.kind] ?? 'var(--soft)';
   const detailId = `ctx-detail-${safeId(chip.id)}`;
   return (
     <span className="detail-hover chip-wrap">
@@ -70,8 +71,14 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
   const attached = chips.filter((c) => c.attached);
   const available = chips.filter((c) => !c.attached);
   const preview = attached.length > 0 ? attached : available;
+  const { open, toggle, containerRef } = useDisclosure<HTMLElement>();
   return (
-    <section className="unit detail-hover" aria-label="Research unit grounding scope">
+    <section
+      className="unit"
+      aria-label="Research unit grounding scope"
+      ref={containerRef}
+      data-open={open ? 'true' : 'false'}
+    >
       <div className="unit-h">
         <span className="nb" aria-hidden="true" />
         <span className="unit-title">Context</span>
@@ -86,6 +93,18 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
         >
           Refresh
         </button>
+        <button
+          type="button"
+          className="unit-toggle"
+          aria-expanded={open}
+          aria-controls="ctx-chips"
+          aria-label={open ? 'Hide context sources' : 'Show context sources'}
+          onClick={toggle}
+        >
+          <span className="tw-caret" aria-hidden="true">
+            ▾
+          </span>
+        </button>
       </div>
       <div className="unit-peek" aria-hidden="true">
         {chips.length === 0 ? (
@@ -98,7 +117,7 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
           ))
         )}
       </div>
-      <div className="chips context-popover">
+      <div id="ctx-chips" className="chips context-popover">
         {chips.length === 0 && (
           <span className="muted small">Nothing to attach yet. Refresh scans the host.</span>
         )}

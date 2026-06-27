@@ -83,7 +83,12 @@ export function GeminiCatalogPanel({
   if (!catalogClient) return null;
 
   return (
-    <section className="catalog" aria-label="Gemini Enterprise catalog" aria-disabled={disabled}>
+    <section
+      className="catalog"
+      aria-label="Gemini Enterprise catalog"
+      aria-disabled={disabled}
+      data-expanded={expanded ? 'true' : 'false'}
+    >
       <div className="catalog-head">
         <div>
           <div className="eyebrow">Gemini Enterprise catalog</div>
@@ -123,7 +128,7 @@ export function GeminiCatalogPanel({
             aria-expanded={expanded}
             disabled={disabled}
           >
-            {expanded ? 'Less' : 'Edit'}
+            {expanded ? 'Close' : 'Edit'}
           </button>
         </div>
       </div>

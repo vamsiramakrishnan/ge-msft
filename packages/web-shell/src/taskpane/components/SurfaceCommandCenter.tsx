@@ -125,38 +125,47 @@ export function SurfaceCommandCenter({
         </span>
       </div>
 
-      <div className="surface-metrics" aria-label="Current work state">
-        <span>
-          <strong>{attachedCount}</strong> attached
-        </span>
-        <span>
-          <strong>{availableCount}</strong> nearby
-        </span>
-        <span>
-          <strong>{messageCount}</strong> turns
-        </span>
-        <span>
-          <strong>{proposalCount}</strong> proposals
-        </span>
-      </div>
+      <div className="detail-hover surface-details">
+        <button type="button" className="surface-detail-trigger" aria-describedby="surface-details">
+          <span>{attachedCount} attached</span>
+          <span>{availableCount} nearby</span>
+          <span>{messageCount} turns</span>
+        </button>
+        <div id="surface-details" className="detail-popover surface-details-popover" role="tooltip">
+          <div className="surface-metrics" aria-label="Current work state">
+            <span>
+              <strong>{attachedCount}</strong> attached
+            </span>
+            <span>
+              <strong>{availableCount}</strong> nearby
+            </span>
+            <span>
+              <strong>{messageCount}</strong> turns
+            </span>
+            <span>
+              <strong>{proposalCount}</strong> proposals
+            </span>
+          </div>
 
-      <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
-        {entrypoints(copy.object).map((entry) => (
-          <span key={entry.id} className="detail-hover surface-entry-wrap">
-            <span className="surface-entry" tabIndex={0} aria-describedby={`entry-${entry.id}`}>
-              <span className="surface-entry-dot" aria-hidden="true" />
-              <span>{entry.label}</span>
-            </span>
-            <span
-              id={`entry-${entry.id}`}
-              className="detail-popover surface-entry-detail"
-              role="tooltip"
-            >
-              <strong>{entry.title}</strong>
-              <span>{entry.detail}</span>
-            </span>
-          </span>
-        ))}
+          <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
+            {entrypoints(copy.object).map((entry) => (
+              <span key={entry.id} className="detail-hover surface-entry-wrap">
+                <span className="surface-entry" tabIndex={0} aria-describedby={`entry-${entry.id}`}>
+                  <span className="surface-entry-dot" aria-hidden="true" />
+                  <span>{entry.label}</span>
+                </span>
+                <span
+                  id={`entry-${entry.id}`}
+                  className="detail-popover surface-entry-detail"
+                  role="tooltip"
+                >
+                  <strong>{entry.title}</strong>
+                  <span>{entry.detail}</span>
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="surface-primary-actions">

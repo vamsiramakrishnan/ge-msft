@@ -92,12 +92,13 @@ export function SkillsPanel({
 }: SkillsPanelProps): JSX.Element | null {
   if (skills.length === 0) return null;
   return (
-    <section className="skills" aria-label="Skills" aria-disabled={disabled}>
-      <div className="skills-h eyebrow">
+    <section className="skills detail-hover" aria-label="Skills" aria-disabled={disabled}>
+      <div className="skills-h">
         <span className="skills-mark" aria-hidden="true" />
-        <span>Skills · in-session programs</span>
+        <span className="skills-title">Session skills</span>
+        <span className="skills-summary">{skills.length} registered</span>
       </div>
-      <ul className="skills-list">
+      <ul className="skills-list skills-popover">
         {skills.map((skill) => (
           <SkillCard key={skill.name} skill={skill} disabled={disabled} onInvoke={onInvoke} />
         ))}

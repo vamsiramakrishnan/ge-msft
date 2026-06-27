@@ -1,0 +1,47 @@
+{
+  "name": "gemini-m365-addin",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Gemini Enterprise add-ins for Microsoft 365, with a controlled Word + Excel internal alpha release profile.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "echo \"Run a specific workspace, e.g. npm run dev -w packages/web-shell\"",
+    "typecheck": "tsc -b",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts packages/contracts/src/manifest-generation.test.ts",
+    "manifests:generate": "node tools/release/manifests-generate.mjs",
+    "manifests:validate": "node tools/release/manifests-validate.mjs",
+    "package:dev": "node tools/release/package-dev.mjs",
+    "package:alpha": "node tools/release/package-alpha.mjs",
+    "release:check": "node tools/release/release-check.mjs",
+    "release:secret-scan": "node tools/release/secret-scan.mjs",
+    "release:checksums": "node tools/release/checksums.mjs --verify",
+    "probe:streamassist-code-exec": "node scripts/streamassist-code-exec-probe.mjs",
+    "coverage": "vitest run --coverage",
+    "emit:language": "tsc -b packages/contracts && node packages/contracts/scripts/emit-language-manifest.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/office-js": "^1.0.377",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "fast-check": "^4.8.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  }
+}

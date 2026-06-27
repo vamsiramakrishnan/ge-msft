@@ -1,0 +1,38 @@
+{
+  "name": "@ge/web-shell",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Surface-agnostic web app core: AuthClient (NAA), session composition, PanelController, ProvenanceStore",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
+    "dev": "vite",
+    "preview": "vite --config vite.preview.config.ts"
+  },
+  "dependencies": {
+    "@azure/msal-browser": "^5.15.0",
+    "@ge/bridge-excel": "*",
+    "@ge/bridge-onenote": "*",
+    "@ge/bridge-outlook": "*",
+    "@ge/bridge-powerpoint": "*",
+    "@ge/bridge-word": "*",
+    "@ge/contracts": "*",
+    "@ge/gemini-client": "*",
+    "@ge/runtime": "*",
+    "@ge/teams": "*",
+    "@ge/triggers": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-basic-ssl": "^1.1.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "jsdom": "^24.1.3",
+    "vite": "^5.3.1"
+  }
+}

@@ -1,0 +1,30 @@
+node_modules/
+dist/
+dist-web/
+build/
+.env
+.env.local
+.gcloud/
+.azure/
+.venv-az/
+.codex/
+.github/hooks/
+.impeccable/
+packages/**/.impeccable/
+*.log
+.DS_Store
+coverage/
+
+# TS build info (artifact)
+*.tsbuildinfo
+
+# GE skill bundle build artifacts
+skill/**/*.zip
+
+# Local Codex/agent skills installed for development assistance
+.agents/
+skills-lock.json
+
+# Python caches
+__pycache__/
+*.pyc

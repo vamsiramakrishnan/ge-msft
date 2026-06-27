@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gemini Enterprise in Word — Click-through</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* Office host neutrals */
+    --bg-canvas:#f3f2f1; --page:#ffffff; --ink:#201f1e; --ink-soft:#605e5c;
+    --line:#e6e4e1; --word-blue:#185abd; --word-blue-deep:#103f87;
+    /* Gemini panel */
+    --panel-bg:#ffffff; --panel-line:#ececf1; --panel-ink:#1f1f24; --panel-soft:#646579;
+    --panel-fill:#f7f7fb;
+    --grad:linear-gradient(135deg,#4285F4 0%,#9b72f2 48%,#d96570 100%);
+    /* annotation categories */
+    --c-style:#2f6fed; --c-policy:#8b5cf6; --c-ground:#0f9d8c;
+    --insert:#137333; --comment:#c98a00;
+    --ui:"Segoe UI",system-ui,-apple-system,sans-serif;
+    --panel-font:"Inter","Segoe UI",system-ui,sans-serif;
+    --doc:Georgia,"Times New Roman",serif;
+    --shadow:0 6px 24px rgba(16,18,40,.14),0 1px 3px rgba(16,18,40,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:var(--ui); color:var(--ink); background:#cfcdcb;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  :focus-visible{outline:2px solid var(--word-blue); outline-offset:2px; border-radius:4px}
+
+  /* ---------- App frame ---------- */
+  .app{display:flex; flex-direction:column; height:100vh; min-height:100vh; background:var(--bg-canvas)}
+  .titlebar{
+    display:flex; align-items:center; gap:10px; height:40px; padding:0 14px;
+    background:#fff; border-bottom:1px solid var(--line); flex:none;
+  }
+  .winwrap{display:flex; align-items:center; gap:8px}
+  .wbtn{width:11px;height:11px;border-radius:50%}
+  .wbtn.r{background:#ff5f57}.wbtn.y{background:#febc2e}.wbtn.g{background:#28c840}
+  .doc-id{display:flex; align-items:center; gap:9px; margin:0 auto; font-size:13px; color:var(--ink-soft)}
+  .doc-id .wlogo{
+    width:18px;height:18px;border-radius:3px;background:var(--word-blue);color:#fff;
+    font-weight:700;font-size:11px;display:grid;place-items:center;font-family:var(--ui)}
+  .doc-id b{color:var(--ink);font-weight:600}
+  .autosave{font-size:11px;color:var(--ink-soft);display:flex;align-items:center;gap:5px}
+  .autosave .dot{width:14px;height:14px;border-radius:50%;border:1.5px solid #2aa775;position:relative}
+  .autosave .dot::after{content:"";position:absolute;inset:3px;border-radius:50%;background:#2aa775}
+
+  .ribbon{
+    display:flex; align-items:center; gap:2px; height:40px; padding:0 12px;
+    background:#fff; border-bottom:1px solid var(--line); flex:none; font-size:13px;
+  }
+  .tab{padding:8px 12px; color:var(--ink-soft); border-radius:6px 6px 0 0; cursor:default; position:relative}
+  .tab.active{color:var(--word-blue); font-weight:600}
+  .tab.active::after{content:"";position:absolute;left:10px;right:10px;bottom:-1px;height:2px;background:var(--word-blue)}
+  .tab.gem{margin-left:auto; display:flex; align-items:center; gap:6px; color:var(--panel-ink); font-weight:600}
+  .tab.gem .spark{width:15px;height:15px;border-radius:50%;background:var(--grad)}
+
+  .workspace{flex:1; display:flex; min-height:0}
+
+  /* ---------- Document area ---------- */
+  .doc-area{flex:1; overflow:auto; padding:26px 0 80px; position:relative; scroll-behavior:smooth}
+  .page{
+    position:relative; width:min(720px,92%); margin:0 auto; background:var(--page);
+    box-shadow:var(--shadow); border-radius:2px; padding:64px 72px 80px; min-height:880px;
+    font-family:var(--doc); color:#23211f; line-height:1.62;
+  }
+  .doc-h1{font-size:21px; text-align:center; margin:0 0 2px; letter-spacing:.2px}
+  .doc-sub{text-align:center; font-size:13px; color:#6b665f; margin:0 0 26px; font-family:var(--ui)}
+  .clause-no{font-family:var(--ui); font-weight:700; font-size:13px; color:#3b3a38; letter-spacing:.04em}
+  .doc-h2{font-size:15px; margin:24px 0 6px; font-family:var(--ui); font-weight:700; color:#2b2926}
+  .page p{font-size:15.5px; margin:0 0 13px}
+  .muted-clause{color:#9b958c}
+
+  /* annotations: wavy underlines, clickable */
+  .anno{cursor:pointer; text-decoration:underline; text-decoration-style:wavy;
+    text-decoration-thickness:1.4px; text-underline-offset:3px; transition:background .15s}
+  .anno.style{text-decoration-color:var(--c-style)}
+  .anno.policy{text-decoration-color:var(--c-policy)}
+  .anno.ground{text-decoration-color:var(--c-ground)}
+  .anno:hover{background:rgba(47,111,237,.07)}
+  .anno.policy:hover{background:rgba(139,92,246,.09)}
+  .anno.ground:hover{background:rgba(15,157,140,.09)}
+  .anno.resolved{text-decoration:none; background:rgba(19,115,51,.10); color:#14532d; border-radius:3px}
+
+  /* inserted / changed text */
+  .ins{color:var(--insert); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:2px}
+  .changed{position:relative; animation:flash 1.3s ease}
+  .changed::before{content:"";position:absolute;left:-72px;top:0;bottom:0;width:3px;background:var(--insert);border-radius:2px}
+  @keyframes flash{0%{background:rgba(19,115,51,.16)}100%{background:transparent}}
+
+  /* content control region */
+  .cc{position:relative; border:1px dashed transparent; border-radius:6px; padding:6px 8px; margin:-6px -8px 7px; transition:.2s}
+  .cc.armed{border-color:var(--c-policy); background:rgba(139,92,246,.05)}
+  .cc-tag{position:absolute; top:-9px; left:8px; font-family:var(--ui); font-size:10px; font-weight:700;
+    letter-spacing:.05em; color:#7c3aed; background:#fff; padding:0 5px; opacity:0; transition:.2s}
+  .cc.armed .cc-tag{opacity:1}
+  .cc.locked{opacity:.45; filter:grayscale(.3)}
+  .lockchip{display:none}
+
+  /* comment anchor + margin comment */
+  .cmt-anchor{background:rgba(201,138,0,.18); border-bottom:2px solid var(--comment); cursor:pointer; border-radius:2px}
+  .comment{
+    position:absolute; right:14px; width:184px; background:#fffaf0; border:1px solid #f0dca8;
+    border-left:3px solid var(--comment); border-radius:8px; padding:10px 11px; font-family:var(--ui);
+    box-shadow:0 3px 12px rgba(120,90,0,.12); font-size:12px; transition:.25s; z-index:4;
+  }
+  .comment .who{display:flex; align-items:center; gap:7px; margin-bottom:5px}
+  .comment .av{width:20px;height:20px;border-radius:50%;background:#e8a13a;color:#fff;display:grid;place-items:center;font-size:10px;font-weight:700}
+  .comment .who b{font-size:12px;color:#5a4a1a}
+  .comment .body{color:#6a5a2e;line-height:1.45}
+  .comment .reply{margin-top:8px;padding-top:8px;border-top:1px dashed #ecd9a6;display:none}
+  .comment .reply .who .av{background:transparent;background-image:var(--grad)}
+  .comment.done{border-left-color:var(--insert);background:#f3faf4}
+  .comment .resolved-tag{display:none;margin-top:7px;font-size:11px;color:var(--insert);font-weight:600;align-items:center;gap:5px}
+  .comment.done .resolved-tag{display:flex}
+
+  /* floating annotation card */
+  .anno-card{
+    position:absolute; width:296px; background:#fff; border:1px solid var(--panel-line);
+    border-radius:12px; box-shadow:var(--shadow); font-family:var(--panel-font); padding:0;
+    z-index:20; opacity:0; transform:translateY(4px); pointer-events:none; transition:.16s; overflow:hidden;
+  }
+  .anno-card.show{opacity:1; transform:none; pointer-events:auto}
+  .ac-top{height:4px;background:var(--c-style)}
+  .anno-card.policy .ac-top{background:var(--c-policy)} .anno-card.ground .ac-top{background:var(--c-ground)}
+  .ac-in{padding:13px 14px}
+  .ac-cat{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--c-style);margin-bottom:8px}
+  .anno-card.policy .ac-cat{color:var(--c-policy)} .anno-card.ground .ac-cat{color:var(--c-ground)}
+  .ac-cat .ic{width:16px;height:16px;border-radius:5px;background:currentColor;opacity:.16}
+  .ac-title{font-size:13.5px;font-weight:600;color:var(--panel-ink);margin-bottom:6px;line-height:1.4}
+  .ac-why{font-size:12.5px;color:var(--panel-soft);line-height:1.5;margin-bottom:11px}
+  .ac-sugg{font-size:13px;background:var(--panel-fill);border:1px solid var(--panel-line);border-radius:8px;padding:9px 10px;margin-bottom:11px;color:#26303b}
+  .ac-sugg .lab{display:block;font-family:var(--panel-font);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--panel-soft);margin-bottom:3px}
+  .ac-src{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--panel-soft);margin-bottom:13px;cursor:pointer}
+  .ac-src .pin{width:13px;height:13px;border-radius:3px;background:var(--c-ground);opacity:.8;flex:none}
+  .ac-src u{color:#2563eb;text-decoration:none;border-bottom:1px solid #c7d6f5}
+  .ac-act{display:flex;gap:8px}
+  .btn{font-family:var(--panel-font);font-size:12.5px;font-weight:600;border-radius:8px;padding:8px 12px;border:1px solid var(--panel-line);background:#fff;color:var(--panel-ink);cursor:pointer;transition:.14s}
+  .btn:hover{background:#f4f4f8}
+  .btn.primary{border:none;color:#fff;background:var(--grad);box-shadow:0 2px 8px rgba(120,80,230,.28)}
+  .btn.primary:hover{filter:brightness(1.05)}
+  .btn.sm{padding:6px 10px;font-size:12px}
+  .btn.full{width:100%;justify-content:center;display:flex}
+
+  /* provenance popover */
+  .prov-pop{position:absolute;width:260px;background:#11131c;color:#e7e8f2;border-radius:11px;padding:13px 14px;
+    font-family:var(--panel-font);box-shadow:0 10px 30px rgba(0,0,0,.4);z-index:22;opacity:0;transform:translateY(4px);
+    pointer-events:none;transition:.16s;font-size:12px}
+  .prov-pop.show{opacity:1;transform:none;pointer-events:auto}
+  .prov-pop h5{margin:0 0 9px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9fa1c4;font-weight:700;display:flex;align-items:center;gap:7px}
+  .prov-pop h5 .sp{width:13px;height:13px;border-radius:50%;background:var(--grad)}
+  .prov-row{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+  .prov-row:last-of-type{border-bottom:none}
+  .prov-row .k{color:#9fa1c4}.prov-row .v{color:#fff;font-weight:500;text-align:right}
+  .prov-src{margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,.10)}
+  .prov-src .s{display:flex;align-items:center;gap:7px;padding:3px 0;color:#cfd0ea}
+  .prov-src .s .d{width:6px;height:6px;border-radius:50%;background:#0f9d8c;flex:none}
+  .hash{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#8fd3c8}
+
+  /* provenance chips that appear in margin when mode on */
+  .prov-chip{position:absolute;left:-10px;transform:translateX(-100%);background:#11131c;color:#cfd0ea;
+    font-family:var(--panel-font);font-size:10px;font-weight:600;border-radius:20px;padding:4px 9px 4px 7px;
+    display:none;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;box-shadow:0 3px 10px rgba(0,0,0,.25)}
+  body.prov-on .prov-chip{display:inline-flex}
+  .prov-chip .sp{width:11px;height:11px;border-radius:50%;background:var(--grad);flex:none}
+
+  /* ---------- Gemini panel ---------- */
+  .panel{
+    width:368px; flex:none; background:var(--panel-bg); border-left:1px solid var(--line);
+    display:flex; flex-direction:column; font-family:var(--panel-font); color:var(--panel-ink);
+  }
+  .panel-head{padding:14px 16px 12px; border-bottom:1px solid var(--panel-line)}
+  .ph-top{display:flex; align-items:center; gap:10px}
+  .ph-av{width:30px;height:30px;border-radius:9px;background:var(--grad);flex:none;position:relative}
+  .ph-av::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px}
+  .ph-name{font-size:14px;font-weight:700}
+  .ph-sub{font-size:11px;color:var(--panel-soft);margin-top:1px}
+  .ph-mic{margin-left:auto;width:34px;height:34px;border-radius:9px;border:1px solid var(--panel-line);background:#fff;cursor:pointer;display:grid;place-items:center;transition:.16s}
+  .ph-mic:hover{background:#f4f4f8}
+  .ph-mic.live{background:var(--grad);border:none}
+  .ph-mic svg{width:16px;height:16px}
+  .ph-mic.live svg path,.ph-mic.live svg rect{stroke:#fff;fill:#fff}
+  .agentsel{margin-top:11px;display:flex;align-items:center;gap:8px;background:var(--panel-fill);border:1px solid var(--panel-line);border-radius:9px;padding:7px 10px;font-size:12.5px;cursor:pointer}
+  .agentsel .tag{width:7px;height:7px;border-radius:50%;background:#0f9d8c}
+  .agentsel b{font-weight:600}
+  .agentsel .chev{margin-left:auto;color:var(--panel-soft)}
+  .agentsel .model{font-size:10.5px;color:var(--panel-soft);border:1px solid var(--panel-line);border-radius:20px;padding:2px 8px;background:#fff}
+
+  /* voice bar */
+  .voicebar{display:none;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--panel-line);background:#fbfaff}
+  body.voice-on .voicebar{display:flex}
+  .eq{display:flex;align-items:flex-end;gap:3px;height:22px}
+  .eq span{width:3px;background:var(--grad);border-radius:2px;height:30%;animation:eq 1s ease-in-out infinite}
+  .eq span:nth-child(2){animation-delay:.15s}.eq span:nth-child(3){animation-delay:.3s}
+  .eq span:nth-child(4){animation-delay:.45s}.eq span:nth-child(5){animation-delay:.6s}
+  @keyframes eq{0%,100%{height:25%}50%{height:100%}}
+  .voicebar .vtxt{font-size:12.5px;color:#4a3f7a}
+  .voicebar .vtxt b{color:#2c2350}
+
+  /* guided tour */
+  .tour{padding:13px 16px;border-bottom:1px solid var(--panel-line);background:linear-gradient(180deg,#fbfbfe,#fff)}
+  .tour-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+  .tour-eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--panel-soft)}
+  .dots{display:flex;gap:5px}
+  .dots i{width:6px;height:6px;border-radius:50%;background:#dcdce6;transition:.2s}
+  .dots i.on{background:transparent;background-image:var(--grad);transform:scale(1.25)}
+  .tour-title{font-size:14.5px;font-weight:700;margin-bottom:5px}
+  .tour-body{font-size:12.5px;color:var(--panel-soft);line-height:1.55;margin-bottom:12px}
+  .tour-act{display:flex;gap:8px;align-items:center}
+  .tour-nav{margin-left:auto;display:flex;gap:4px}
+  .navbtn{width:30px;height:30px;border-radius:8px;border:1px solid var(--panel-line);background:#fff;cursor:pointer;color:var(--panel-soft);font-size:14px;display:grid;place-items:center}
+  .navbtn:hover{background:#f4f4f8}
+  .navbtn:disabled{opacity:.4;cursor:default}
+
+  /* thread / log */
+  .thread{flex:1;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+  .msg{font-size:12.5px;line-height:1.55;max-width:100%}
+  .msg.user{align-self:flex-end;background:#eef0fb;border:1px solid #e0e3f6;color:#2a2d4a;padding:8px 11px;border-radius:12px 12px 3px 12px}
+  .msg.agent{display:flex;gap:9px}
+  .msg.agent .a{width:22px;height:22px;border-radius:7px;background:var(--grad);flex:none;position:relative}
+  .msg.agent .a::after{content:"✦";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:10px}
+  .msg.agent .c{background:var(--panel-fill);border:1px solid var(--panel-line);border-radius:3px 12px 12px 12px;padding:9px 11px;color:#2b2d3c}
+  .msg .cite{display:inline-flex;align-items:center;gap:5px;margin-top:7px;font-size:11px;color:#2563eb;border:1px solid #d5e0fa;background:#fff;border-radius:20px;padding:2px 8px;cursor:pointer}
+  .msg .cite .d{width:6px;height:6px;border-radius:2px;background:#0f9d8c}
+  .msg.sys{font-size:11px;color:var(--panel-soft);text-align:center;border-top:1px dashed var(--panel-line);padding-top:11px}
+  .typing{display:inline-flex;gap:3px}.typing i{width:5px;height:5px;border-radius:50%;background:#b9bace;animation:eq .9s ease-in-out infinite}
+  .typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+
+  /* composer */
+  .composer{padding:12px 16px 14px;border-top:1px solid var(--panel-line)}
+  .cbox{display:flex;align-items:center;gap:9px;border:1px solid var(--panel-line);border-radius:11px;padding:9px 11px;background:#fff}
+  .cbox:focus-within{border-color:#b9a8f2;box-shadow:0 0 0 3px rgba(155,114,242,.13)}
+  .cbox input{flex:1;border:none;outline:none;font-family:var(--panel-font);font-size:13px;color:var(--panel-ink);background:transparent}
+  .cbox input::placeholder{color:#a9aab8}
+  .send{width:30px;height:30px;border-radius:8px;border:none;background:var(--grad);cursor:pointer;display:grid;place-items:center;flex:none}
+  .send svg{width:15px;height:15px}
+  .ctx{font-size:10.5px;color:var(--panel-soft);margin-top:8px;display:flex;align-items:center;gap:6px;justify-content:center}
+  .ctx .pulse{width:6px;height:6px;border-radius:50%;background:#0f9d8c}
+
+  .badge{position:fixed;left:14px;bottom:12px;z-index:40;font-family:var(--panel-font);font-size:10.5px;font-weight:600;
+    color:#fff;background:rgba(20,20,30,.82);border-radius:20px;padding:5px 11px;display:flex;align-items:center;gap:7px;backdrop-filter:blur(6px)}
+  .badge .sp{width:11px;height:11px;border-radius:50%;background:var(--grad)}
+
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(20px);background:#11131c;color:#fff;
+    font-family:var(--panel-font);font-size:12.5px;padding:10px 16px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);
+    opacity:0;transition:.25s;z-index:50;display:flex;align-items:center;gap:9px}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .sp{width:13px;height:13px;border-radius:50%;background:var(--grad)}
+
+  .mobile-note{display:none}
+  @media (max-width:880px){
+    .workspace{flex-direction:column}
+    .panel{width:100%;border-left:none;border-top:1px solid var(--line);height:46vh}
+    .doc-area{padding-bottom:20px}
+    .mobile-note{display:flex}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms !important;transition-duration:.05ms !important;scroll-behavior:auto}
+    .eq span{height:60%}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- title bar -->
+  <div class="titlebar">
+    <div class="winwrap"><span class="wbtn r"></span><span class="wbtn y"></span><span class="wbtn g"></span></div>
+    <div class="doc-id">
+      <span class="wlogo">W</span>
+      <b>Northwind_MSA_v3.docx</b><span>· Saved to SharePoint</span>
+    </div>
+    <div class="autosave"><span class="dot"></span> AutoSave on</div>
+  </div>
+  <!-- ribbon -->
+  <div class="ribbon">
+    <span class="tab">File</span>
+    <span class="tab active">Home</span>
+    <span class="tab">Insert</span>
+    <span class="tab">Review</span>
+    <span class="tab">View</span>
+    <span class="tab gem"><span class="spark"></span> Gemini Enterprise</span>
+  </div>
+
+  <div class="workspace">
+    <!-- ===== DOCUMENT ===== -->
+    <div class="doc-area" id="docArea">
+      <div class="page" id="page">
+        <h1 class="doc-h1">Master Services Agreement</h1>
+        <p class="doc-sub">Acme Financial Services Pty Ltd &nbsp;·&nbsp; Northwind Cloud Solutions &nbsp;·&nbsp; Execution copy</p>
+
+        <p><span class="anno style" data-anno="style">It is hereby acknowledged and agreed by and between the parties that</span> the Supplier will provide the cloud services described in Schedule&nbsp;1 (the “Services”) in accordance with the terms set out below.</p>
+
+        <h2 class="doc-h2" id="s4"><span class="clause-no">4.</span> Service Levels</h2>
+        <p>The Supplier shall use commercially reasonable efforts to ensure the Services are available <span class="anno policy" data-anno="policy">99.5% of the time</span>, measured monthly, excluding scheduled maintenance windows notified at least five business days in advance.</p>
+        <p>The Supplier maintains <span class="anno ground" data-anno="ground">ISO/IEC&nbsp;27001 certification</span> across the data centres used to host the Services.</p>
+
+        <h2 class="doc-h2" id="s5"><span class="clause-no">5.</span> Data Residency &amp; Access</h2>
+        <p>Customer Data will be stored and processed within Australia. <span class="cmt-anchor" id="cmtAnchor">The Supplier may, where reasonably necessary for support, access Customer Data from locations outside Australia.</span></p>
+
+        <h2 class="doc-h2" id="s6"><span class="clause-no">6.</span> Limitation of Liability</h2>
+        <div class="cc" id="ccLiability">
+          <span class="cc-tag">CONTENT CONTROL · Liability clause</span>
+          <p id="ccText">Each party’s total aggregate liability arising out of or in connection with this Agreement shall not exceed the fees paid by the Customer in the twelve (12) months preceding the event giving rise to the claim.</p>
+        </div>
+        <p class="muted-clause">7. Term and Termination. This Agreement commences on the Effective Date and continues for an initial term of twenty-four (24) months…</p>
+
+        <!-- floating layers injected by JS live here -->
+      </div>
+
+      <!-- margin comment -->
+      <div class="comment" id="comment" style="top:0">
+        <div class="who"><span class="av">P</span><b>Priya N.</b></div>
+        <div class="body">Does this offshore-access carve-out meet APRA CPS&nbsp;234? Can we tighten it?</div>
+        <div class="reply" id="cmtReply">
+          <div class="who"><span class="av"></span><b style="color:#4a3f7a">Contract Review Agent</b></div>
+          <div class="body" style="color:#3a3358" id="cmtReplyBody"></div>
+        </div>
+        <div class="resolved-tag">✓ Resolved</div>
+      </div>
+
+      <!-- annotation card -->
+      <div class="anno-card" id="annoCard">
+        <div class="ac-top"></div>
+        <div class="ac-in">
+          <div class="ac-cat"><span class="ic"></span><span id="acCat">Style</span></div>
+          <div class="ac-title" id="acTitle"></div>
+          <div class="ac-why" id="acWhy"></div>
+          <div class="ac-sugg" id="acSugg"><span class="lab">Suggested</span><span id="acSuggText"></span></div>
+          <div class="ac-src" id="acSrc"><span class="pin"></span><span id="acSrcText"></span></div>
+          <div class="ac-act">
+            <button class="btn primary sm" id="acApply">Accept change</button>
+            <button class="btn sm" id="acDismiss">Dismiss</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- provenance popover -->
+      <div class="prov-pop" id="provPop">
+        <h5><span class="sp"></span> Provenance</h5>
+        <div class="prov-row"><span class="k">Generated by</span><span class="v">Contract Review Agent</span></div>
+        <div class="prov-row"><span class="k">When</span><span class="v">20 Jun 2026, 14:08</span></div>
+        <div class="prov-row"><span class="k">Identity</span><span class="v">v.k@acme · Legal</span></div>
+        <div class="prov-row"><span class="k">Content hash</span><span class="v hash">a1f9·c4e2</span></div>
+        <div class="prov-src">
+          <div class="s"><span class="d"></span> Vendor Risk Policy v4 — §3.2</div>
+          <div class="s"><span class="d"></span> APRA CPS 234 (2019)</div>
+          <div class="s"><span class="d"></span> Northwind ISO 27001 cert.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== GEMINI PANEL ===== -->
+    <aside class="panel">
+      <div class="panel-head">
+        <div class="ph-top">
+          <div class="ph-av"></div>
+          <div>
+            <div class="ph-name">Gemini Enterprise</div>
+            <div class="ph-sub">Grounded on this document + connected sources</div>
+          </div>
+          <button class="ph-mic" id="micBtn" title="Talk to the document" aria-label="Toggle voice">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#5f6177" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+          </button>
+        </div>
+        <div class="agentsel" id="agentSel">
+          <span class="tag"></span><b>Contract Review Agent</b>
+          <span class="model">Gemini · A2A</span>
+          <span class="chev">▾</span>
+        </div>
+      </div>
+
+      <!-- voice bar -->
+      <div class="voicebar">
+        <div class="eq"><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="vtxt">Listening… <b>“summarise the liability exposure”</b></div>
+      </div>
+
+      <!-- guided tour -->
+      <div class="tour">
+        <div class="tour-top">
+          <span class="tour-eyebrow">Guided walkthrough</span>
+          <div class="dots" id="dots"></div>
+        </div>
+        <div class="tour-title" id="tourTitle"></div>
+        <div class="tour-body" id="tourBody"></div>
+        <div class="tour-act">
+          <button class="btn primary sm" id="tourAction"></button>
+          <div class="tour-nav">
+            <button class="navbtn" id="prevBtn" aria-label="Previous">‹</button>
+            <button class="navbtn" id="nextBtn" aria-label="Next">›</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- thread -->
+      <div class="thread" id="thread">
+        <div class="msg agent"><span class="a"></span><div class="c">I’ve reviewed all six clauses against your vendor risk policy and APRA CPS&nbsp;234. Three items need attention — they’re flagged inline in the document. Click any underline, or step through the walkthrough above.</div></div>
+      </div>
+
+      <!-- composer -->
+      <div class="composer">
+        <div class="cbox">
+          <input id="ask" placeholder="Ask about the selection…" aria-label="Ask Gemini" />
+          <button class="send" id="sendBtn" aria-label="Send">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </div>
+        <div class="ctx" id="ctxLine"><span class="pulse"></span> Context: §6 Limitation of Liability</div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div class="badge"><span class="sp"></span> Prototype · simulated data · designed for desktop Word</div>
+<div class="toast" id="toast"><span class="sp"></span><span id="toastTxt"></span></div>
+
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const page=$('page'), docArea=$('docArea');
+
+  /* ---- annotation content ---- */
+  const ANNO={
+    style:{cat:'Style',cls:'',title:'Wordy legal boilerplate',
+      why:'Long preambles slow the reader and add no legal force. Your house style favours plain, active phrasing.',
+      sugg:'The parties agree that',src:'Acme Legal Style Guide — §1.4',srcCls:'style'},
+    policy:{cat:'Policy gap',cls:'policy',title:'Availability below FSI standard',
+      why:'99.5% allows ~3.6 hours of downtime per month. Your policy requires 99.9% for systems handling customer data.',
+      sugg:'99.9% of the time',src:'Vendor Risk Policy v4 — §3.2',srcCls:'policy'},
+    ground:{cat:'Verified',cls:'ground',title:'Certification confirmed',
+      why:'Cross-checked against the supplier’s current certificate. Valid and covers all three hosting regions.',
+      sugg:'No change needed — certificate expires Nov 2026',src:'Northwind ISO 27001 certificate',srcCls:'ground'}
+  };
+
+  /* ---- toast ---- */
+  let tT;
+  function toast(msg){const t=$('toast');$('toastTxt').textContent=msg;t.classList.add('show');clearTimeout(tT);tT=setTimeout(()=>t.classList.remove('show'),2600);}
+
+  /* ---- thread helpers ---- */
+  function addUser(txt){const t=$('thread');const m=document.createElement('div');m.className='msg user';m.textContent=txt;t.appendChild(m);t.scrollTop=t.scrollHeight;}
+  function addAgent(html,cite){
+    const t=$('thread');const m=document.createElement('div');m.className='msg agent';
+    m.innerHTML='<span class="a"></span><div class="c"><span class="typing"><i></i><i></i><i></i></span></div>';
+    t.appendChild(m);t.scrollTop=t.scrollHeight;
+    const c=m.querySelector('.c');
+    setTimeout(()=>{ c.innerHTML=html; if(cite){const b=document.createElement('span');b.className='cite';b.innerHTML='<span class="d"></span>'+cite;b.onclick=()=>toast('Opening source: '+cite);c.appendChild(b);} t.scrollTop=t.scrollHeight; },650);
+  }
+  function addSys(txt){const t=$('thread');const m=document.createElement('div');m.className='msg sys';m.textContent=txt;t.appendChild(m);t.scrollTop=t.scrollHeight;}
+
+  /* ---- annotation card ---- */
+  const card=$('annoCard'); let activeSpan=null;
+  function openCard(span){
+    const key=span.dataset.anno, d=ANNO[key]; activeSpan=span;
+    card.className='anno-card '+d.cls;
+    $('acCat').textContent=d.cat; $('acTitle').textContent=d.title; $('acWhy').textContent=d.why;
+    $('acSuggText').textContent=d.sugg; $('acSrcText').textContent=d.src;
+    // position under the span, within the page
+    const top=span.offsetTop+span.offsetHeight+8;
+    let left=span.offsetLeft; const maxL=page.clientWidth-310; if(left>maxL)left=maxL; if(left<20)left=20;
+    card.style.top=top+'px'; card.style.left=left+'px';
+    card.classList.add('show');
+    $('acApply').style.display = span.classList.contains('resolved')?'none':'';
+    $('acApply').textContent = key==='ground'?'Keep as-is':'Accept change';
+  }
+  function closeCard(){card.classList.remove('show');activeSpan=null;}
+  document.querySelectorAll('.anno').forEach(s=>s.addEventListener('click',e=>{e.stopPropagation();openCard(s);}));
+  $('acDismiss').onclick=()=>{closeCard();};
+  $('acApply').onclick=()=>{
+    if(!activeSpan)return; const key=activeSpan.dataset.anno, d=ANNO[key];
+    if(key==='ground'){ activeSpan.classList.add('resolved'); toast('Marked verified'); addAgent('Kept the certification claim as-is — it’s confirmed and current.'); }
+    else{
+      const span=document.createElement('span'); span.className='ins changed'; span.textContent=d.sugg;
+      activeSpan.replaceWith(span);
+      addAgent('Applied as a tracked change: “'+d.sugg+'”. You can accept or reject it in <b>Review</b>.', d.src);
+      toast('Tracked change inserted');
+    }
+    closeCard();
+  };
+
+  /* ---- comment as task queue ---- */
+  function positionComment(){const a=$('cmtAnchor');if(!a)return;const c=$('comment');c.style.top=(a.offsetTop-6)+'px';}
+  const REPLY="Tightened the carve-out: offshore access now requires prior written notice, data minimisation, and APRA-notifiable controls. Aligns with CPS 234 §35.";
+  function resolveComment(){
+    const anchor=$('cmtAnchor');
+    anchor.innerHTML='The Supplier may access Customer Data from outside Australia <span class="ins">only with prior written notice, limited to the minimum data required, and subject to controls notifiable under APRA CPS&nbsp;234</span>.';
+    anchor.classList.add('changed'); anchor.classList.remove('cmt-anchor');
+    const c=$('comment'); $('cmtReply').style.display='block'; $('cmtReplyBody').textContent=REPLY; c.classList.add('done');
+    setTimeout(positionComment,30);
+    addAgent('Resolved Priya’s comment on §5. I rewrote the offshore-access carve-out and replied in the thread.', 'APRA CPS 234 §35');
+    toast('Comment resolved & reply posted');
+  }
+  $('cmtAnchor').addEventListener('click',e=>{e.stopPropagation();toast('Reviewer comment — resolve it from the walkthrough or here');});
+
+  /* ---- content control regeneration ---- */
+  const NEWCC="Each party’s total aggregate liability under this Agreement is capped at the fees paid in the preceding twelve (12) months; this cap does not apply to liability arising from a data breach, breach of confidentiality, or wilful misconduct, for which liability is capped at three (3) times the annual fees.";
+  function regenClause(){
+    const cc=$('ccLiability'); cc.classList.add('armed');
+    // lock the others briefly
+    document.querySelectorAll('.page > p, .page > h2').forEach(el=>el.classList.add('locked'));
+    const tgt=$('ccText'); tgt.textContent=''; tgt.classList.add('ins');
+    addSys('Regenerating §6 — all other clauses locked');
+    let i=0; const words=NEWCC.split(' ');
+    (function stream(){ if(i<words.length){ tgt.textContent+=(i?' ':'')+words[i]; i++; docArea.scrollTop=docArea.scrollTop; setTimeout(stream,38);} 
+      else{ tgt.classList.remove('ins'); $('ccText').parentElement.classList.add('changed'); 
+        document.querySelectorAll('.locked').forEach(el=>el.classList.remove('locked'));
+        addAgent('Redrafted the liability clause: kept the 12-month cap but added a super-cap carve-out for data breach and confidentiality — a common ask from your FSI counterparties.', 'Vendor Risk Policy v4 — §5.1');
+        toast('Clause regenerated'); } })();
+  }
+
+  /* ---- provenance ---- */
+  const provPop=$('provPop');
+  function injectProvChips(){
+    document.querySelectorAll('.page > p, .cc').forEach((el,idx)=>{
+      if(el.querySelector('.prov-chip'))return;
+      const chip=document.createElement('span'); chip.className='prov-chip';
+      const who=idx%2? 'Review Agent':'Drafting Agent';
+      chip.innerHTML='<span class="sp"></span>'+who;
+      el.style.position='relative'; el.appendChild(chip);
+      chip.addEventListener('click',e=>{e.stopPropagation();showProv(el);});
+    });
+  }
+  function showProv(el){
+    const r=el.getBoundingClientRect(), pr=docArea.getBoundingClientRect();
+    provPop.style.top=(el.offsetTop)+'px';
+    let left=el.offsetLeft+ (el.offsetParent===page?0:0) + 20; 
+    provPop.style.left=Math.min(left+360, page.clientWidth-200)+'px';
+    provPop.classList.add('show');
+  }
+  function toggleProv(on){
+    document.body.classList.toggle('prov-on',on);
+    if(on){injectProvChips(); toast('Provenance on — every paragraph carries its source, agent & hash, saved inside the .docx');}
+    else{provPop.classList.remove('show');}
+  }
+
+  /* ---- voice ---- */
+  let voiceOn=false;
+  function toggleVoice(){
+    voiceOn=!voiceOn; document.body.classList.toggle('voice-on',voiceOn);
+    $('micBtn').classList.toggle('live',voiceOn);
+    if(voiceOn){ toast('Voice mode — talk to the document'); 
+      setTimeout(()=>{ addUser('Summarise the liability exposure'); 
+        addAgent('Your exposure is capped at 12 months’ fees (~A$480k), with no carve-out for data breach yet — that’s the gap I’d close before signing.'); },900);
+    }
+  }
+  $('micBtn').onclick=toggleVoice;
+
+  /* ---- ambient section context ---- */
+  const SECT={s4:'§4 Service Levels',s5:'§5 Data Residency & Access',s6:'§6 Limitation of Liability'};
+  function setCtx(id){ $('ctxLine').innerHTML='<span class="pulse"></span> Context: '+SECT[id]; }
+  docArea.addEventListener('scroll',()=>{ // cheap ambient: pick nearest heading
+    const mid=docArea.scrollTop+120; let cur='s4';
+    ['s4','s5','s6'].forEach(id=>{ const el=$(id); if(el && el.offsetTop<=mid) cur=id; });
+    setCtx(cur);
+  });
+
+  /* ---- composer ---- */
+  function send(){const v=$('ask').value.trim(); if(!v)return; addUser(v); $('ask').value='';
+    addAgent('Looking at the current selection and your connected policy sources… here’s what I found, grounded with citations.', 'Vendor Risk Policy v4'); }
+  $('sendBtn').onclick=send; $('ask').addEventListener('keydown',e=>{if(e.key==='Enter')send();});
+
+  /* ---- close popovers on outside click ---- */
+  document.addEventListener('click',()=>{closeCard();provPop.classList.remove('show');});
+
+  /* ---- GUIDED TOUR ---- */
+  const STEPS=[
+    {t:'Suggestions live in the text',
+     b:'The agent flags issues as native squiggles — style, policy gaps, verified facts — each with a hover card, reasoning and a grounding citation. Click the violet underline on “99.5%”.',
+     a:'Open the policy flag', run:()=>{ const s=document.querySelector('[data-anno="policy"]'); if(s){ $('s4').scrollIntoView({block:'center'}); setTimeout(()=>openCard(s),350);} }},
+    {t:'The comment thread is a task queue',
+     b:'Reviewers leave comments; the agent works them. It reads Priya’s CPS 234 question, edits the clause as a tracked change, replies in-thread and resolves.',
+     a:'Resolve Priya’s comment', run:()=>{ $('s5').scrollIntoView({block:'center'}); setTimeout(resolveComment,400); }},
+    {t:'Regenerate one clause, lock the rest',
+     b:'Clauses are addressable content controls. Regenerate just the liability clause while every other clause stays locked — surgical, not a blob rewrite.',
+     a:'Regenerate §6 clause', run:()=>{ $('s6').scrollIntoView({block:'center'}); setTimeout(regenClause,400); }},
+    {t:'Trust that travels with the file',
+     b:'Every generated paragraph carries its agent, sources, identity and a content hash — stored inside the .docx as custom XML, readable by any reviewer later.',
+     a:'Show provenance', run:()=>toggleProv(true)},
+    {t:'Voice & ambient grounding',
+     b:'Talk to the document hands-free, and the panel re-grounds on whatever section you’re in. Scroll the document and watch the context line update.',
+     a:'Turn on voice', run:()=>{ if(!voiceOn) toggleVoice(); }}
+  ];
+  let step=0;
+  function renderDots(){const d=$('dots');d.innerHTML='';STEPS.forEach((_,i)=>{const x=document.createElement('i');if(i===step)x.className='on';d.appendChild(x);});}
+  function renderStep(){const s=STEPS[step];$('tourTitle').textContent=(step+1)+'. '+s.t;$('tourBody').textContent=s.b;$('tourAction').textContent=s.a;
+    $('prevBtn').disabled=step===0;$('nextBtn').disabled=step===STEPS.length-1;renderDots();}
+  $('tourAction').onclick=()=>{STEPS[step].run();};
+  $('nextBtn').onclick=()=>{if(step<STEPS.length-1){step++;renderStep();}};
+  $('prevBtn').onclick=()=>{if(step>0){step--;renderStep(); if(step<3)toggleProv(false);}};
+
+  /* init */
+  function init(){ positionComment(); renderStep(); setCtx('s6'); }
+  if(document.readyState==='complete')init(); else window.addEventListener('load',init);
+  window.addEventListener('resize',()=>{positionComment();closeCard();provPop.classList.remove('show');});
+})();
+</script>
+</body>
+</html>

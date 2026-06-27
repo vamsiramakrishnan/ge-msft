@@ -1,0 +1,56 @@
+{"name": "outline-flat", "input": "outline", "expect": {"verbs": ["outline"]}}
+{"name": "read-selector", "input": "read Sales!C2:C7", "expect": {"verbs": ["read"]}}
+{"name": "read-wholedoc", "input": "read", "expect": {"verbs": ["read"]}}
+{"name": "search-text", "input": "search quarterly revenue", "expect": {"verbs": ["search"]}}
+{"name": "search-quoted", "input": "search \"quarterly revenue\"", "expect": {"verbs": ["search"]}}
+{"name": "set-formula", "input": "set Sales!F2 =SUM(C2, D2)", "expect": {"verbs": ["set"]}}
+{"name": "set-literal", "input": "set Sales!A1 East region", "expect": {"verbs": ["set"]}}
+{"name": "suggest-flat", "input": "suggest \"old wording\" => \"new wording\"", "expect": {"verbs": ["suggest"]}}
+{"name": "suggest-arrow-alt", "input": "suggest \"old\" -> \"new\"", "expect": {"verbs": ["suggest"]}}
+{"name": "suggest-escaped-quote", "input": "suggest \"say \\\"hi\\\"\" => \"say bye\"", "expect": {"verbs": ["suggest"]}}
+{"name": "comment-cell", "input": "comment Sales!A16 \"anomalous spike\"", "expect": {"verbs": ["comment"]}}
+{"name": "comment-anchor", "input": "comment \"net revenue\" \"verify this figure\"", "expect": {"verbs": ["comment"]}}
+{"name": "format-flat", "input": "format Sales!A16:C16 bold=true fill=#FFF2CC", "expect": {"verbs": ["format"]}}
+{"name": "reply-flat", "input": "reply {3f2a} \"addressed in the redline\"", "expect": {"verbs": ["reply"]}}
+{"name": "slide-title-bullets", "input": "slide \"Top accounts\" \"Acme\" \"Globex\"", "expect": {"verbs": ["slide"]}}
+{"name": "slide-title-only", "input": "slide \"Just a title\"", "expect": {"verbs": ["slide"]}}
+{"name": "page-flat", "input": "page \"Meeting notes\" \"Decisions and owners\"", "expect": {"verbs": ["page"]}}
+{"name": "mail-flat", "input": "mail \"Thanks, will follow up by Friday.\"", "expect": {"verbs": ["mail"]}}
+{"name": "post-flat", "input": "post \"Summary posted to the channel.\"", "expect": {"verbs": ["post"]}}
+{"name": "compose-flat", "input": "compose \"Follow-up on Q3\" \"Here is the recap.\"", "expect": {"verbs": ["compose"]}}
+{"name": "table-flat", "input": "table Report!A1:C12 headers", "expect": {"verbs": ["table"]}}
+{"name": "table-named", "input": "table Report!A1:C12 headers name=TopRegions", "expect": {"verbs": ["table"]}}
+{"name": "chart-flat", "input": "chart column Report!A1:B11 title=\"Top regions\"", "expect": {"verbs": ["chart"]}}
+{"name": "cf-inline-op", "input": "cf Sales!E2:E200 >100000 fill=#C6EFCE", "expect": {"verbs": ["cf"]}}
+{"name": "cf-databar", "input": "cf Sales!E2:E200 databar", "expect": {"verbs": ["cf"]}}
+{"name": "spill-var", "input": "spill Report!A1 = ($top)", "expect": {"verbs": ["spill"]}}
+{"name": "spill-pipeline", "input": "spill Report!A1 = ($top | select Region,Revenue)", "expect": {"verbs": ["spill"]}}
+{"name": "table-missing-range", "input": "table", "expect": {"error_substring": "table needs a range"}}
+{"name": "chart-missing-range", "input": "chart column", "expect": {"error_substring": "chart needs a type and a range"}}
+{"name": "cf-missing-rule", "input": "cf Sales!E2:E200", "expect": {"error_substring": "cf needs a rule"}}
+{"name": "spill-literal-rejected", "input": "spill Report!A1 = East region", "expect": {"error_substring": "not a literal"}}
+{"name": "block-spill-grid-complete", "input": "```cmd\nspill Report!A1 = ($top | filter Quarter=Q3 | select Region,Revenue)\ntable Report!A1:B11 headers\nchart column Report!A1:B11 title=\"Top regions\"\ndone\n```", "expect": {"verbs": ["spill", "table", "chart", "done"], "complete": true}}
+{"name": "block-chart-no-range-done-error", "input": "```cmd\nchart column\ndone\n```", "expect": {"has_error": true, "complete": false}}
+{"name": "done-flat", "input": "done", "expect": {"verbs": ["done"]}}
+{"name": "help-flat", "input": "help", "expect": {"verbs": ["help"]}}
+{"name": "comment-only", "input": "# just a comment line", "expect": {"verbs": []}}
+{"name": "unknown-verb", "input": "writ-cells A1 5", "expect": {"error_substring": "unknown verb"}}
+{"name": "unknown-verb-didyoumean", "input": "sugest \"old\" => \"new\"", "expect": {"error_substring": "did you mean"}}
+{"name": "set-missing-value", "input": "set Sales!F2", "expect": {"error_substring": "set needs a cell and a value"}}
+{"name": "search-empty", "input": "search", "expect": {"error_substring": "search needs text"}}
+{"name": "context-strategy", "input": "context analytical full-scope upload-preferred code-execution-preferred", "expect": {"verbs": ["context"]}}
+{"name": "context-unknown-hint", "input": "context run-python-now", "expect": {"error_substring": "unknown context hint"}}
+{"name": "suggest-one-string", "input": "suggest \"only one\"", "expect": {"error_substring": "two quoted strings"}}
+{"name": "outline-trailing-junk", "input": "outline Sales", "expect": {"error_substring": "takes no arguments"}}
+{"name": "done-trailing-junk", "input": "done now please", "expect": {"error_substring": "takes no arguments"}}
+{"name": "help-trailing-junk", "input": "help me", "expect": {"error_substring": "takes no arguments"}}
+{"name": "block-each-flat", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2\ndone\n```", "expect": {"verbs": ["read", "set", "done"], "complete": true}}
+{"name": "block-unclosed-fence", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2", "expect": {"verbs": ["read", "set"], "complete": false}}
+{"name": "block-done-with-error", "input": "```cmd\nwrit-cells A1 5\ndone\n```", "expect": {"has_error": true, "complete": false}}
+{"name": "block-clean-done-complete", "input": "```cmd\nread Sales!C2:C7\ndone\n```", "expect": {"verbs": ["read", "done"], "complete": true}}
+{"name": "block-no-done-not-complete", "input": "```cmd\nread Sales!C2:C7\n```", "expect": {"verbs": ["read"], "complete": false}}
+{"name": "block-no-fence", "input": "I will read the sheet and compute totals.", "expect": {"no_block": true}}
+{"name": "invoke-insert-image", "input": "/insert-image base64=AAA alt=\"Q3 chart\"", "expect": {"verbs": ["invoke"]}}
+{"name": "invoke-fill-cc", "input": "/fill-content-control id=Title text=\"Q3 Report\"", "expect": {"verbs": ["invoke"]}}
+{"name": "invoke-unknown-kind", "input": "/insert-imag base64=AAA", "expect": {"error_substring": "unknown capability"}}
+{"name": "invoke-bare-slash", "input": "/", "expect": {"error_substring": "needs a capability name"}}

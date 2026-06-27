@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Enterprise Authentication</title>
+  </head>
+  <body>
+    <p>Completing Microsoft sign-in...</p>
+    <script>
+      (() => {
+        function payloadFromLocation() {
+          const hash = window.location.hash.startsWith('#')
+            ? window.location.hash.slice(1)
+            : window.location.hash;
+          const query = window.location.search.startsWith('?')
+            ? window.location.search.slice(1)
+            : window.location.search;
+          const hashParams = new URLSearchParams(hash);
+          const queryParams = new URLSearchParams(query);
+          if (hashParams.has('state') && queryParams.has('state')) return `${query}${hash}`;
+          if (hashParams.has('state')) return hash;
+          if (queryParams.has('state')) return query;
+          return '';
+        }
+
+        function decodeBase64Url(value) {
+          const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+          const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+          const binary = atob(padded);
+          const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+          return new TextDecoder().decode(bytes);
+        }
+
+        try {
+          const payload = payloadFromLocation();
+          const params = new URLSearchParams(payload);
+          const state = params.get('state');
+          if (!payload || !state) throw new Error('Missing authentication state.');
+          const libraryState = JSON.parse(decodeBase64Url(state));
+          const id = libraryState && libraryState.id;
+          if (!id) throw new Error('Missing authentication channel.');
+
+          if (typeof window.history.replaceState === 'function') {
+            window.history.replaceState(
+              null,
+              '',
+              `${window.location.origin}${window.location.pathname}`,
+            );
+          }
+
+          const message = { type: 'ge-msal-auth-response', v: 1, id, payload };
+          try {
+            window.opener?.postMessage(message, window.location.origin);
+          } catch {}
+          try {
+            const channel = new BroadcastChannel(id);
+            channel.postMessage({ v: 1, payload });
+            channel.close();
+          } catch {}
+          window.setTimeout(() => window.close(), 100);
+        } catch {
+          document.body.textContent =
+            'Microsoft sign-in returned, but the add-in could not receive the response. Close this window and retry sign-in.';
+        }
+      })();
+    </script>
+  </body>
+</html>

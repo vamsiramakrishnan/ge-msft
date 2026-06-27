@@ -1,0 +1,14 @@
+{"name": "valid-direct-set", "program": "set Sales!F2 =C2-D2\ndone", "capabilities": ["set"], "max_effects": 8, "label": "valid"}
+{"name": "valid-comment", "program": "comment Sales!A16 \"anomalous spike\"\ndone", "capabilities": ["comment"], "max_effects": 8, "label": "valid"}
+{"name": "valid-top-n-report", "program": "let $top = read Sales!A1:D200 | sort ARR desc | head 10\nspill Report!A1 = ($top)\ntable Report!A1:D11 headers\nchart column Report!A1:D11 title=\"Top\"\ndone", "capabilities": ["spill", "table", "chart"], "max_effects": 8, "label": "valid"}
+{"name": "valid-invoke-image", "program": "/insert-image base64=AAA alt=\"chart\"\ndone", "capabilities": ["insert-image"], "max_effects": 8, "label": "valid"}
+{"name": "valid-pipeline-scalar", "program": "let $e = read Sales!A1:B9 | filter region=East\nset Summary!B2 = ($e | sum amount)\ndone", "capabilities": ["set"], "max_effects": 8, "label": "valid"}
+{"name": "defect-unknown-verb", "program": "writ Sales!F2 5\ndone", "capabilities": ["set"], "max_effects": 8, "label": "defective", "defect": "unknown-verb"}
+{"name": "defect-parse-error", "program": "set A1\ndone", "capabilities": ["set"], "max_effects": 8, "label": "defective", "defect": "parse-error"}
+{"name": "defect-unknown-capability", "program": "/insert-imag base64=AAA\ndone", "capabilities": ["insert-image"], "max_effects": 8, "label": "defective", "defect": "unknown-capability"}
+{"name": "defect-capability-violation", "program": "chart column Report!A1:B11\ndone", "capabilities": ["set", "table"], "max_effects": 8, "label": "defective", "defect": "capability-violation"}
+{"name": "defect-invoke-not-advertised", "program": "/post-channel-message text=\"hi\"\ndone", "capabilities": ["insert-image"], "max_effects": 8, "label": "defective", "defect": "capability-violation"}
+{"name": "defect-unbound-var", "program": "spill Report!A1 = ($ghost)\ndone", "capabilities": ["spill"], "max_effects": 8, "label": "defective", "defect": "unbound-var"}
+{"name": "defect-budget-effects", "program": "set A1 1\nset A2 1\nset A3 1\nset A4 1\nset A5 1\nset A6 1\nset A7 1\nset A8 1\nset A9 1\nset A10 1\ndone", "capabilities": ["set"], "max_effects": 8, "label": "defective", "defect": "budget"}
+{"name": "defect-spill-literal", "program": "spill Report!A1 = East region\ndone", "capabilities": ["spill"], "max_effects": 8, "label": "defective", "defect": "parse-error"}
+{"name": "defect-bare-slash", "program": "/\ndone", "capabilities": [], "max_effects": 8, "label": "defective", "defect": "parse-error"}

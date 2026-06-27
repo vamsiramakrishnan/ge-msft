@@ -1,0 +1,27 @@
+node_modules
+dist
+dist-web
+build
+coverage
+.azure
+.venv-az
+.codex
+.github/hooks
+.impeccable
+packages/**/.impeccable
+package-lock.json
+
+# Provided spec + content (authoritative source — do not reformat)
+docs
+manifests
+*.md
+.claude/settings.json
+
+# Vendored API schema slices (generated from Google's discovery doc)
+packages/*/vendor
+
+# Generated language manifest (emitted by `npm run emit:language` — the emitter owns its format)
+skill/m365-surface-commander/scripts/m365-cli-1.0.json
+
+# Exploratory probe harnesses (authored artifacts — kept verbatim, not reformatted)
+scripts

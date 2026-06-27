@@ -1,0 +1,20 @@
+{
+  "name": "@ge/gemini-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Client-direct Gemini Enterprise access: WIF token exchange + StreamAssist relay (browser-safe, no Google service-account keys)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@ge/content": "*"
+  }
+}

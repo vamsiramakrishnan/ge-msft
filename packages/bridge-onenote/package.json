@@ -1,0 +1,19 @@
+{
+  "name": "@ge/bridge-onenote",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "onenote surface bridge (Office.js, web-only): page/outline capture + citation-tagged page synthesis",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "@ge/content": "*",
+    "@ge/runtime": "*",
+    "@ge/triggers": "*"
+  }
+}

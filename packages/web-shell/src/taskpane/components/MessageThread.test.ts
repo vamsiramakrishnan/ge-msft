@@ -1,0 +1,270 @@
+// @vitest-environment jsdom
+import { describe, it, expect, afterEach } from 'vitest';
+import { createElement, act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { MessageThread } from './MessageThread.js';
+import type { ChatMessage } from '../../controller.js';
+
+/**
+ * Behavioral tests for the conversation thread. The load-bearing logic here is the untrusted-URI
+ * gate (`safeHttpUri`): citation URIs are grounded, untrusted source material, so a `javascript:`,
+ * `data:`, or malformed URI must NOT become an executable href — it is rendered inert. Also covers
+ * the empty-state invitation, per-message error/cancelled rendering, and the citation popover.
+ */
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+let container: HTMLDivElement;
+let root: Root;
+
+function render(messages: ChatMessage[]): void {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(createElement(MessageThread, { messages }));
+  });
+}
+
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
+
+/** Open the (single) citation popover so the link / inert text is in the DOM. */
+function openFirstCitation(): void {
+  const cite = container.querySelector<HTMLButtonElement>('.cite-btn');
+  act(() => cite?.click());
+}
+
+describe('MessageThread', () => {
+  it('shows the grounded empty-state invitation when there are no messages', () => {
+    render([]);
+    expect(container.textContent).toContain('Ask about this document or selection');
+    // The invitation is itself an assistant bubble — but there are no real messages.
+    expect(container.querySelectorAll('.m').length).toBe(1);
+  });
+
+  it('shows surface-specific empty-state copy', () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(createElement(MessageThread, { messages: [], surface: 'excel' }));
+    });
+    expect(container.textContent).toContain('Ask about this workbook, sheet, or range');
+  });
+
+  it('renders a citation with an http(s) link as a real, new-tab, noopener anchor', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        sources: [{ title: 'Policy', uri: 'https://example.com/policy', locator: '§3' }],
+      },
+    ]);
+    openFirstCitation();
+    const link = container.querySelector<HTMLAnchorElement>('a.cite-detail-link');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('href')).toBe('https://example.com/policy');
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toBe('noreferrer noopener');
+  });
+
+  it('renders a javascript: citation URI as inert text, never as an executable href', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        // eslint-disable-next-line no-script-url
+        sources: [{ title: 'Evil', uri: 'javascript:alert(1)' }],
+      },
+    ]);
+    openFirstCitation();
+    // No anchor must be produced for an unsafe scheme.
+    expect(container.querySelector('a.cite-detail-link')).toBeNull();
+    // The raw URI text is still surfaced inertly inside the detail.
+    const detail = container.querySelector('.cite-detail');
+    expect(detail?.textContent).toContain('javascript:alert(1)');
+  });
+
+  it('renders a data: citation URI as inert text', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        sources: [{ title: 'Sneaky', uri: 'data:text/html,<script>x</script>' }],
+      },
+    ]);
+    openFirstCitation();
+    expect(container.querySelector('a.cite-detail-link')).toBeNull();
+  });
+
+  it('falls back to a "no link" message when a malformed citation URI cannot be parsed', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        // An opaque string with no scheme and a control char that breaks URL parsing.
+        sources: [{ title: 'Broken', uri: 'ht\ntp://bad uri\0' }],
+      },
+    ]);
+    openFirstCitation();
+    expect(container.querySelector('a.cite-detail-link')).toBeNull();
+    const detail = container.querySelector('.cite-detail');
+    // Either the raw uri or the explicit fallback copy — never an anchor.
+    expect(detail?.textContent?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('shows the explicit "No link available" copy when a source has no URI at all', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        sources: [{ title: 'SLA addendum', locator: 'p. 4' }],
+      },
+    ]);
+    openFirstCitation();
+    expect(container.querySelector('a.cite-detail-link')).toBeNull();
+    expect(container.querySelector('.cite-detail')?.textContent).toContain(
+      'No link available for this source.',
+    );
+  });
+
+  it('toggles the citation popover open and closed and reflects aria-expanded', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: 'grounded',
+        sources: [{ title: 'Policy', uri: 'https://example.com' }],
+      },
+    ]);
+    const cite = container.querySelector<HTMLButtonElement>('.cite-btn');
+    expect(cite?.getAttribute('aria-expanded')).toBe('false');
+    act(() => cite?.click());
+    expect(cite?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.cite-detail')).not.toBeNull();
+    act(() => cite?.click());
+    expect(cite?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.cite-detail')).toBeNull();
+  });
+
+  it('renders a per-message error as an assertive alert', () => {
+    render([{ id: 'a-1', role: 'assistant', text: '', error: 'Stream dropped — retry.' }]);
+    const alert = container.querySelector('.msg-error[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).toContain('Stream dropped — retry.');
+  });
+
+  it('marks a cancelled turn distinctly and does not render an error', () => {
+    render([{ id: 'a-1', role: 'assistant', text: 'partial', cancelled: true }]);
+    expect(container.textContent).toContain('Cancelled.');
+    expect(container.querySelector('.msg-error')).toBeNull();
+  });
+
+  it('renders the streaming caret only on a streaming message', () => {
+    render([
+      { id: 'a-1', role: 'assistant', text: 'done' },
+      { id: 'a-2', role: 'assistant', text: 'typing', streaming: true },
+    ]);
+    expect(container.querySelectorAll('.caret').length).toBe(1);
+  });
+
+  it('renders assistant Markdown headings, emphasis, and tables as structured UI', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: [
+          '### Example Time-Blocked Schedule',
+          '',
+          '**Recommended Action**: Use time blocking.',
+          '',
+          '| Time Slot | Monday | Tuesday |',
+          '|---|---|---|',
+          '| 08:00 AM - 10:00 AM | Deep Work | Meetings |',
+        ].join('\n'),
+      },
+    ]);
+
+    expect(container.querySelector('.md-content h4')?.textContent).toBe(
+      'Example Time-Blocked Schedule',
+    );
+    expect(container.querySelector('strong')?.textContent).toBe('Recommended Action');
+    const table = container.querySelector<HTMLTableElement>('table.md-table');
+    expect(table).not.toBeNull();
+    expect(table?.querySelectorAll('th').length).toBe(3);
+    expect(table?.textContent).toContain('Deep Work');
+    expect(container.textContent).not.toContain('|---|');
+  });
+
+  it('does not turn unsafe Markdown links into anchors', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: '[bad](javascript:alert(1)) and [good](https://example.com)',
+      },
+    ]);
+
+    const links = [...container.querySelectorAll<HTMLAnchorElement>('.md-link')];
+    expect(links).toHaveLength(1);
+    expect(links[0]?.href).toBe('https://example.com/');
+    expect(container.textContent).toContain('bad (javascript:alert(1))');
+  });
+
+  it('renders raw HTML in assistant text inertly', () => {
+    render([{ id: 'a-1', role: 'assistant', text: '<img src=x onerror=alert(1)>' }]);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('renders posted user command, grounding, and scope tokens as chips', () => {
+    render([
+      {
+        id: 'u-1',
+        role: 'user',
+        text: '/visualize @this create a chart scope:range(A1:B8)',
+      },
+    ]);
+
+    expect(container.querySelector('.msg-token-command')?.textContent).toBe('/visualize');
+    expect(container.querySelector('.msg-token-mention')?.textContent).toBe('@this');
+    expect(container.querySelector('.msg-token-scope')?.textContent).toBe('scope:range(A1:B8)');
+    expect(container.querySelector('.m.u')?.textContent).toContain('create a chart');
+  });
+
+  it('renders user text with token highlighting inertly, never as HTML', () => {
+    render([
+      {
+        id: 'u-1',
+        role: 'user',
+        text: '@this <img src=x onerror=alert(1)>',
+      },
+    ]);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.msg-token-mention')?.textContent).toBe('@this');
+    expect(container.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('distinguishes user and assistant bubbles by class', () => {
+    render([
+      { id: 'u-1', role: 'user', text: 'hi' },
+      { id: 'a-1', role: 'assistant', text: 'hello' },
+    ]);
+    expect(container.querySelector('.m.u')).not.toBeNull();
+    expect(container.querySelector('.m.a')).not.toBeNull();
+  });
+
+  it('omits the citations block when an assistant message has an empty sources array', () => {
+    render([{ id: 'a-1', role: 'assistant', text: 'no sources', sources: [] }]);
+    expect(container.querySelector('.cites')).toBeNull();
+  });
+});

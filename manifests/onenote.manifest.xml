@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OneNote ships separately: web-only, legacy add-in-only (XML) manifest. -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+  <Id>REPLACE_WITH_ONENOTE_APP_GUID</Id>
+  <Version>0.1.0</Version>
+  <ProviderName>REPLACE_DEVELOPER</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Gemini Enterprise (OneNote)" />
+  <Description DefaultValue="Research capture and synthesis grounded on your Gemini Enterprise unit." />
+  <IconUrl DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/icon-64.png" />
+  <SupportUrl DefaultValue="https://example.com/support" />
+  <AppDomains>
+    <AppDomain>https://REPLACE_WEB_SHELL_DOMAIN</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Notebook" />
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/taskpane.html?host=onenote" />
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Notebook">
+        <DesktopFormFactor>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="geminiGroup">
+                <Label resid="Gemini.Group" />
+                <Control xsi:type="Button" id="openGeminiBtn">
+                  <Label resid="Gemini.Open" />
+                  <Supertip>
+                    <Title resid="Gemini.Open" />
+                    <Description resid="Gemini.Desc" />
+                  </Supertip>
+                  <Icon><bt:Image size="16" resid="Icon.16" /><bt:Image size="32" resid="Icon.32" /></Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>GeminiPane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="ContextMenu">
+            <OfficeMenu id="ContextMenuText">
+              <Control xsi:type="Button" id="GeminiAskCtx">
+                <Label resid="Gemini.Ask" />
+                <Supertip>
+                  <Title resid="Gemini.Ask" />
+                  <Description resid="Gemini.Desc" />
+                </Supertip>
+                <Icon><bt:Image size="16" resid="Icon.16" /><bt:Image size="32" resid="Icon.32" /></Icon>
+                <Action xsi:type="ShowTaskpane">
+                  <TaskpaneId>GeminiPane</TaskpaneId>
+                  <SourceLocation resid="Taskpane.Url" />
+                </Action>
+              </Control>
+            </OfficeMenu>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/icon-16.png" />
+        <bt:Image id="Icon.32" DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/icon-32.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://REPLACE_WEB_SHELL_DOMAIN/taskpane.html?host=onenote" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
+        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+        <bt:String id="Gemini.Ask" DefaultValue="Ask Gemini about this" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Gemini.Desc" DefaultValue="Capture and synthesize research grounded on your unit." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

@@ -172,6 +172,31 @@ export function sessionUrl(cfg: GeminiClientConfig, sessionIdOrName: string): st
   return `${sessionsUrl(cfg)}/${encodeURIComponent(sessionIdOrName)}`;
 }
 
+/** Absolute URL for adding a session context file (`v1` addContextFile). */
+export function addContextFileUrl(cfg: GeminiClientConfig, sessionIdOrName: string): string {
+  if (cfg.proxyUrl) {
+    return `${proxyBase(cfg.proxyUrl)}/sessions/${encodeURIComponent(sessionIdOrName)}:addContextFile`;
+  }
+  const host = discoveryEngineHost(cfg.assistant.location);
+  if (sessionIdOrName.startsWith('projects/'))
+    return `${host}/v1/${sessionIdOrName}:addContextFile`;
+  return `${host}/v1/${engineResourceName(cfg.assistant)}/sessions/${encodeURIComponent(
+    sessionIdOrName,
+  )}:addContextFile`;
+}
+
+/** Absolute URL for listing metadata for context files in one session. */
+export function sessionFilesUrl(cfg: GeminiClientConfig, sessionIdOrName: string): string {
+  if (cfg.proxyUrl) {
+    return `${proxyBase(cfg.proxyUrl)}/sessions/${encodeURIComponent(sessionIdOrName)}/files`;
+  }
+  const host = discoveryEngineHost(cfg.assistant.location);
+  if (sessionIdOrName.startsWith('projects/')) return `${host}/v1/${sessionIdOrName}/files`;
+  return `${host}/v1/${engineResourceName(cfg.assistant)}/sessions/${encodeURIComponent(
+    sessionIdOrName,
+  )}/files`;
+}
+
 /** Engine resource name (parent of sessions/servingConfigs), for session creation etc. */
 export function engineResourceName(p: AssistantPath): string {
   const collection = p.collection ?? 'default_collection';

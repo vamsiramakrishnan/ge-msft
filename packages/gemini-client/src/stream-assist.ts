@@ -20,6 +20,13 @@ import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 import { defaultFetch } from './de-fetch.js';
 import type { ResolvedGrounding } from './resolve-grounding.js';
+import {
+  ContextFileClient,
+  type ContextFileInput,
+  type ContextFileUploadOptions,
+  type UploadedContextFile,
+  type ContextFileMetadata,
+} from './context-files.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
 export interface TokenSource {
@@ -75,6 +82,26 @@ export class StreamAssistClient {
     >,
   ): void {
     this.config = { ...this.config, ...update };
+  }
+
+  async addContextFile(
+    input: ContextFileInput,
+    opts: ContextFileUploadOptions = {},
+  ): Promise<UploadedContextFile> {
+    return new ContextFileClient(this.tokens, this.config, this.fetchImpl).addContextFile(
+      input,
+      opts,
+    );
+  }
+
+  async listContextFiles(
+    session: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<{ files: ContextFileMetadata[] }> {
+    return new ContextFileClient(this.tokens, this.config, this.fetchImpl).listContextFiles(
+      session,
+      opts,
+    );
   }
 
   async *stream(req: AssistRequest, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {

@@ -161,13 +161,13 @@ DOCUMENTED_CONTROL_VERBS = {"done", "help"}
 
 
 def _documented_verbs() -> set:
-    """Extract the verb set from capability-map.md: the `outline`/`read`/`search` read columns,
+    """Extract the verb set from capability-map.md: the read columns,
     every `\\`verb\\`` named in the Writes table's first column, plus the control verbs."""
     cap_map = HERE / "m365-surface-commander" / "references" / "capability-map.md"
     text = cap_map.read_text(encoding="utf-8")
     verbs = set(DOCUMENTED_CONTROL_VERBS)
-    # Read verbs are referenced inline as `outline` / `read` / `search`.
-    for v in ("outline", "read", "search"):
+    # Read verbs are referenced inline as table columns.
+    for v in ("outline", "read", "search", "context"):
         if f"`{v}`" in text:
             verbs.add(v)
     # Write verbs: rows of the Writes table begin with `| \`<verb>\``.
@@ -204,7 +204,7 @@ def _check_manifest_parity() -> list:
         failures.append(f"  [manifest] write verbs without a parse arm: "
                         f"{sorted(manifest_write - parse_commands.HANDLED_WRITE_VERBS)}")
     # 3. doc ≡ manifest (the human capability-map matches the generated source).
-    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - {"outline", "read", "search"}
+    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - {"outline", "read", "search", "context"}
     if doc_write != manifest_write:
         failures.append(f"  [manifest] capability-map writes != manifest writes: "
                         f"doc-only {sorted(doc_write - manifest_write)}, "

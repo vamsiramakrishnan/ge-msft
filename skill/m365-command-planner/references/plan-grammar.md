@@ -13,6 +13,7 @@ to the user for a one-tap confirm before anything runs.
 | `surface`    |     no     |   yes    | The active app: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                                                    |
 | `scope`      |     no     |    no    | Where the work applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow (`section §4–6`, `range Sales!A:C`, `comment c-12`). |
 | `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                                        |
+| `context`    |    yes     |    no    | Context-construction hint: `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`, `code-execution-preferred`, `analytical`, or `full-scope`. |
 | `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                                   |
 | `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                                                            |
 | `clarify`    |    yes     |    no    | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                                  |
@@ -67,8 +68,28 @@ approved, recorded edit.
 - **`ground`** names the sources the plan depends on; the host has already pinned them as
   `@`-mentions and mapped them to real `streamAssist` fields (`query.parts`,
   `dataStoreSpecs`). Only echo the ones you actually use.
+- **`context`** names how much material the runtime should consider attaching. It is a hint, not an
+  action: the host still decides whether the source is inlined, referenced, or uploaded as a session
+  context file for hosted code execution.
 - **`exclude`** is a hard carve-out the executor must respect — list anything the free text
   said to leave alone.
+
+## Context strategy
+
+Use these hints sparingly and compositionally:
+
+- `incremental` — read live host slices lazily through the executor (`outline`, `read`, `search`).
+- `inline-preferred` — selected item/range/thread is small enough to inline as context.
+- `reference-preferred` — pinned/indexed sources should be referenced rather than copied.
+- `upload-preferred` — whole file/deck/thread/workbook is likely needed and too large to inline.
+- `code-execution-preferred` — hosted Python would help compute/pivot/chart/validate/reconcile.
+- `analytical` — the task is data-analysis heavy.
+- `full-scope` — the whole open artifact is needed, not just the current selection.
+
+Examples: Excel workbook anomaly detection usually emits `analytical`, `full-scope`,
+`upload-preferred`, and `code-execution-preferred`; Word selected-clause rewrite usually emits
+`inline-preferred` or `incremental`; Teams full-transcript action extraction emits `full-scope` and
+possibly `analytical`.
 
 ## When to `clarify`
 

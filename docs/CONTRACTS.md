@@ -176,7 +176,8 @@ export interface ActionRequest {
 The client-direct surfaces expose a small, capability-scoped CLI grammar to the model. Each surface advertises only the verbs it can actually serve, derived from its `CapabilityManifest` (`packages/contracts/src/command-grammar.ts`). Three verb classes:
 
 - **Control verbs** (`done`, `help`) — always advertised; not actuations.
-- **Read verbs** (`outline`, `read`, `search`) — advertised per `manifest.reads` (see below).
+- **Read verbs** (`outline`, `read`, `search`, `context`) — host reads are advertised per
+  `manifest.reads`; `context` is runtime-served and read-only (see below).
 - **Write verbs** — each maps to exactly one `ActuationKind` via `WRITE_VERB_TO_KIND`, and is advertised for a surface ONLY when `manifest.actuations[]` includes its mapped kind. The parser, the grammar advertisement, and the runtime compiler all derive from this single map.
 
 ```ts
@@ -250,7 +251,7 @@ end                          ← terminates the body
 
 ### Read-scoping by `manifest.reads` (ADR-0006)
 
-The grammar advertises a read verb (`outline` / `read` / `search`) **only when it is present in `manifest.reads`** — a surface must never advertise a read it cannot serve. An **absent** `manifest.reads` advertises **no** reads. (Control verbs are always advertised; write verbs remain scoped by their advertised `ActuationKind` as above.)
+The grammar advertises a host read verb (`outline` / `read` / `search`) **only when it is present in `manifest.reads`** — a surface must never advertise a host read it cannot serve. An **absent** `manifest.reads` advertises **no host reads**. `context [hints...]` is the deliberate exception: it is served by the runtime, not a bridge read port, and returns only a context/upload/code-execution strategy with guardrails. It never uploads a file, runs code, grants capability, approves a write, or mutates host content. (Control verbs are always advertised; write verbs remain scoped by their advertised `ActuationKind` as above.)
 
 ### Composition: pipelines, bindings, and effect-arg expressions (ADR-0005)
 
@@ -338,7 +339,20 @@ The `/`-verb list + `@`-mention vocabulary + per-surface scope labels the input 
 
 ### `CommandPlan` (`packages/contracts/src/command-plan.ts`)
 
-The structured plan the **planner skill** emits, and its parser — a faithful TS port of `skill/m365-command-planner/scripts/parse_plan.py` (kept in lockstep). `CommandPlanSchema = { intent: Intent, surface: Surface, scope?: CommandScope, ground: GroundSource[], steps: string[], excludes: string[], clarify: string[], confidence?: 'high'|'medium'|'low' }`. `parsePlanBlock(text) → { plan, errors, needsClarification }`: extracts the ` ```plan ` fence (tolerating an unclosed one), validates intent/surface, accumulates the repeatable keywords, reports unknown keywords with a did-you-mean, and returns a `null` plan on a missing/invalid `intent`/`surface`. A `clarify` line substitutes for a required `step`.
+The structured plan the **planner skill** emits, and its parser — a faithful TS port of
+`skill/m365-command-planner/scripts/parse_plan.py` (kept in lockstep). `CommandPlanSchema = {
+intent: Intent, surface: Surface, scope?: CommandScope, ground: GroundSource[], context:
+PlanContextHint[], steps: string[], excludes: string[], clarify: string[], confidence?:
+'high'|'medium'|'low' }`. `context` is a repeatable hint over
+`incremental | inline-preferred | reference-preferred | upload-preferred |
+code-execution-preferred | analytical | full-scope`; it guides context construction but never grants
+upload, code-execution, or write authority. The executor-side `context` command consumes the same
+hint vocabulary and returns the runtime strategy before any full-file attachment is considered.
+`parsePlanBlock(text) → { plan, errors, needsClarification }`:
+extracts the ` ```plan ` fence (tolerating an unclosed one), validates intent/surface/context,
+accumulates the repeatable keywords, reports unknown keywords with a did-you-mean, and returns a
+`null` plan on a missing/invalid `intent`/`surface`. A `clarify` line substitutes for a required
+`step`.
 
 ## A2A agent interface (`services/agents`)
 

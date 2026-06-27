@@ -43,6 +43,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,11 +116,6 @@ def resolve_live_config() -> LiveConfig:
 def session(cfg: LiveConfig) -> requests.Session:
     """Authenticated requests.Session with bounded retries. Imports google.auth lazily so the
     tooling (and its offline tests) can be imported without the dependency installed."""
-    import google.auth
-    import google.auth.transport.requests
-
-    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    creds.refresh(google.auth.transport.requests.Request())
     s = requests.Session()
     retry = Retry(
         total=MAX_RETRIES,
@@ -131,12 +127,18 @@ def session(cfg: LiveConfig) -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
-    s.headers.update(
-        {
-            "Authorization": f"Bearer {creds.token}",
-            "X-Goog-User-Project": cfg.project,
-        }
-    )
+    if os.environ.get("GE_AUTH_MODE") == "gcloud":
+        token = subprocess.check_output(
+            ["gcloud", "auth", "print-access-token"], text=True
+        ).strip()
+    else:
+        import google.auth
+        import google.auth.transport.requests
+
+        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(google.auth.transport.requests.Request())
+        token = creds.token
+    s.headers.update({"Authorization": f"Bearer {token}", "X-Goog-User-Project": cfg.project})
     return s
 
 
@@ -150,13 +152,20 @@ def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
     return r
 
 
-def create_shell(s: requests.Session, cfg: LiveConfig, agent_id: str, instruction: str) -> dict:
+def create_shell(
+    s: requests.Session,
+    cfg: LiveConfig,
+    agent_id: str,
+    instruction: str,
+    display_name: str = DISPLAY_NAME,
+    description: str = DESCRIPTION,
+) -> dict:
     r = s.post(
         f"{API}/{cfg.assistant}/agents",
         params={"agentId": agent_id},
         json={
-            "displayName": DISPLAY_NAME,
-            "description": DESCRIPTION,
+            "displayName": display_name,
+            "description": description,
             "skillAgentDefinition": {"instruction": instruction},
         },
         timeout=HTTP_TIMEOUT,
@@ -222,6 +231,8 @@ def main(argv=None) -> int:
         help="Method A: create with this file's contents as the inline instruction",
     )
     ap.add_argument("--agent-id", default=AGENT_ID)
+    ap.add_argument("--display-name", default=DISPLAY_NAME)
+    ap.add_argument("--description", default=DESCRIPTION)
     ap.add_argument(
         "--live",
         action="store_true",
@@ -279,14 +290,21 @@ def main(argv=None) -> int:
     if args.single_file:
         print(f"Method A — single-file create from {args.single_file}")
         instruction = Path(args.single_file).read_text(encoding="utf-8")
-        create_shell(s, cfg, args.agent_id, instruction)
+        create_shell(s, cfg, args.agent_id, instruction, args.display_name, args.description)
     else:
         zip_path = Path(args.zip)
         if not zip_path.exists():
             raise SystemExit(f"zip not found: {zip_path}")
         print(f"Method B — bundle upload from {zip_path}")
         print("  1) create shell agent")
-        create_shell(s, cfg, args.agent_id, "placeholder — replaced by SKILL.md on upload")
+        create_shell(
+            s,
+            cfg,
+            args.agent_id,
+            "placeholder — replaced by SKILL.md on upload",
+            args.display_name,
+            args.description,
+        )
         print("  2) upload zip (server unpacks)")
         upload_zip(s, cfg, args.agent_id, zip_path)
 

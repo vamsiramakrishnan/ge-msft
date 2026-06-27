@@ -641,19 +641,19 @@ export const ActuationResultSchema = z.object({
 export type ActuationResult = z.infer<typeof ActuationResultSchema>;
 
 /**
- * The read verbs a surface can serve (ADR-0006 capability closure). The CLI grammar advertises a
- * read verb only when it appears here, and conformance tests require a matching bridge read port —
- * so a surface can never advertise a read it cannot perform. Optional for back-compat; an absent
- * value means "no addressable reads declared".
+ * The read verbs a surface can serve (ADR-0006 capability closure). The CLI grammar scopes host read
+ * verbs (`outline`/`read`/`search`) to this list, and conformance tests require a matching bridge
+ * read port. `context` is runtime-served and read-only; it may appear here, but it is not a bridge
+ * port requirement.
  */
-export const ReadVerbSchema = z.enum(['outline', 'read', 'search']);
+export const ReadVerbSchema = z.enum(['outline', 'read', 'search', 'context']);
 
 /** A surface's full capability advertisement: what it can read and what it can write. */
 export const CapabilityManifestSchema = z.object({
   surface: SurfaceSchema,
   contextKinds: z.array(ContextKindSchema),
   actuations: z.array(ActuationSchema),
-  /** Read verbs this surface serves (ADR-0006); the grammar scopes `outline`/`read`/`search` to it. */
+  /** Read verbs this surface serves (ADR-0006); host reads are scoped to this set. */
   reads: z.array(ReadVerbSchema).optional(),
 });
 export type CapabilityManifest = z.infer<typeof CapabilityManifestSchema>;

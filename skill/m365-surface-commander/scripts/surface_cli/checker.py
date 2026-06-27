@@ -34,7 +34,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _names, unknown = _infer_pipeline_type(rhs)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}" in ${name}')
-                if src.split()[0] in ("read", "search", "outline"):
+                if src.split()[0] in ("read", "search", "outline", "context"):
                     reads.append(src)
                 for ref in re.findall(r"\$(\w+)", rhs):
                     if ref not in bound:
@@ -45,7 +45,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _n, unknown = _infer_pipeline_type(line)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}"')
-                if src.split()[0] in ("read", "search", "outline"):
+                if src.split()[0] in ("read", "search", "outline", "context"):
                     reads.append(src)
             continue
 
@@ -57,7 +57,7 @@ def analyze(program_text: str, capabilities=None):
             continue
 
         verb = rec["verb"]
-        if verb in ("outline", "read", "search"):
+        if verb in ("outline", "read", "search", "context"):
             reads.append(line)
             continue
         if verb in ("done", "help"):

@@ -17,6 +17,7 @@ import {
   type ParsedSkillCall,
   type ParsedSkillDef,
 } from './skill-grammar.js';
+import { PlanContextHintSchema, type PlanContextHint } from './command-plan.js';
 
 /**
  * ADR-0004 — the command-line protocol grammar (the single source of truth).
@@ -33,12 +34,16 @@ import {
  * corrective error (`unknown verb "writ" — did you mean "write"? (run help)`) the model
  * self-corrects on the next turn.
  *
- * SCOPE: `outline · read · search · set · suggest · comment · format · reply · slide · page · mail ·
- * post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the host-native kinds).
+ * SCOPE: `outline · read · search · context · set · suggest · comment · format · reply · slide ·
+ * page · mail · post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the
+ * host-native kinds).
  */
 
-/** Read verbs (Layer-B host reads, ADR-0003). Always advertised; never gated. */
-export const READ_VERBS = ['outline', 'read', 'search'] as const;
+/**
+ * Read verbs. `outline`/`read`/`search` are Layer-B host reads (ADR-0003). `context` is a
+ * runtime-served read-only strategy probe: it never uploads a file, runs code, or writes content.
+ */
+export const READ_VERBS = ['outline', 'read', 'search', 'context'] as const;
 
 /** Control verbs. Always advertised; not actuations. */
 export const CONTROL_VERBS = ['done', 'help'] as const;
@@ -112,6 +117,7 @@ export type ParsedCommand =
   | { verb: 'outline' }
   | { verb: 'read'; selector: string }
   | { verb: 'search'; text: string }
+  | { verb: 'context'; hints: PlanContextHint[] }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'suggest'; oldText: string; newText: string }
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
@@ -148,6 +154,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('outline') }),
   z.object({ verb: z.literal('read'), selector: z.string() }),
   z.object({ verb: z.literal('search'), text: z.string() }),
+  z.object({ verb: z.literal('context'), hints: z.array(PlanContextHintSchema) }),
   z.object({
     verb: z.literal('set'),
     cell: z.string(),
@@ -261,6 +268,7 @@ export function extractCommandBlock(modelText: string): string | null {
  *   • `format <range> k=v k=v ...` — first token is the range; the rest are `key=value`
  *     pairs (split on the FIRST `=`; values may contain `# $ , . %`, no quotes needed).
  *   • `read`/`search` — the remainder is the selector / search text (verbatim).
+ *   • `context` — read-only context/upload/code-exec strategy hints (validated enum tokens).
  *   • `outline`/`done`/`help` — no args.
  * An unknown/garbled verb yields a did-you-mean against the advertised verbs.
  */
@@ -298,6 +306,22 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       if (rest === '') return { error: 'search needs text — usage: search <text>' };
       // Tolerate the model wrapping the query in quotes.
       return { verb: 'search', text: stripWrappingQuotes(rest) };
+    }
+
+    case 'context': {
+      if (rest === '') return { verb: 'context', hints: [] };
+      const hints: PlanContextHint[] = [];
+      for (const raw of rest.split(/\s+/).filter(Boolean)) {
+        const hint = raw.toLowerCase();
+        const parsed = PlanContextHintSchema.safeParse(hint);
+        if (!parsed.success) {
+          return {
+            error: `unknown context hint "${raw}" — supported: ${PlanContextHintSchema.options.join(', ')}`,
+          };
+        }
+        hints.push(parsed.data);
+      }
+      return { verb: 'context', hints };
     }
 
     case 'set': {
@@ -1026,10 +1050,11 @@ export interface VerbSpec {
 /**
  * The capability-scoped grammar advertisement for a surface. Control verbs are always advertised; a
  * READ verb (`outline`/`read`/`search`) appears ONLY when it is in `manifest.reads` (ADR-0006 — a
- * surface must never advertise a read it cannot serve), and a WRITE verb appears ONLY when
- * `manifest.actuations[]` contains its mapped `ActuationKind`. Surface selector hints differ (Excel
- * reads an A1/NamedRange; Word's `read` is whole-document), so the smaller per-surface grammar is
- * fewer tokens to get wrong.
+ * surface must never advertise a host read it cannot serve). `context` is the exception: it is
+ * runtime-served, read-only, and always available so the model can ask the host for an upload/context
+ * strategy before escalating. A WRITE verb appears ONLY when `manifest.actuations[]` contains its
+ * mapped `ActuationKind`. Surface selector hints differ (Excel reads an A1/NamedRange; Word's
+ * `read` is whole-document), so the smaller per-surface grammar is fewer tokens to get wrong.
  */
 export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   const isExcelLike = manifest.surface === 'excel';
@@ -1044,11 +1069,17 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
     outline: { verb: 'outline', usage: 'outline', hint: 'show the document/workbook structure' },
     read: readSelector,
     search: { verb: 'search', usage: 'search <text>', hint: 'find content containing the text' },
+    context: {
+      verb: 'context',
+      usage:
+        'context [incremental|inline-preferred|reference-preferred|upload-preferred|code-execution-preferred|analytical|full-scope ...]',
+      hint: 'ask the host for a context/upload/code-execution strategy; read-only, never uploads by itself',
+    },
   };
 
   const specs: VerbSpec[] = [];
   for (const verb of READ_VERBS) {
-    if (declaredReads.has(verb)) specs.push(readSpecByVerb[verb]);
+    if (verb === 'context' || declaredReads.has(verb)) specs.push(readSpecByVerb[verb]);
   }
 
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a

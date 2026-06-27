@@ -266,7 +266,7 @@ describe('command surface — planner-confirm for complex free-text (full-stack,
       surface: 'word',
       client: scriptedClient([
         // 1) the PLANNER turn → a ```plan block (the confirmable intention)
-        '```plan\nintent rewrite\nsurface word\nstep rewrite the SLA to 99.9% as a tracked change\nexclude the indemnity clause\n```',
+        '```plan\nintent rewrite\nsurface word\ncontext inline-preferred\nstep rewrite the SLA to 99.9% as a tracked change\nexclude the indemnity clause\n```',
         // 2) the EXECUTOR turn (after confirm) → a ```cmd suggest → stages the effect gate
         '```cmd\nsuggest "The SLA is 99.5%." => "The SLA is 99.9%."\n```',
         '```cmd\ndone\n```',
@@ -282,6 +282,8 @@ describe('command surface — planner-confirm for complex free-text (full-stack,
     const card = ui.container.querySelector('.command-plan');
     expect(card).not.toBeNull();
     expect(card!.textContent).toContain('99.9%');
+    expect(card!.textContent).toContain('Context strategy');
+    expect(card!.textContent).toContain('Inline context');
     expect(ui.controller.getState().pendingPlan).toBeUndefined();
     expect((sim as WordSimulator).snapshot().inserts.length).toBe(0);
 

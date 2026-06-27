@@ -154,6 +154,15 @@ describe('compileCommand', () => {
     expect(
       compileCommand({ verb: 'search', text: 'x' }, { surface: 'word', mintChangeId: mint }),
     ).toEqual({ kind: 'read', intent: { read: 'search', text: 'x' } });
+    expect(
+      compileCommand(
+        { verb: 'context', hints: ['analytical', 'upload-preferred'] },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({
+      kind: 'read',
+      intent: { read: 'context-strategy', hints: ['analytical', 'upload-preferred'] },
+    });
   });
 
   it('compiles control verbs', () => {
@@ -375,6 +384,7 @@ describe('renderGrammarPrompt', () => {
     const prompt = renderGrammarPrompt(excelManifest);
     expect(prompt).toContain('set <A1> <value|=formula>');
     expect(prompt).toContain('read <A1|NamedRange>');
+    expect(prompt).toContain('context [incremental|inline-preferred');
     expect(prompt).not.toContain('suggest "old text"');
     expect(prompt).toContain('```cmd');
   });
@@ -604,6 +614,43 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(queries[0]).toContain('Analyze the sheet');
     // Turn 2 query is the ```result block fed back.
     expect(queries[1]).toContain('```result');
+  });
+
+  it('context returns upload and code-execution strategy without reading or writing host content', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      '```cmd\ncontext analytical full-scope upload-preferred code-execution-preferred\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('Analyze the full workbook'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'context analytical full-scope upload-preferred code-execution-preferred',
+      result: {
+        strategy: {
+          scope: 'whole-artifact',
+          transfer: 'upload-candidate',
+          analysis: 'code-execution-candidate',
+        },
+        upload: {
+          state: 'recommended',
+          supportedFormats: expect.arrayContaining([
+            {
+              extension: '.xlsx',
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            },
+          ]),
+        },
+      },
+    });
+    expect(bridge.reads).toEqual([]);
+    expect(bridge.applied).toEqual([]);
+    expect(queries[1]).toContain('"upload"');
+    expect(queries[1]).toContain('fileId');
   });
 
   it('write-one: a set compiles to a gated write-cells request, one at a time', async () => {

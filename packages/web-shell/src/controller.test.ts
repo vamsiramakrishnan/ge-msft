@@ -908,6 +908,7 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     surface: 'word',
     scope: { kind: 'section', ref: '§4' },
     ground: [],
+    context: ['inline-preferred'],
     steps: ['rewrite the SLA figure to 99.9% as a tracked change'],
     excludes: ['the indemnity clause'],
     clarify: [],

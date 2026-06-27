@@ -38,6 +38,16 @@ HANDLED_WRITE_VERBS = {
     "table", "chart", "cf", "spill",
 }
 
+CONTEXT_HINTS = {
+    "incremental",
+    "inline-preferred",
+    "reference-preferred",
+    "upload-preferred",
+    "code-execution-preferred",
+    "analytical",
+    "full-scope",
+}
+
 
 def _load_language():
     """Load (read, control, write, transforms, effects, kinds, version) from the bundled manifest."""
@@ -56,7 +66,7 @@ def _load_language():
         # Fallback: the manifest is absent (stripped sandbox) — fall back to HANDLED_WRITE_VERBS so the
         # checker still runs. Parity asserts this matches the manifest, so the fallback can't rot.
         return (
-            {"outline", "read", "search"},
+            {"outline", "read", "search", "context"},
             {"done", "help"},
             set(HANDLED_WRITE_VERBS),
             {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
@@ -210,6 +220,15 @@ def parse_line(line: str):
         if not rest:
             return {"error": "search needs text — usage: search <text>"}
         return {"verb": "search", "text": rest.strip('"')}
+    if verb == "context":
+        hints = []
+        for raw in rest.split():
+            hint = raw.lower()
+            if hint not in CONTEXT_HINTS:
+                supported = ", ".join(sorted(CONTEXT_HINTS))
+                return {"error": f"unknown context hint '{raw}' — supported: {supported}"}
+            hints.append(hint)
+        return {"verb": "context", "hints": hints}
 
     if verb == "set":
         sp = re.search(r"\s", rest)
@@ -428,6 +447,15 @@ done
     # A no-arg verb with a trailing token is a reported error, not a silent drop.
     if "error" not in (parse_line("done now please") or {}):
         failures.append("`done now please` did not error on its trailing tokens")
+
+    ctx = parse_line("context analytical full-scope upload-preferred code-execution-preferred")
+    if ctx != {
+        "verb": "context",
+        "hints": ["analytical", "full-scope", "upload-preferred", "code-execution-preferred"],
+    }:
+        failures.append(f"context hints did not parse: {ctx}")
+    if "error" not in (parse_line("context run-python-now") or {}):
+        failures.append("unknown context hint did not error")
 
     # ADR-0008 §4 drift gate: every manifest write verb MUST have a parse arm here (and vice-versa),
     # so growing the manifest without a Python arm is caught — never a silent "unhandled verb".

@@ -38,6 +38,7 @@ def _load(module_name: str, filename: str):
 
 # Import lazily-dependent modules. These must NOT pull in google.auth / requests at import time.
 create_skill = _load("create_skill", "create_skill.py")
+update_skills = _load("update_skills", "update_skills.py")
 
 
 class _FakeResponse:
@@ -170,6 +171,29 @@ class TestDryRunDefault(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 create_skill.main(["--live"])
             self.assertIn("GE_PROJECT", str(cm.exception))
+
+
+class TestBatchSkillUpdater(unittest.TestCase):
+    ENV = {"GE_PROJECT": "p", "GE_PROJECT_NUMBER": "123", "GE_ENGINE": "e"}
+
+    def test_batch_dry_run_makes_no_network_calls(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with mock.patch.object(create_skill, "session") as sess_factory:
+                code = update_skills.main([])
+        self.assertEqual(code, 0)
+        sess_factory.assert_not_called()
+
+    def test_batch_replace_requires_yes(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with self.assertRaises(SystemExit) as cm:
+                update_skills.main(["--replace"])
+            self.assertIn("--yes", str(cm.exception))
+
+    def test_batch_delete_only_requires_yes(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with self.assertRaises(SystemExit) as cm:
+                update_skills.main(["--delete-only"])
+            self.assertIn("--yes", str(cm.exception))
 
 
 # ---------------------------------------------------------------------------

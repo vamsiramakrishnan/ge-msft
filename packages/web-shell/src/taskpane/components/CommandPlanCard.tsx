@@ -1,4 +1,4 @@
-import type { CommandScope } from '@ge/contracts';
+import { derivePlanContextStrategy, type CommandScope } from '@ge/contracts';
 import type { PendingCommandPlan } from '../../controller.js';
 
 export interface CommandPlanCardProps {
@@ -27,6 +27,7 @@ export function CommandPlanCard({
 }: CommandPlanCardProps): JSX.Element | null {
   if (!pending) return null;
   const { plan } = pending;
+  const contextStrategy = derivePlanContextStrategy(plan.context);
   return (
     <section className="command-plan" role="group" aria-label="Proposed plan">
       <div className="command-plan-head">
@@ -49,6 +50,16 @@ export function CommandPlanCard({
       {plan.ground.length > 0 && (
         <div className="command-plan-ground">
           Grounded on {plan.ground.map((g) => g.ref ?? g.kind).join(', ')}
+        </div>
+      )}
+      {contextStrategy.hints.length > 0 && (
+        <div className="command-plan-context" aria-label="Context strategy">
+          <strong>Context strategy</strong>
+          {contextStrategy.hints.map((hint) => (
+            <span key={hint.hint} title={hint.detail}>
+              {hint.label}
+            </span>
+          ))}
         </div>
       )}
       <div className="command-plan-actions">

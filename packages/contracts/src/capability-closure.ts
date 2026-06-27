@@ -14,7 +14,8 @@ import { WRITE_VERB_TO_KIND } from './command-grammar.js';
  * advertised but unhandled; advertised reads with no bridge port; handled effects with no CLI
  * verb). {@link checkCapabilityClosure} computes the three disagreement sets from the three
  * authoritative inputs so a conformance test can fail the build on a *lie* (phantom / unreached
- * read) and track a *gap* (unreached handler) against an allow-list.
+ * read) and track a *gap* (unreached handler) against an allow-list. The `context` read is a
+ * runtime-served strategy probe, so it is not a bridge-port obligation.
  *
  * This is the one definition; surfaces feed it their own `handledKinds`/`readPorts`.
  */
@@ -48,6 +49,7 @@ export interface CapabilityClosureReport {
 
 /** The set of `ActuationKind`s reachable from some CLI write verb (the closure's verb input). */
 const VERB_REACHABLE_KINDS: ReadonlySet<ActuationKind> = new Set(Object.values(WRITE_VERB_TO_KIND));
+const RUNTIME_SERVED_READS: ReadonlySet<ReadVerb> = new Set(['context']);
 
 /**
  * Compute the capability-closure report for a surface (pure). No I/O, no Office.js — just set
@@ -66,7 +68,9 @@ export function checkCapabilityClosure(inputs: CapabilityClosureInputs): Capabil
 
   // Unreached reads: advertised read verbs with no bridge read port.
   const advertisedReads = manifest.reads ?? [];
-  const unreachedReads = [...new Set(advertisedReads)].filter((verb) => !ports.has(verb));
+  const unreachedReads = [...new Set(advertisedReads)].filter(
+    (verb) => !ports.has(verb) && !RUNTIME_SERVED_READS.has(verb),
+  );
 
   // Gaps: handled kinds reachable by no CLI write verb. Iterating the `handled` Set de-dups
   // (symmetric with the de-duped phantom set above).

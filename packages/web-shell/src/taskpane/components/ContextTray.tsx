@@ -7,9 +7,9 @@ export interface ContextTrayProps {
 }
 
 const KIND_DOT: Readonly<Record<string, string>> = {
-  document: 'var(--grad)',
-  selection: 'var(--grad)',
-  range: 'var(--grad)',
+  document: 'var(--host)',
+  selection: 'var(--host)',
+  range: 'var(--host)',
   'mail-item': '#2f6fed',
   transcript: '#0f9d8c',
 };

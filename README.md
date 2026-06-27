@@ -271,7 +271,7 @@ See `docs/STATUS.md` and `docs/CAPABILITY-MAP.md` for the full inventory.
 
 ## ADR index
 
-The ADRs are the current architecture, in order — each builds on the last.
+The ADRs are the current architecture, in order - each builds on the last.
 
 | ADR | Title | Status | One line |
 |---|---|---|---|
@@ -281,14 +281,19 @@ The ADRs are the current architecture, in order — each builds on the last.
 | [0004](docs/ADR-0004-command-protocol-actuation.md) | A command-line protocol for the assist loop | Proposed | The model drives reads/writes via flat CLI command lines; the runtime compiles each to a typed `ActuationRequest`. CLI beats JSON (no envelope drift). |
 | [0005](docs/ADR-0005-composable-capabilities.md) | A composable capability algebra | Accepted (Ph 1–3 built) | A typed value layer between reads and effects: pure composes freely, effects gate; plans + dry-run + one approval; skills as saved compositions. |
 | [0006](docs/ADR-0006-capability-closure.md) | Capability closure: truthful manifests | Accepted | Compute the closed, executable capability set and enforce it with conformance tests that fail the build on phantom capabilities. |
+| [0007](docs/ADR-0007-host-native-write-kinds.md) | Host-native write kinds | Proposed | Generalize writes into per-kind strategies with explicit anchor, inverse, provenance, and preview rather than one tracked-change-shaped template. |
+| [0008](docs/ADR-0008-surface-commander-algebra.md) | Surface Commander algebra | Accepted | Keep one algebraic Surface Commander skill, make runtime signatures authoritative, and keep effects terminal while `surface-cli` remains a pure checker. |
+| [0009](docs/ADR-0009-tenant-config-bootstrap.md) | Tenant bootstrap, ring configuration, and bounded deployment envelopes | Proposed | Treat manifest scopes as the bounded ceiling; tenant config may select/disable within it, while SharePoint Selected permissions plus WIF/IAM enforce access. |
 
 ---
 
 ## Docs index
 
-- **Architecture (current):** the six ADRs above — start there.
+- **Architecture (current):** the ADRs above - start there.
 - `setup/` — tenant prerequisites, Entra/WIF configuration, dev tunnel setup, manifest/package
   generation, sideloading paths, and debugging.
+- `docs/bootstrap-live-validation.md` — first live slice for SharePoint-backed tenant config.
+- `docs/wif-iam-scoping.md` — WIF provider and Google IAM scoping guardrails for tenant config.
 - `docs/STATUS.md` — the honest "what's built / what's deferred" inventory.
 - `docs/CAPABILITY-MAP.md` — the per-capability read/write/do inventory across the two planes.
 - `docs/CONTRACTS.md` — the authoritative API schemas, the command/expr/skill grammars, closure.

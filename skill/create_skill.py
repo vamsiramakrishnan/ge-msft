@@ -251,6 +251,13 @@ def _looks_like_missing_agent(r: requests.Response) -> bool:
     return any(marker in body for marker in missing_markers)
 
 
+def _looks_like_unknown_json_field(r: requests.Response) -> bool:
+    if r.status_code != 400:
+        return False
+    body = _response_body_for_error(r)
+    return "Unknown name" in body and "Cannot find field" in body
+
+
 def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
     r = s.delete(f"{API}/{cfg.assistant}/agents/{agent_id}", timeout=HTTP_TIMEOUT)
     print(f"  delete {agent_id}: HTTP {r.status_code}")
@@ -269,18 +276,35 @@ def delete_widget_agent(
     *,
     missing_ok: bool = True,
 ):
-    r = s.post(
-        f"{CONTENT_API}/locations/{cfg.location}/widgetDeleteAgent",
-        json=_widget_request(widget, "deleteAgentRequest", {"name": agent_name}),
-        timeout=HTTP_TIMEOUT,
-    )
-    print(f"  delete {agent_name}: HTTP {r.status_code}")
-    if missing_ok and _looks_like_missing_agent(r):
-        if r.status_code != 404:
-            print(f"  delete {agent_name}: treating missing/stale agent as already deleted")
-        return r
-    _raise_for_status_with_body(r, "widgetDeleteAgent")
-    return r
+    url = f"{CONTENT_API}/locations/{cfg.location}/widgetDeleteAgent"
+    base = {
+        "configId": widget.config_id,
+        "additionalParams": {"token": "-", "origin": "ORIGIN_UNSPECIFIED"},
+    }
+    payloads = [
+        ("deleteAgentRequest", _widget_request(widget, "deleteAgentRequest", {"name": agent_name})),
+        ("name", {**base, "name": agent_name}),
+        ("agentName", {**base, "agentName": agent_name}),
+        ("deleteAgentViewRequest", _widget_request(widget, "deleteAgentViewRequest", {"name": agent_name})),
+        ("agent", {**base, "agent": {"name": agent_name}}),
+    ]
+    last_response: requests.Response | None = None
+    for label, payload in payloads:
+        r = s.post(url, json=payload, timeout=HTTP_TIMEOUT)
+        print(f"  delete {agent_name} ({label}): HTTP {r.status_code}")
+        if missing_ok and _looks_like_missing_agent(r):
+            if r.status_code != 404:
+                print(f"  delete {agent_name}: treating missing/stale agent as already deleted")
+            return r
+        if 200 <= r.status_code < 300:
+            return r
+        if _looks_like_unknown_json_field(r):
+            last_response = r
+            continue
+        _raise_for_status_with_body(r, "widgetDeleteAgent")
+    assert last_response is not None
+    _raise_for_status_with_body(last_response, "widgetDeleteAgent")
+    return last_response
 
 
 def create_shell(

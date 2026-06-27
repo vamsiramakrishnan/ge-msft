@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
+from requests import HTTPError
 from requests.adapters import HTTPAdapter
 
 try:  # urllib3 ships with requests; import path differs across versions.
@@ -218,6 +219,38 @@ def _widget_request(widget: WidgetConfig, key: str, payload: dict) -> dict:
     }
 
 
+def _response_body_for_error(r: requests.Response) -> str:
+    text = r.text.strip()
+    if len(text) > 2000:
+        return text[:2000] + "...<truncated>"
+    return text
+
+
+def _raise_for_status_with_body(r: requests.Response, op: str) -> None:
+    try:
+        r.raise_for_status()
+    except HTTPError as exc:
+        body = _response_body_for_error(r)
+        raise HTTPError(f"{op} failed: HTTP {r.status_code}: {body}", response=r) from exc
+
+
+def _looks_like_missing_agent(r: requests.Response) -> bool:
+    if r.status_code == 404:
+        return True
+    if r.status_code != 400:
+        return False
+    body = _response_body_for_error(r).lower()
+    missing_markers = (
+        "not found",
+        "not_found",
+        "does not exist",
+        "no such agent",
+        "not exist",
+        "already deleted",
+    )
+    return any(marker in body for marker in missing_markers)
+
+
 def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
     r = s.delete(f"{API}/{cfg.assistant}/agents/{agent_id}", timeout=HTTP_TIMEOUT)
     print(f"  delete {agent_id}: HTTP {r.status_code}")
@@ -229,7 +262,12 @@ def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
 
 
 def delete_widget_agent(
-    s: requests.Session, cfg: LiveConfig, widget: WidgetConfig, agent_name: str
+    s: requests.Session,
+    cfg: LiveConfig,
+    widget: WidgetConfig,
+    agent_name: str,
+    *,
+    missing_ok: bool = True,
 ):
     r = s.post(
         f"{CONTENT_API}/locations/{cfg.location}/widgetDeleteAgent",
@@ -237,9 +275,11 @@ def delete_widget_agent(
         timeout=HTTP_TIMEOUT,
     )
     print(f"  delete {agent_name}: HTTP {r.status_code}")
-    if r.status_code == 404:
+    if missing_ok and _looks_like_missing_agent(r):
+        if r.status_code != 404:
+            print(f"  delete {agent_name}: treating missing/stale agent as already deleted")
         return r
-    r.raise_for_status()
+    _raise_for_status_with_body(r, "widgetDeleteAgent")
     return r
 
 
@@ -261,7 +301,7 @@ def create_shell(
         },
         timeout=HTTP_TIMEOUT,
     )
-    r.raise_for_status()
+    _raise_for_status_with_body(r, "widgetCreateAgent")
     return r.json()
 
 
@@ -325,7 +365,7 @@ def upload_zip_resumable(
         data=b"",
         timeout=HTTP_TIMEOUT,
     )
-    start.raise_for_status()
+    _raise_for_status_with_body(start, "files:upload start")
     upload_url = start.headers.get("x-goog-upload-url")
     if not upload_url:
         raise RuntimeError(
@@ -344,7 +384,7 @@ def upload_zip_resumable(
         data=data,
         timeout=HTTP_TIMEOUT,
     )
-    final.raise_for_status()
+    _raise_for_status_with_body(final, "files:upload finalize")
     if final.content:
         try:
             return final.json()
@@ -361,7 +401,7 @@ def share(s: requests.Session, cfg: LiveConfig, agent_id: str):
         timeout=HTTP_TIMEOUT,
     )
     print(f"  share {agent_id}: HTTP {r.status_code}")
-    r.raise_for_status()
+    _raise_for_status_with_body(r, "widgetGetAgentView")
     return r
 
 

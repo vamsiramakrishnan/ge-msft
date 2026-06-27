@@ -1,7 +1,7 @@
 # Office host simulators + full-stack UI integration harness
 
 The code lives in [`../src/test-harness/`](../src/test-harness/). This README documents it. (The
-harness ships *inside* `src/` so it compiles and tests under the same `tsc`/Vitest project as the
+harness ships _inside_ `src/` so it compiles and tests under the same `tsc`/Vitest project as the
 rest of `web-shell`; this top-level folder is just its doc home.)
 
 ## What this is, and why
@@ -23,7 +23,7 @@ actually landed where the bridge computed it, not merely that the UI said so.
 On top of that, [`mountStack`](#mountstack--the-full-stack-wiring) wires the **real** runtime
 (`AssistSession`), the **real** `PanelController`, and the **real** React `<App/>` over the fake host
 and a scripted model stream. Nothing is mocked except the host object model and the model SSE
-stream, so an assertion against the rendered DOM *or* the mutated host snapshot is an assertion about
+stream, so an assertion against the rendered DOM _or_ the mutated host snapshot is an assertion about
 the whole client stack: bridge → runtime → controller → UI.
 
 The single `unknown` cast that installs fakes onto the typed `globalThis` Office namespaces is
@@ -133,15 +133,15 @@ requirement set:
 - `Office.context.document.customXmlParts.add(xml)` — Word durable provenance. Appends into
   `OfficeSeed.customXmlParts`.
 - `Office.context.document.addHandlerAsync/removeHandlerAsync` + `Office.EventType.
-  {DocumentSelectionChanged,ActiveViewChanged}` — host-event registration. Handlers are retained so
+{DocumentSelectionChanged,ActiveViewChanged}` — host-event registration. Handlers are retained so
   a test fires them via the `OfficeHandlerRegistry` (`officeHandlers.fire(eventType)` / `.count(...)`).
 
 ### No-op stubs / fidelity gaps (the boundary)
 
-These host APIs are *called* by a bridge but **stubbed** — a test can pass against the fake that the
+These host APIs are _called_ by a bridge but **stubbed** — a test can pass against the fake that the
 real host would compute differently. They are deliberate scope cuts:
 
-- **Excel formula evaluation is not computed.** A `=`-formula write records the formula *string*
+- **Excel formula evaluation is not computed.** A `=`-formula write records the formula _string_
   verbatim into the cell; dependent cells are never recomputed. (The composed-read path
   `read | filter | sum` is dry-run by the **runtime** over the seeded values, not by Excel, so those
   tests are unaffected.)
@@ -150,7 +150,7 @@ real host would compute differently. They are deliberate scope cuts:
 - **No real slide layouts/masters.** `slides.add()` fabricates two empty placeholder shapes — enough
   structure for the native compose path, not a real master.
 - **`load(props)` ignores its property list.** Every property is materialized regardless of what was
-  requested, so a bridge that reads a property it forgot to `load()` would *pass* against the fake
+  requested, so a bridge that reads a property it forgot to `load()` would _pass_ against the fake
   but throw `PropertyNotLoaded` on a real host. (Low risk — the bridges are reviewed for matching
   load/read pairs — but it is a divergence worth knowing.)
 - **Excel `numberFormat` / `format.font.*` / `format.fill.color` writes are stored but not committed
@@ -171,12 +171,28 @@ e.g. `{ ExcelApi: 9 }` to model a stale host).
 ### `ExcelSeed` — `excelSeed({ sheets, activeSheet?, selection?, namedRanges?, comments? })`
 
 ```ts
-interface SheetSeed      { name: string; origin: string; values: string[][] }  // origin = top-left A1
-interface NamedRangeSeed { name: string; range: string }                       // sheet-qualified A1, no '='
-interface CommentSeed    { id: string; cell: string; content: string; replies: string[]; resolved: boolean }
+interface SheetSeed {
+  name: string;
+  origin: string;
+  values: string[][];
+} // origin = top-left A1
+interface NamedRangeSeed {
+  name: string;
+  range: string;
+} // sheet-qualified A1, no '='
+interface CommentSeed {
+  id: string;
+  cell: string;
+  content: string;
+  replies: string[];
+  resolved: boolean;
+}
 interface ExcelSeed {
-  sheets: SheetSeed[]; activeSheet: string; selection: string;                 // sheet-qualified A1
-  namedRanges: NamedRangeSeed[]; comments: CommentSeed[];
+  sheets: SheetSeed[];
+  activeSheet: string;
+  selection: string; // sheet-qualified A1
+  namedRanges: NamedRangeSeed[];
+  comments: CommentSeed[];
 }
 ```
 
@@ -188,13 +204,23 @@ data row.
 ### `WordSeed` — `wordSeed({ selectionText?, paragraphs, comments? })`
 
 ```ts
-interface WordParagraphSeed { text: string; styleBuiltIn: string }             // style → heading level
-interface WordCommentSeed   { id: string; text: string; replies: string[]; resolved: boolean }
+interface WordParagraphSeed {
+  text: string;
+  styleBuiltIn: string;
+} // style → heading level
+interface WordCommentSeed {
+  id: string;
+  text: string;
+  replies: string[];
+  resolved: boolean;
+}
 interface WordSeed {
-  selectionText: string; paragraphs: WordParagraphSeed[]; comments: WordCommentSeed[];
-  changeTrackingMode?: string;                                                 // recorded by the bridge
-  inserts: Array<{ anchor: string; text: string }>;                           // recorded tracked-change writes
-  addedComments: Array<{ anchor: string; text: string }>;                     // recorded insertComment writes
+  selectionText: string;
+  paragraphs: WordParagraphSeed[];
+  comments: WordCommentSeed[];
+  changeTrackingMode?: string; // recorded by the bridge
+  inserts: Array<{ anchor: string; text: string }>; // recorded tracked-change writes
+  addedComments: Array<{ anchor: string; text: string }>; // recorded insertComment writes
 }
 ```
 
@@ -205,11 +231,17 @@ to redline, plus one existing comment.
 ### `PowerPointSeed` — `powerPointSeed({ slides, selectedIndices? })`
 
 ```ts
-interface ShapeSeed { text: string }
-interface SlideSeed { id: string; shapes: ShapeSeed[] }                        // shapes[0] = title, by convention
+interface ShapeSeed {
+  text: string;
+}
+interface SlideSeed {
+  id: string;
+  shapes: ShapeSeed[];
+} // shapes[0] = title, by convention
 interface PowerPointSeed {
-  slides: SlideSeed[]; selectedIndices: number[];                             // zero-based; bridge reads items[0]
-  insertedDecks: string[];                                                    // recorded base64 merges
+  slides: SlideSeed[];
+  selectedIndices: number[]; // zero-based; bridge reads items[0]
+  insertedDecks: string[]; // recorded base64 merges
 }
 ```
 
@@ -220,11 +252,14 @@ with slide index 1 selected.
 ## `mountStack` — the full-stack wiring
 
 ```ts
-const sim = installFakeExcel();                       // 1. install the fake host (caller owns restore)
-const ui  = mountStack({                              // 2. wire the real stack over it
+const sim = installFakeExcel(); // 1. install the fake host (caller owns restore)
+const ui = mountStack({
+  // 2. wire the real stack over it
   surface: 'excel',
-  client: scriptedClient([ /* model turns */ ]),
-  triggers,                                            //    optional actuation gate / event registry
+  client: scriptedClient([
+    /* model turns */
+  ]),
+  triggers, //    optional actuation gate / event registry
 });
 ```
 
@@ -241,9 +276,9 @@ It returns the live `{ bridge, session, controller, container, root }` plus:
   e.g. after `refreshContext`).
 - **`waitFor(predicate, timeoutMs=1000)`** — pumps the event loop (real `setTimeout(0)` macrotasks)
   inside `act()` until `predicate(controller.getState())` holds. **Why:** the command loop
-  *suspends on async stream consumption between gates* — it `await`s the model stream and the
-  approval promise — so a test must wait for a gate to be *staged* (`pendingPlan !== undefined`) or
-  the run to *settle* (`!busy`) rather than assume a fixed number of microtasks.
+  _suspends on async stream consumption between gates_ — it `await`s the model stream and the
+  approval promise — so a test must wait for a gate to be _staged_ (`pendingPlan !== undefined`) or
+  the run to _settle_ (`!busy`) rather than assume a fixed number of microtasks.
 - **`act(fn)`** — runs a discrete user gesture (`approvePlan`, `rejectPlan`, `runCommands`,
   `refreshContext`) inside `act()`, draining the immediate microtasks it schedules so the rendered
   DOM stays warning-free.
@@ -261,7 +296,7 @@ either the wrapper or a bare `client`.
 ## Adding a new surface simulator
 
 1. **Enumerate the exact host calls its bridge makes.** Read the bridge (and any host port) and list
-   every `Host.run` object-model call and `Office.context.*` call it touches — that list *is* the
+   every `Host.run` object-model call and `Office.context.*` call it touches — that list _is_ the
    fidelity boundary, and belongs in the fake's file header.
 2. **Model only that slice** as small fake classes with `load()` no-ops and immediate property
    materialization. Don't implement the full `@types/office-js` surface.
@@ -279,36 +314,46 @@ either the wrapper or a bare `client`.
 
 Pattern (jsdom; start the file with `// @vitest-environment jsdom`):
 
-```ts
+````ts
 sim = installFakeExcel(/* optional seed, optional requirements */);
-ui  = mountStack({ surface: 'excel', client: scriptedClient([
-  '```cmd\nset Summary!B2 42\n```',
-  '```cmd\ndone\n```',
-]) });
+ui = mountStack({
+  surface: 'excel',
+  client: scriptedClient(['```cmd\nset Summary!B2 42\n```', '```cmd\ndone\n```']),
+});
 await ui.flush();
 
 let run!: Promise<void>;
-await ui.act(() => { run = ui.controller.runCommands('write a value'); });
-await ui.waitFor((s) => s.pendingPlan !== undefined);   // wait for the staged gate
+await ui.act(() => {
+  run = ui.controller.runCommands('write a value');
+});
+await ui.waitFor((s) => s.pendingPlan !== undefined); // wait for the staged gate
 
-await ui.act(() => ui.controller.approvePlan());        // the user gesture
-await ui.waitFor((s) => !s.busy);                       // wait for the run to settle
+await ui.act(() => ui.controller.approvePlan()); // the user gesture
+await ui.waitFor((s) => !s.busy); // wait for the run to settle
 await run;
 await ui.flush();
 
 // Assert the MUTATED HOST, not just UI state:
 expect(sim.snapshot().sheets.find((s) => s.name === 'Summary')?.values[1]?.[1]).toBe('42');
-```
+````
 
 Always assert the **host snapshot** for write outcomes (so the test fails if a write leaks through or
 fails to land), and remember the teardown:
 
 ```ts
-afterEach(() => { ui?.unmount(); sim?.restore(); ui = undefined; sim = undefined; });
+afterEach(() => {
+  ui?.unmount();
+  sim?.restore();
+  ui = undefined;
+  sim = undefined;
+});
 ```
 
 To exercise a **stale host**, lower the requirement set: `installFakeExcel(undefined, { ExcelApi: 9 })`
 makes comments (ExcelApi 1.10) unsupported, so the bridge degrades instead of throwing. To exercise
 the **fail-closed gate**, pass a `TriggerRegistry` with a `pre-actuation` handler returning
 `{ kind: 'block' }` and assert the host snapshot is unchanged.
+
+```
+
 ```

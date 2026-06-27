@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export AZURE_CONFIG_DIR="${AZURE_CONFIG_DIR:-$ROOT/.azure}"
+
+exec "$ROOT/.venv-az/bin/python" -m azure.cli "$@"

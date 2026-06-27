@@ -3,6 +3,8 @@ dist
 dist-web
 build
 coverage
+.azure
+.venv-az
 package-lock.json
 
 # Provided spec + content (authoritative source — do not reformat)

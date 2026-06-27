@@ -69,11 +69,15 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
   // top-to-bottom. The controller still owns the flat `chips` list and the `attached` flag.
   const attached = chips.filter((c) => c.attached);
   const available = chips.filter((c) => !c.attached);
+  const preview = attached.length > 0 ? attached : available;
   return (
-    <section className="unit" aria-label="Research unit grounding scope">
-      <div className="unit-h eyebrow">
+    <section className="unit detail-hover" aria-label="Research unit grounding scope">
+      <div className="unit-h">
         <span className="nb" aria-hidden="true" />
-        <span>Research unit · grounding scope</span>
+        <span className="unit-title">Context</span>
+        <span className="unit-summary">
+          {attached.length} attached · {available.length} nearby
+        </span>
         <button
           type="button"
           className="link"
@@ -83,9 +87,20 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
           Refresh
         </button>
       </div>
-      <div className="chips">
+      <div className="unit-peek" aria-hidden="true">
+        {chips.length === 0 ? (
+          <span className="muted small">No host context loaded</span>
+        ) : (
+          preview.slice(0, 3).map((chip) => (
+            <span key={chip.id} className={`mini-chip${chip.attached ? ' on' : ''}`}>
+              {chip.title}
+            </span>
+          ))
+        )}
+      </div>
+      <div className="chips context-popover">
         {chips.length === 0 && (
-          <span className="muted small">Nothing to attach yet — Refresh to scan the host.</span>
+          <span className="muted small">Nothing to attach yet. Refresh scans the host.</span>
         )}
         {attached.length > 0 && (
           <div className="chips-group" role="list" aria-label="Attached sources">

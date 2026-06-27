@@ -137,6 +137,122 @@ describe('StreamAssistClient — network and failure paths', () => {
   });
 });
 
+describe('StreamAssistClient — code execution parts', () => {
+  it('emits executable code and execution results as typed events without mixing them into answer text', async () => {
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: {
+                executableCode: {
+                  code: 'values = [120, 90, 110]\nprint(sum(values))',
+                },
+              },
+            },
+          },
+          {
+            groundedContent: {
+              content: {
+                codeExecutionResult: {
+                  outcome: 'OUTCOME_OK',
+                  output: '320\n',
+                },
+              },
+            },
+          },
+          {
+            groundedContent: {
+              content: { text: 'The computed total is 320.' },
+            },
+          },
+        ],
+      },
+    };
+    const client = new StreamAssistClient(tokens, cfg(), streamFetch([chunk]) as never);
+    const events = await collect(client.stream(assistReq('Calculate the total.')));
+    expect(events.map((e) => e.type)).toEqual([
+      'code-execution',
+      'code-execution-result',
+      'token',
+      'provenance',
+      'done',
+    ]);
+    expect(events[0]).toEqual({
+      type: 'code-execution',
+      language: 'python',
+      code: 'values = [120, 90, 110]\nprint(sum(values))',
+    });
+    expect(events[1]).toEqual({
+      type: 'code-execution-result',
+      outcome: 'OUTCOME_OK',
+      output: '320\n',
+    });
+    const answer = events
+      .filter((e): e is Extract<SseEvent, { type: 'token' }> => e.type === 'token')
+      .map((e) => e.text)
+      .join('');
+    expect(answer).toBe('The computed total is 320.');
+  });
+
+  it('normalizes unknown code execution outcomes to OUTCOME_UNSPECIFIED', async () => {
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: {
+                codeExecutionResult: {
+                  outcome: 'OUTCOME_VENDOR_PRIVATE',
+                  output: 'redacted failure',
+                },
+              },
+            },
+          },
+        ],
+      },
+    };
+    const client = new StreamAssistClient(tokens, cfg(), streamFetch([chunk]) as never);
+    const events = await collect(client.stream(assistReq('Run code if needed.')));
+    expect(events[0]).toEqual({
+      type: 'code-execution-result',
+      outcome: 'OUTCOME_UNSPECIFIED',
+      output: 'redacted failure',
+    });
+  });
+
+  it('suppresses code execution parts flagged as model thought', async () => {
+    const chunk = {
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: {
+                thought: true,
+                executableCode: {
+                  code: 'print("internal scratchpad")',
+                },
+              },
+            },
+          },
+          {
+            groundedContent: {
+              content: { text: 'No code was exposed.' },
+            },
+          },
+        ],
+      },
+    };
+    const client = new StreamAssistClient(tokens, cfg(), streamFetch([chunk]) as never);
+    const events = await collect(client.stream(assistReq('Explain.')));
+    expect(events.some((e) => e.type === 'code-execution')).toBe(false);
+    expect(events.some((e) => e.type === 'token' && e.text === 'No code was exposed.')).toBe(true);
+  });
+});
+
 describe('StreamAssistClient — grounding-support source resolution', () => {
   it('resolves a support source from inline documentMetadata (no referenceIndex)', async () => {
     const chunk = {

@@ -261,6 +261,7 @@ export interface RunStep {
     | 'capped'
     | 'done'
     | 'exhausted'
+    | 'code-execution'
     | 'error';
   text: string;
 }
@@ -649,6 +650,12 @@ export class PanelController {
         this.patchMessage(replyId, () => ({ error: ev.message }));
         this.addStep('error', ev.message);
         return;
+      case 'code-execution':
+        this.addStep('code-execution', 'Python code execution requested');
+        return;
+      case 'code-execution-result':
+        this.addStep('code-execution', codeExecutionResultText(ev));
+        return;
       case 'turn-start':
         this.addStep('turn-start', `Turn ${ev.turn}`);
         return;
@@ -985,6 +992,20 @@ function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>):
         ? ' (⚠ provenance not recorded)'
         : '';
   return `${r.kind} — ${outcome}${provenance}`;
+}
+
+/** A one-line label for Gemini Enterprise code execution telemetry. */
+function codeExecutionResultText(ev: Extract<SseEvent, { type: 'code-execution-result' }>): string {
+  switch (ev.outcome) {
+    case 'OUTCOME_OK':
+      return 'Python code execution completed';
+    case 'OUTCOME_FAILED':
+      return 'Python code execution failed';
+    case 'OUTCOME_DEADLINE_EXCEEDED':
+      return 'Python code execution timed out';
+    case 'OUTCOME_UNSPECIFIED':
+      return 'Python code execution returned an unspecified outcome';
+  }
 }
 
 /** A fetch aborted via AbortSignal rejects with a DOMException/Error named 'AbortError'. */

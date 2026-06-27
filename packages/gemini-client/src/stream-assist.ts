@@ -135,8 +135,21 @@ export class StreamAssistClient {
 
       for (const reply of data.answer?.replies ?? []) {
         const gc = reply.groundedContent;
-        const text = gc?.content?.text;
-        if (text && gc?.content?.thought !== true) {
+        const content = gc?.content;
+        const code = content?.executableCode?.code;
+        if (code && content?.thought !== true) {
+          yield { type: 'code-execution', language: 'python', code };
+        }
+        const codeResult = content?.codeExecutionResult;
+        if (codeResult && content?.thought !== true) {
+          yield {
+            type: 'code-execution-result',
+            outcome: codeExecutionOutcome(codeResult.outcome),
+            ...(codeResult.output ? { output: codeResult.output } : {}),
+          };
+        }
+        const text = content?.text;
+        if (text && content?.thought !== true) {
           accumulated += text;
           yield { type: 'token', text };
         }
@@ -305,6 +318,19 @@ function resolveSupportSources(
  */
 function policyReason(): string {
   return 'This response was blocked by your organization’s content policy.';
+}
+
+function codeExecutionOutcome(
+  outcome: string,
+): Extract<SseEvent, { type: 'code-execution-result' }>['outcome'] {
+  switch (outcome) {
+    case 'OUTCOME_OK':
+    case 'OUTCOME_FAILED':
+    case 'OUTCOME_DEADLINE_EXCEEDED':
+      return outcome;
+    default:
+      return 'OUTCOME_UNSPECIFIED';
+  }
 }
 
 function agentId(cfg: GeminiClientConfig, skills: string[]): string {

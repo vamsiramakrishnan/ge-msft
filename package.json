@@ -24,6 +24,7 @@
     "release:check": "node tools/release/release-check.mjs",
     "release:secret-scan": "node tools/release/secret-scan.mjs",
     "release:checksums": "node tools/release/checksums.mjs --verify",
+    "probe:streamassist-code-exec": "node scripts/streamassist-code-exec-probe.mjs",
     "coverage": "vitest run --coverage",
     "emit:language": "tsc -b packages/contracts && node packages/contracts/scripts/emit-language-manifest.mjs"
   },

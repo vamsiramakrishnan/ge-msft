@@ -43,25 +43,44 @@ function chipLabels(): string[] {
   return chips().map((c) => c.querySelector('.quick-action-main')?.textContent ?? '');
 }
 
+function clickTab(label: string): void {
+  const tab = [...container.querySelectorAll<HTMLButtonElement>('.action-tab')].find((button) =>
+    button.textContent?.includes(label),
+  );
+  act(() => tab?.click());
+}
+
+function clickMore(): void {
+  const more = container.querySelector<HTMLButtonElement>('.action-more');
+  act(() => more?.click());
+}
+
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
 });
 
 describe('QuickActionBar', () => {
-  it('renders exactly the surface catalog, in order, by label', () => {
+  it('renders a grouped drawer with the write group first when write actions exist', () => {
     render({ surface: 'word' });
-    const expected = quickActionsForSurface('word').map((a) => a.label);
+    const expected = quickActionsForSurface('word')
+      .filter((a) => a.output === 'write')
+      .slice(0, 4)
+      .map((a) => a.label);
     expect(chipLabels()).toEqual(expected);
+    expect(container.querySelector('.action-drawer-summary')?.textContent).toContain(
+      'available on this surface',
+    );
   });
 
-  it('renders a different catalog per surface', () => {
+  it('keeps every group reachable for the active surface', () => {
     render({ surface: 'excel' });
-    const expected = quickActionsForSurface('excel').map((a) => a.label);
-    expect(chipLabels()).toEqual(expected);
-    // Excel offers a range-summary action that Word does not.
+    expect(chipLabels()).toContain('Create a chart');
+    clickTab('Ask');
+    clickMore();
     expect(chipLabels().some((label) => label === 'Summarize this range')).toBe(true);
-    expect(expected).not.toEqual(quickActionsForSurface('word').map((a) => a.label));
+    clickTab('Review');
+    expect(chipLabels().some((label) => label === 'Find anomalies / outliers')).toBe(true);
   });
 
   it('narrows the catalog by allowed intents (capability closure)', () => {
@@ -70,7 +89,9 @@ describe('QuickActionBar', () => {
     const expected = quickActionsForSurface('word', ['ask', 'summarize', 'explain']).map(
       (a) => a.label,
     );
-    expect(labels).toEqual(expected);
+    expect(labels).toEqual(expected.slice(0, 4));
+    clickMore();
+    expect(chipLabels()).toEqual(expected);
     // No annotation/write verb survives a chat-only closure.
     expect(chips().every((c) => c.getAttribute('data-output') === 'chat')).toBe(true);
   });
@@ -89,7 +110,7 @@ describe('QuickActionBar', () => {
 
   it('hands the full action back to onAction on click', () => {
     const { onAction } = render({ surface: 'word' });
-    const first = quickActionsForSurface('word')[0];
+    const first = quickActionsForSurface('word').find((action) => action.output === 'write');
     act(() => chips()[0]?.click());
     expect(onAction).toHaveBeenCalledTimes(1);
     expect(onAction).toHaveBeenCalledWith(first);
@@ -105,6 +126,7 @@ describe('QuickActionBar', () => {
     render({ surface: 'excel', excludeIds: ['create-chart', 'summarize-range'] });
     expect(chipLabels()).not.toContain('Create a chart');
     expect(chipLabels()).not.toContain('Summarize this range');
+    clickTab('Review');
     expect(chipLabels()).toContain('Find anomalies / outliers');
   });
 });

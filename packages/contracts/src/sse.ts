@@ -16,6 +16,23 @@ export const SseEventSchema = z.discriminatedUnion('type', [
     sources: z.array(SourceRefSchema),
   }),
   z.object({ type: z.literal('citation'), source: SourceRefSchema }),
+  // Gemini Enterprise code-execution tool telemetry. These events are diagnostic
+  // tool artifacts, not user-document content and not executable by the add-in.
+  z.object({
+    type: z.literal('code-execution'),
+    language: z.literal('python'),
+    code: z.string(),
+  }),
+  z.object({
+    type: z.literal('code-execution-result'),
+    outcome: z.enum([
+      'OUTCOME_UNSPECIFIED',
+      'OUTCOME_OK',
+      'OUTCOME_FAILED',
+      'OUTCOME_DEADLINE_EXCEEDED',
+    ]),
+    output: z.string().optional(),
+  }),
   // A grounded claim span. `start`/`end` are JS string (UTF-16) character indices
   // into the accumulated answer text, so a UI can `answerText.slice(start, end)`.
   z.object({

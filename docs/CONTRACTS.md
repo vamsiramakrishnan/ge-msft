@@ -120,10 +120,19 @@ export type SseEvent =
   | { type: 'finding'; finding: Finding }              // one finding (review)
   | { type: 'slide'; title: string; bullets: string[]; sources: SourceRef[] }
   | { type: 'citation'; source: SourceRef }
+  | { type: 'code-execution'; language: 'python'; code: string }
+  | { type: 'code-execution-result';
+      outcome: 'OUTCOME_UNSPECIFIED' | 'OUTCOME_OK' | 'OUTCOME_FAILED' | 'OUTCOME_DEADLINE_EXCEEDED';
+      output?: string }
   | { type: 'provenance'; payload: ProvenancePayload } // sent before 'done'
   | { type: 'error'; code: string; message: string }
   | { type: 'done' };
 ```
+
+`code-execution` events are telemetry from Gemini Enterprise's hosted Python execution tool. They
+are never executed by the add-in and are not treated as Office write authority. The task pane may
+surface them as activity/diagnostic evidence, but only parsed `ActuationRequest` writes can mutate a
+host document.
 
 Wire format: `event: <type>\ndata: <json>\n\n`. Clients consume via `EventSource`; the `StreamClient` falls back to chunked polling of the same payloads if SSE is unavailable.
 

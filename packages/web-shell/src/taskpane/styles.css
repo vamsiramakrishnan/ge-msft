@@ -58,7 +58,7 @@
   --r-pill: 18px;
 
   /* typography */
-  --pf: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --pf: 'Aptos', 'Segoe UI', system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --fz-xs: 10.5px;
   --fz-sm: 11.5px;
@@ -1304,7 +1304,6 @@ a.cite:hover {
   padding: var(--s3) var(--s4);
   background: var(--fill-2);
   border: 1px solid var(--pl);
-  border-left: 3px solid var(--brand);
   border-radius: var(--r-sm);
   font-family: var(--mono);
   font-size: 12px;
@@ -1833,7 +1832,6 @@ a.cite:hover {
   gap: var(--s3);
   background: var(--fill-2);
   border: 1px solid var(--pl);
-  border-left: 3px solid var(--host);
   border-radius: var(--r-sm);
   padding: var(--s3) var(--s4);
   margin-bottom: var(--s3);
@@ -3031,5 +3029,256 @@ body {
   .thread,
   .comp {
     padding-inline: 10px;
+  }
+}
+
+/* Responsive task-pane behavior: narrow Office panes first, browser preview second. */
+@media (min-width: 520px) {
+  .surface-center,
+  .unit,
+  .catalog,
+  .skills,
+  .quick-actions.action-drawer,
+  .thread,
+  .run-steps,
+  .command-plan,
+  .qa-param-form,
+  .gate-rail .command-plan,
+  .gate-rail .card.plan-approval,
+  .gate-rail .card.approval,
+  .proposals,
+  .panel-error {
+    width: min(720px, calc(100% - 28px));
+    align-self: center;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .surface-primary-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .surface-action {
+    min-height: 66px;
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .surface-action-mode {
+    justify-self: start;
+  }
+
+  .thread {
+    flex: 1 0 auto;
+  }
+
+  .m.a .c {
+    max-width: min(660px, 100%);
+  }
+
+  .catalog-grid {
+    left: 50%;
+    right: auto;
+    width: min(560px, calc(100vw - 40px));
+    transform: translateX(-50%);
+  }
+
+  .context-popover,
+  .skills-popover,
+  .action-drawer-list {
+    left: 50%;
+    right: auto;
+    width: min(560px, calc(100vw - 40px));
+    transform: translateX(-50%);
+  }
+}
+
+@media (max-width: 340px) {
+  :root {
+    --fz-xs: 10px;
+    --fz-sm: 11px;
+    --fz-md: 12px;
+    --fz-lg: 13px;
+  }
+
+  .surface-center,
+  .unit,
+  .catalog,
+  .skills,
+  .quick-actions.action-drawer,
+  .command-plan,
+  .qa-param-form,
+  .run-steps,
+  .gate-rail .command-plan,
+  .gate-rail .card.plan-approval,
+  .gate-rail .card.approval,
+  .proposals,
+  .panel-error {
+    margin-inline: 8px;
+  }
+
+  .ph,
+  .thread,
+  .comp {
+    padding-inline: 8px;
+  }
+
+  .pht {
+    gap: 7px;
+  }
+
+  .av,
+  .surface-glyph {
+    width: 24px;
+    height: 24px;
+  }
+
+  .pss,
+  .surface-subtitle {
+    max-width: 180px;
+  }
+
+  .surface-center-head,
+  .catalog-head,
+  .action-drawer-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .surface-state {
+    align-self: flex-start;
+  }
+
+  .surface-detail-trigger {
+    gap: 4px;
+  }
+
+  .surface-action {
+    grid-template-columns: 52px minmax(0, 1fr);
+    padding: 6px 7px;
+  }
+
+  .catalog-actions,
+  .action-drawer-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .catalog-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skill-param,
+  .plan-effect-row,
+  .prov-row,
+  .entity-row,
+  .proposal-formula {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .skill-param-name,
+  .plan-effect-row .k,
+  .prov-row dt {
+    min-width: 0;
+  }
+
+  .plan-effect-detail {
+    margin-left: 0;
+  }
+
+  .m.u {
+    max-width: 96%;
+  }
+
+  .md-table {
+    min-width: 360px;
+  }
+
+  .cb {
+    gap: 7px;
+  }
+
+  .snd {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-height: 680px) {
+  .ph {
+    padding-block: 8px 7px;
+  }
+
+  .surface-center,
+  .unit,
+  .catalog,
+  .skills,
+  .quick-actions.action-drawer {
+    margin-top: 6px;
+  }
+
+  .surface-center {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .surface-subtitle,
+  .action-drawer-summary,
+  .catalog-summary {
+    display: none;
+  }
+
+  .surface-action {
+    min-height: 36px;
+  }
+
+  .unit-peek {
+    margin-top: 4px;
+  }
+
+  .thread {
+    padding-block: 9px;
+    gap: 9px;
+  }
+
+  .comp {
+    padding-block: 8px;
+  }
+
+  .comp-scope {
+    margin-bottom: 6px;
+  }
+
+  .cb textarea {
+    min-height: 34px;
+    max-height: 92px;
+  }
+}
+
+@media (max-height: 560px) {
+  .surface-detail-trigger,
+  .unit-peek {
+    display: none;
+  }
+
+  .surface-primary-actions {
+    gap: 4px;
+  }
+
+  .surface-action-meta {
+    display: none;
+  }
+
+  .quick-actions.action-drawer,
+  .catalog,
+  .skills {
+    padding-block: 6px;
+  }
+
+  .gate-rail {
+    max-height: 42vh;
+    overflow: auto;
   }
 }

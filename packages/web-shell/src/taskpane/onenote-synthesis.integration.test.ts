@@ -121,6 +121,7 @@ describe('OneNote page-synthesis full-stack integration', () => {
     ui = mountStack({
       surface: 'onenote',
       client: scriptedClient([
+        // impeccable-disable-next-line broken-image: security fixture must contain inert escaped HTML
         '```cmd\npage "Injected" "<img src=x onerror=alert(1)> review"\n```',
         '```cmd\ndone\n```',
       ]),
@@ -138,8 +139,9 @@ describe('OneNote page-synthesis full-stack integration', () => {
     await ui!.flush();
 
     const html = sim.snapshot().addedPages[0]?.outlineHtml ?? '';
-    // The injected tag is escaped (rendered as data), and no live <img> tag reaches the host page.
+    // The injected image tag is escaped as data and never reaches the host page as live markup.
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    // impeccable-disable-next-line broken-image: negative assertion for the inert HTML injection fixture
     expect(html).not.toContain('<img');
   });
 

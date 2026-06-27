@@ -12,7 +12,7 @@ body {
   gap: 28px;
   min-height: 100vh;
   padding: 28px;
-  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Aptos', 'Segoe UI', system-ui, sans-serif;
 }
 .preview-toolbar {
   width: 240px;

@@ -33,3 +33,7 @@ Secondary information appears through hover, focus, or an explicit edit action:
 ## Interaction
 
 Every hover affordance must also open through keyboard focus. Primary actions remain visible because they are task accelerators; secondary action lists remain discoverable but not visually dominant.
+
+## Responsive Behavior
+
+The task pane is designed from the narrow Office pane outward. At narrow widths, controls stack into single-column rows, popovers become scrollable sheets inside the pane, and dense metadata collapses before primary actions do. At wider preview widths, primary actions can return to multi-column layout while the conversation remains readable. At short heights, header and action chrome compress so approvals and the composer stay reachable.

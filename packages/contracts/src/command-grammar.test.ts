@@ -81,6 +81,21 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     });
     expect(parseCommandLine('search')).toMatchObject({ error: expect.stringContaining('search') });
   });
+
+  it('parses context strategy hints as a read-only command', () => {
+    const cmd = parseCommandLine('context analytical full-scope upload-preferred');
+    expect(cmd).toEqual({
+      verb: 'context',
+      hints: ['analytical', 'full-scope', 'upload-preferred'],
+    });
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+  });
+
+  it('rejects invented context authority hints', () => {
+    expect(parseCommandLine('context run-python-now')).toMatchObject({
+      error: expect.stringContaining('unknown context hint'),
+    });
+  });
 });
 
 describe('command-grammar — set quoting (value is the full remainder)', () => {
@@ -565,6 +580,7 @@ describe('command-grammar — capability scoping', () => {
     const verbs = grammarFor(excelManifest).map((v) => v.verb);
     expect(verbs).toContain('set');
     expect(verbs).not.toContain('suggest');
+    expect(verbs).toContain('context');
     const read = grammarFor(excelManifest).find((v) => v.verb === 'read');
     expect(read?.usage).toBe('read <A1|NamedRange>');
   });
@@ -624,11 +640,12 @@ describe('command-grammar — capability scoping', () => {
     };
     const verbs = grammarFor(noWrite).map((v) => v.verb);
     expect(verbs).toEqual(expect.arrayContaining(['done', 'help']));
+    expect(verbs).toContain('context');
     expect(verbs).not.toContain('set');
     expect(verbs).not.toContain('suggest');
   });
 
-  it('scopes read verbs to manifest.reads (ADR-0006): absent reads ⇒ no read verbs advertised', () => {
+  it('scopes host read verbs to manifest.reads while keeping runtime context available', () => {
     const noReads: CapabilityManifest = {
       surface: 'powerpoint',
       contextKinds: ['slide'],
@@ -638,6 +655,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).not.toContain('outline');
     expect(verbs).not.toContain('read');
     expect(verbs).not.toContain('search');
+    expect(verbs).toContain('context');
   });
 
   it('advertises ONLY the declared read verbs', () => {
@@ -650,6 +668,7 @@ describe('command-grammar — capability scoping', () => {
     const verbs = grammarFor(someReads).map((v) => v.verb);
     expect(verbs).toContain('outline');
     expect(verbs).toContain('search');
+    expect(verbs).toContain('context');
     expect(verbs).not.toContain('read'); // 'read' not declared ⇒ not advertised
   });
 });
@@ -660,6 +679,7 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('outline'),
       parseCommandLine('read A1'),
       parseCommandLine('search foo'),
+      parseCommandLine('context analytical upload-preferred'),
       parseCommandLine('set A1 =1+1'),
       parseCommandLine('suggest "a" => "b"'),
       parseCommandLine('comment A1 "note"'),

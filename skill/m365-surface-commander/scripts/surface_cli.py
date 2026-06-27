@@ -212,6 +212,20 @@ done
     if not any("VERIFY" in n for n in nnotes):
         failures.append("normalize did not flag read-after-effect as a VERIFY boundary")
 
+    # 11. context strategy is an OBSERVE/read phase, not an effect; unknown hints fail closed.
+    rctx = analyze(
+        "```cmd\ncontext analytical full-scope upload-preferred code-execution-preferred\ndone\n```"
+    )
+    if rctx["errors"]:
+        failures.append(f"context strategy program had errors: {rctx['errors']}")
+    if rctx["reads"] != ["context analytical full-scope upload-preferred code-execution-preferred"]:
+        failures.append(f"context strategy was not counted as one read: {rctx['reads']}")
+    if rctx["effects"]:
+        failures.append(f"context strategy was incorrectly counted as an effect: {rctx['effects']}")
+    rctx_bad = analyze("```cmd\ncontext run-python-now\ndone\n```")
+    if not any("unknown context hint" in e for e in rctx_bad["errors"]):
+        failures.append("unknown context hint not rejected")
+
     if failures:
         print("SURFACE-CLI SELF-TEST FAIL", file=sys.stderr)
         for f in failures:

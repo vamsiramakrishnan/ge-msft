@@ -19,7 +19,7 @@ import { SurfaceSchema, type Surface } from './context.js';
 /** Scalar keys (last one wins). */
 const SCALAR_KEYS = new Set(['intent', 'surface', 'scope', 'confidence']);
 /** List keys (accumulate, in order). */
-const LIST_KEYS = new Set(['ground', 'step', 'exclude', 'clarify']);
+const LIST_KEYS = new Set(['ground', 'context', 'step', 'exclude', 'clarify']);
 /** Optional bracket markers, ignored. */
 const BRACKETS = new Set(['plan', 'end']);
 const ALL_KEYS = new Set([...SCALAR_KEYS, ...LIST_KEYS, ...BRACKETS]);
@@ -27,6 +27,101 @@ const ALL_KEYS = new Set([...SCALAR_KEYS, ...LIST_KEYS, ...BRACKETS]);
 const INTENTS = new Set(IntentSchema.options);
 const SURFACES = new Set(SurfaceSchema.options);
 const CONFIDENCE = new Set(['high', 'medium', 'low']);
+
+export const PlanContextHintSchema = z.enum([
+  'incremental',
+  'inline-preferred',
+  'reference-preferred',
+  'upload-preferred',
+  'code-execution-preferred',
+  'analytical',
+  'full-scope',
+]);
+export type PlanContextHint = z.infer<typeof PlanContextHintSchema>;
+const CONTEXT_HINTS = new Set(PlanContextHintSchema.options);
+
+export interface PlanContextHintInfo {
+  hint: PlanContextHint;
+  label: string;
+  detail: string;
+}
+
+export const PLAN_CONTEXT_HINT_INFO: Record<PlanContextHint, Omit<PlanContextHintInfo, 'hint'>> = {
+  incremental: {
+    label: 'Incremental reads',
+    detail: 'Use bounded live host reads such as outline, read, and search.',
+  },
+  'inline-preferred': {
+    label: 'Inline context',
+    detail: 'The current selection, range, slide, page, message, or thread is likely enough.',
+  },
+  'reference-preferred': {
+    label: 'Reference sources',
+    detail: 'Use pinned indexed or federated sources by reference instead of copying them.',
+  },
+  'upload-preferred': {
+    label: 'File upload preferred',
+    detail: 'The whole artifact is likely needed and may exceed inline context budget.',
+  },
+  'code-execution-preferred': {
+    label: 'Code execution preferred',
+    detail: 'Hosted analysis would materially help compute, pivot, chart, validate, or reconcile.',
+  },
+  analytical: {
+    label: 'Analytical',
+    detail: 'The task is data-analysis heavy.',
+  },
+  'full-scope': {
+    label: 'Full scope',
+    detail: 'Use the whole open artifact or thread, not only the current selection.',
+  },
+};
+
+export interface PlanContextStrategy {
+  hints: PlanContextHintInfo[];
+  scope: 'selection-or-current-item' | 'whole-artifact' | 'incremental';
+  transfer: 'inline' | 'reference' | 'upload-candidate' | 'live-host-reads';
+  analysis: 'standard' | 'analytical' | 'code-execution-candidate';
+}
+
+export function describePlanContextHints(
+  hints: readonly PlanContextHint[] | undefined,
+): PlanContextHintInfo[] {
+  const seen = new Set<PlanContextHint>();
+  const out: PlanContextHintInfo[] = [];
+  for (const hint of hints ?? []) {
+    if (seen.has(hint)) continue;
+    seen.add(hint);
+    const info = PLAN_CONTEXT_HINT_INFO[hint];
+    out.push({ hint, ...info });
+  }
+  return out;
+}
+
+export function derivePlanContextStrategy(
+  hints: readonly PlanContextHint[] | undefined,
+): PlanContextStrategy {
+  const unique = describePlanContextHints(hints);
+  const has = (hint: PlanContextHint): boolean => unique.some((info) => info.hint === hint);
+  const scope = has('incremental')
+    ? 'incremental'
+    : has('full-scope')
+      ? 'whole-artifact'
+      : 'selection-or-current-item';
+  const transfer = has('upload-preferred')
+    ? 'upload-candidate'
+    : has('reference-preferred')
+      ? 'reference'
+      : has('incremental')
+        ? 'live-host-reads'
+        : 'inline';
+  const analysis = has('code-execution-preferred')
+    ? 'code-execution-candidate'
+    : has('analytical')
+      ? 'analytical'
+      : 'standard';
+  return { hints: unique, scope, transfer, analysis };
+}
 
 /** One grounding token in a plan: its {@link GroundSource} kind plus an optional named ref. */
 export const PlanGroundSchema = z.object({
@@ -40,6 +135,7 @@ export const CommandPlanSchema = z.object({
   surface: SurfaceSchema,
   scope: CommandScopeSchema.optional(),
   ground: z.array(PlanGroundSchema).default([]),
+  context: z.array(PlanContextHintSchema).default([]),
   steps: z.array(z.string()),
   excludes: z.array(z.string()).default([]),
   clarify: z.array(z.string()).default([]),
@@ -152,6 +248,14 @@ function parseLine(line: string): ParsedLine {
   if (key === 'confidence' && !CONFIDENCE.has(rest.toLowerCase())) {
     return { kind: 'error', error: `confidence must be high|medium|low — got '${rest}'` };
   }
+  if (key === 'context' && !CONTEXT_HINTS.has(rest.toLowerCase() as PlanContextHint)) {
+    return {
+      kind: 'error',
+      error: `unknown context hint '${rest}' — expected one of ${JSON.stringify(
+        [...CONTEXT_HINTS].sort(),
+      )}`,
+    };
+  }
   if (key === 'ground') {
     rest = rest.trim().replace(/^"+|"+$/g, '');
   }
@@ -182,6 +286,7 @@ export function parsePlanBlock(text: string): {
   let scope: CommandScope | undefined;
   let confidence: string | undefined;
   const ground: PlanGround[] = [];
+  const context: PlanContextHint[] = [];
   const steps: string[] = [];
   const excludes: string[] = [];
   const clarify: string[] = [];
@@ -210,6 +315,9 @@ export function parsePlanBlock(text: string): {
         break;
       case 'ground':
         ground.push(parseGround(rec.value));
+        break;
+      case 'context':
+        context.push(rec.value.toLowerCase() as PlanContextHint);
         break;
       case 'step':
         steps.push(rec.value);
@@ -243,6 +351,7 @@ export function parsePlanBlock(text: string): {
     surface: surface as Surface,
     ...(scope !== undefined ? { scope } : {}),
     ground,
+    context,
     steps,
     excludes,
     clarify,
@@ -289,12 +398,14 @@ export function renderPlanPrompt(surface: Surface, verbs?: readonly Intent[]): s
     `surface  ${surface}`,
     'scope    <selection|document|range(<a1|named>)|section(<heading>)|comment(<id>)|this-item>   # optional',
     'ground   "<source>"        # repeatable; a pinned @source this plan needs',
+    'context  <incremental|inline-preferred|reference-preferred|upload-preferred|code-execution-preferred|analytical|full-scope>   # repeatable; optional',
     'step     <one action, in order>   # repeatable; one reviewable change per line',
     'exclude  <what to leave unchanged>   # repeatable; optional',
     'clarify  <a question>      # repeatable; emit when something material is ambiguous, and STOP short of guessing',
     'confidence <high|medium|low>   # optional',
     '```',
-    'Rules: one ```plan block only; phrase steps as intentions (not ```cmd commands); if anything ' +
+    'Rules: one ```plan block only; phrase steps as intentions (not ```cmd commands); context is ' +
+      'only a context-construction hint and never grants upload/code/write authority; if anything ' +
       'material is ambiguous, emit clarify line(s) instead of over-specifying.',
   ].join('\n');
 }

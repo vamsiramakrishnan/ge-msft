@@ -6,17 +6,19 @@ listed for the current app.
 
 ## Reads
 
-| App        | `outline` |                   `read`                   |      `search`       | What you get                                |
-| ---------- | :-------: | :----------------------------------------: | :-----------------: | ------------------------------------------- |
-| Word       |    yes    |            yes (whole/section)             |         yes         | selection, body, paragraphs, comments       |
-| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         | values **and** formulas; comments           |
-| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   | slide list (up to 60), shape text           |
-| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) | page title + paragraph outline              |
-| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    | subject, sender, leading body lines         |
-| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    | meeting title + transcript turns (up to 60) |
+| App        | `outline` |                   `read`                   |      `search`       | `context` | What you get                                |
+| ---------- | :-------: | :----------------------------------------: | :-----------------: | :-------: | ------------------------------------------- |
+| Word       |    yes    |            yes (whole/section)             |         yes         |    yes    | selection, body, paragraphs, comments       |
+| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         |    yes    | values **and** formulas; comments           |
+| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   |    yes    | slide list (up to 60), shape text           |
+| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) |    yes    | page title + paragraph outline              |
+| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    |    yes    | subject, sender, leading body lines         |
+| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    |    yes    | meeting title + transcript turns (up to 60) |
 
 Reads are bounded and scoped to the open item/window. They return empty on bad input and
-always frame document content as data.
+always frame document content as data. `context` is runtime-served: it returns a strategy for
+inline/reference/upload/code-execution grounding and never uploads, runs code, or writes content by
+itself.
 
 ## Writes
 
@@ -49,7 +51,8 @@ to visualize a computed result, first `spill` the composed table into a grid, th
 
 ## Out of scope
 
-- Sending mail, creating calendar events or tasks, and uploading/checking out files are not
-  available as commands here.
-- If the user asks for something no listed command covers, explain it in plain text — do not
-  invent a command.
+- Sending mail, creating calendar events or tasks, and checking out files are not available as
+  commands here.
+- Uploading a context file is not a model command. The model can use `context upload-preferred` to
+  request a host/user attachment decision, then consume only the structured file id the host returns.
+- If the user asks for something no listed command covers, emit `done`; do not invent a command.

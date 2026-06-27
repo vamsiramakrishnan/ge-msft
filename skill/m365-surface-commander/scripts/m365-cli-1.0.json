@@ -12,7 +12,8 @@
     "read": [
       "outline",
       "read",
-      "search"
+      "search",
+      "context"
     ],
     "control": [
       "done",

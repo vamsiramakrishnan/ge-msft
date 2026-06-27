@@ -9,7 +9,7 @@ command.
 Structure every non-trivial program in four phases, in this order:
 
 ```
-OBSERVE   read / search / outline            — get the data
+OBSERVE   read / search / outline / context  — get data or a context strategy
 DERIVE    let bindings + pure transforms     — compute purely
 EFFECT    bounded, concrete host mutations   — the smallest effect set
 VERIFY    (optional) read-after-write later  — confirm, in a *later* turn

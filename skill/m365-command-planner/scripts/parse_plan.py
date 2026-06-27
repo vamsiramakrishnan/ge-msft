@@ -22,7 +22,7 @@ import sys
 # `scope` is the orthogonal WHERE axis (CommandScope kind):
 #   selection | document | range | section | comment | this-item  (free-text ref ok)
 SCALAR_KEYS = {"intent", "surface", "scope", "confidence"}   # last one wins
-LIST_KEYS = {"ground", "step", "exclude", "clarify"}         # accumulate, in order
+LIST_KEYS = {"ground", "context", "step", "exclude", "clarify"}  # accumulate, in order
 BRACKETS = {"plan", "end"}                                   # optional, ignored
 ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 
@@ -31,6 +31,15 @@ ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft", "notes"}
 SURFACES = {"word", "excel", "powerpoint", "onenote", "outlook", "teams"}
 CONFIDENCE = {"high", "medium", "low"}
+CONTEXT_HINTS = {
+    "incremental",
+    "inline-preferred",
+    "reference-preferred",
+    "upload-preferred",
+    "code-execution-preferred",
+    "analytical",
+    "full-scope",
+}
 
 _FENCE = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
 _FENCE_OPEN = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*)$", re.IGNORECASE)
@@ -76,6 +85,8 @@ def parse_line(line: str):
         return {"error": f"unknown surface '{rest}' — expected one of {sorted(SURFACES)}"}
     if key == "confidence" and rest.lower() not in CONFIDENCE:
         return {"error": f"confidence must be high|medium|low — got '{rest}'"}
+    if key == "context" and rest.lower() not in CONTEXT_HINTS:
+        return {"error": f"unknown context hint '{rest}' — expected one of {sorted(CONTEXT_HINTS)}"}
     if key == "ground":
         rest = rest.strip().strip('"')
     return (key, rest)
@@ -89,7 +100,7 @@ def parse_plan(model_text: str):
                 "note": "no ```plan fence (re-prompt, not an error)"}
 
     plan = {"intent": None, "surface": None, "scope": None, "confidence": None,
-            "ground": [], "step": [], "exclude": [], "clarify": []}
+            "ground": [], "context": [], "step": [], "exclude": [], "clarify": []}
     errors = []
     for raw in inner.splitlines():
         rec = parse_line(raw)
@@ -103,6 +114,8 @@ def parse_plan(model_text: str):
             continue
         if key in SCALAR_KEYS:
             plan[key] = val.lower() if key in ("surface", "confidence") else val
+        elif key == "context":
+            plan[key].append(val.lower())
         else:
             plan[key].append(val)
 
@@ -125,12 +138,37 @@ intent   rewrite
 surface  word
 scope    section §4-6
 ground   "Vendor Risk Policy v4"
+context  incremental
 step     rewrite the SLA availability figure to 99.9% as a tracked change
 exclude  the indemnity clause — leave unchanged
 confidence high
 prioritise nonsense
 ```'''
-    print(json.dumps(parse_plan(sample), indent=2, ensure_ascii=False))
+    result = parse_plan(sample)
+    failures = []
+    plan = result["plan"]
+    if plan["intent"] != "rewrite":
+        failures.append("intent did not parse")
+    if plan["surface"] != "word":
+        failures.append("surface did not parse")
+    if plan["context"] != ["incremental"]:
+        failures.append(f"context hints did not parse: {plan['context']}")
+    if not any("unknown plan keyword 'prioritise'" in e for e in result["errors"]):
+        failures.append("unknown keyword was not reported")
+
+    unsafe = parse_plan("""```plan
+intent ask
+surface excel
+context run-python-now
+step inspect
+```""")
+    if not any("unknown context hint" in e for e in unsafe["errors"]):
+        failures.append("unsafe context hint was not rejected")
+
+    print(json.dumps({"sample": result, "unsafe": unsafe, "failures": failures}, indent=2,
+                     ensure_ascii=False))
+    if failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import {
   type CapabilityManifest,
   type ChangeId,
   type ParsedCommand,
+  type PlanContextHint,
   type Surface,
 } from '@ge/contracts';
 import { TRANSFORM_USAGE } from './compose.js';
@@ -27,7 +28,8 @@ import { TRANSFORM_USAGE } from './compose.js';
 export type ReadIntent =
   | { read: 'outline' } // → bridge.captureDocState()
   | { read: 'range'; selector: string } // → bridge.readRange() (Excel) — empty ⇒ whole doc
-  | { read: 'search'; text: string }; // → bridge.searchDocument()
+  | { read: 'search'; text: string } // → bridge.searchDocument()
+  | { read: 'context-strategy'; hints: PlanContextHint[] }; // → runtime context/upload strategy
 
 /** The result of compiling one command line. */
 export type CompiledCommand =
@@ -51,6 +53,7 @@ export function isCompileError(c: CompiledCommand): c is { error: string } {
  *   outline                     → read outline  (captureDocState)
  *   read <selector>             → read range    (readRange / whole-doc)
  *   search <text>               → read search   (searchDocument)
+ *   context <hints...>          → read strategy (runtime-served, no upload/code/write)
  *   done / help                 → control
  */
 export function compileCommand(
@@ -64,6 +67,8 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'range', selector: cmd.selector } };
     case 'search':
       return { kind: 'read', intent: { read: 'search', text: cmd.text } };
+    case 'context':
+      return { kind: 'read', intent: { read: 'context-strategy', hints: cmd.hints } };
     case 'done':
       return { kind: 'control', verb: 'done' };
     case 'help':

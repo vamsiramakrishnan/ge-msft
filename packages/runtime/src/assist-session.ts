@@ -29,14 +29,26 @@ import {
   parseProgramBlock,
   parsePlanBlock,
   renderPlanPrompt,
+  derivePlanContextStrategy,
   WRITE_VERB_TO_KIND,
   type ParsedExpr,
+  type PlanContextHint,
   type PipeSource,
   type ProgramEntry,
   type WriteVerb,
 } from '@ge/contracts';
 import { estimateTokens, renderDocState } from '@ge/content';
-import { SessionContext, StreamAssistClient, type ResolvedGrounding } from '@ge/gemini-client';
+import {
+  SessionContext,
+  StreamAssistClient,
+  DEFAULT_CONTEXT_FILE_MAX_BYTES,
+  HARD_CONTEXT_FILE_MAX_BYTES,
+  supportedContextFileFormats,
+  type ContextFileInput,
+  type ContextFileUploadOptions,
+  type ResolvedGrounding,
+  type UploadedContextFile,
+} from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
 import type { DocBridge } from './bridge.js';
 import {
@@ -571,6 +583,24 @@ export class AssistSession {
   }
 
   /**
+   * Upload a file into the current Discovery Engine session context and return its `fileId`.
+   * This is an explicit caller action, not a model command: local guardrails validate name, MIME,
+   * extension, and size before the v1 `addContextFile` call. The returned `fileId` can then be used
+   * as structured `upload` grounding so StreamAssist decides whether to ground or run code over it.
+   */
+  async addContextFile(
+    input: ContextFileInput,
+    opts: Omit<ContextFileUploadOptions, 'session'> = {},
+  ): Promise<UploadedContextFile> {
+    const uploaded = await this.client.addContextFile(input, {
+      ...opts,
+      session: this.session ?? '-',
+    });
+    if (uploaded.session) this.session = uploaded.session;
+    return uploaded;
+  }
+
+  /**
    * Apply a proposed write through the bridge — reversibly and provenanced. The caller SHOULD supply
    * the provenance of the very turn that produced this change EXPLICITLY (the controller stamps the
    * proposal's own captured provenance); when omitted, `apply` falls back to the CURRENT turn's
@@ -688,7 +718,7 @@ export class AssistSession {
           'No executable ```cmd block found.',
           'Your reply must contain EXACTLY one fenced ```cmd block and nothing else.',
           'Do not emit prose, thinking, troubleshooting notes, or ```python/```json/```bash fences.',
-          'If you need data, start with read/outline/search in the cmd block.',
+          'If you need data, start with read/outline/search/context in the cmd block.',
           'If finished, reply with only:',
           '```cmd',
           'done',
@@ -874,7 +904,12 @@ export class AssistSession {
       plan.results.push({ help: renderGrammarPrompt(capabilities) });
       return;
     }
-    if (command.verb === 'outline' || command.verb === 'read' || command.verb === 'search') {
+    if (
+      command.verb === 'outline' ||
+      command.verb === 'read' ||
+      command.verb === 'search' ||
+      command.verb === 'context'
+    ) {
       const compiled = compileCommand(command, {
         surface: this.bridge.surface,
         mintChangeId: () => asChangeId(crypto.randomUUID()),
@@ -1357,6 +1392,11 @@ export class AssistSession {
           const reads = await this.bridge.searchDocument(intent.text);
           return { label: `search ${intent.text}`, result: readsToData(reads) };
         }
+        case 'context-strategy':
+          return {
+            label: `context ${intent.hints.join(' ')}`.trim(),
+            result: contextStrategyResult(intent.hints),
+          };
       }
     } catch (err) {
       return { label: 'read', result: { error: `read failed: ${errMsg(err)}` } };
@@ -1510,6 +1550,39 @@ function readsToData(reads: ResolvedContext[]): unknown {
       ? { title: r.ref.title, text: r.value.text }
       : { title: r.ref.title, ref: r.value },
   );
+}
+
+function contextStrategyResult(hints: readonly PlanContextHint[]): unknown {
+  const strategy = derivePlanContextStrategy(hints);
+  const uploadLikely =
+    strategy.transfer === 'upload-candidate' || strategy.analysis === 'code-execution-candidate';
+  const uploadState = uploadLikely ? 'recommended' : 'not-needed';
+  return {
+    strategy,
+    upload: {
+      state: uploadState,
+      reason: uploadLikely
+        ? 'The requested scope or analysis likely benefits from attaching the full artifact as a session context file.'
+        : 'Use inline context, references, or bounded live host reads before escalating to a full-file upload.',
+      maxBytes: DEFAULT_CONTEXT_FILE_MAX_BYTES,
+      hardMaxBytes: HARD_CONTEXT_FILE_MAX_BYTES,
+      supportedFormats: supportedContextFileFormats(),
+      next: uploadLikely
+        ? 'Ask the user or host UI to attach the full file. Use the returned fileId as structured upload grounding; do not invent fileIds.'
+        : 'Continue with outline/read/search or existing references. Re-run context with upload-preferred only if the cheap context is insufficient.',
+    },
+    codeExecution: {
+      state: strategy.analysis === 'code-execution-candidate' ? 'candidate' : 'not-requested',
+      guardrail:
+        'The CLI cannot execute code. It can only request structured upload grounding so StreamAssist may decide whether hosted analysis is appropriate.',
+    },
+    guardrails: [
+      'context is read-only and never uploads, runs code, or writes host content by itself',
+      'uploads require an explicit host/user action and local file validation',
+      'accepted files are bounded by size, plain file name, extension, and MIME type',
+      'the model must not invent fileIds or treat context hints as approval or capability',
+    ],
+  };
 }
 
 function errMsg(err: unknown): string {

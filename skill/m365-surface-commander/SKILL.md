@@ -16,7 +16,7 @@ compatibility: >-
   snapshot each turn and applies the emitted commands. Optional scripts require Python 3.
 metadata:
   author: ge-msft
-  version: '1.0'
+  version: '1.1'
 ---
 
 # M365 Surface Commander
@@ -39,6 +39,8 @@ you act on the document; a prose answer does nothing and is wrong here.
 
 - Do your analysis **through commands** (`read`, `search`, pipelines), not in prose. If you
   already have the data in the snapshot, go straight to the write command.
+- If the task appears to need the whole file or hosted analysis, first ask the host for a context
+  strategy with `context ...`; do not invent upload handles or code-execution commands.
 - Never reveal thinking, planning notes, "I am analyzing...", or troubleshooting narration.
 - Never emit any fenced block except ` ```cmd `. ` ```python `, ` ```json `, ` ```bash `,
   and bare markdown fences are invalid output.
@@ -91,6 +93,7 @@ shapes; consult the signature for what's live and `references/` for exact syntax
 outline                              show the document/workbook structure
 read <selector>                      Excel: read Sales!C2:C7 · others: read (whole/section)
 search <text>                        find content containing the text
+context [hints...]                   ask for context/upload/code-exec strategy; read-only
 
 # write (one per line; only those available this turn)
 set <A1> <value|=formula>            Excel: write a cell        e.g. set Sales!F2 =C2-D2
@@ -115,6 +118,30 @@ post "text"                          Teams: stage a reviewable post (never auto-
 # control
 done                                 the task is complete
 help                                 list available commands
+```
+
+### Progressive context strategy
+
+Use the cheapest useful context first. Escalate only when the task genuinely needs it.
+
+1. **Inline/current item**: use the provided snapshot, `outline`, `read`, and `search`.
+2. **Reference grounding**: use existing pinned or federated references when the host provides them.
+3. **Full-file upload candidate**: ask with `context upload-preferred full-scope` when bounded
+   reads cannot expose enough of the artifact.
+4. **Hosted analysis/code-execution candidate**: ask with `context analytical code-execution-preferred`
+   for workbook-scale reconciliation, pivots, chart-data shaping, validation, or file-level analysis.
+
+`context` never uploads a file, runs code, grants capability, or approves a write. It returns a
+strategy, size limits, accepted file formats, and guardrails. If the result says upload is
+recommended, wait for the host/user to attach the file and provide a structured file id; never make
+one up. Once a file id exists, use it only as structured upload grounding supplied by the host.
+
+Useful examples:
+
+```
+context analytical full-scope upload-preferred code-execution-preferred
+context incremental inline-preferred
+context reference-preferred full-scope
 ```
 
 You can also **compose**: pipe a read through pure transforms to compute a value, and
@@ -186,6 +213,7 @@ needs them, so you keep context small.
 | File                                                                                                           | App                                                                 |
 | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | [assets/example-sessions/example-session-excel.md](assets/example-sessions/example-session-excel.md)           | Excel — read a range, compute, write a formula, comment an outlier  |
+| [assets/example-sessions/example-session-context-upload.md](assets/example-sessions/example-session-context-upload.md) | Progressive context — ask for full-file upload/hosted analysis strategy |
 | [assets/example-sessions/example-session-word.md](assets/example-sessions/example-session-word.md)             | Word — find claims, propose tracked changes, comment unsourced text |
 | [assets/example-sessions/example-session-powerpoint.md](assets/example-sessions/example-session-powerpoint.md) | PowerPoint — read slides, insert a summary slide                    |
 | [assets/example-sessions/example-session-outlook.md](assets/example-sessions/example-session-outlook.md)       | Outlook — read the open mail, stage a reply or a new draft          |

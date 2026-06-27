@@ -12,7 +12,7 @@ def _phase_of(line: str) -> str:
     if rec is None or "error" in rec:
         return "EFFECT"  # keep unknowns where the model put them (in the effect tail)
     verb = rec["verb"]
-    if verb in ("outline", "read", "search"):
+    if verb in ("outline", "read", "search", "context"):
         return "OBSERVE"
     if verb in ("done", "help"):
         return "CONTROL"

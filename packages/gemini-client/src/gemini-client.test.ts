@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { AssistRequest, SseEvent } from '@ge/contracts';
 import {
+  addContextFileUrl,
   assistantResourceName,
   discoveryEngineHost,
   lookupWidgetConfigUrl,
+  sessionFilesUrl,
   sessionUrl,
   sessionsUrl,
   streamAssistUrl,
@@ -11,6 +13,12 @@ import {
   widgetStreamAssistUrl,
   type GeminiClientConfig,
 } from './config.js';
+import {
+  ContextFileClient,
+  bytesToBase64,
+  normalizeContextFileInput,
+  supportedContextFileFormats,
+} from './context-files.js';
 import { contentHash } from './hash.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { WifTokenClient } from './wif.js';
@@ -82,6 +90,94 @@ describe('config', () => {
     expect(sessionUrl(cfg(), 'sess-1')).toBe(
       'https://discoveryengine.eu.rep.googleapis.com/v1alpha/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1',
     );
+    expect(addContextFileUrl(cfg(), '-')).toBe(
+      'https://discoveryengine.eu.rep.googleapis.com/v1/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/-:addContextFile',
+    );
+    expect(sessionFilesUrl(cfg(), 'sess-1')).toBe(
+      'https://discoveryengine.eu.rep.googleapis.com/v1/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1/files',
+    );
+  });
+});
+
+describe('ContextFileClient', () => {
+  const tokens = { getAccessToken: () => Promise.resolve('goog-token'), invalidate: vi.fn() };
+
+  it('validates, base64-encodes, and uploads a session context file', async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        session:
+          'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1',
+        fileId: 'file-1',
+        tokenCount: '42',
+      }),
+    );
+    const client = new ContextFileClient(tokens, cfg(), f as never);
+
+    const out = await client.addContextFile({
+      fileName: 'schedule.xlsx',
+      mimeType: 'application/octet-stream',
+      contents: new Uint8Array([1, 2, 3]),
+    });
+
+    expect(out.fileId).toBe('file-1');
+    expect(out.tokenCount).toBe(42);
+    expect(out.byteSize).toBe(3);
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(addContextFileUrl(cfg(), '-'));
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer goog-token');
+    expect(JSON.parse(init.body as string)).toEqual({
+      fileName: 'schedule.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      fileContents: 'AQID',
+    });
+  });
+
+  it('lists context file metadata for a session', async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({ files: [{ fileId: 'file-1', mimeType: 'text/csv', tokenCount: 7 }] }),
+    );
+    const client = new ContextFileClient(tokens, cfg(), f as never);
+    const out = await client.listContextFiles('sess-1');
+    expect(out.files).toEqual([{ fileId: 'file-1', mimeType: 'text/csv', tokenCount: 7 }]);
+    expect((f.mock.calls[0] as unknown as [string, RequestInit])[0]).toBe(
+      sessionFilesUrl(cfg(), 'sess-1'),
+    );
+  });
+
+  it('rejects unsafe names, unsupported formats, mismatched extensions, and oversize files', () => {
+    expect(() =>
+      normalizeContextFileInput({
+        fileName: '../secrets.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        contents: new Uint8Array([1]),
+      }),
+    ).toThrow(/plain file name/);
+    expect(() =>
+      normalizeContextFileInput({
+        fileName: 'macro.xlsm',
+        mimeType: 'application/octet-stream',
+        contents: new Uint8Array([1]),
+      }),
+    ).toThrow(/MIME type is required|unsupported/);
+    expect(() =>
+      normalizeContextFileInput({
+        fileName: 'deck.pptx',
+        mimeType: 'text/csv',
+        contents: new Uint8Array([1]),
+      }),
+    ).toThrow(/extension does not match MIME type/);
+    expect(() =>
+      normalizeContextFileInput(
+        { fileName: 'data.csv', mimeType: 'text/csv', contents: new Uint8Array([1, 2]) },
+        { maxBytes: 1 },
+      ),
+    ).toThrow(/exceeds the 1 byte limit/);
+  });
+
+  it('keeps base64 encoding browser-safe and advertises the bounded format allowlist', () => {
+    expect(bytesToBase64(new Uint8Array([0, 1, 2, 253, 254, 255]))).toBe('AAEC/f7/');
+    expect(supportedContextFileFormats().map((f) => f.extension)).toContain('.xlsx');
+    expect(supportedContextFileFormats().map((f) => f.extension)).not.toContain('.xlsm');
   });
 });
 

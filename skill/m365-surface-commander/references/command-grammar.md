@@ -22,6 +22,22 @@ reviewable change.
 | `outline` | `outline`         | Structure of the document/workbook. Not available in Outlook/Teams. |
 | `read`    | `read <selector>` | Excel: an addressable range. Others: whole or current section.      |
 | `search`  | `search <text>`   | Find content containing the text.                                   |
+| `context` | `context [hints]` | Ask the host for context/upload/code-execution strategy. Read-only. |
+
+`context` accepts zero or more hints:
+
+`incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`,
+`code-execution-preferred`, `analytical`, `full-scope`.
+
+Use it before escalating from bounded reads to full-file attachment or hosted analysis. It never
+uploads by itself, never runs code, never approves a write, and never grants a capability.
+
+```
+context analytical full-scope upload-preferred code-execution-preferred
+```
+
+If the result recommends upload, wait for the host/user to attach the file and provide a structured
+file id. Do not invent file ids or emit upload/code commands.
 
 ## Write commands
 

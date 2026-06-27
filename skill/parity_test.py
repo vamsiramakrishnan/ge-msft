@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "m365-command-planner" / "scripts"))
-from parse_plan import INTENTS  # noqa: E402
+from parse_plan import CONTEXT_HINTS, INTENTS, parse_plan  # noqa: E402
 
 # The seven general, Copilot-altitude verbs (docs/EXPERIENCE.md §1 / IntentSchema).
 # Scope is an orthogonal axis, never a verb; the deleted task-verbs (regen-clause,
@@ -24,6 +24,15 @@ EXPECTED_INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft",
 
 DELETED_INTENTS = {"assist", "regen-clause", "resolve-comment",
                    "draft-slides", "synthesize", "meeting-notes"}
+EXPECTED_CONTEXT_HINTS = {
+    "incremental",
+    "inline-preferred",
+    "reference-preferred",
+    "upload-preferred",
+    "code-execution-preferred",
+    "analytical",
+    "full-scope",
+}
 
 
 def main() -> int:
@@ -41,13 +50,55 @@ def main() -> int:
     if leaked:
         failures.append(f"planner INTENTS still carries deleted task-verbs: {sorted(leaked)}")
 
+    if CONTEXT_HINTS != EXPECTED_CONTEXT_HINTS:
+        missing = EXPECTED_CONTEXT_HINTS - CONTEXT_HINTS
+        extra = CONTEXT_HINTS - EXPECTED_CONTEXT_HINTS
+        if missing:
+            failures.append(f"planner CONTEXT_HINTS missing hints: {sorted(missing)}")
+        if extra:
+            failures.append(f"planner CONTEXT_HINTS has stray hints: {sorted(extra)}")
+
+    sample = """```plan
+intent draft
+surface excel
+scope document
+ground this
+context analytical
+context full-scope
+context upload-preferred
+context code-execution-preferred
+step produce a chart-ready risk table
+```"""
+    parsed = parse_plan(sample)
+    if parsed["errors"]:
+        failures.append(f"context sample produced parse errors: {parsed['errors']}")
+    if parsed["plan"]["context"] != [
+        "analytical",
+        "full-scope",
+        "upload-preferred",
+        "code-execution-preferred",
+    ]:
+        failures.append(f"context sample parsed wrong hints: {parsed['plan']['context']}")
+
+    unsafe = parse_plan("""```plan
+intent ask
+surface excel
+context run-python-now
+step inspect
+```""")
+    if not any("unknown context hint" in e for e in unsafe["errors"]):
+        failures.append("unsafe context hint was not rejected")
+
     if failures:
         print("PARITY FAIL")
         for f in failures:
             print(f"  - {f}")
         return 1
 
-    print(f"PARITY OK — planner INTENTS == the 7 verbs {sorted(EXPECTED_INTENTS)}")
+    print(
+        "PARITY OK — planner INTENTS and CONTEXT_HINTS match the typed contract; "
+        "context hints parse fail-closed"
+    )
     return 0
 
 

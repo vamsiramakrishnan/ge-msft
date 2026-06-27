@@ -2147,6 +2147,28 @@ a.cite:hover {
   color: var(--soft);
   margin-bottom: var(--s3);
 }
+.command-plan-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--s3);
+}
+.command-plan-context strong {
+  color: var(--soft);
+  font-size: var(--fz-xs);
+  margin-right: 2px;
+}
+.command-plan-context span {
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 8%, #fff);
+  color: var(--brand-ink);
+  font-size: var(--fz-xs);
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 8px;
+}
 .command-plan-actions {
   display: flex;
   gap: var(--s2);

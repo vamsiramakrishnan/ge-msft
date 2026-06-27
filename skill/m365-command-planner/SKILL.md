@@ -16,7 +16,7 @@ compatibility: >-
   Optional scripts require Python 3.
 metadata:
   author: ge-msft
-  version: '1.0'
+  version: '1.1'
 ---
 
 # M365 Command Planner
@@ -104,6 +104,7 @@ intent   <verb>                        one of ask|summarize|explain|rewrite|revi
 surface  <app>                         echo the active surface
 scope    <where>                       OPTIONAL — selection|document|range|section|comment|this-item; plain ref ok
 ground   "<source>"                    REPEATABLE — a pinned @source this plan needs (verbatim title)
+context  <hint>                        REPEATABLE — context strategy hint; see below
 step     <what to do, in order>        REPEATABLE — one intention per line, executor-shaped but NL
 exclude  <what to leave alone>         REPEATABLE — explicit carve-outs
 clarify  <question>                    OPTIONAL, REPEATABLE — ask before executing when ambiguous
@@ -120,9 +121,48 @@ Rules:
   comments; Excel → cell writes, formulas, comments; PowerPoint → slides; OneNote → a page;
   Outlook → a staged reply/draft; Teams → a staged post.
 - **Only `ground` what you use.** Each `ground` must correspond to a pinned `@source`.
+- **Use `context` to classify context shape, not to execute anything.** The host decides whether it
+  can inline, reference, or upload a file. You only emit hints from:
+  `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`,
+  `code-execution-preferred`, `analytical`, `full-scope`.
 - **If anything material is ambiguous, emit `clarify` and stop short of over-specifying.**
   A plan with `clarify` lines is shown to the user as a question first; the host will not
   dispatch to the executor until the ambiguity is resolved.
+
+## Context strategy hints
+
+Use `context` lines when the request implies a material context-construction strategy:
+
+| Hint                       | Use when                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| `incremental`              | the executor should read live host slices lazily (`outline`, `read`, `search`)              |
+| `inline-preferred`         | the selected item/range/thread is small and enough to answer or draft                       |
+| `reference-preferred`      | pinned `@` sources are already indexed and should be referenced rather than copied          |
+| `upload-preferred`         | the whole file/thread/deck/workbook is likely needed and too large for inline context       |
+| `code-execution-preferred` | hosted Python would materially help compute, pivot, chart, validate, forecast, or reconcile |
+| `analytical`               | the task is data-analysis heavy, especially tables, metrics, timelines, or logs             |
+| `full-scope`               | the plan needs the whole open document/workbook/deck/mail thread/transcript, not selection  |
+
+Surface guidance:
+
+- **Excel:** pivots, formulas over many rows/sheets, anomaly detection, reconciliation,
+  forecasting, chart-ready tables → `context analytical`, `context upload-preferred`,
+  `context code-execution-preferred`, often `context full-scope`.
+- **Word:** clause review over a section/selection → `incremental` or `inline-preferred`; whole
+  agreement comparison or defined-term audit → `full-scope` and maybe `reference-preferred` if
+  grounded on pinned policies.
+- **PowerPoint:** selected slide rewrite → `inline-preferred`; whole-deck consistency, narrative
+  restructuring, slide generation from a source workbook → `full-scope`, plus `upload-preferred`
+  only if the deck/source file itself must be analyzed as a file.
+- **Outlook:** current message/reply draft → `inline-preferred`; long thread summary or attachment
+  analysis → `full-scope`, and `upload-preferred` for attachment-heavy analysis.
+- **OneNote:** current page synthesis → `inline-preferred`; notebook-wide synthesis over pinned
+  indexed material → `reference-preferred` and `full-scope`.
+- **Teams:** current meeting window/action items → `incremental`; full meeting transcript analysis
+  → `full-scope`, `analytical` for decisions/actions/issues extraction.
+
+Never emit code, Python, or an upload command. Context hints influence the host's context
+constructor only; every write still goes through the executor CLI, preview, approval, and provenance.
 
 ## How the plan is used
 
@@ -151,6 +191,7 @@ intent   review
 surface  word
 scope    section §4–6
 ground   "Vendor Risk Policy v4"
+context  incremental
 step     flag clauses in §4–6 that breach APRA CPS 234, grounded on the policy
 exclude  the indemnity clause — leave unchanged
 confidence high
@@ -166,6 +207,7 @@ User (Word): `/rewrite the SLA availability figure to our 99.9% standard, as a t
 intent   rewrite
 surface  word
 scope    selection
+context  inline-preferred
 step     rewrite the SLA availability figure to 99.9% as a tracked change
 confidence high
 ```
@@ -179,8 +221,28 @@ intent   review
 surface  word
 scope    section §4–6
 ground   "Vendor Risk Policy v4"
+context  reference-preferred
 clarify  "breach APRA CPS 234" — the whole standard, or specifically §35 (offshore access)?
 confidence low
+```
+````
+
+Analytical Excel requests should hint that the runtime may need hosted code execution:
+
+User (Excel): `/visualize @this find schedule risks across the workbook and create a chart-ready table`
+
+````text
+```plan
+intent   draft
+surface  excel
+scope    document
+ground   this
+context  analytical
+context  full-scope
+context  upload-preferred
+context  code-execution-preferred
+step     analyze the workbook for schedule risks and produce a chart-ready summary table
+confidence high
 ```
 ````
 
@@ -190,4 +252,6 @@ confidence low
 - **Reading or inventing document content.** You don't have it — plan in plain language.
 - **Over-specifying past the user's intent.** When unsure, `clarify`, don't guess.
 - **Grounding on sources the user didn't pin.** Only echo `@`-mentions you were given.
+- **Treating `context` as execution.** It is only a host/runtime hint; never emit Python or upload
+  commands.
 - **More than one fenced block, or prose outside it.** One ` ```plan ` block, keyword lines only.

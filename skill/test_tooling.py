@@ -289,14 +289,26 @@ class TestRequestHardening(unittest.TestCase):
         with mock.patch.dict("os.environ", env, clear=True):
             cfg = create_skill.resolve_live_config()
             widget = create_skill.resolve_widget_config()
-            rec = _RecordingSession({})
+            rec = _SequenceSession(
+                [
+                    _FakeResponse(
+                        status_code=400,
+                        content=(
+                            b'{"error":{"message":"Invalid JSON payload received. Unknown name '
+                            b'\\"deleteAgentRequest\\": Cannot find field."}}'
+                        ),
+                    ),
+                    _FakeResponse(payload={}),
+                ]
+            )
             resp = create_skill.delete_widget_agent(rec, cfg, widget, "8870098647237058037")
-        self.assertTrue(resp.raised)
-        verb, url, kw = rec.calls[0]
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(rec.calls), 2)
+        verb, url, kw = rec.calls[1]
         self.assertEqual(verb, "POST")
         self.assertIn("content-discoveryengine.googleapis.com", url)
         self.assertIn("widgetDeleteAgent", url)
-        self.assertEqual(kw["json"]["deleteAgentRequest"]["name"], "8870098647237058037")
+        self.assertEqual(kw["json"]["name"], "8870098647237058037")
 
     def test_widget_zip_upload_uses_resumable_protocol(self):
         with mock.patch.dict("os.environ", self.ENV, clear=True):

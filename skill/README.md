@@ -1,12 +1,11 @@
 # Gemini Enterprise skill tooling — create & test
 
 Tooling to **create** a Gemini Enterprise custom skill programmatically and **test/refine** it
-against the `streamAssist` API in isolation (no other data sources connected). Built and verified
-end-to-end against a live GE engine.
+against the `streamAssist` API in isolation (no other data sources connected).
 
 ````
 ge-skill-tooling/
-├── create_skill.py            # create/upload a skill via the authenticated GE API
+├── create_skill.py            # create/upload a skill via public API or widget API mode
 ├── test_skill.py              # multi-surface live test harness (+ offline self-check)
 ├── de_stub.py                 # streamAssist response stub + robust reader (thoughts/citations/…)
 ├── fixtures.py                # mock M365 docs: Excel analysis, Outlook thread, Word contract
@@ -43,7 +42,7 @@ the **skill ↔ workspace parity** tasks (keep `parse_commands.py` / `parse_plan
 
 ```bash
 pip install -r requirements.txt
-gcloud auth application-default login        # ADC; identity needs agents create/update on the engine
+gcloud auth application-default login        # public API mode; needs Discovery Engine agent IAM
 ```
 
 Configure the target engine (defaults point at the dev engine; override for your project):
@@ -57,25 +56,47 @@ export GE_ENGINE=your-engine_1700000000000
 
 ## Create / upload a skill
 
+There are two API modes:
+
+- `--api-mode public` uses `discoveryengine.googleapis.com` with OAuth/ADC. It is the preferred API
+  posture, but the caller must have Google IAM permissions such as `discoveryengine.agents.list`,
+  `discoveryengine.agents.create`, `discoveryengine.agents.delete`, and related update/upload
+  permissions on the assistant resource.
+- `--api-mode widget` mirrors the Gemini Enterprise web UI (`widgetCreateAgent`,
+  `widgetListAvailableAgentViews`, resumable `files:upload`). It uses a short-lived Vertex AI
+  Search widget JWT plus `GE_WIDGET_CONFIG_ID`; keep it dev-only and never commit the token.
+
 ```bash
 # (re)build the bundle zip from the m365-surface-commander/ directory
 ./build_zip.sh
 
+# Public API auth/permission probe; no mutation.
+python3 create_skill.py --api-mode public --live --list
+
 # Method B (default): create a shell agent, then raw-upload the zip (server unpacks SKILL.md +
 # references/scripts/assets into instruction + subfiles)
-python3 create_skill.py --agent-id m365-surface-commander --zip m365-surface-commander.zip
+python3 create_skill.py --api-mode public --agent-id m365-surface-commander --zip m365-surface-commander.zip
 
 # Method A: single-file skill — push one markdown file as the instruction (no bundle)
-python3 create_skill.py --single-file m365-surface-commander/SKILL.md
+python3 create_skill.py --api-mode public --single-file m365-surface-commander/SKILL.md
+
+# Widget/dev update of existing UI-created skills. Put the short-lived widget JWT in a temp file
+# rather than in shell history.
+GE_WIDGET_BEARER_TOKEN_FILE=/tmp/ge-widget-token \
+GE_WIDGET_CONFIG_ID=<widget-config-guid> \
+GE_SURFACE_COMMANDER_AGENT_ID=<numeric-commander-agent> \
+GE_COMMAND_PLANNER_AGENT_ID=<numeric-planner-agent> \
+python3 update_skills.py --api-mode widget --live --upload-existing
 
 # Useful flags
-python3 create_skill.py --replace      # delete an existing agent of this id first
-python3 create_skill.py --share        # set sharingConfig.scope=ALL_USERS after create
+python3 create_skill.py --api-mode public --replace      # delete an existing agent first
+python3 create_skill.py --api-mode public --share        # set sharingConfig.scope=ALL_USERS
 ```
 
-This mirrors the GE web UI's import flow (create → `files:upload` → get) but uses a plain OAuth
-Bearer token (ADC) instead of browser/widget auth. The `agents` resource is undocumented in the
-public discovery doc; the authenticated REST endpoints work regardless (verified).
+The public API and widget API are deliberately separate. Do not automate browser cookies or XSRF
+state. For widget mode, copy only the short-lived Bearer token from an authenticated
+`content-discoveryengine.googleapis.com` widget request into a local temp file and let the tooling
+validate that it is a Vertex AI Search widget JWT.
 
 ## Test / refine a skill
 

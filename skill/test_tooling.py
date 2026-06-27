@@ -183,6 +183,12 @@ class TestDryRunDefault(unittest.TestCase):
         sess_factory.assert_not_called()
         self.assertEqual(rec.calls, [], "dry-run must perform zero HTTP calls")
 
+    def test_public_list_dry_run_makes_no_network_calls(self):
+        code, rec, sess_factory = self._run(["--api-mode", "public", "--list"])
+        self.assertEqual(code, 0)
+        sess_factory.assert_not_called()
+        self.assertEqual(rec.calls, [], "public --list dry-run must perform zero HTTP calls")
+
     def test_replace_without_yes_refuses(self):
         with mock.patch.dict("os.environ", self.ENV, clear=True):
             with self.assertRaises(SystemExit) as cm:
@@ -297,6 +303,18 @@ class TestRequestHardening(unittest.TestCase):
             s = create_skill.session(cfg, "widget")
         self.assertEqual(s.headers["Authorization"], f"Bearer {token}")
         self.assertEqual(s.headers["x-server-token"], "CAMSAh0H")
+
+    def test_list_agents_uses_public_agents_endpoint(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            cfg = create_skill.resolve_live_config()
+            rec = _RecordingSession({"agents": [{"name": "agents/x"}]})
+            result = create_skill.list_agents(rec, cfg)
+        self.assertEqual(result["agents"][0]["name"], "agents/x")
+        verb, url, kw = rec.calls[0]
+        self.assertEqual(verb, "GET")
+        self.assertTrue(url.endswith("/agents"))
+        self.assertIn("discoveryengine.googleapis.com", url)
+        self.assertIn("timeout", kw)
 
     def test_widget_create_uses_content_api_and_returns_numeric_agent_name(self):
         env = {

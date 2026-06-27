@@ -11,22 +11,23 @@ content-discoveryengine widget API for skill creation plus Google resumable uplo
   3) POST the zip bytes to the returned upload URL
        x-goog-upload-command: upload, finalize
 
-This is not the same as the public discoveryengine.googleapis.com raw upload path. The raw legacy
-path is still available through --api-mode legacy for older/admin environments, but --api-mode
-widget is the default because it matches the live UI traffic.
+This is not the same as the public discoveryengine.googleapis.com API path. The documented public
+agent API is available through --api-mode public. The old name --api-mode legacy remains as a
+backwards-compatible alias because earlier versions of this script used that name for the same
+OAuth-based path. --api-mode widget is the default because it matches the live UI traffic.
 
 Two methods:
 
   Method A — single-file skill (instruction only):
       widget mode: widgetCreateAgent with skillAgentDefinition.instruction
-      legacy mode: POST {assistant}/agents?agentId=<id>
+      public mode: POST {assistant}/agents?agentId=<id>
         { displayName, description, skillAgentDefinition: { instruction: "<full markdown>" } }
 
   Method B — multi-file bundle (SKILL.md + references/ + scripts/ + assets/):  [default]
       widget mode:
         1) widgetCreateAgent with a placeholder skillAgentDefinition.instruction
         2) resumable upload the zip to agents/<returned agent.name>/files:upload
-      legacy mode:
+      public mode:
         1) POST {assistant}/agents?agentId=<id> with a placeholder instruction
         2) raw upload the zip to agents/<id>/files:upload
          -> the server unpacks the zip: SKILL.md body -> instruction, the rest -> subfiles.
@@ -38,7 +39,7 @@ OAuth Bearer token (ADC) instead of SAPISIDHASH/widget config.
 Auth:
   * widget mode: GE_AUTH_MODE=widget and GE_WIDGET_BEARER_TOKEN copied from the authenticated
     Gemini Enterprise web session. It is short-lived; do not commit or log it.
-  * legacy mode: ADC or GE_AUTH_MODE=gcloud (gcloud auth print-access-token).
+  * public mode: ADC or GE_AUTH_MODE=gcloud (gcloud auth print-access-token).
 
 SAFETY (review Finding #8):
   * There are NO baked-in project/engine identifiers. Any LIVE operation REQUIRES the GE_PROJECT,
@@ -54,7 +55,7 @@ Usage:
   python3 create_skill.py --live                       # Method B via widget API
   python3 create_skill.py --live --zip path/skill.zip  # Method B with a specific zip
   python3 create_skill.py --live --single-file SKILL.md  # Method A: inline instruction from markdown
-  python3 create_skill.py --live --api-mode legacy --replace --yes  # legacy delete first
+  python3 create_skill.py --live --api-mode public --replace --yes  # public API delete first
   python3 create_skill.py --live --share --yes         # set sharingConfig.scope=ALL_USERS after create
 """
 
@@ -96,7 +97,8 @@ MAX_RETRIES = 3
 
 REQUIRED_ENV = ("GE_PROJECT", "GE_PROJECT_NUMBER", "GE_ENGINE")
 WIDGET_ORIGIN = "https://vertexaisearch.cloud.google"
-API_MODES = ("widget", "legacy")
+API_MODES = ("widget", "public", "legacy")
+PUBLIC_API_MODES = ("public", "legacy")
 
 
 @dataclass(frozen=True)
@@ -257,6 +259,12 @@ def session(cfg: LiveConfig, api_mode: str = "legacy") -> requests.Session:
     return s
 
 
+def _api_mode_label(api_mode: str) -> str:
+    if api_mode == "legacy":
+        return "public (legacy alias)"
+    return api_mode
+
+
 def _widget_request(widget: WidgetConfig, key: str, payload: dict) -> dict:
     return {
         "configId": widget.config_id,
@@ -312,6 +320,12 @@ def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
         return r
     r.raise_for_status()
     return r
+
+
+def list_agents(s: requests.Session, cfg: LiveConfig) -> dict:
+    r = s.get(f"{API}/{cfg.assistant}/agents", timeout=HTTP_TIMEOUT)
+    _raise_for_status_with_body(r, "agents.list")
+    return r.json()
 
 
 def delete_widget_agent(
@@ -371,7 +385,7 @@ def create_shell(
         },
         timeout=HTTP_TIMEOUT,
     )
-    _raise_for_status_with_body(r, "widgetCreateAgent")
+    _raise_for_status_with_body(r, "agents.create")
     return r.json()
 
 
@@ -415,7 +429,7 @@ def upload_zip(s: requests.Session, cfg: LiveConfig, agent_id: str, zip_path: Pa
         data=zip_path.read_bytes(),
         timeout=HTTP_TIMEOUT,
     )
-    r.raise_for_status()
+    _raise_for_status_with_body(r, "agents.files:upload")
     return r.json()
 
 
@@ -471,7 +485,7 @@ def share(s: requests.Session, cfg: LiveConfig, agent_id: str):
         timeout=HTTP_TIMEOUT,
     )
     print(f"  share {agent_id}: HTTP {r.status_code}")
-    _raise_for_status_with_body(r, "widgetGetAgentView")
+    _raise_for_status_with_body(r, "agents.patch")
     return r
 
 
@@ -517,7 +531,7 @@ def show_widget(s: requests.Session, cfg: LiveConfig, widget: WidgetConfig, agen
 
 def show(s: requests.Session, cfg: LiveConfig, agent_id: str) -> None:
     r = s.get(f"{API}/{cfg.assistant}/agents/{agent_id}", timeout=HTTP_TIMEOUT)
-    r.raise_for_status()
+    _raise_for_status_with_body(r, "agents.get")
     d = r.json()
     sd = d.get("skillAgentDefinition", {})
     print(f"  name:        {d.get('name','').split('/')[-1]}")
@@ -554,7 +568,15 @@ def main(argv=None) -> int:
         "--api-mode",
         choices=API_MODES,
         default="widget",
-        help="widget matches the Gemini Enterprise web UI; legacy uses the older public API path",
+        help=(
+            "widget matches the Gemini Enterprise web UI; public uses documented OAuth API "
+            "(legacy is a backwards-compatible alias for public)"
+        ),
+    )
+    ap.add_argument(
+        "--list",
+        action="store_true",
+        help="list public API agents for the assistant and exit; useful as an auth/permission probe",
     )
     ap.add_argument(
         "--upload-existing",
@@ -593,10 +615,12 @@ def main(argv=None) -> int:
             f"Refusing {' and '.join(destructive)} without confirmation. "
             "These are destructive / tenant-wide; re-run with --yes to proceed."
         )
+    if args.api_mode == "widget" and args.list:
+        raise SystemExit("--list is only implemented for --api-mode public")
     if args.api_mode == "widget" and args.replace:
-        raise SystemExit("--replace is only implemented for --api-mode legacy")
+        raise SystemExit("--replace is only implemented for --api-mode public")
     if args.api_mode == "widget" and args.share:
-        raise SystemExit("--share is only implemented for --api-mode legacy")
+        raise SystemExit("--share is only implemented for --api-mode public")
     if args.upload_existing and args.api_mode != "widget":
         raise SystemExit("--upload-existing is only valid with --api-mode widget")
     if args.upload_existing and args.single_file:
@@ -608,7 +632,8 @@ def main(argv=None) -> int:
     widget = resolve_widget_config() if args.api_mode == "widget" else None
 
     method = "A (single-file)" if args.single_file else "B (bundle upload)"
-    print(f"Plan: provision agent '{args.agent_id}' via Method {method} ({args.api_mode} API)")
+    op = "list agents" if args.list else f"provision agent '{args.agent_id}' via Method {method}"
+    print(f"Plan: {op} ({_api_mode_label(args.api_mode)} API)")
     _print_target(cfg, args.agent_id, "PROVISION")
     if widget:
         print(f"      widget_config:  {widget.config_id}")
@@ -618,12 +643,32 @@ def main(argv=None) -> int:
         print("  step: --replace -> delete existing agent first")
     if args.share:
         print("  step: --share -> sharingConfig.scope=ALL_USERS (visible to ALL users in tenant)")
+    if args.list:
+        print("  step: --list -> GET agents under this assistant; no delete/create/upload")
 
     if not args.live:
         print("\nDRY-RUN (default): no API calls made. Re-run with --live to execute.")
         return 0
 
     s = session(cfg, args.api_mode)
+
+    if args.list:
+        d = list_agents(s, cfg)
+        agents = d.get("agents", [])
+        if not isinstance(agents, list):
+            print(json.dumps(d, indent=2, sort_keys=True))
+            return 0
+        print(f"  agents: {len(agents)}")
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            print(
+                "  - "
+                + str(agent.get("name", "(unnamed)"))
+                + f" | {agent.get('displayName', '(no displayName)')}"
+                + f" | state={agent.get('state', '(unknown)')}"
+            )
+        return 0
 
     if args.api_mode == "widget":
         assert widget is not None

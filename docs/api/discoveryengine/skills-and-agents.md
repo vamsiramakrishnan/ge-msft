@@ -15,7 +15,7 @@ them — the `skillAgentDefinition` payload on an Agent, the raw `files:upload` 
 (see `skill/` tooling: `create_skill.py`, `test_skill.py`, README "What we learned"). Treat the
 published doc as a **subset** of what the endpoint accepts.
 
-## The real skill lifecycle (verified)
+## The real skill lifecycle
 
 A "skill" is modelled as a GE **agent** with a `skillAgentDefinition`, under the assistant:
 
@@ -24,7 +24,13 @@ A "skill" is modelled as a GE **agent** with a `skillAgentDefinition`, under the
               /engines/{engine}/assistants/default_assistant
 ```
 
-| Operation | Call (authenticated, ADC bearer) |
+### Public API mode
+
+Use `discoveryengine.googleapis.com` with OAuth/ADC when the caller has Google IAM permissions on
+the assistant resource. This is the preferred API posture for automation, CI, and tenant admin
+workflows.
+
+| Operation | Call (authenticated OAuth/ADC bearer) |
 |---|---|
 | **Create (single-file)** | `POST {assistant}/agents?agentId=<id>` · body `{displayName, description, skillAgentDefinition:{instruction:"<SKILL.md>"}}` |
 | **Create (bundle)** | create a shell agent, then `POST /upload/v1alpha/{assistant}/agents/<id>/files:upload?upload_protocol=raw` with `Content-Type: application/zip` — the server unpacks the zip: `SKILL.md` → `instruction`, the rest → `subfiles` |
@@ -32,11 +38,28 @@ A "skill" is modelled as a GE **agent** with a `skillAgentDefinition`, under the
 | **Share** | `PATCH {assistant}/agents/<id>?updateMask=sharingConfig` · body `{sharingConfig:{scope:"ALL_USERS"}}` — this is the real "ShareSkill" |
 | **Delete** | `DELETE {assistant}/agents/<id>` |
 
-This mirrors the GE web UI import flow (create → `files:upload` → get) but with a plain OAuth
-bearer token instead of browser/widget auth. The `agents` CRUD is published; the
-`skillAgentDefinition` payload and the raw `files:upload` route are the undocumented part — they
-work regardless (verified). Note `agents.files.import` (published) is a *different*, No-Code-only
-file route; the bundle path used here is the raw `/upload/v1alpha/.../files:upload`.
+The `agents` CRUD methods are published. The `skillAgentDefinition` payload and the raw
+`files:upload` route are the skill-specific layer on top. Note `agents.files.import` (published) is
+a *different*, No-Code-only file route; the bundle path used here is the raw
+`/upload/v1alpha/.../files:upload`.
+
+This mode can fail even when the GE web UI can edit the same skill. A live probe against the dev
+tenant authenticated through ADC but returned `PERMISSION_DENIED` for
+`discoveryengine.agents.list`, which means the user had GE widget permissions but not the Google IAM
+agent permission required by the public API.
+
+### Widget API mode
+
+The Gemini Enterprise web UI uses `content-discoveryengine.googleapis.com` widget calls such as
+`widgetListAvailableAgentViews`, `widgetCreateAgent`, `widgetGetAgentView`,
+`widgetDeleteAgent`, and a resumable `/upload/v1alpha/.../files:upload` flow. Those calls authorize
+against the signed-in user's GE widget permissions (`canRun`, `canView`, `canEdit`, `canDelete`,
+etc.) and use a short-lived Vertex AI Search widget JWT.
+
+Use this mode for developer-owned private skills when public IAM is not available. Keep it out of
+CI and do not automate browser cookies or XSRF state; copy only the short-lived widget Bearer token
+into a local temp file and let the tooling validate issuer/audience/expiry before it sends a
+request.
 
 ## Mounting a skill per turn — `skillsSpec` (the load-bearing correction)
 

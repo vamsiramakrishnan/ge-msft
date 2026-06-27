@@ -16,8 +16,9 @@ Examples:
   GE_SURFACE_COMMANDER_AGENT_ID=740... GE_COMMAND_PLANNER_AGENT_ID=175... \
     python3 skill/update_skills.py --live --upload-existing
   python3 skill/update_skills.py --live --create-new
-  python3 skill/update_skills.py --live --api-mode legacy --replace --yes
-  python3 skill/update_skills.py --live --api-mode legacy --delete-only --yes
+  python3 skill/update_skills.py --live --api-mode public --replace --yes
+  python3 skill/update_skills.py --live --api-mode public --delete-only --yes
+  python3 skill/update_skills.py --live --api-mode widget --delete-only --yes
   python3 skill/update_skills.py --live --replace --yes --only m365-surface-commander
 """
 
@@ -107,7 +108,10 @@ def main(argv=None) -> int:
         "--api-mode",
         choices=create_skill.API_MODES,
         default="widget",
-        help="widget matches the Gemini Enterprise web UI; legacy uses the older public API path",
+        help=(
+            "widget matches the Gemini Enterprise web UI; public uses documented OAuth API "
+            "(legacy is a backwards-compatible alias for public)"
+        ),
     )
     ap.add_argument(
         "--upload-existing",
@@ -157,9 +161,9 @@ def main(argv=None) -> int:
         raise SystemExit("--delete-only cannot be combined with --share")
     if args.upload_existing and args.create_new:
         raise SystemExit("--upload-existing and --create-new are mutually exclusive")
-    if args.api_mode == "widget" and (args.delete_only or args.share):
-        raise SystemExit("--delete-only and --share are only implemented for legacy mode")
-    if args.api_mode == "legacy" and (args.upload_existing or args.create_new):
+    if args.api_mode == "widget" and args.share:
+        raise SystemExit("--share is only implemented for public API mode")
+    if args.api_mode in create_skill.PUBLIC_API_MODES and (args.upload_existing or args.create_new):
         raise SystemExit("--upload-existing/--create-new are widget mode options")
 
     cfg = create_skill.resolve_live_config()
@@ -168,7 +172,7 @@ def main(argv=None) -> int:
 
     print(
         f"Plan: {'delete' if args.delete_only else 'update'} {len(bundles)} "
-        f"Gemini Enterprise skill(s) via {args.api_mode} API"
+        f"Gemini Enterprise skill(s) via {create_skill._api_mode_label(args.api_mode)} API"
     )
     create_skill._print_target(cfg, ",".join(b.agent_id for b in bundles), "BATCH")
     if widget:
@@ -191,6 +195,8 @@ def main(argv=None) -> int:
         if args.api_mode == "widget":
             if args.replace:
                 print("  step:        delete this numeric widget agent, create replacement, upload zip")
+            elif args.delete_only:
+                print("  step:        delete this numeric widget agent; no replacement/upload")
             elif args.create_new:
                 print("  step:        create a new widget agent and upload zip")
             elif args.upload_existing:
@@ -205,7 +211,9 @@ def main(argv=None) -> int:
         print("\nDRY-RUN (default): no API calls made. Re-run with --live to execute.")
         return 0
 
-    if args.api_mode == "widget" and not (args.upload_existing or args.create_new or args.replace):
+    if args.api_mode == "widget" and not (
+        args.upload_existing or args.create_new or args.replace or args.delete_only
+    ):
         raise SystemExit(
             "Widget live mode requires --replace (with numeric GE_*_AGENT_ID values), "
             "--upload-existing, or --create-new."
@@ -216,6 +224,10 @@ def main(argv=None) -> int:
         if args.api_mode == "widget":
             assert widget is not None
             print(f"\nUpdate {bundle.agent_id}")
+            if args.delete_only:
+                create_skill._print_target(cfg, bundle.agent_id, "WIDGET DELETE")
+                create_skill.delete_widget_agent(s, cfg, widget, bundle.agent_id)
+                continue
             if args.replace:
                 create_skill._print_target(cfg, bundle.agent_id, "WIDGET DELETE")
                 create_skill.delete_widget_agent(s, cfg, widget, bundle.agent_id)

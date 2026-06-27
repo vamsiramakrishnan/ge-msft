@@ -44,9 +44,12 @@ update_skills = _load("update_skills", "update_skills.py")
 class _FakeResponse:
     """Minimal requests.Response stand-in that records raise_for_status() calls."""
 
-    def __init__(self, status_code=200, payload=None):
+    def __init__(self, status_code=200, payload=None, headers=None, content=None):
         self.status_code = status_code
         self._payload = payload or {}
+        self.headers = headers or {}
+        self.content = b"{}" if content is None else content
+        self.text = self.content.decode("utf-8", errors="replace")
         self.raised = False
 
     def raise_for_status(self):
@@ -83,6 +86,19 @@ class _RecordingSession:
 
     def delete(self, url, **kw):
         return self._record("DELETE", url, **kw)
+
+
+class _SequenceSession(_RecordingSession):
+    def __init__(self, responses):
+        super().__init__()
+        self._responses = list(responses)
+
+    def _record(self, verb, url, **kw):
+        self.calls.append((verb, url, kw))
+        assert "timeout" in kw and kw["timeout"], f"{verb} {url} missing timeout"
+        if not self._responses:
+            raise AssertionError(f"unexpected HTTP call {verb} {url}")
+        return self._responses.pop(0)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +143,12 @@ class TestLiveConfigRequired(unittest.TestCase):
 # 2) Dry-run is default; --replace/--share need --yes; dry-run does no network I/O.
 # ---------------------------------------------------------------------------
 class TestDryRunDefault(unittest.TestCase):
-    ENV = {"GE_PROJECT": "p", "GE_PROJECT_NUMBER": "123", "GE_ENGINE": "e"}
+    ENV = {
+        "GE_PROJECT": "p",
+        "GE_PROJECT_NUMBER": "123",
+        "GE_ENGINE": "e",
+        "GE_WIDGET_CONFIG_ID": "33333333-3333-4333-8333-333333333333",
+    }
 
     def _run(self, argv):
         with mock.patch.dict("os.environ", self.ENV, clear=True):
@@ -174,7 +195,12 @@ class TestDryRunDefault(unittest.TestCase):
 
 
 class TestBatchSkillUpdater(unittest.TestCase):
-    ENV = {"GE_PROJECT": "p", "GE_PROJECT_NUMBER": "123", "GE_ENGINE": "e"}
+    ENV = {
+        "GE_PROJECT": "p",
+        "GE_PROJECT_NUMBER": "123",
+        "GE_ENGINE": "e",
+        "GE_WIDGET_CONFIG_ID": "33333333-3333-4333-8333-333333333333",
+    }
 
     def test_batch_dry_run_makes_no_network_calls(self):
         with mock.patch.dict("os.environ", self.ENV, clear=True):
@@ -194,6 +220,12 @@ class TestBatchSkillUpdater(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 update_skills.main(["--delete-only"])
             self.assertIn("--yes", str(cm.exception))
+
+    def test_batch_widget_live_requires_explicit_existing_or_create_new(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with self.assertRaises(SystemExit) as cm:
+                update_skills.main(["--live"])
+            self.assertIn("--upload-existing", str(cm.exception))
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +259,74 @@ class TestRequestHardening(unittest.TestCase):
         self.assertLessEqual(retries, 10)
         self.assertIsInstance(create_skill.HTTP_TIMEOUT, (int, float))
         self.assertGreater(create_skill.HTTP_TIMEOUT, 0)
+
+    def test_widget_create_uses_content_api_and_returns_numeric_agent_name(self):
+        env = {
+            **self.ENV,
+            "GE_WIDGET_CONFIG_ID": "33333333-3333-4333-8333-333333333333",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = create_skill.resolve_live_config()
+            widget = create_skill.resolve_widget_config()
+            rec = _RecordingSession({"agent": {"name": "8870098647237058037"}})
+            agent = create_skill.create_widget_agent(
+                rec, cfg, widget, "instruction", "Name", "Desc"
+            )
+        self.assertEqual(agent["name"], "8870098647237058037")
+        verb, url, kw = rec.calls[0]
+        self.assertEqual(verb, "POST")
+        self.assertIn("content-discoveryengine.googleapis.com", url)
+        self.assertIn("widgetCreateAgent", url)
+        self.assertEqual(kw["json"]["configId"], env["GE_WIDGET_CONFIG_ID"])
+        self.assertTrue(kw["json"]["createAgentRequest"]["defaultFilesSkipped"])
+        self.assertNotIn("params", kw)
+
+    def test_widget_delete_uses_content_api_agent_name(self):
+        env = {
+            **self.ENV,
+            "GE_WIDGET_CONFIG_ID": "33333333-3333-4333-8333-333333333333",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = create_skill.resolve_live_config()
+            widget = create_skill.resolve_widget_config()
+            rec = _RecordingSession({})
+            resp = create_skill.delete_widget_agent(rec, cfg, widget, "8870098647237058037")
+        self.assertTrue(resp.raised)
+        verb, url, kw = rec.calls[0]
+        self.assertEqual(verb, "POST")
+        self.assertIn("content-discoveryengine.googleapis.com", url)
+        self.assertIn("widgetDeleteAgent", url)
+        self.assertEqual(kw["json"]["deleteAgentRequest"]["name"], "8870098647237058037")
+
+    def test_widget_zip_upload_uses_resumable_protocol(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            cfg = create_skill.resolve_live_config()
+        zip_path = HERE / "m365-surface-commander.zip"
+        rec = _SequenceSession(
+            [
+                _FakeResponse(
+                    headers={
+                        "x-goog-upload-url": "https://content-discoveryengine.googleapis.com/upload/session"
+                    },
+                    content=b"",
+                ),
+                _FakeResponse(payload={}, content=b"{}"),
+            ]
+        )
+        create_skill.upload_zip_resumable(rec, cfg, "8870098647237058037", zip_path)
+        self.assertEqual(len(rec.calls), 2)
+        start = rec.calls[0]
+        final = rec.calls[1]
+        self.assertIn("/agents/8870098647237058037/files:upload", start[1])
+        self.assertEqual(start[2]["headers"]["x-goog-upload-command"], "start")
+        self.assertEqual(start[2]["headers"]["x-goog-upload-protocol"], "resumable")
+        self.assertEqual(
+            start[2]["headers"]["x-goog-upload-header-content-length"],
+            str(zip_path.stat().st_size),
+        )
+        self.assertEqual(final[1], "https://content-discoveryengine.googleapis.com/upload/session")
+        self.assertEqual(final[2]["headers"]["x-goog-upload-command"], "upload, finalize")
+        self.assertEqual(final[2]["headers"]["x-goog-upload-offset"], "0")
 
 
 # ---------------------------------------------------------------------------

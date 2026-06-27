@@ -1,27 +1,44 @@
 #!/usr/bin/env python3
 """
-Create a Gemini Enterprise skill programmatically, using the **authenticated** equivalent of the
-GE web UI's import flow (which we triangulated from captured browser traffic + a live end-to-end
-test).
+Create a Gemini Enterprise skill programmatically. The current Gemini Enterprise web UI uses the
+content-discoveryengine widget API for skill creation plus Google resumable upload for zip bundles:
 
-The `agents` resource is NOT in the public discovery doc, but the authenticated REST endpoints on
-discoveryengine.googleapis.com work (GET/POST/DELETE all verified). Two methods:
+  1) POST /v1alpha/locations/<location>/widgetCreateAgent
+       -> returns agent.name, an opaque numeric id such as "8870098647237058037"
+  2) POST /upload/v1alpha/{assistant}/agents/<agent.name>/files:upload
+       x-goog-upload-command: start
+       x-goog-upload-protocol: resumable
+  3) POST the zip bytes to the returned upload URL
+       x-goog-upload-command: upload, finalize
+
+This is not the same as the public discoveryengine.googleapis.com raw upload path. The raw legacy
+path is still available through --api-mode legacy for older/admin environments, but --api-mode
+widget is the default because it matches the live UI traffic.
+
+Two methods:
 
   Method A — single-file skill (instruction only):
-      POST {assistant}/agents?agentId=<id>
+      widget mode: widgetCreateAgent with skillAgentDefinition.instruction
+      legacy mode: POST {assistant}/agents?agentId=<id>
         { displayName, description, skillAgentDefinition: { instruction: "<full markdown>" } }
 
   Method B — multi-file bundle (SKILL.md + references/ + scripts/ + assets/):  [default]
-      1) POST {assistant}/agents?agentId=<id>   with a placeholder skillAgentDefinition.instruction
-      2) POST /upload/v1alpha/{assistant}/agents/<id>/files:upload?upload_protocol=raw
-              Content-Type: application/zip, body = the zip bytes
+      widget mode:
+        1) widgetCreateAgent with a placeholder skillAgentDefinition.instruction
+        2) resumable upload the zip to agents/<returned agent.name>/files:upload
+      legacy mode:
+        1) POST {assistant}/agents?agentId=<id> with a placeholder instruction
+        2) raw upload the zip to agents/<id>/files:upload
          -> the server unpacks the zip: SKILL.md body -> instruction, the rest -> subfiles.
       3) GET to verify.
 
 This is the same result the UI produces (create -> files:upload -> getAgentView), with a plain
 OAuth Bearer token (ADC) instead of SAPISIDHASH/widget config.
 
-Auth: ADC (gcloud auth print-access-token). Needs agents create/update on the engine.
+Auth:
+  * widget mode: GE_AUTH_MODE=widget and GE_WIDGET_BEARER_TOKEN copied from the authenticated
+    Gemini Enterprise web session. It is short-lived; do not commit or log it.
+  * legacy mode: ADC or GE_AUTH_MODE=gcloud (gcloud auth print-access-token).
 
 SAFETY (review Finding #8):
   * There are NO baked-in project/engine identifiers. Any LIVE operation REQUIRES the GE_PROJECT,
@@ -34,10 +51,10 @@ SAFETY (review Finding #8):
 
 Usage:
   python3 create_skill.py                              # DRY-RUN (default): print the plan, no I/O
-  python3 create_skill.py --live                       # Method B: zip in ./m365-surface-commander.zip
+  python3 create_skill.py --live                       # Method B via widget API
   python3 create_skill.py --live --zip path/skill.zip  # Method B with a specific zip
   python3 create_skill.py --live --single-file SKILL.md  # Method A: inline instruction from markdown
-  python3 create_skill.py --live --replace --yes       # delete an existing agent of the same id first
+  python3 create_skill.py --live --api-mode legacy --replace --yes  # legacy delete first
   python3 create_skill.py --live --share --yes         # set sharingConfig.scope=ALL_USERS after create
 """
 
@@ -66,12 +83,16 @@ DESCRIPTION = (
 
 API = "https://discoveryengine.googleapis.com/v1alpha"
 UPLOAD_API = "https://discoveryengine.googleapis.com/upload/v1alpha"
+CONTENT_API = "https://content-discoveryengine.googleapis.com/v1alpha"
+CONTENT_UPLOAD_API = "https://content-discoveryengine.googleapis.com/upload/v1alpha"
 
 # Request hardening: every call gets a finite timeout and a small, bounded retry budget.
 HTTP_TIMEOUT = 60  # seconds
 MAX_RETRIES = 3
 
 REQUIRED_ENV = ("GE_PROJECT", "GE_PROJECT_NUMBER", "GE_ENGINE")
+WIDGET_ORIGIN = "https://vertexaisearch.cloud.google"
+API_MODES = ("widget", "legacy")
 
 
 @dataclass(frozen=True)
@@ -89,6 +110,12 @@ class LiveConfig:
             f"projects/{self.project_number}/locations/{self.location}"
             f"/collections/default_collection/engines/{self.engine}/assistants/default_assistant"
         )
+
+
+@dataclass(frozen=True)
+class WidgetConfig:
+    config_id: str
+    server_token: str | None = None
 
 
 def resolve_live_config() -> LiveConfig:
@@ -113,7 +140,34 @@ def resolve_live_config() -> LiveConfig:
     )
 
 
-def session(cfg: LiveConfig) -> requests.Session:
+def resolve_widget_config() -> WidgetConfig:
+    config_id = os.environ.get("GE_WIDGET_CONFIG_ID")
+    if not config_id:
+        raise SystemExit(
+            "Widget API mode requires GE_WIDGET_CONFIG_ID (for your dev app this is the "
+            "widget config GUID from the Gemini Enterprise URL/captured widget calls)."
+        )
+    return WidgetConfig(
+        config_id=config_id,
+        server_token=os.environ.get("GE_WIDGET_SERVER_TOKEN"),
+    )
+
+
+def _widget_bearer_token() -> str:
+    token = os.environ.get("GE_WIDGET_BEARER_TOKEN", "").strip()
+    token_file = os.environ.get("GE_WIDGET_BEARER_TOKEN_FILE", "").strip()
+    if not token and token_file:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    if not token:
+        raise SystemExit(
+            "Widget API live mode requires GE_WIDGET_BEARER_TOKEN or GE_WIDGET_BEARER_TOKEN_FILE. "
+            "Use the short-lived Bearer token from an authenticated Gemini Enterprise web request; "
+            "do not commit it or paste it into logs."
+        )
+    return token.removeprefix("Bearer ").strip()
+
+
+def session(cfg: LiveConfig, api_mode: str = "legacy") -> requests.Session:
     """Authenticated requests.Session with bounded retries. Imports google.auth lazily so the
     tooling (and its offline tests) can be imported without the dependency installed."""
     s = requests.Session()
@@ -127,6 +181,20 @@ def session(cfg: LiveConfig) -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
+    if api_mode == "widget" or os.environ.get("GE_AUTH_MODE") == "widget":
+        token = _widget_bearer_token()
+        s.headers.update(
+            {
+                "Authorization": f"Bearer {token}",
+                "Origin": WIDGET_ORIGIN,
+                "Referer": f"{WIDGET_ORIGIN}/",
+            }
+        )
+        server_token = os.environ.get("GE_WIDGET_SERVER_TOKEN")
+        if server_token:
+            s.headers.update({"x-server-token": server_token})
+        return s
+
     if os.environ.get("GE_AUTH_MODE") == "gcloud":
         token = subprocess.check_output(
             ["gcloud", "auth", "print-access-token"], text=True
@@ -142,10 +210,33 @@ def session(cfg: LiveConfig) -> requests.Session:
     return s
 
 
+def _widget_request(widget: WidgetConfig, key: str, payload: dict) -> dict:
+    return {
+        "configId": widget.config_id,
+        "additionalParams": {"token": "-", "origin": "ORIGIN_UNSPECIFIED"},
+        key: payload,
+    }
+
+
 def delete_agent(s: requests.Session, cfg: LiveConfig, agent_id: str):
     r = s.delete(f"{API}/{cfg.assistant}/agents/{agent_id}", timeout=HTTP_TIMEOUT)
     print(f"  delete {agent_id}: HTTP {r.status_code}")
     # 404 is fine (nothing to delete, idempotent); surface every other failure.
+    if r.status_code == 404:
+        return r
+    r.raise_for_status()
+    return r
+
+
+def delete_widget_agent(
+    s: requests.Session, cfg: LiveConfig, widget: WidgetConfig, agent_name: str
+):
+    r = s.post(
+        f"{CONTENT_API}/locations/{cfg.location}/widgetDeleteAgent",
+        json=_widget_request(widget, "deleteAgentRequest", {"name": agent_name}),
+        timeout=HTTP_TIMEOUT,
+    )
+    print(f"  delete {agent_name}: HTTP {r.status_code}")
     if r.status_code == 404:
         return r
     r.raise_for_status()
@@ -174,6 +265,38 @@ def create_shell(
     return r.json()
 
 
+def create_widget_agent(
+    s: requests.Session,
+    cfg: LiveConfig,
+    widget: WidgetConfig,
+    instruction: str,
+    display_name: str = DISPLAY_NAME,
+    description: str = DESCRIPTION,
+) -> dict:
+    r = s.post(
+        f"{CONTENT_API}/locations/{cfg.location}/widgetCreateAgent",
+        json=_widget_request(
+            widget,
+            "createAgentRequest",
+            {
+                "agent": {
+                    "displayName": display_name,
+                    "description": description,
+                    "skillAgentDefinition": {"instruction": instruction},
+                },
+                "defaultFilesSkipped": True,
+            },
+        ),
+        timeout=HTTP_TIMEOUT,
+    )
+    r.raise_for_status()
+    d = r.json()
+    agent = d.get("agent")
+    if not isinstance(agent, dict) or not agent.get("name"):
+        raise RuntimeError(f"widgetCreateAgent returned no agent.name: {d!r}")
+    return agent
+
+
 def upload_zip(s: requests.Session, cfg: LiveConfig, agent_id: str, zip_path: Path) -> dict:
     r = s.post(
         f"{UPLOAD_API}/{cfg.assistant}/agents/{agent_id}/files:upload",
@@ -186,6 +309,50 @@ def upload_zip(s: requests.Session, cfg: LiveConfig, agent_id: str, zip_path: Pa
     return r.json()
 
 
+def upload_zip_resumable(
+    s: requests.Session, cfg: LiveConfig, agent_name: str, zip_path: Path
+) -> dict:
+    data = zip_path.read_bytes()
+    start = s.post(
+        f"{CONTENT_UPLOAD_API}/{cfg.assistant}/agents/{agent_name}/files:upload",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "x-goog-upload-command": "start",
+            "x-goog-upload-file-name": zip_path.name,
+            "x-goog-upload-header-content-length": str(len(data)),
+            "x-goog-upload-protocol": "resumable",
+        },
+        data=b"",
+        timeout=HTTP_TIMEOUT,
+    )
+    start.raise_for_status()
+    upload_url = start.headers.get("x-goog-upload-url")
+    if not upload_url:
+        raise RuntimeError(
+            "resumable upload start returned no x-goog-upload-url header; "
+            f"status={start.status_code}"
+        )
+
+    final = s.post(
+        upload_url,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            "x-goog-upload-command": "upload, finalize",
+            "x-goog-upload-file-name": zip_path.name,
+            "x-goog-upload-offset": "0",
+        },
+        data=data,
+        timeout=HTTP_TIMEOUT,
+    )
+    final.raise_for_status()
+    if final.content:
+        try:
+            return final.json()
+        except ValueError:
+            return {"raw": final.text}
+    return {}
+
+
 def share(s: requests.Session, cfg: LiveConfig, agent_id: str):
     r = s.patch(
         f"{API}/{cfg.assistant}/agents/{agent_id}",
@@ -196,6 +363,46 @@ def share(s: requests.Session, cfg: LiveConfig, agent_id: str):
     print(f"  share {agent_id}: HTTP {r.status_code}")
     r.raise_for_status()
     return r
+
+
+def get_widget_agent_view(
+    s: requests.Session, cfg: LiveConfig, widget: WidgetConfig, agent_name: str
+) -> dict:
+    r = s.post(
+        f"{CONTENT_API}/locations/{cfg.location}/widgetGetAgentView",
+        json=_widget_request(widget, "getAgentViewRequest", {"name": agent_name}),
+        timeout=HTTP_TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def _extract_widget_agent(view: dict) -> dict:
+    candidates = [
+        view.get("agent"),
+        view.get("agentView"),
+        view.get("agentView", {}).get("agent") if isinstance(view.get("agentView"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate.get("name"):
+            return candidate
+    return view
+
+
+def show_widget(s: requests.Session, cfg: LiveConfig, widget: WidgetConfig, agent_name: str) -> None:
+    d = get_widget_agent_view(s, cfg, widget, agent_name)
+    agent = _extract_widget_agent(d)
+    sd = agent.get("skillAgentDefinition", {}) if isinstance(agent, dict) else {}
+    print(f"  name:        {agent.get('name', agent_name)}")
+    print(f"  displayName: {agent.get('displayName')}")
+    print(f"  state:       {agent.get('state')}")
+    print(f"  instruction: {len(sd.get('instruction',''))} chars")
+    print(f"  subfiles:    {[f.get('fileName') for f in sd.get('subfiles', [])] or '(none)'}")
+    print("\n  reference in widgetStreamAssist via:")
+    print(
+        "    "
+        + f'"skillsSpec": {{"skills": [{{"name": "{cfg.assistant}/agents/{agent.get("name", agent_name)}"}}]}}'
+    )
 
 
 def show(s: requests.Session, cfg: LiveConfig, agent_id: str) -> None:
@@ -234,6 +441,17 @@ def main(argv=None) -> int:
     ap.add_argument("--display-name", default=DISPLAY_NAME)
     ap.add_argument("--description", default=DESCRIPTION)
     ap.add_argument(
+        "--api-mode",
+        choices=API_MODES,
+        default="widget",
+        help="widget matches the Gemini Enterprise web UI; legacy uses the older public API path",
+    )
+    ap.add_argument(
+        "--upload-existing",
+        action="store_true",
+        help="widget mode only: skip create and upload the zip to --agent-id / numeric agent name",
+    )
+    ap.add_argument(
         "--live",
         action="store_true",
         help="actually talk to the API (default is a dry-run that prints the plan and exits)",
@@ -265,14 +483,27 @@ def main(argv=None) -> int:
             f"Refusing {' and '.join(destructive)} without confirmation. "
             "These are destructive / tenant-wide; re-run with --yes to proceed."
         )
+    if args.api_mode == "widget" and args.replace:
+        raise SystemExit("--replace is only implemented for --api-mode legacy")
+    if args.api_mode == "widget" and args.share:
+        raise SystemExit("--share is only implemented for --api-mode legacy")
+    if args.upload_existing and args.api_mode != "widget":
+        raise SystemExit("--upload-existing is only valid with --api-mode widget")
+    if args.upload_existing and args.single_file:
+        raise SystemExit("--upload-existing only applies to zip bundle upload")
 
     # Resolve the live target up front so even a dry-run shows the real (env-provided) plan and a
     # live run cannot pick up accidental defaults.
     cfg = resolve_live_config()
+    widget = resolve_widget_config() if args.api_mode == "widget" else None
 
     method = "A (single-file)" if args.single_file else "B (bundle upload)"
-    print(f"Plan: provision agent '{args.agent_id}' via Method {method}")
+    print(f"Plan: provision agent '{args.agent_id}' via Method {method} ({args.api_mode} API)")
     _print_target(cfg, args.agent_id, "PROVISION")
+    if widget:
+        print(f"      widget_config:  {widget.config_id}")
+        if args.upload_existing:
+            print("  step: --upload-existing -> skip create and upload to this numeric agent name")
     if args.replace:
         print("  step: --replace -> delete existing agent first")
     if args.share:
@@ -282,7 +513,43 @@ def main(argv=None) -> int:
         print("\nDRY-RUN (default): no API calls made. Re-run with --live to execute.")
         return 0
 
-    s = session(cfg)
+    s = session(cfg, args.api_mode)
+
+    if args.api_mode == "widget":
+        assert widget is not None
+        if args.single_file:
+            print(f"Method A — widget single-file create from {args.single_file}")
+            instruction = Path(args.single_file).read_text(encoding="utf-8")
+            agent = create_widget_agent(
+                s, cfg, widget, instruction, args.display_name, args.description
+            )
+            agent_name = agent["name"]
+        else:
+            zip_path = Path(args.zip)
+            if not zip_path.exists():
+                raise SystemExit(f"zip not found: {zip_path}")
+            print(f"Method B — widget bundle upload from {zip_path}")
+            if args.upload_existing:
+                agent_name = args.agent_id
+                print(f"  1) use existing agent name {agent_name}")
+            else:
+                print("  1) create widget shell agent")
+                agent = create_widget_agent(
+                    s,
+                    cfg,
+                    widget,
+                    "placeholder — replaced by SKILL.md on upload",
+                    args.display_name,
+                    args.description,
+                )
+                agent_name = agent["name"]
+                print(f"     created agent.name {agent_name}")
+            print("  2) resumable upload zip (server unpacks)")
+            upload_zip_resumable(s, cfg, agent_name, zip_path)
+        print("  3) verify")
+        show_widget(s, cfg, widget, agent_name)
+        return 0
+
     if args.replace:
         _print_target(cfg, args.agent_id, "DELETE")
         delete_agent(s, cfg, args.agent_id)

@@ -27,6 +27,8 @@
     "skills:validate": "python3 skill/validate_skill_bundles.py --check-zip",
     "skills:validate:official": "uvx --from skills-ref agentskills validate skill/m365-command-planner && uvx --from skills-ref agentskills validate skill/m365-surface-commander",
     "skills:index": "python3 skill/generate_resource_index.py",
+    "test:streamassist:live": "GE_LIVE_STREAMASSIST=1 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
+    "test:streamassist:live:login": "node scripts/streamassist-live-login.mjs",
     "probe:streamassist-code-exec": "node scripts/streamassist-code-exec-probe.mjs",
     "coverage": "vitest run --coverage",
     "emit:language": "tsc -b packages/contracts && node packages/contracts/scripts/emit-language-manifest.mjs"

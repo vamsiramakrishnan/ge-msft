@@ -256,6 +256,21 @@ npm run manifests:validate -- --profile development
 npm run package:dev
 ```
 
+To cross-check current Gemini Enterprise skill wiring against the live StreamAssist widget API,
+refresh `/tmp/ge-widget.env` from a browser-authenticated GE session and run:
+
+```bash
+npm run test:streamassist:live
+```
+
+Or let the test preflight guide the browser login/request-capture refresh first:
+
+```bash
+npm run test:streamassist:live:login
+```
+
+See [live StreamAssist integration tests](docs/api/discoveryengine/live-streamassist-tests.md).
+
 Office "Upload Add-in" dialogs expect host-specific XML manifests:
 
 ```text

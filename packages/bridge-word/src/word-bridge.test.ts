@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { asChangeId, type ActuationRequest } from '@ge/contracts';
+import { asChangeId, type ActuationRequest, type ContextRef } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { WordBridge } from './word-bridge.js';
 import { DocStateSnapshotSchema } from '@ge/contracts';
@@ -52,6 +52,7 @@ class FakeWordHost implements WordHost {
   readonly filledControls: Array<{ id: string; text: string; priorText: string }> = [];
   /** Durable provenance XML parts persisted via the port (BUILD-PLAN 1.6). */
   readonly persistedProvenance: string[] = [];
+  readonly revealedContext: ContextRef[] = [];
   /** When true, the next addComment reports failure (unsupported / anchor gone). */
   commentFails = false;
   /** When true, persistProvenance reports failure (API unsupported). */
@@ -71,6 +72,11 @@ class FakeWordHost implements WordHost {
 
   searchText(query: string, _matchCase: boolean): Promise<WordSearchHit[]> {
     return Promise.resolve(this.textHits.get(query) ?? []);
+  }
+
+  revealContext(ref: ContextRef): Promise<void> {
+    this.revealedContext.push(ref);
+    return Promise.resolve();
   }
 
   applyTrackedChange(
@@ -258,6 +264,61 @@ describe('WordBridge orchestration (against a fake host)', () => {
         title: 'Whole document',
       });
       expect(ctx.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('revealContext', () => {
+    it('only advertises reveal for addressable Word refs and delegates to the host', async () => {
+      const host = new FakeWordHost();
+      const bridge = new WordBridge(host);
+      const selection: ContextRef = {
+        id: 'word:selection',
+        kind: 'selection',
+        surface: 'word',
+        title: 'Selection',
+      };
+      const document: ContextRef = {
+        id: 'word:document',
+        kind: 'document',
+        surface: 'word',
+        title: 'Whole document',
+      };
+
+      expect(bridge.canRevealContext(selection)).toBe(true);
+      expect(bridge.canRevealContext(document)).toBe(false);
+
+      await bridge.revealContext(selection);
+      await bridge.revealContext(document);
+      expect(host.revealedContext).toEqual([selection]);
+    });
+
+    it('treats content anchors, content controls, and comments as revealable targets', () => {
+      const bridge = new WordBridge(new FakeWordHost());
+      expect(
+        bridge.canRevealContext({
+          id: 'ctx:hit',
+          kind: 'paragraph',
+          surface: 'word',
+          title: 'Clause',
+          anchor: { matchText: 'SLA clause' },
+        }),
+      ).toBe(true);
+      expect(
+        bridge.canRevealContext({
+          id: 'word:cc:12',
+          kind: 'paragraph',
+          surface: 'word',
+          title: 'Content control',
+        }),
+      ).toBe(true);
+      expect(
+        bridge.canRevealContext({
+          id: 'word:comment:c1',
+          kind: 'comment',
+          surface: 'word',
+          title: 'Comment',
+        }),
+      ).toBe(true);
     });
   });
 
@@ -625,6 +686,11 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-i'),
         kind: 'insert-text',
         location: 'selection',
+        inverse: {
+          op: 'not-reversible',
+          reason:
+            'Word insert-text currently records provenance but has no durable inserted-range handle.',
+        },
         provenanceMissing: true,
       });
       expect(host.directInserts).toEqual([{ text: 'hello' }]);
@@ -693,6 +759,7 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-r'),
         kind: 'replace-selection',
         location: 'selection',
+        inverse: { op: 'restore-text', anchor: 'selection', priorText: 'old value' },
         provenanceMissing: true,
       });
       // The prior text was captured (for the inverse) before the overwrite.
@@ -731,6 +798,11 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-o'),
         kind: 'insert-ooxml',
         location: 'selection',
+        inverse: {
+          op: 'not-reversible',
+          reason:
+            'Word insert-ooxml currently records provenance but has no durable inserted-range handle.',
+        },
         provenanceMissing: true,
       });
       expect(host.directInserts).toEqual([{ ooxml: '<w:p/>' }]);
@@ -780,6 +852,11 @@ describe('WordBridge orchestration (against a fake host)', () => {
         changeId: asChangeId('chg-f'),
         kind: 'fill-content-control',
         location: 'content-control:42',
+        inverse: {
+          op: 'restore-content-control',
+          contentControlId: '42',
+          priorText: 'placeholder',
+        },
         provenanceMissing: true,
       });
       expect(host.filledControls).toEqual([{ id: '42', text: 'filled', priorText: 'placeholder' }]);

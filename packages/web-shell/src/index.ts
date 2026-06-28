@@ -38,3 +38,8 @@ export {
   type RunStep,
 } from './controller.js';
 export { renderCommandLine } from './render-command.js';
+export {
+  buildPowerPointDeckImportRequest,
+  type BuildPowerPointDeckImportOptions,
+  type PowerPointDeckImportPlan,
+} from './powerpoint-deck-import.js';

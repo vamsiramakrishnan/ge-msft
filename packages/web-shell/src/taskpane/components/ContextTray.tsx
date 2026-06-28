@@ -4,6 +4,7 @@ import { useDisclosure } from './useDisclosure.js';
 export interface ContextTrayProps {
   chips: ContextChip[];
   onToggle: (id: string, attach: boolean) => void;
+  onReveal: (id: string) => void;
   onRefresh: () => void;
 }
 
@@ -23,12 +24,15 @@ const KIND_DOT: Readonly<Record<string, string>> = {
 function Chip({
   chip,
   onToggle,
+  onReveal,
 }: {
   chip: ContextChip;
   onToggle: (id: string, attach: boolean) => void;
+  onReveal: (id: string) => void;
 }): JSX.Element {
   const dot = KIND_DOT[chip.kind] ?? 'var(--soft)';
   const detailId = `ctx-detail-${safeId(chip.id)}`;
+  const revealLabel = `Open ${chip.title} in the host`;
   return (
     <span className="detail-hover chip-wrap">
       <span className={`chip${chip.attached ? ' on' : ''}`} aria-describedby={detailId}>
@@ -55,17 +59,34 @@ function Chip({
             ×
           </button>
         )}
+        {chip.revealable && (
+          <button
+            type="button"
+            className="open-host"
+            onClick={() => onReveal(chip.id)}
+            aria-label={revealLabel}
+            title={revealLabel}
+          >
+            ↗
+          </button>
+        )}
       </span>
       <span id={detailId} className="detail-popover" role="tooltip">
         <strong>{chip.title}</strong>
         <span>{chip.kind}</span>
+        {chip.revealable ? <span>Open jumps to this location in the host.</span> : null}
         {chip.preview ? <span>{chip.preview}</span> : null}
       </span>
     </span>
   );
 }
 
-export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): JSX.Element {
+export function ContextTray({
+  chips,
+  onToggle,
+  onReveal,
+  onRefresh,
+}: ContextTrayProps): JSX.Element {
   // Read-only view shaping: surface attached sources first so the active grounding scope reads
   // top-to-bottom. The controller still owns the flat `chips` list and the `attached` flag.
   const attached = chips.filter((c) => c.attached);
@@ -125,7 +146,7 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
           <div className="chips-group" role="list" aria-label="Attached sources">
             {attached.map((chip) => (
               <span role="listitem" key={chip.id} style={{ display: 'contents' }}>
-                <Chip chip={chip} onToggle={onToggle} />
+                <Chip chip={chip} onToggle={onToggle} onReveal={onReveal} />
               </span>
             ))}
           </div>
@@ -137,7 +158,7 @@ export function ContextTray({ chips, onToggle, onRefresh }: ContextTrayProps): J
           <div className="chips-group" role="list" aria-label="Available to attach">
             {available.map((chip) => (
               <span role="listitem" key={chip.id} style={{ display: 'contents' }}>
-                <Chip chip={chip} onToggle={onToggle} />
+                <Chip chip={chip} onToggle={onToggle} onReveal={onReveal} />
               </span>
             ))}
           </div>

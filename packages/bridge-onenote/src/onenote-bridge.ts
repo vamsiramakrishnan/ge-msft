@@ -75,6 +75,30 @@ export class OneNoteBridge implements DocBridge {
     return page ? pageToContext(page) : [];
   }
 
+  canRevealContext(ref: ContextRef): boolean {
+    return (
+      ref.surface === 'onenote' && ref.kind === 'page' && onenoteRevealTarget(ref) !== undefined
+    );
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    const target = onenoteRevealTarget(ref);
+    if (!target || !isSet('OneNoteApi', '1.1')) return;
+    await OneNote.run(async (ctx) => {
+      if (target.clientUrl) {
+        ctx.application.navigateToPageWithClientUrl(target.clientUrl);
+        await ctx.sync();
+        return;
+      }
+      const page = ctx.application.getActivePageOrNull();
+      page.load('id');
+      await ctx.sync();
+      if (page.isNullObject || (target.pageId && page.id !== target.pageId)) return;
+      ctx.application.navigateToPage(page);
+      await ctx.sync();
+    });
+  }
+
   /**
    * ADR-0003 Layer B element 1 / ADR-0006 `outline` read: an ambient structural snapshot of the
    * active page — its title (heading) + paragraph outline, mapped through the same native blocks
@@ -208,4 +232,31 @@ export class OneNoteBridge implements DocBridge {
       return { ok: true, changeId: req.changeId, kind: req.kind, location: `page:${page.id}` };
     });
   }
+}
+
+interface OneNoteRevealTarget {
+  pageId?: string;
+  clientUrl?: string;
+}
+
+function onenoteRevealTarget(ref: ContextRef): OneNoteRevealTarget | undefined {
+  if (ref.surface !== 'onenote' || ref.kind !== 'page') return undefined;
+  const url = prefixedValue(ref.anchor?.locator, 'clientUrl:', 'url:');
+  if (url) return { clientUrl: url };
+  const pageId =
+    prefixedValue(ref.id, 'on:page:', 'onenote:page:') ??
+    prefixedValue(ref.anchor?.locator, 'page:', 'on:page:', 'onenote:page:');
+  return pageId ? { pageId } : undefined;
+}
+
+function prefixedValue(value: string | undefined, ...prefixes: string[]): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  for (const prefix of prefixes) {
+    if (trimmed.startsWith(prefix)) {
+      const rest = trimmed.slice(prefix.length).trim();
+      return rest || undefined;
+    }
+  }
+  return undefined;
 }

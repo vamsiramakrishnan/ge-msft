@@ -1,3 +1,12 @@
+---
+title: OneNote Semantics
+kind: reference
+skill: m365-surface-commander
+surface: onenote
+topics: [page, paragraph, note, append-page]
+load_when: The active surface is OneNote or a plan mentions pages, notebook notes, or append-page.
+---
+
 # OneNote semantics
 
 Load this when the active surface is OneNote. Cross-surface table:

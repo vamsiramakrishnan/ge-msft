@@ -13,7 +13,7 @@ import type { StreamAssistClient, StreamOptions } from '@ge/gemini-client';
 import type { AssistRequest } from '@ge/contracts';
 import { TriggerRegistry } from '@ge/triggers';
 import { AssistSession, type CommandLoopEvent } from './assist-session.js';
-import { compileCommand, renderGrammarPrompt } from './command-protocol.js';
+import { compileCommand, renderCommandHelp, renderGrammarPrompt } from './command-protocol.js';
 import type { DocBridge } from './bridge.js';
 import { asChangeId } from '@ge/contracts';
 
@@ -155,6 +155,41 @@ describe('compileCommand', () => {
       compileCommand({ verb: 'search', text: 'x' }, { surface: 'word', mintChangeId: mint }),
     ).toEqual({ kind: 'read', intent: { read: 'search', text: 'x' } });
     expect(
+      compileCommand({ verb: 'list', kind: 'comment' }, { surface: 'word', mintChangeId: mint }),
+    ).toEqual({ kind: 'read', intent: { read: 'list-context', kind: 'comment' } });
+    expect(
+      compileCommand(
+        { verb: 'inspect', selector: 'xl:Sales!A1:C9' },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'read', intent: { read: 'inspect-context', selector: 'xl:Sales!A1:C9' } });
+    expect(
+      compileCommand(
+        { verb: 'properties', selector: 'word:selection' },
+        { surface: 'word', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'read', intent: { read: 'properties', selector: 'word:selection' } });
+    expect(compileCommand({ verb: 'comments' }, { surface: 'word', mintChangeId: mint })).toEqual({
+      kind: 'read',
+      intent: { read: 'context-kind', kind: 'comment' },
+    });
+    expect(
+      compileCommand({ verb: 'attachments' }, { surface: 'outlook', mintChangeId: mint }),
+    ).toEqual({ kind: 'read', intent: { read: 'context-kind', kind: 'attachment' } });
+    expect(compileCommand({ verb: 'tables' }, { surface: 'excel', mintChangeId: mint })).toEqual({
+      kind: 'read',
+      intent: { read: 'context-kind', kind: 'table' },
+    });
+    expect(
+      compileCommand(
+        { verb: 'slides', selector: 's1' },
+        { surface: 'powerpoint', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'read', intent: { read: 'context-kind', kind: 'slide', selector: 's1' } });
+    expect(compileCommand({ verb: 'neighbors' }, { surface: 'excel', mintChangeId: mint })).toEqual(
+      { kind: 'read', intent: { read: 'neighbors' } },
+    );
+    expect(
       compileCommand(
         { verb: 'context', hints: ['analytical', 'upload-preferred'] },
         { surface: 'excel', mintChangeId: mint },
@@ -163,12 +198,28 @@ describe('compileCommand', () => {
       kind: 'read',
       intent: { read: 'context-strategy', hints: ['analytical', 'upload-preferred'] },
     });
+    expect(
+      compileCommand(
+        { verb: 'open', selector: 'xl:Sales!A1:C9' },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'read', intent: { read: 'open-context', selector: 'xl:Sales!A1:C9' } });
   });
 
   it('compiles control verbs', () => {
     expect(compileCommand({ verb: 'done' }, { surface: 'excel', mintChangeId: mint })).toEqual({
       kind: 'control',
       verb: 'done',
+    });
+    expect(
+      compileCommand(
+        { verb: 'help', topic: 'shape' },
+        { surface: 'powerpoint', mintChangeId: mint },
+      ),
+    ).toEqual({
+      kind: 'control',
+      verb: 'help',
+      topic: 'shape',
     });
   });
 
@@ -184,6 +235,119 @@ describe('compileCommand', () => {
         kind: 'insert-slide',
         surface: 'powerpoint',
         params: { slide: { title: 'Q3 Results', bullets: ['Revenue up 12%', 'Churn down'] } },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `/insert-slide deckBase64=…` into an explicit PowerPoint deck artifact import', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'insert-slide',
+        props: {
+          deckBase64: 'UEsDBBQ=',
+          slideCount: '3',
+          formatting: 'UseDestinationTheme',
+          targetSlideId: '256#2',
+          specFingerprint: '3a7c10ff',
+        },
+        args: [],
+      },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-slide',
+        surface: 'powerpoint',
+        params: {
+          deck: {
+            base64: 'UEsDBBQ=',
+            format: 'pptx',
+            slideCount: 3,
+            formatting: 'UseDestinationTheme',
+            targetSlideId: '256#2',
+            specFingerprint: '3a7c10ff',
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `shape` → set-shape-text with explicit slide + shape target', () => {
+    const c = compileCommand(
+      { verb: 'shape', selector: 'pp:shape:s2:s2-shape-1', text: 'Updated outlook' },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'set-shape-text',
+        surface: 'powerpoint',
+        params: {
+          target: { slideId: 's2', shapeId: 's2-shape-1' },
+          text: 'Updated outlook',
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('rejects `shape` selectors that do not include a slide id', () => {
+    const c = compileCommand(
+      { verb: 'shape', selector: 's2-shape-1', text: 'Updated outlook' },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      error: expect.stringContaining('shape selector must include slide and shape id'),
+    });
+  });
+
+  it('compiles specialized /insert-text with a Word content anchor', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'insert-text',
+        props: { text: ' Effective July 1.', match: 'This agreement begins', hint: 'Section 2' },
+        args: [],
+      },
+      { surface: 'word', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-text',
+        surface: 'word',
+        params: {
+          text: ' Effective July 1.',
+          target: { matchText: 'This agreement begins', contextHint: 'Section 2' },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles specialized /fill-content-control from id/text props', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'fill-content-control',
+        props: { id: 'CustomerName', text: 'VanArsdel, Ltd.' },
+        args: [],
+      },
+      { surface: 'word', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'fill-content-control',
+        surface: 'word',
+        params: {
+          text: 'VanArsdel, Ltd.',
+          target: { contentControlId: 'CustomerName' },
+        },
       },
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
@@ -412,11 +576,83 @@ describe('renderGrammarPrompt', () => {
     expect(prompt).not.toContain('set <A1');
   });
 
+  it('advertises specialized slash operations only when the surface manifest includes them', () => {
+    expect(renderGrammarPrompt(wordManifest)).not.toContain('/fill-content-control');
+    const prompt = renderGrammarPrompt({
+      ...wordManifest,
+      actuations: [
+        ...wordManifest.actuations,
+        { kind: 'insert-text', surface: 'word', title: 'Insert text', reversible: false },
+        {
+          kind: 'fill-content-control',
+          surface: 'word',
+          title: 'Fill content control',
+          reversible: true,
+        },
+      ],
+    });
+    expect(prompt).toContain('/insert-text text="..."');
+    expect(prompt).toContain('/fill-content-control id=<contentControlId> text="..."');
+  });
+
   it('explicitly rejects non-cmd fences and thinking prose', () => {
     const prompt = renderGrammarPrompt(excelManifest);
     expect(prompt).toContain('Never emit prose, thinking');
     expect(prompt).toContain('```python');
     expect(prompt).toContain('invalid and will be ignored');
+  });
+});
+
+describe('renderCommandHelp', () => {
+  it('renders targeted generated help for an available command', () => {
+    const prompt = renderCommandHelp(
+      {
+        surface: 'powerpoint',
+        contextKinds: ['slide', 'shape'],
+        reads: ['outline', 'read'],
+        actuations: [
+          { kind: 'insert-slide', surface: 'powerpoint', title: 'Insert slide', reversible: true },
+          {
+            kind: 'set-shape-text',
+            surface: 'powerpoint',
+            title: 'Replace shape text',
+            reversible: true,
+          },
+        ],
+      },
+      'shape',
+    );
+
+    expect(prompt).toContain('Command: shape');
+    expect(prompt).toContain('Discovery sequence');
+    expect(prompt).toContain('shape <pp:shape:slideId:shapeId> "new text"');
+  });
+
+  it('fails closed for targeted write help when the capability is unavailable', () => {
+    const prompt = renderCommandHelp(wordManifest, 'shape');
+    expect(prompt).toContain('Command unavailable on this surface: shape');
+    expect(prompt).toContain('does not advertise set-shape-text');
+  });
+
+  it('renders targeted help for an available specialized slash operation', () => {
+    const prompt = renderCommandHelp(
+      {
+        ...wordManifest,
+        actuations: [
+          ...wordManifest.actuations,
+          {
+            kind: 'fill-content-control',
+            surface: 'word',
+            title: 'Fill content control',
+            reversible: true,
+          },
+        ],
+      },
+      '/fill-content-control',
+    );
+    expect(prompt).toContain('Command: /fill-content-control');
+    expect(prompt).toContain('Discovery sequence');
+    expect(prompt).toContain('id=<contentControlId>');
   });
 });
 
@@ -453,16 +689,33 @@ class FakeExcelBridge implements DocBridge {
   readonly surface = 'excel' as const;
   applied: ActuationRequest[] = [];
   reads: string[] = [];
+  revealed: ContextRef[] = [];
   version = 1;
+  contextRefs: ContextRef[] = [
+    {
+      id: 'xl:Sales!A1:C9',
+      kind: 'range',
+      surface: 'excel',
+      title: 'Sales!A1:C9',
+      preview: 'Region | Revenue',
+      hostRef: { type: 'excel.range', worksheet: 'Sales', address: 'A1:C9' },
+      live: true,
+    },
+  ];
 
   getCapabilities(): CapabilityManifest {
     return excelManifest;
   }
   listContext(): Promise<ContextRef[]> {
-    return Promise.resolve([]);
+    return Promise.resolve(this.contextRefs);
   }
-  resolveContext(): Promise<ResolvedContext[]> {
-    return Promise.resolve([]);
+  resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    return Promise.resolve([
+      {
+        ref,
+        value: { as: 'text', text: `values of ${ref.title}` },
+      },
+    ]);
   }
   actuate(request: ActuationRequest): Promise<ActuationResult> {
     this.applied.push(request);
@@ -494,6 +747,13 @@ class FakeExcelBridge implements DocBridge {
         value: { as: 'text', text: `rows matching ${query}` },
       },
     ]);
+  }
+  canRevealContext(ref: ContextRef): boolean {
+    return ref.surface === 'excel' && ref.kind === 'range';
+  }
+  revealContext(ref: ContextRef): Promise<void> {
+    this.revealed.push(ref);
+    return Promise.resolve();
   }
 }
 
@@ -651,6 +911,45 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(bridge.applied).toEqual([]);
     expect(queries[1]).toContain('"upload"');
     expect(queries[1]).toContain('fileId');
+  });
+
+  it('lists and inspects addressable context without creating a write plan', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      '```cmd\nlist range\nproperties xl:Sales!A1:C9\ninspect xl:Sales!A1:C9\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('Inspect the active range'));
+    const loop = loopEvents(events);
+
+    expect(loop.filter((e) => e.type === 'read-result')).toHaveLength(3);
+    expect(loop.some((e) => e.type === 'plan-preview')).toBe(false);
+    expect(bridge.applied).toEqual([]);
+    expect(queries[1]).toContain('hostRef');
+    expect(queries[1]).toContain('values of Sales!A1:C9');
+  });
+
+  it('open navigates to a revealable context ref and does not mutate the workbook', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      '```cmd\nopen xl:Sales!A1:C9\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('Open the Sales range'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'open xl:Sales!A1:C9',
+      result: { opened: true, navigationOnly: true },
+    });
+    expect(bridge.revealed.map((r) => r.id)).toEqual(['xl:Sales!A1:C9']);
+    expect(bridge.applied).toEqual([]);
+    expect(queries[1]).toContain('"navigationOnly":true');
   });
 
   it('write-one: a set compiles to a gated write-cells request, one at a time', async () => {

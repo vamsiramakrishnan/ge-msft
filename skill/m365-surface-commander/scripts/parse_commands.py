@@ -33,6 +33,7 @@ _MANIFEST_PATH = Path(__file__).with_name("m365-cli-1.0.json")
 HANDLED_WRITE_VERBS = {
     "set", "suggest", "comment", "format", "reply",
     "slide", "page", "mail", "post", "compose",
+    "shape",
     # ADR-0007 host-native Excel kinds — table/chart/cf take a literal range + props
     # (the `format`-style grammar); spill is the table→grid composition sink (`set` widened).
     "table", "chart", "cf", "spill",
@@ -48,6 +49,30 @@ CONTEXT_HINTS = {
     "full-scope",
 }
 
+CONTEXT_KINDS = {
+    "selection",
+    "document",
+    "paragraph",
+    "table",
+    "range",
+    "sheet",
+    "slide",
+    "shape",
+    "image",
+    "comment",
+    "mail-item",
+    "mail-thread",
+    "attachment",
+    "calendar-event",
+    "transcript",
+    "page",
+    "person",
+    "indexed-document",
+    "drive-document",
+    "file",
+    "brief",
+}
+
 
 def _load_language():
     """Load (read, control, write, transforms, effects, kinds, version) from the bundled manifest."""
@@ -60,18 +85,23 @@ def _load_language():
             set(data.get("transforms", [])),
             set(data.get("effectVerbs", [])),
             set(data.get("actuationKinds", [])),
+            data.get("commandHelp", {}),
             data.get("version", "unknown"),
         )
     except (OSError, KeyError, ValueError):
         # Fallback: the manifest is absent (stripped sandbox) — fall back to HANDLED_WRITE_VERBS so the
         # checker still runs. Parity asserts this matches the manifest, so the fallback can't rot.
         return (
-            {"outline", "read", "search", "context"},
+            {
+                "outline", "read", "search", "list", "inspect", "properties", "comments",
+                "attachments", "tables", "slides", "neighbors", "context", "open",
+            },
             {"done", "help"},
             set(HANDLED_WRITE_VERBS),
             {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
             set(HANDLED_WRITE_VERBS),
             set(),
+            {},
             "fallback",
         )
 
@@ -83,6 +113,7 @@ def _load_language():
     TRANSFORM_NAMES,
     EFFECT_VERBS,
     ACTUATION_KINDS,
+    COMMAND_HELP,
     LANGUAGE_VERSION,
 ) = _load_language()
 ALL_VERBS = READ_VERBS | CONTROL_VERBS | WRITE_VERBS
@@ -174,6 +205,95 @@ def _did_you_mean(verb: str):
     return f" — did you mean '{near[0]}'?" if near else ""
 
 
+def _split_pipeline(value: str):
+    parts = []
+    buf = []
+    quote = False
+    escape = False
+    depth = 0
+    for ch in value:
+        if escape:
+            buf.append(ch)
+            escape = False
+            continue
+        if ch == "\\" and quote:
+            buf.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            quote = not quote
+            buf.append(ch)
+            continue
+        if not quote and ch == "(":
+            depth += 1
+            buf.append(ch)
+            continue
+        if not quote and ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+            continue
+        if not quote and depth == 0 and ch == "|":
+            parts.append("".join(buf).strip())
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf).strip())
+    return parts
+
+
+def _has_top_level_pipe(value: str) -> bool:
+    return len(_split_pipeline(value)) > 1
+
+
+def _parse_pipeline_source(head: str):
+    if head == "outline":
+        return {"src": "outline"}
+    if head.startswith("$"):
+        if re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*$", head):
+            return {"src": "var", "name": head[1:]}
+        return {"error": f"invalid pipeline variable '{head}'"}
+    parts = head.split(None, 1)
+    if len(parts) != 2:
+        return {"error": "pipeline needs a source — e.g. read <selector> | <transform>"}
+    src, arg = parts[0].lower(), parts[1].strip()
+    if src == "read":
+        return {"src": "read", "selector": arg}
+    if src == "search":
+        if not arg:
+            return {"error": "search pipeline source needs text"}
+        return {"src": "search", "text": arg.strip('"')}
+    return {"error": f'unknown pipeline source "{parts[0]}" — use read <selector>, search <text>, outline, or $var'}
+
+
+def _parse_pipeline(value: str):
+    segments = _split_pipeline(value)
+    if not segments or not segments[0]:
+        return {"error": "pipeline needs a source — e.g. read <selector> | <transform>"}
+    source = _parse_pipeline_source(segments[0])
+    if "error" in source:
+        return source
+    stages = []
+    for seg in segments[1:]:
+        if not seg:
+            return {"error": "empty pipeline stage (a `|` with nothing after it)"}
+        parts = seg.split(None, 1)
+        name = parts[0].lower()
+        if name not in TRANSFORM_NAMES:
+            return {"error": f"unknown transform '{parts[0]}'"}
+        stages.append({"name": name, "arg": parts[1].strip() if len(parts) > 1 else ""})
+    return {"kind": "pipeline", "source": source, "stages": stages}
+
+
+def _parse_let(line: str):
+    m = re.match(r"^let\s+(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$", line, re.IGNORECASE)
+    if not m:
+        return {"error": "let needs a $name and a pipeline — usage: let $name = <source> | <transform> ..."}
+    pipeline = _parse_pipeline(m.group(2).strip())
+    if "error" in pipeline:
+        return pipeline
+    return {"kind": "let", "name": m.group(1)[1:], "pipeline": pipeline}
+
+
 def _parse_invoke(verb: str, rest: str):
     """ADR-0008 §two-tier — `/<kind> positional… key=value…` (the specialized surface). The kind must
     be an ActuationKind from the catalogue (loaded from the manifest); an unknown kind yields a
@@ -197,12 +317,21 @@ def parse_line(line: str):
     if not line or line.startswith("#"):
         return None
     parts = line.split(None, 1)
-    verb = parts[0]
+    raw_verb = parts[0]
+    verb = raw_verb.lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if verb == "let":
+        return _parse_let(line)
+    if _has_top_level_pipe(line):
+        return _parse_pipeline(line)
+
+    if rest in ("-h", "--help"):
+        return {"verb": "help", "topic": raw_verb}
 
     # ADR-0008 §two-tier — a `/<kind>` line is the SPECIALIZED surface (the long-tail catalogue),
     # dispatched before the core-verb check. The command name IS the ActuationKind (drift-free).
-    if verb.startswith("/"):
+    if raw_verb.startswith("/"):
         return _parse_invoke(verb, rest)
 
     if verb not in ALL_VERBS:
@@ -210,16 +339,35 @@ def parse_line(line: str):
 
     # No-argument verbs. Consume the FULL line: a trailing token is malformed input, not something
     # to silently drop (review Finding #8/#10 — a dropped `done`-block tail hid real parse failures).
-    if verb in ("outline", "done", "help"):
+    if verb in ("outline", "done"):
         if rest:
             return {"error": f"{verb} takes no arguments — got {rest!r} (usage: {verb})"}
         return {"verb": verb}
+    if verb == "help":
+        return {"verb": "help", **({"topic": rest} if rest else {})}
     if verb == "read":
         return {"verb": "read", "selector": rest}  # empty ⇒ whole doc
     if verb == "search":
         if not rest:
             return {"error": "search needs text — usage: search <text>"}
         return {"verb": "search", "text": rest.strip('"')}
+    if verb == "list":
+        if not rest:
+            return {"verb": "list"}
+        kind = rest.lower()
+        if kind not in CONTEXT_KINDS:
+            supported = ", ".join(sorted(CONTEXT_KINDS))
+            return {"error": f"unknown context kind '{rest}' — supported: {supported}"}
+        return {"verb": "list", "kind": kind}
+    if verb in ("inspect", "properties", "open"):
+        if not rest:
+            return {"error": f"{verb} needs a ref id or selector — usage: {verb} <refId|selector>"}
+        return {"verb": verb, "selector": rest.strip('"')}
+    if verb in ("comments", "attachments", "tables", "slides", "neighbors"):
+        out = {"verb": verb}
+        if rest:
+            out["selector"] = rest.strip('"')
+        return out
     if verb == "context":
         hints = []
         for raw in rest.split():
@@ -317,6 +465,18 @@ def parse_line(line: str):
         if not qs:
             return {"error": 'slide needs a quoted title — usage: slide "Title" "bullet" ...'}
         return {"verb": "slide", "title": qs[0], "bullets": qs[1:]}
+
+    if verb == "shape":
+        q = _QUOTED.search(rest)
+        if not q:
+            return {"error": 'shape needs a shape ref and quoted text — usage: shape <pp:shape:slideId:shapeId> "text"'}
+        selector = rest[: q.start()].strip()
+        if not selector:
+            return {"error": 'shape needs a shape ref and quoted text — usage: shape <pp:shape:slideId:shapeId> "text"'}
+        after = rest[q.end():].strip()
+        if after:
+            return {"error": 'shape needs a shape ref and quoted text — usage: shape <pp:shape:slideId:shapeId> "text"'}
+        return {"verb": "shape", "selector": selector, "text": q.group(1)}
 
     # ADR-0007 `table <range> [headers] [name=...]` — promote a range to a native Table.
     if verb == "table":
@@ -456,6 +616,33 @@ done
         failures.append(f"context hints did not parse: {ctx}")
     if "error" not in (parse_line("context run-python-now") or {}):
         failures.append("unknown context hint did not error")
+    if parse_line("list range") != {"verb": "list", "kind": "range"}:
+        failures.append("list range did not parse")
+    if parse_line('open "Sales!A1:C9"') != {"verb": "open", "selector": "Sales!A1:C9"}:
+        failures.append("open selector did not parse")
+    if "error" not in (parse_line("list monster") or {}):
+        failures.append("unknown list kind did not error")
+    if parse_line("help shape") != {"verb": "help", "topic": "shape"}:
+        failures.append("help shape did not parse")
+    if parse_line("shape -h") != {"verb": "help", "topic": "shape"}:
+        failures.append("shape -h did not parse as targeted help")
+    if parse_line("/insert-image -h") != {"verb": "help", "topic": "/insert-image"}:
+        failures.append("/insert-image -h did not parse as targeted help")
+    shape = parse_line('shape pp:shape:s2:s2-shape-1 "Updated outlook"')
+    if shape != {"verb": "shape", "selector": "pp:shape:s2:s2-shape-1", "text": "Updated outlook"}:
+        failures.append(f"shape did not parse: {shape}")
+    if "error" not in (parse_line("shape pp:shape:s2:s2-shape-1") or {}):
+        failures.append("malformed shape did not error")
+    bound = parse_line("let $top = read Sales!A1:D20 | filter Quarter=Q3 | head 5")
+    if bound.get("kind") != "let" or bound.get("name") != "top":
+        failures.append(f"let pipeline did not parse: {bound}")
+    pipe = parse_line("read Sales!A1:D20 | count")
+    if pipe.get("kind") != "pipeline" or len(pipe.get("stages", [])) != 1:
+        failures.append(f"bare pipeline did not parse: {pipe}")
+    if "error" not in (parse_line("let top = read Sales!A1:D20 | count") or {}):
+        failures.append("malformed let did not error")
+    if "error" not in (parse_line("read Sales!A1:D20 | explode") or {}):
+        failures.append("unknown transform did not error")
 
     # ADR-0008 §4 drift gate: every manifest write verb MUST have a parse arm here (and vice-versa),
     # so growing the manifest without a Python arm is caught — never a silent "unhandled verb".
@@ -471,6 +658,8 @@ done
         failures.append(f"/insert-image did not parse to an invoke: {inv}")
     if ACTUATION_KINDS and "error" not in (parse_line("/insert-imag base64=AAA") or {}):
         failures.append("unknown /kind did not error")
+    if "shape" in WRITE_VERBS and "shape" not in COMMAND_HELP:
+        failures.append("generated commandHelp is missing shape")
 
     if failures:
         print("SELF-TEST FAIL", file=sys.stderr)

@@ -158,6 +158,26 @@ describe('config from env', () => {
     ]);
   });
 
+  it('infers GE mention labels for unlabelled route-bound planner and command skills', () => {
+    const env = {
+      ...full,
+      VITE_GE_COMMAND_PLANNER_SKILL: '17573173582293271726',
+      VITE_GE_SURFACE_COMMANDER_SKILL: '7404511736383961129',
+    };
+    expect(plannerSkillsFromEnv(env)).toEqual([
+      'projects/proj-12345/locations/eu/collections/col-1/engines/engine-1/assistants/assist-1/agents/17573173582293271726',
+    ]);
+    expect(plannerSkillMentionsFromEnv(env)).toEqual([
+      { label: 'm365-command-planner', uri: '17573173582293271726' },
+    ]);
+    expect(commandSkillsFromEnv(env)).toEqual([
+      'projects/proj-12345/locations/eu/collections/col-1/engines/engine-1/assistants/assist-1/agents/7404511736383961129',
+    ]);
+    expect(commandSkillMentionsFromEnv(env)).toEqual([
+      { label: 'm365-surface-commander', uri: '7404511736383961129' },
+    ]);
+  });
+
   it('throws a helpful error when a required var is missing', () => {
     const missing = { ...full, VITE_GCP_PROJECT: undefined };
     expect(() => assistantFromEnv(missing)).toThrow(/VITE_GCP_PROJECT/);

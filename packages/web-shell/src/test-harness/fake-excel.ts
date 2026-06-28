@@ -15,6 +15,8 @@
  *   - `sheet.getRange(a1)` → `.values=` / `.formulas=` (WRITE), `.numberFormat=`,
  *     `.format.font.bold/italic`, `.format.fill.color`, `.getCell(r,c)` → `.address`,
  *     `.rowCount` / `.columnCount` / `.isNullObject` (bounded read metadata).
+ *   - `ctx.workbook.tables` → `.load('items/name')` items {name}; `.items[i].getRange()` (table ref
+ *     listing and reveal).
  *   - `ctx.workbook.names` → `.load('items/...')` items {name,type,formula}; `.getItemOrNullObject(n)`
  *     → `.getRange()` (named-range read).
  *   - `ctx.workbook.comments` → `.add(cellAddress, content)` (WRITE), `.load('items/id')` items {id},
@@ -53,6 +55,13 @@ export interface NamedRangeSeed {
   range: string;
 }
 
+/** A workbook-scoped Excel table: a name → its A1 range. */
+export interface TableSeed {
+  name: string;
+  /** Sheet-qualified A1, e.g. `"Sales!A1:D9"`. */
+  range: string;
+}
+
 /** A cell comment (the `add(cellAddress, content)` shape Excel uses). */
 export interface CommentSeed {
   id: string;
@@ -70,6 +79,7 @@ export interface ExcelSeed {
   activeSheet: string;
   /** Sheet-qualified A1 of the current selection, e.g. `"Sales!A2:D2"`. */
   selection: string;
+  tables: TableSeed[];
   namedRanges: NamedRangeSeed[];
   comments: CommentSeed[];
   /**
@@ -295,6 +305,29 @@ class FakeNamedItem {
   }
 }
 
+class FakeTable {
+  constructor(
+    private readonly seed: ExcelSeed,
+    readonly name: string,
+    readonly range: string,
+  ) {}
+  getRange(): FakeRange {
+    const bang = this.range.lastIndexOf('!');
+    const sheetName = bang >= 0 ? unquote(this.range.slice(0, bang)) : this.seed.activeSheet;
+    const a1 = bang >= 0 ? this.range.slice(bang + 1) : this.range;
+    return new FakeRange(this.seed, sheetName, a1.replace(/\$/g, ''));
+  }
+}
+
+class FakeTableCollection {
+  items: FakeTable[] = [];
+  constructor(private readonly seed: ExcelSeed) {}
+  load(_props?: string): this {
+    this.items = this.seed.tables.map((t) => new FakeTable(this.seed, t.name, t.range));
+    return this;
+  }
+}
+
 class FakeWorksheet {
   constructor(
     private readonly seed: ExcelSeed,
@@ -416,10 +449,12 @@ class FakeCommentCollection {
 
 class FakeWorkbook {
   readonly worksheets: FakeWorksheetCollection;
+  readonly tables: FakeTableCollection;
   readonly names: FakeNamedItemCollection;
   readonly comments: FakeCommentCollection;
   constructor(private readonly seed: ExcelSeed) {
     this.worksheets = new FakeWorksheetCollection(seed);
+    this.tables = new FakeTableCollection(seed);
     this.names = new FakeNamedItemCollection(seed);
     this.comments = new FakeCommentCollection(seed);
   }
@@ -474,6 +509,18 @@ function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook
   };
   workbook.worksheets.getItem = (name: string) => wrapSheet(origGetItem(name));
   workbook.worksheets.getActiveWorksheet = () => wrapSheet(origActive());
+
+  // The named-range read path: `names.getItemOrNullObject(name).getRange()` returns a range that
+  // must also commit/flush on sync, or a `read <NamedRange>` would read an unloaded property.
+  const origTablesLoad = workbook.tables.load.bind(workbook.tables);
+  workbook.tables.load = (props?: string): FakeTableCollection => {
+    const out = origTablesLoad(props);
+    for (const table of workbook.tables.items) {
+      const gr = table.getRange.bind(table);
+      table.getRange = () => registerRange(gr(), touched);
+    }
+    return out;
+  };
 
   // The named-range read path: `names.getItemOrNullObject(name).getRange()` returns a range that
   // must also commit/flush on sync, or a `read <NamedRange>` would read an unloaded property.
@@ -637,6 +684,7 @@ export function excelSeed(init: {
   sheets: SheetSeed[];
   activeSheet?: string;
   selection?: string;
+  tables?: TableSeed[];
   namedRanges?: NamedRangeSeed[];
   comments?: CommentSeed[];
 }): ExcelSeed {
@@ -647,6 +695,7 @@ export function excelSeed(init: {
     sheets: init.sheets,
     activeSheet: active,
     selection: init.selection ?? `${active}!${first.origin}`,
+    tables: init.tables ?? [],
     namedRanges: init.namedRanges ?? [],
     comments: init.comments ?? [],
     formats: new Map<string, RangeFormatSeed>(),
@@ -685,6 +734,7 @@ export function defaultExcelSeed(): ExcelSeed {
     ],
     activeSheet: 'Sales',
     selection: 'Sales!A2:D2',
+    tables: [{ name: 'SalesTable', range: 'Sales!A1:D7' }],
     namedRanges: [{ name: 'SalesTable', range: 'Sales!A1:D7' }],
     comments: [],
   });

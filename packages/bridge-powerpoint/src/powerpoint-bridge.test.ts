@@ -33,7 +33,9 @@ interface DeckSeed {
   slides: SlideSeed[];
   /** Zero-based indices of selected slides (the bridge reads items[0]). */
   selectedIndices: number[];
+  selectedShapeIds: string[];
   insertedDecks: string[];
+  insertedDeckOptions: PowerPoint.InsertSlideOptions[];
 }
 
 class FakeTextRange {
@@ -54,18 +56,31 @@ class FakeShape {
   constructor(
     readonly shape: ShapeSeed,
     readonly id: string,
+    readonly isNullObject = false,
   ) {
     this.textFrame = { textRange: new FakeTextRange(shape) };
+  }
+  load(_p?: string): this {
+    return this;
   }
 }
 
 class FakeShapeCollection {
   items: FakeShape[];
-  constructor(slide: SlideSeed) {
+  constructor(
+    private readonly slide: SlideSeed,
+    private readonly slideId: string,
+  ) {
     this.items = slide.shapes.map((s, i) => new FakeShape(s, `${slide.id}-shape-${i}`));
   }
   load(_p?: string): this {
     return this;
+  }
+  getItemOrNullObject(id: string): FakeShape {
+    const index = this.items.findIndex((shape) => shape.id === id);
+    const existing = this.items[index];
+    if (existing) return existing;
+    return new FakeShape({ text: '' }, id || `${this.slideId}-missing-shape`, true);
   }
 }
 
@@ -73,6 +88,7 @@ class FakeSlide {
   constructor(
     private readonly slide: SlideSeed,
     readonly index: number,
+    private readonly seed: DeckSeed,
   ) {}
   get id(): string {
     return this.slide.id;
@@ -81,7 +97,11 @@ class FakeSlide {
     return this;
   }
   get shapes(): FakeShapeCollection {
-    return new FakeShapeCollection(this.slide);
+    return new FakeShapeCollection(this.slide, this.slide.id);
+  }
+  setSelectedShapes(shapeIds: string[]): void {
+    this.seed.selectedIndices = [this.index];
+    this.seed.selectedShapeIds = [...shapeIds];
   }
 }
 
@@ -90,7 +110,7 @@ class FakeSlideCollection {
   /** Recorded calls so tests can assert what the bridge drove. */
   addCalls = 0;
   constructor(private readonly seed: DeckSeed) {
-    this.items = seed.slides.map((s, i) => new FakeSlide(s, i));
+    this.items = seed.slides.map((s, i) => new FakeSlide(s, i, seed));
   }
   load(_p?: string): this {
     return this;
@@ -104,12 +124,18 @@ class FakeSlideCollection {
       id: `sim-slide-${this.seed.slides.length + 1}`,
       shapes: [{ text: '' }, { text: '' }],
     });
-    this.items = this.seed.slides.map((s, i) => new FakeSlide(s, i));
+    this.items = this.seed.slides.map((s, i) => new FakeSlide(s, i, this.seed));
   }
   getItemAt(index: number): FakeSlide {
     const slide = this.seed.slides[index];
     if (!slide) throw new Error(`fake-powerpoint: no slide at ${index}`);
-    return new FakeSlide(slide, index);
+    return new FakeSlide(slide, index, this.seed);
+  }
+  getItem(id: string): FakeSlide {
+    const index = this.seed.slides.findIndex((s) => s.id === id);
+    const slide = this.seed.slides[index];
+    if (!slide) throw new Error(`fake-powerpoint: no slide ${id}`);
+    return new FakeSlide(slide, index, this.seed);
   }
 }
 
@@ -127,9 +153,15 @@ class FakePresentation {
       .filter((s): s is FakeSlide => s !== undefined);
     return sel;
   }
-  insertSlidesFromBase64(b64: string): void {
+  setSelectedSlides(slideIds: string[]): void {
+    this.seed.selectedIndices = slideIds
+      .map((id) => this.seed.slides.findIndex((s) => s.id === id))
+      .filter((i) => i >= 0);
+  }
+  insertSlidesFromBase64(b64: string, options?: PowerPoint.InsertSlideOptions): void {
     this.insertCalls.push(b64);
     this.seed.insertedDecks.push(b64);
+    this.seed.insertedDeckOptions.push(options ?? {});
     this.seed.slides.push({ id: `sim-inserted-${this.seed.insertedDecks.length}`, shapes: [] });
   }
 }
@@ -233,11 +265,31 @@ afterEach(() => {
 function deck(slides: SlideSeed[], selectedIndices: number[] = []): DeckSeed {
   // Deep-copy so shared fixtures (SAMPLE_SLIDES) aren't mutated by write paths across tests.
   const copy = slides.map((s) => ({ id: s.id, shapes: s.shapes.map((sh) => ({ text: sh.text })) }));
-  return { slides: copy, selectedIndices, insertedDecks: [] };
+  return {
+    slides: copy,
+    selectedIndices,
+    selectedShapeIds: [],
+    insertedDecks: [],
+    insertedDeckOptions: [],
+  };
 }
 
 function insertSlide(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'insert-slide', surface: 'powerpoint', params };
+}
+
+function setShapeText(
+  slideId: string,
+  shapeId: string,
+  text: string,
+  id = 'shape-1',
+): ActuationRequest {
+  return {
+    changeId: asChangeId(id),
+    kind: 'set-shape-text',
+    surface: 'powerpoint',
+    params: { target: { slideId, shapeId }, text },
+  };
 }
 
 const SAMPLE_SLIDES: SlideSeed[] = [
@@ -272,15 +324,30 @@ describe('PowerPointBridge.listContext', () => {
   it('lists the selected slide (live, 1-based title) plus the whole deck when 1.5 is supported', async () => {
     installed = install(deck(SAMPLE_SLIDES, [1]));
     const refs = await new PowerPointBridge().listContext();
-    expect(refs).toHaveLength(2);
+    expect(refs).toHaveLength(4);
     expect(refs[0]).toEqual({
       id: 'pp:slide:s2',
       kind: 'slide',
       surface: 'powerpoint',
-      title: 'Slide 2', // index 1 → human "Slide 2"
+      title: 'Slide 2: Roster', // index 1 → human "Slide 2"
+      preview: 'Roster',
       live: true,
+      anchor: { matchText: 'Roster', locator: 'slide:s2' },
+      hostRef: { type: 'powerpoint.slide', slideId: 's2' },
     });
-    expect(refs[1]).toMatchObject({ id: 'pp:deck', kind: 'document' });
+    expect(refs[1]).toMatchObject({
+      id: 'pp:shape:s2:s2-shape-0',
+      kind: 'shape',
+      title: 'Shape 1 on slide 2',
+      preview: 'Roster',
+    });
+    expect(refs[2]).toMatchObject({
+      id: 'pp:shape:s2:s2-shape-1',
+      kind: 'shape',
+      title: 'Shape 2 on slide 2',
+      preview: 'Pat, Sam',
+    });
+    expect(refs[3]).toMatchObject({ id: 'pp:deck', kind: 'document' });
   });
 
   it('lists only the deck when nothing is selected', async () => {
@@ -302,17 +369,44 @@ describe('PowerPointBridge.resolveContext', () => {
     title: 'Slide 2',
   };
 
-  it('resolves a slide ref to that selected slide, anchored by slide id', async () => {
+  it('resolves a slide ref by host slide id independent of the current selection', async () => {
     installed = install(deck(SAMPLE_SLIDES, [0]));
     const ctx = await new PowerPointBridge().resolveContext(slideRef);
     expect(ctx.length).toBeGreaterThan(0);
     for (const c of ctx) expect(() => ResolvedContextSchema.parse(c)).not.toThrow();
-    expect(ctx.some((c) => c.ref.anchor?.locator === 'slide:s1')).toBe(true);
+    expect(ctx.some((c) => c.ref.anchor?.locator === 'slide:s2')).toBe(true);
   });
 
-  it('returns [] for a slide ref when no slide is selected (degrade, do not guess)', async () => {
+  it('resolves an exact slide ref when no slide is selected', async () => {
     installed = install(deck(SAMPLE_SLIDES, []));
-    expect(await new PowerPointBridge().resolveContext(slideRef)).toEqual([]);
+    const ctx = await new PowerPointBridge().resolveContext(slideRef);
+    expect(ctx.some((c) => c.ref.anchor?.locator === 'slide:s2')).toBe(true);
+  });
+
+  it('returns [] for a stale slide ref', async () => {
+    installed = install(deck(SAMPLE_SLIDES, []));
+    expect(
+      await new PowerPointBridge().resolveContext({
+        id: 'pp:slide:missing',
+        kind: 'slide',
+        surface: 'powerpoint',
+        title: 'Missing slide',
+      }),
+    ).toEqual([]);
+  });
+
+  it('resolves a shape ref to the exact shape text', async () => {
+    installed = install(deck(SAMPLE_SLIDES, []));
+    const ctx = await new PowerPointBridge().resolveContext({
+      id: 'pp:shape:s2:s2-shape-1',
+      kind: 'shape',
+      surface: 'powerpoint',
+      title: 'Roster body',
+    });
+    expect(ctx).toHaveLength(1);
+    expect(ctx[0]?.ref.id).toBe('pp:shape:s2:s2-shape-1');
+    expect(ctx[0]?.value.as).toBe('text');
+    if (ctx[0]?.value.as === 'text') expect(ctx[0].value.text).toBe('Pat, Sam');
   });
 
   it('treats selection and shape refs the same way as slide refs', async () => {
@@ -452,6 +546,53 @@ describe('PowerPointBridge.readRange', () => {
   });
 });
 
+/* ───────────────────────────── revealContext ───────────────────────────── */
+
+describe('PowerPointBridge.revealContext', () => {
+  it('selects an addressable slide ref by host slide id', async () => {
+    const seed = deck(SAMPLE_SLIDES, [0]);
+    installed = install(seed);
+    const bridge = new PowerPointBridge();
+    const ref: ContextRef = {
+      id: 'pp:slide:s3',
+      kind: 'slide',
+      surface: 'powerpoint',
+      title: 'Slide 3',
+    };
+
+    expect(bridge.canRevealContext(ref)).toBe(true);
+    await bridge.revealContext(ref);
+
+    expect(seed.selectedIndices).toEqual([2]);
+  });
+
+  it('selects a shape when the ref carries slide and shape ids', async () => {
+    const seed = deck(SAMPLE_SLIDES, [0]);
+    installed = install(seed);
+    await new PowerPointBridge().revealContext({
+      id: 'pp:shape:s2:s2-shape-1',
+      kind: 'shape',
+      surface: 'powerpoint',
+      title: 'Body text',
+    });
+
+    expect(seed.selectedIndices).toEqual([1]);
+    expect(seed.selectedShapeIds).toEqual(['s2-shape-1']);
+  });
+
+  it('does not advertise deck-wide refs as revealable', () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    expect(
+      new PowerPointBridge().canRevealContext({
+        id: 'pp:deck',
+        kind: 'document',
+        surface: 'powerpoint',
+        title: 'Whole deck',
+      }),
+    ).toBe(false);
+  });
+});
+
 /* ───────────────────────────── actuate: dispatch + insert-slide ───────────────────────────── */
 
 describe('PowerPointBridge.actuate dispatch', () => {
@@ -513,6 +654,37 @@ describe('PowerPointBridge.actuate insert-slide (base64 prebuilt deck)', () => {
     });
     // The base64 payload reached the host merge path exactly once.
     expect(d.insertedDecks).toEqual(['UEsDBBQ=']);
+    expect(d.insertedDeckOptions).toEqual([{ targetSlideId: 's3' }]);
+  });
+
+  it('imports an explicit generated deck artifact in one call with formatting and slide count', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      insertSlide(
+        {
+          deck: {
+            format: 'pptx',
+            base64: 'compiled-deck',
+            slideCount: 2,
+            formatting: 'UseDestinationTheme',
+            targetSlideId: 's1',
+            specFingerprint: '9f34a012',
+          },
+        },
+        'chg-generated-deck',
+      ),
+    );
+    expect(res).toEqual({
+      ok: true,
+      changeId: asChangeId('chg-generated-deck'),
+      kind: 'insert-slide',
+      location: 'inserted-deck:2',
+    });
+    expect(d.insertedDecks).toEqual(['compiled-deck']);
+    expect(d.insertedDeckOptions).toEqual([
+      { formatting: 'UseDestinationTheme', targetSlideId: 's1' },
+    ]);
   });
 
   it('prefers the base64 path over native compose when both are present (no slides.add)', async () => {
@@ -572,6 +744,59 @@ describe('PowerPointBridge.actuate insert-slide (native compose)', () => {
     // Title placeholder untouched (empty); bullets written to the body placeholder.
     expect(appended?.shapes[0]?.text).toBe('');
     expect(appended?.shapes[1]?.text).toBe('Only a bullet');
+  });
+});
+
+describe('PowerPointBridge.actuate set-shape-text', () => {
+  it('rewrites one addressed shape and records the inverse text', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      setShapeText('s2', 's2-shape-1', 'Pat, Sam, and Lee'),
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      changeId: asChangeId('shape-1'),
+      kind: 'set-shape-text',
+      location: 'shape:s2:s2-shape-1',
+      inverse: {
+        op: 'restore-text',
+        anchor: 'pp:shape:s2:s2-shape-1',
+        priorText: 'Pat, Sam',
+      },
+    });
+    expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam, and Lee');
+  });
+
+  it('fails closed when the addressed shape no longer exists', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      setShapeText('s2', 's2-shape-99', 'Should not apply'),
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      kind: 'set-shape-text',
+      degraded: true,
+      error: { code: 'target_conflict' },
+    });
+    expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam');
+  });
+
+  it('fails before touching the host when the required shape text API is unavailable', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]), { requirements: { PowerPointApi: 1.3 } });
+    const res = await new PowerPointBridge().actuate(
+      setShapeText('s2', 's2-shape-1', 'Unsupported'),
+    );
+
+    expect(res).toMatchObject({
+      ok: false,
+      kind: 'set-shape-text',
+      error: { code: 'unsupported' },
+    });
+    expect(installed.ctxRef.ctx).toBeUndefined();
   });
 });
 

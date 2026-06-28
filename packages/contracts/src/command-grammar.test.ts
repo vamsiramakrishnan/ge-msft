@@ -48,6 +48,7 @@ describe('command-grammar — verb map', () => {
       table: 'create-table',
       chart: 'insert-chart',
       cf: 'format-conditional',
+      shape: 'set-shape-text',
       spill: 'write-cells',
     });
   });
@@ -58,6 +59,15 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     expect(parseCommandLine('outline')).toEqual({ verb: 'outline' });
     expect(parseCommandLine('done')).toEqual({ verb: 'done' });
     expect(parseCommandLine('help')).toEqual({ verb: 'help' });
+  });
+
+  it('parses targeted help without creating an effect', () => {
+    expect(parseCommandLine('help shape')).toEqual({ verb: 'help', topic: 'shape' });
+    expect(parseCommandLine('shape -h')).toEqual({ verb: 'help', topic: 'shape' });
+    expect(parseCommandLine('/insert-image -h')).toEqual({
+      verb: 'help',
+      topic: '/insert-image',
+    });
   });
 
   it('is case-insensitive on the verb', () => {
@@ -94,6 +104,46 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
   it('rejects invented context authority hints', () => {
     expect(parseCommandLine('context run-python-now')).toMatchObject({
       error: expect.stringContaining('unknown context hint'),
+    });
+  });
+
+  it('parses read-only context inspection and navigation verbs', () => {
+    expect(parseCommandLine('list')).toEqual({ verb: 'list' });
+    expect(parseCommandLine('list comment')).toEqual({ verb: 'list', kind: 'comment' });
+    expect(parseCommandLine('inspect xl:Sales!A1:C9')).toEqual({
+      verb: 'inspect',
+      selector: 'xl:Sales!A1:C9',
+    });
+    expect(parseCommandLine('properties "word:selection"')).toEqual({
+      verb: 'properties',
+      selector: 'word:selection',
+    });
+    expect(parseCommandLine('comments')).toEqual({ verb: 'comments' });
+    expect(parseCommandLine('attachments mail-1')).toEqual({
+      verb: 'attachments',
+      selector: 'mail-1',
+    });
+    expect(parseCommandLine('tables')).toEqual({ verb: 'tables' });
+    expect(parseCommandLine('slides s1')).toEqual({ verb: 'slides', selector: 's1' });
+    expect(parseCommandLine('neighbors')).toEqual({ verb: 'neighbors' });
+    expect(parseCommandLine('open "Sales!A1:C9"')).toEqual({
+      verb: 'open',
+      selector: 'Sales!A1:C9',
+    });
+  });
+
+  it('rejects malformed context inspection verbs', () => {
+    expect(parseCommandLine('list monster')).toMatchObject({
+      error: expect.stringContaining('unknown context kind'),
+    });
+    expect(parseCommandLine('inspect')).toMatchObject({
+      error: expect.stringContaining('inspect needs'),
+    });
+    expect(parseCommandLine('properties')).toMatchObject({
+      error: expect.stringContaining('properties needs'),
+    });
+    expect(parseCommandLine('open')).toMatchObject({
+      error: expect.stringContaining('open needs'),
     });
   });
 });
@@ -348,6 +398,22 @@ describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', 
       error: expect.stringContaining('range'),
     });
   });
+
+  it('parses PowerPoint shape text edits as one explicit shape effect', () => {
+    expect(parseCommandLine('shape pp:shape:s2:s2-shape-1 "Updated outlook"')).toEqual({
+      verb: 'shape',
+      selector: 'pp:shape:s2:s2-shape-1',
+      text: 'Updated outlook',
+    });
+    expect(parseCommandLine('shape s2-shape-1 "Updated outlook"')).toEqual({
+      verb: 'shape',
+      selector: 's2-shape-1',
+      text: 'Updated outlook',
+    });
+    expect(parseCommandLine('shape pp:shape:s2:s2-shape-1')).toMatchObject({
+      error: expect.stringContaining('shape'),
+    });
+  });
 });
 
 describe('command-grammar — suggest quoting (embedded quotes, escapes, separators)', () => {
@@ -581,6 +647,8 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).toContain('set');
     expect(verbs).not.toContain('suggest');
     expect(verbs).toContain('context');
+    expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'open']));
+    expect(verbs).toContain('tables');
     const read = grammarFor(excelManifest).find((v) => v.verb === 'read');
     expect(read?.usage).toBe('read <A1|NamedRange>');
   });
@@ -589,6 +657,7 @@ describe('command-grammar — capability scoping', () => {
     const verbs = grammarFor(wordManifest).map((v) => v.verb);
     expect(verbs).toContain('suggest');
     expect(verbs).not.toContain('set');
+    expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'open']));
     const read = grammarFor(wordManifest).find((v) => v.verb === 'read');
     expect(read?.usage).toBe('read');
   });
@@ -641,8 +710,39 @@ describe('command-grammar — capability scoping', () => {
     const verbs = grammarFor(noWrite).map((v) => v.verb);
     expect(verbs).toEqual(expect.arrayContaining(['done', 'help']));
     expect(verbs).toContain('context');
+    expect(verbs).toContain('list');
+    expect(verbs).toContain('open');
+    expect(verbs).toContain('slides');
     expect(verbs).not.toContain('set');
     expect(verbs).not.toContain('suggest');
+  });
+
+  it('PowerPoint advertises shape only when set-shape-text is present', () => {
+    const withShape: CapabilityManifest = {
+      surface: 'powerpoint',
+      contextKinds: ['slide', 'shape'],
+      reads: ['outline', 'read'],
+      actuations: [
+        { kind: 'insert-slide', surface: 'powerpoint', title: 'Insert slide', reversible: true },
+        {
+          kind: 'set-shape-text',
+          surface: 'powerpoint',
+          title: 'Replace shape text',
+          reversible: true,
+        },
+      ],
+    };
+    expect(grammarFor(withShape).map((v) => v.verb)).toEqual(
+      expect.arrayContaining(['slide', 'shape']),
+    );
+
+    const withoutShape: CapabilityManifest = {
+      ...withShape,
+      actuations: [
+        { kind: 'insert-slide', surface: 'powerpoint', title: 'Insert slide', reversible: true },
+      ],
+    };
+    expect(grammarFor(withoutShape).map((v) => v.verb)).not.toContain('shape');
   });
 
   it('scopes host read verbs to manifest.reads while keeping runtime context available', () => {
@@ -656,6 +756,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).not.toContain('read');
     expect(verbs).not.toContain('search');
     expect(verbs).toContain('context');
+    expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'neighbors']));
   });
 
   it('advertises ONLY the declared read verbs', () => {
@@ -679,13 +780,23 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('outline'),
       parseCommandLine('read A1'),
       parseCommandLine('search foo'),
+      parseCommandLine('list range'),
+      parseCommandLine('inspect xl:Sales!A1:C9'),
+      parseCommandLine('properties xl:Sales!A1:C9'),
+      parseCommandLine('comments'),
+      parseCommandLine('attachments'),
+      parseCommandLine('tables'),
+      parseCommandLine('slides'),
+      parseCommandLine('neighbors'),
       parseCommandLine('context analytical upload-preferred'),
+      parseCommandLine('open xl:Sales!A1:C9'),
       parseCommandLine('set A1 =1+1'),
       parseCommandLine('suggest "a" => "b"'),
       parseCommandLine('comment A1 "note"'),
       parseCommandLine('format A1 bold=true'),
       parseCommandLine('reply {3f2a} "ok"'),
       parseCommandLine('slide "Title" "b1" "b2"'),
+      parseCommandLine('shape pp:shape:s2:s2-shape-1 "Updated outlook"'),
       parseCommandLine('page "Notes" "body"'),
       parseCommandLine('mail "reply body"'),
       parseCommandLine('post "hello team"'),

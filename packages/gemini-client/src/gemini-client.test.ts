@@ -46,6 +46,20 @@ function assistReq(query = 'What is the SLA?'): AssistRequest {
   };
 }
 
+function assistReqForSurface(
+  surfaceContext: AssistRequest['unit']['surfaceContext'],
+  query = 'Run the command loop.',
+): AssistRequest {
+  return {
+    intent: 'ask',
+    query,
+    unit: {
+      connectors: [],
+      surfaceContext,
+    },
+  };
+}
+
 /** Build a ReadableStream that emits the given string pieces (simulates chunking). */
 function streamOf(pieces: string[]): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
@@ -296,6 +310,42 @@ describe('buildStreamAssistRequest', () => {
     expect(text).toContain('Question: [m365-surface-commander]');
     expect(text).toContain('/visualize');
   });
+
+  const commandLoopSurfaceCases: Array<[string, AssistRequest['unit']['surfaceContext']]> = [
+    ['word', { kind: 'word', selection: 'paragraph text' }],
+    ['excel', { kind: 'excel', values: [['Region', 'Revenue']] }],
+    ['powerpoint', { kind: 'powerpoint', slideText: 'Q3 slide' }],
+    ['onenote', { kind: 'onenote', sources: ['page text'] }],
+    ['outlook', { kind: 'outlook', subject: 'Subject', body: 'Body' }],
+    ['teams', { kind: 'teams', transcriptWindow: 'Speaker: update' }],
+  ];
+
+  it.each(commandLoopSurfaceCases)(
+    'adds the command skill mention for %s command-loop turns',
+    (_surface, surfaceContext) => {
+      const body = buildStreamAssistRequest(
+        assistReqForSurface(surfaceContext, 'COMMANDS\nTASK:\n/run'),
+        cfg({
+          commandSkills: [
+            'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/7404511736383961129',
+          ],
+          commandSkillMentions: [{ label: 'm365-surface-commander', uri: '7404511736383961129' }],
+        }),
+        undefined,
+        undefined,
+        'command',
+      );
+      const text = (body.query as { text: string }).text;
+      expect(body.skillsSpec).toEqual({
+        skills: [
+          {
+            name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/7404511736383961129',
+          },
+        ],
+      });
+      expect(text).toContain('[m365-surface-commander](mention://?uri=7404511736383961129)');
+    },
+  );
 
   it('does not inject command skill mentions into ordinary chat turns', () => {
     const body = buildStreamAssistRequest(

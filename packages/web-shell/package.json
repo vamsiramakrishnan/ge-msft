@@ -20,6 +20,7 @@
     "@ge/bridge-powerpoint": "*",
     "@ge/bridge-word": "*",
     "@ge/contracts": "*",
+    "@ge/deck-compiler": "*",
     "@ge/gemini-client": "*",
     "@ge/runtime": "*",
     "@ge/teams": "*",

@@ -1,3 +1,12 @@
+---
+title: Pattern - Meeting Summary To Notes
+kind: pattern
+skill: m365-surface-commander
+surface: teams
+topics: [meeting, transcript, notes, action-items]
+load_when: A task asks to summarize a Teams meeting or turn transcript content into notes/actions.
+---
+
 # Pattern: meeting summary → notes
 
 A reasoning template, not a command. Read it for shape, then write the turn's algebra.

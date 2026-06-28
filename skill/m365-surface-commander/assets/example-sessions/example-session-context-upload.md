@@ -1,3 +1,11 @@
+---
+title: Example Session - Progressive Full File Context
+kind: example
+skill: m365-surface-commander
+topics: [context, upload, full-scope, code-execution]
+load_when: A task may need full-file upload or hosted analysis rather than bounded reads.
+---
+
 # Example session: progressive full-file context
 
 Use this pattern when the visible snapshot or selected range is too small for the task, especially

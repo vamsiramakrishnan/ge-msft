@@ -36,6 +36,15 @@ export interface DocBridge {
   actuate(request: ActuationRequest): Promise<ActuationResult>;
 
   /**
+   * Bring an addressable host object into view without changing document content. For Excel this
+   * activates the worksheet and selects the referenced range; other surfaces can implement the same
+   * affordance for comments, slides, shapes, pages, or mail items. This is navigation only: no model
+   * output, no mutation, and no approval bypass.
+   */
+  canRevealContext?(ref: ContextRef): boolean;
+  revealContext?(ref: ContextRef): Promise<void>;
+
+  /**
    * Stream host events (selection/document/comment changes; Outlook compose/send) into the
    * trigger engine. Optional — a surface that can't observe events simply omits it. The
    * bridge tags each event's `origin` so the system ignores remote/own-write echoes.

@@ -1,3 +1,12 @@
+---
+title: Teams Semantics
+kind: reference
+skill: m365-surface-commander
+surface: teams
+topics: [transcript, message, thread, post, deep-link]
+load_when: The active surface is Teams or a plan mentions meetings, transcript, channel, thread, or post.
+---
+
 # Teams semantics
 
 Load this when the active surface is Teams. Cross-surface table:

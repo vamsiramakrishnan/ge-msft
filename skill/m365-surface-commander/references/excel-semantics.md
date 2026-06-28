@@ -1,10 +1,21 @@
+---
+title: Excel Semantics
+kind: reference
+skill: m365-surface-commander
+surface: excel
+topics: [ranges, tables, formulas, charts, formatting, compute]
+load_when: The active surface is Excel or a plan mentions ranges, formulas, tables, charts, or workbook analysis.
+---
+
 # Excel semantics
 
 Load this when the active surface is Excel. The cross-surface capability table is in
 [capability-map.md](capability-map.md); this is the Excel-specific reading/writing model.
 
 **Selectors** are A1 / `Sheet!A1:G9` / a named range. `read` takes a selector; everything writes by
-address. Read the smallest range that answers the request, not the whole sheet.
+address. Read the smallest range that answers the request, not the whole sheet. `list table`,
+`properties <ref>`, and `open <ref>` expose workbook tables and named ranges as typed refs; resolving
+one must use that exact ref, not the current selection.
 
 **Writing is address-anchored** — `set <cell> <value|=formula>` lands an exact cell. Prefer a native
 formula (`=SUMIF(...)`) or a value you read over a guessed number.
@@ -23,4 +34,6 @@ see [planning-normal-form.md](planning-normal-form.md) and the `top-n-report` pa
 
 **Gotchas:** comments anchor on a cell you've read; conditional formats apply to a whole range in one
 effect (prefer one `cf` over N comments for "highlight"); chart `type` is one of
-`column|bar|line|pie|scatter|area`.
+`column|bar|line|pie|scatter|area`. If the user selects a single numeric column and asks for a chart,
+read adjacent label columns before choosing the chart range; do not chart an unlabeled selection
+unless the user explicitly asked for that exact range.

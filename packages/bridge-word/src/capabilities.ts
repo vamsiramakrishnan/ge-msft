@@ -14,6 +14,32 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
   reads: ['outline', 'read', 'search'],
   actuations: [
     {
+      kind: 'insert-text',
+      surface: 'word',
+      title: 'Insert text',
+      description:
+        'Insert plain text at the current selection or after an explicit content anchor.',
+      reversible: false,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
+      kind: 'replace-selection',
+      surface: 'word',
+      title: 'Replace selection',
+      description: 'Replace the currently selected text, capturing the prior text as an inverse.',
+      reversible: true,
+      appliesTo: ['selection'],
+    },
+    {
+      kind: 'insert-ooxml',
+      surface: 'word',
+      title: 'Insert OOXML',
+      description:
+        'Insert screened rich OOXML at the current selection or after an explicit content anchor.',
+      reversible: false,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
       kind: 'tracked-change',
       surface: 'word',
       title: 'Insert as tracked change',
@@ -21,9 +47,15 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['selection', 'paragraph'],
     },
-    // NOTE: `insert-ooxml` and `fill-content-control` were advertised here but `actuate()` handled
-    // neither (ADR-0006 phantom capabilities). Un-advertised rather than implemented — a surface
-    // must never claim what it cannot do. Re-add ONLY alongside an `actuate()` case + a CLI verb.
+    {
+      kind: 'fill-content-control',
+      surface: 'word',
+      title: 'Fill content control',
+      description:
+        'Replace a known content control value, capturing the prior value as an inverse.',
+      reversible: true,
+      appliesTo: ['document'],
+    },
     {
       kind: 'add-comment',
       surface: 'word',

@@ -24,6 +24,7 @@ export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'table',
   'chart',
   'cf',
+  'shape',
   // `spill` consumes a table expression but is itself an effect terminal (you can't pipe out of it).
   'spill',
 ]);

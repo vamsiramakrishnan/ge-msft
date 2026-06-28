@@ -1,3 +1,11 @@
+---
+title: Capability Map
+kind: reference
+skill: m365-surface-commander
+topics: [surfaces, read-commands, write-commands, limits]
+load_when: Checking which commands each Office surface may advertise.
+---
+
 # What each app can read and write
 
 The commands available depend on which Office app the user has open. Each turn you are told
@@ -6,19 +14,21 @@ listed for the current app.
 
 ## Reads
 
-| App        | `outline` |                   `read`                   |      `search`       | `context` | What you get                                |
-| ---------- | :-------: | :----------------------------------------: | :-----------------: | :-------: | ------------------------------------------- |
-| Word       |    yes    |            yes (whole/section)             |         yes         |    yes    | selection, body, paragraphs, comments       |
-| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         |    yes    | values **and** formulas; comments           |
-| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   |    yes    | slide list (up to 60), shape text           |
-| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) |    yes    | page title + paragraph outline              |
-| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    |    yes    | subject, sender, leading body lines         |
-| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    |    yes    | meeting title + transcript turns (up to 60) |
+| App        | `outline` |                   `read`                   |      `search`       | `list`/`inspect`/`properties`/`open` | Surface refs exposed                       |
+| ---------- | :-------: | :----------------------------------------: | :-----------------: | :----------------------------------: | ------------------------------------------ |
+| Word       |    yes    |            yes (whole/section)             |         yes         |                 yes                  | selection, paragraphs, comments, anchors   |
+| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         |                 yes                  | ranges, tables, named ranges, comments     |
+| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   |                 yes                  | slides, shapes, text boxes, charts         |
+| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) |                 yes                  | pages, paragraphs, tables, images          |
+| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    |                 yes                  | current item, thread, attachments, draft   |
+| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    |                 yes                  | transcript segments, messages, deep links  |
 
 Reads are bounded and scoped to the open item/window. They return empty on bad input and
 always frame document content as data. `context` is runtime-served: it returns a strategy for
 inline/reference/upload/code-execution grounding and never uploads, runs code, or writes content by
-itself.
+itself. `list`, `inspect`, `properties`, `comments`, `attachments`, `tables`, `slides`,
+`neighbors`, and `open` are also runtime-served. They operate on typed host refs supplied by the
+bridge; `open` only navigates/selects in the host and is never a write or a send action.
 
 ## Writes
 
@@ -34,14 +44,20 @@ itself.
 | `comment` | add a comment      | yes  |  yes  |     |         |         |       |
 | `reply`   | reply to a comment | yes  |  yes  |     |         |         |       |
 | `slide`   | insert a slide     |      |       | yes |         |         |       |
+| `shape`   | replace shape text |      |       | yes |         |         |       |
 | `page`    | append a page      |      |       |     |   yes   |         |       |
 | `mail`    | reply to mail      |      |       |     |         |   yes   |       |
 | `compose` | draft new mail     |      |       |     |         |   yes   |       |
 | `post`    | post to a channel  |      |       |     |         |         |  yes  |
+| `/insert-text` | direct text insert | yes | | | | | |
+| `/replace-selection` | direct selection replacement | yes | | | | | |
+| `/insert-ooxml` | direct rich OOXML insert | yes | | | | | |
+| `/fill-content-control` | fill known content control | yes | | | | | |
 
-Every change is previewed and approved before it is applied, recorded for traceability, and
-reversible through the app's normal review mechanism (tracked changes, comments, staged
-drafts). Outlook and Teams writes are always staged for review — never auto-sent. `compose`
+Every change is previewed and approved before it is applied and recorded for traceability. Some
+writes are reversible by a bridge inverse or app review mechanism; direct inserts such as
+`/insert-text` and `/insert-ooxml` are gated as irreversible until the bridge has a durable inserted
+range handle. Outlook and Teams writes are always staged for review — never auto-sent. `compose`
 never fills in recipients.
 
 The Excel `table`/`chart`/`cf`/`spill` writes are reversible by a recorded inverse (delete the

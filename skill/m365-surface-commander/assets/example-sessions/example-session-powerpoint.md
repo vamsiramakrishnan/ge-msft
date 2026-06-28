@@ -1,3 +1,12 @@
+---
+title: Example Session - PowerPoint
+kind: example
+skill: m365-surface-commander
+surface: powerpoint
+topics: [slide, deck, summary]
+load_when: A concrete PowerPoint slide insertion command-loop transcript is needed.
+---
+
 # Example session — PowerPoint
 
 Build a slide from content already in the deck: read the slide inventory, find the supporting

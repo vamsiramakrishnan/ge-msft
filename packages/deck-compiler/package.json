@@ -1,0 +1,18 @@
+{
+  "name": "@ge/deck-compiler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-side PowerPoint deck compiler: validated deck specs to base64 PPTX artifacts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "pptxgenjs": "^3.12.0",
+    "zod": "^3.23.0"
+  }
+}

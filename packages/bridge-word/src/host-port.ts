@@ -1,4 +1,6 @@
+import type { ContextRef } from '@ge/contracts';
 import { isSet } from './capabilities-runtime.js';
+import { chooseAnchorIndex } from './actuate-plan.js';
 import type { WordSearchHit } from './capture.js';
 
 /**
@@ -121,6 +123,9 @@ export interface WordHost {
    * unsupported host / no hits yields `[]`.
    */
   searchText(query: string, matchCase: boolean): Promise<WordSearchHit[]>;
+
+  /** Bring an addressable Word object into view without changing document content. */
+  revealContext(ref: ContextRef): Promise<void>;
 
   /**
    * Turn on tracked changes, search the body for `query`, let `choose` pick a read-back hit, and
@@ -263,6 +268,81 @@ export class OfficeWordHost implements WordHost {
       // Search unavailable / host quirk — lazy read degrades to nothing, never throws.
       return [];
     }
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    if (ref.surface !== 'word') return;
+
+    const contentControlId = wordContentControlId(ref);
+    if (contentControlId !== undefined) {
+      await this.revealContentControl(contentControlId);
+      return;
+    }
+
+    const commentId = wordCommentId(ref);
+    if (commentId !== undefined) {
+      await this.revealComment(commentId);
+      return;
+    }
+
+    const matchText = ref.anchor?.matchText.trim();
+    if (matchText) {
+      await this.revealTextAnchor(matchText, ref.anchor?.contextHint);
+      return;
+    }
+
+    if (ref.kind === 'selection' || ref.id === 'word:selection') {
+      await Word.run(async (ctx) => {
+        ctx.document.getSelection().select();
+        await ctx.sync();
+      });
+    }
+  }
+
+  private async revealTextAnchor(
+    matchText: string,
+    contextHint: string | undefined,
+  ): Promise<void> {
+    await Word.run(async (ctx) => {
+      const results = ctx.document.body.search(matchText, { matchCase: false });
+      results.load('items/text');
+      await ctx.sync();
+      const idx = chooseAnchorIndex(
+        results.items.map((r) => r.text),
+        contextHint,
+      );
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return;
+      range.select();
+      await ctx.sync();
+    });
+  }
+
+  private async revealContentControl(contentControlId: string): Promise<void> {
+    if (!isSet('WordApi', '1.3')) return;
+    const id = Number(contentControlId);
+    if (!Number.isInteger(id)) return;
+    await Word.run(async (ctx) => {
+      const cc = ctx.document.contentControls.getByIdOrNullObject(id);
+      cc.load('isNullObject');
+      await ctx.sync();
+      if (cc.isNullObject) return;
+      cc.select();
+      await ctx.sync();
+    });
+  }
+
+  private async revealComment(commentId: string): Promise<void> {
+    if (!isSet('WordApi', '1.4')) return;
+    await Word.run(async (ctx) => {
+      const comments = ctx.document.body.getComments();
+      comments.load('items/id');
+      await ctx.sync();
+      const comment = comments.items.find((c) => c.id === commentId);
+      if (!comment) return;
+      comment.getRange().select();
+      await ctx.sync();
+    });
   }
 
   async applyTrackedChange(
@@ -535,6 +615,50 @@ export class OfficeWordHost implements WordHost {
       void registration.then(() => removeWordHandlers(removers.splice(0)));
     };
   }
+}
+
+export function canRevealWordContext(ref: ContextRef): boolean {
+  return (
+    ref.surface === 'word' &&
+    (ref.kind === 'selection' ||
+      ref.id === 'word:selection' ||
+      Boolean(ref.anchor?.matchText.trim()) ||
+      wordContentControlId(ref) !== undefined ||
+      wordCommentId(ref) !== undefined)
+  );
+}
+
+function wordContentControlId(ref: ContextRef): string | undefined {
+  return (
+    prefixedValue(ref.id, 'word:cc:', 'word:content-control:') ??
+    prefixedValue(
+      ref.anchor?.locator,
+      'cc:',
+      'content-control:',
+      'word:cc:',
+      'word:content-control:',
+    )
+  );
+}
+
+function wordCommentId(ref: ContextRef): string | undefined {
+  if (ref.kind !== 'comment') return undefined;
+  return (
+    prefixedValue(ref.id, 'word:comment:', 'comment:') ??
+    prefixedValue(ref.anchor?.locator, 'comment:', 'word:comment:')
+  );
+}
+
+function prefixedValue(value: string | undefined, ...prefixes: string[]): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  for (const prefix of prefixes) {
+    if (trimmed.startsWith(prefix)) {
+      const rest = trimmed.slice(prefix.length).trim();
+      return rest || undefined;
+    }
+  }
+  return undefined;
 }
 
 /** Remove Word object-model event handlers; per the typings, `.remove()` runs inside a sync batch. */

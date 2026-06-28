@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ActuationKindSchema } from './capability.js';
+import { COMMAND_HELP, CommandHelpEntrySchema } from './command-help.js';
 import { READ_VERBS, CONTROL_VERBS, WRITE_VERB_TO_KIND } from './command-grammar.js';
 import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
 
@@ -30,7 +31,16 @@ export const LANGUAGE_VERSION = 'm365-cli/1.0' as const;
  * ArtifactRef` — added when cross-artifact composition lands; not emitted until the runtime
  * produces them.)
  */
-export const VALUE_TYPES = ['Table', 'Number', 'Text', 'Boolean', 'Selector', 'RangeRef'] as const;
+export const VALUE_TYPES = [
+  'Table',
+  'Number',
+  'Text',
+  'Boolean',
+  'Selector',
+  'RangeRef',
+  'ContextRef',
+  'HostRef',
+] as const;
 export type ValueType = (typeof VALUE_TYPES)[number];
 
 /** The serialized language manifest (the shape bundled as `m365-cli-<v>.json`). */
@@ -50,6 +60,8 @@ export const LanguageManifestSchema = z.object({
   effectVerbs: z.array(z.string()),
   /** The full actuation-kind catalogue (the verb→kind values must be a subset of this). */
   actuationKinds: z.array(z.string()),
+  /** Topic-aware command help/playbooks emitted to the skill-side CLI. */
+  commandHelp: z.record(CommandHelpEntrySchema),
   /**
    * The `/<kind>` SPECIALIZED surface (ADR-0008 §two-tier): catalogue kinds NOT already reachable by
    * a core composable verb. These are named, typed, non-composing effect terminals invoked as
@@ -80,6 +92,7 @@ export function buildLanguageManifest(): LanguageManifest {
     transforms: [...TRANSFORM_NAMES].sort(),
     effectVerbs: [...EFFECT_VERBS].sort(),
     actuationKinds: [...ActuationKindSchema.options].sort(),
+    commandHelp: sortedRecord(COMMAND_HELP),
     // Specialized `/`-surface = catalogue kinds NOT covered by a core composable verb.
     specializedKinds: (() => {
       const core = new Set<string>(Object.values(WRITE_VERB_TO_KIND));
@@ -116,6 +129,8 @@ export function assertManifestConsistent(
   // cover the whole catalogue — no kind is both, none is unreachable.
   const coreKinds = new Set(Object.values(parsed.writeVerbToKind));
   const specialized = new Set(parsed.specializedKinds);
+  const verbs = new Set([...parsed.verbs.read, ...parsed.verbs.control, ...parsed.verbs.write]);
+  const help = new Set(Object.keys(parsed.commandHelp));
   for (const k of specialized) {
     if (coreKinds.has(k)) errors.push(`kind "${k}" is both core-verb-reachable and specialized`);
     if (!kinds.has(k)) errors.push(`specialized kind "${k}" is not in the catalogue`);
@@ -125,9 +140,21 @@ export function assertManifestConsistent(
       errors.push(`kind "${k}" is reachable by neither a core verb nor the / surface`);
     }
   }
+  for (const verb of verbs) {
+    if (!help.has(verb)) errors.push(`verb "${verb}" has no commandHelp entry`);
+  }
+  for (const topic of help) {
+    if (!verbs.has(topic) && !kinds.has(topic)) {
+      errors.push(`commandHelp topic "${topic}" is neither a language verb nor an actuation kind`);
+    }
+  }
 
   if (errors.length > 0) {
     throw new Error(`language manifest is inconsistent:\n  - ${errors.join('\n  - ')}`);
   }
   return parsed;
+}
+
+function sortedRecord<T>(record: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b)));
 }

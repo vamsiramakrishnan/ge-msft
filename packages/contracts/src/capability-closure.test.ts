@@ -59,6 +59,29 @@ describe('checkCapabilityClosure (ADR-0006)', () => {
     expect(report.phantoms).toEqual([]);
   });
 
+  it('does not require bridge read ports for runtime-served context inspection/navigation reads', () => {
+    const report = checkCapabilityClosure({
+      manifest: manifest(
+        ['tracked-change'],
+        [
+          'list',
+          'inspect',
+          'properties',
+          'comments',
+          'attachments',
+          'tables',
+          'slides',
+          'neighbors',
+          'open',
+        ],
+      ),
+      handledKinds: ['tracked-change'],
+      readPorts: [],
+    });
+    expect(report.unreachedReads).toEqual([]);
+    expect(report.phantoms).toEqual([]);
+  });
+
   it('flags a gap: a handled kind reachable by no CLI write verb', () => {
     // set-speaker-notes is a handled effect but no write verb maps to it → a tracked gap, not a
     // phantom. (post-message/insert-slide/append-page/reply-mail are now reachable via the

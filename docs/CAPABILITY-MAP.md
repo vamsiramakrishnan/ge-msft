@@ -25,7 +25,7 @@ the **React/Vite/manifest shell** over the web-shell core. See `STATUS.md`.
 | Capability | Surfaces | Status | Notes |
 |---|---|---|---|
 | selection, document/body, paragraph | Word | ✅ | `bridge-word` native capture → `@ge/content` blocks |
-| table / range / sheet (values+formulas) | Excel | ✅ | `bridge-excel` range/used-range → native table block |
+| table / range / sheet / named range (values+formulas) | Excel | ✅ | `bridge-excel` range/used-range + workbook tables/names → native table block and openable refs |
 | mail item / subject / from / body | Outlook | ✅ | `bridge-outlook` (string path; reads active item) |
 | transcript window | Teams | ✅ | `teams` bridge (RSC-consented, injected) |
 | comment / thread | Word, Excel | ✅ | comment-reply actuation + `comment-added` events |
@@ -73,25 +73,36 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 ### Plane A · in-document
 | Actuation (`ActuationKind`) | Surfaces | Status |
 |---|---|---|
+| **insert-text** | Word | ✅ `bridge-word` direct plain-text insert, current selection or exact anchor; irreversible until inserted-range inverse exists |
+| **replace-selection** | Word | ✅ `bridge-word` direct replacement of the current selection; prior text captured as inverse |
+| **insert-ooxml** | Word | ✅ `bridge-word` direct rich OOXML insert, current selection or exact anchor; irreversible until inserted-range inverse exists |
 | **tracked-change** | Word | ✅ `bridge-word` (content-anchored, drift-degrading) |
 | **add-comment** | Word, Excel | ✅ content/cell-anchored new comment (ADR-0004 `comment` verb) |
 | **write-cells** | Excel | ✅ `bridge-excel` (address-targeted) |
 | **format-cells** | Excel | ✅ `bridge-excel` (ADR-0004 `format` verb) |
+| **create-table** | Excel | ✅ `bridge-excel` native table creation |
+| **insert-chart** | Excel | ✅ `bridge-excel` native chart creation over a source range |
+| **format-conditional** | Excel | ✅ `bridge-excel` conditional-format rules |
 | **comment-reply** (+ resolve) | Word, Excel | ✅ |
-| **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` (native compose or base64 deck) |
+| **fill-content-control** | Word | ✅ `bridge-word` direct fill of a known content-control id; prior value captured as inverse |
+| **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` (native compose or client-staged base64 PPTX deck import) |
+| **set-shape-text** | PowerPoint | ✅ `bridge-powerpoint` exact slide+shape text replacement |
 | **append-page** | OneNote | ✅ `bridge-onenote` (synthesis + inline citation tags) |
 | **reply-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayReplyForm`) |
 | **create-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayNewMessageForm`; `compose` verb, unaddressed by default) |
 | **post-message** (+ Adaptive Card) | Teams | ✅ `teams` (reviewable compose) |
-| insert-text, replace-selection, insert-ooxml | Word/PPT | 🟡 modeled — **not advertised** by any bridge (ADR-0006: never advertise what `actuate()` can't do) |
-| fill-content-control | Word | 🟡 modeled — **not advertised** (no `actuate()` case) |
 | set-speaker-notes | PowerPoint | 🟡 modeled — **not advertised** (no host write path in current typings; always degraded, so un-advertised per ADR-0006) |
+| add-shape, add-table-slide, format-shape, delete/move/duplicate slide | PowerPoint | 🟡 modeled — **not advertised** until the bridge has tested host write paths and inverses |
 | create-event, create-task | Outlook/Graph | 🟡 modeled — **not advertised** (no `actuate()` case yet) |
 
 **Every write verb maps to a CLI verb and is composition-bearing.** `WRITE_VERB_TO_KIND`:
 `set`→write-cells, `suggest`→tracked-change, `comment`→add-comment, `format`→format-cells,
-`reply`→comment-reply, `slide`→insert-slide, `page`→append-page, `mail`→reply-mail,
-`post`→post-message, `compose`→create-mail. The free-text slot of every text-bearing verb accepts a
+`reply`→comment-reply, `table`→create-table, `chart`→insert-chart, `cf`→format-conditional,
+`spill`→write-cells, `slide`→insert-slide, `shape`→set-shape-text, `page`→append-page,
+`mail`→reply-mail, `post`→post-message, `compose`→create-mail. Bridge-backed non-core actuation
+kinds, such as Word `insert-text` and `fill-content-control`, are exposed as exact slash commands
+(`/insert-text`, `/fill-content-control`) only on surfaces that advertise them. The free-text slot of
+every text-bearing verb accepts a
 `( <pipeline> )` / `$var` expression evaluated at dry-run (ADR-0005), so a composed value can feed a
 cell, a comment, a slide's bullets (table rows → bullets), a page, an email, or a chat post — not
 just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
@@ -118,7 +129,7 @@ just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
 | Connector (data-store) scoping | 🟡 | request shape built; no UI enumeration |
 | Capability **detection** (runtime) | 🟡 | `detectSurface()` (host→bridge) built; per-capability intersection gate not |
 | Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. A landed-but-untraced write is now **observable**: `ActuationResult.provenanceDropped` (had a record, failed to persist) and `provenanceMissing` (no payload at all → unattributed) are surfaced on the run-step instead of swallowed. Client `ProvenanceStore` view-model built for all. |
-| Code-execution file upload (`addContextFile`, v1) | ⬜ | needs a v1 client in `@ge/gemini-client` |
+| Code-execution file upload (`addContextFile`, v1) | ✅ | `@ge/gemini-client` `ContextFileClient` + runtime `context` strategy; host/user attachment still explicit |
 | A2UI render + action→actuation routing | ⬜ | designed (`api/discoveryengine/a2ui.md`); renderer not built |
 | Audit | 🟡 | client-direct: provenance-in-artifact is the trail; optional thin sink undecided |
 
@@ -128,13 +139,14 @@ just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
 2. **CLI parity — closed.** Every handled actuation now has a model-facing CLI verb
    (`slide`/`page`/`mail`/`post`/`compose`), and every text-bearing effect verb is
    composition-bearing (ADR-0005 expressions in the free-text slot). The remaining write frontier is
-   not *more verbs* but **deeper host operations** per surface (Excel tables/charts, Word styles/OOXML,
-   PowerPoint shapes, Outlook calendar) and **cross-surface composition** (a multi-bridge router so a
+   not *more verbs* but **deeper host operations** per surface (Word styles/headers/revisions,
+   richer PowerPoint object creation/formatting, Outlook calendar/tasks) and **cross-surface composition** (a multi-bridge router so a
    value read on one surface can be written on another — today an `AssistSession` owns one bridge;
    live cross-surface needs Graph/the research unit because each add-in instance runs in one host).
 3. **Estate writes.** Reads are first-class (`@ge/graph-client`); Graph/SharePoint *writes*
    (send mail, create event, upload/checkout) are modeled but not wired.
-4. **Engine paths unbuilt:** v1 `addContextFile` (code-execution uploads) and the A2UI renderer.
+4. **Engine paths unbuilt:** the A2UI renderer. `addContextFile` client support exists; live host UX
+   still needs the explicit attach/upload affordance.
 5. **Per-capability detection.** Host detection is built; the per-capability intersection gate from
    ADR-0002 is not.
 

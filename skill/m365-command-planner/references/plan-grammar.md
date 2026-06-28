@@ -1,3 +1,11 @@
+---
+title: Plan Grammar
+kind: reference
+skill: m365-command-planner
+topics: [plan-block, keywords, cross-surface, clarification]
+load_when: Exact plan keyword rules, cross-surface fields, or parser-compatible examples are needed.
+---
+
 # Plan grammar (full reference)
 
 A plan is one fenced ` ```plan ` block of flat keyword lines. It is a **structured
@@ -10,10 +18,15 @@ to the user for a one-tap confirm before anything runs.
 | Keyword      | Repeatable | Required | Meaning                                                                                                                                                                          |
 | ------------ | :--------: | :------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                                           |
-| `surface`    |     no     |   yes    | The active app: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                                                    |
-| `scope`      |     no     |    no    | Where the work applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow (`section §4–6`, `range Sales!A:C`, `comment c-12`). |
+| `surface`    |     no     |   yes    | The active app where the workflow starts: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                         |
+| `scope`      |     no     |    no    | Where the first phase applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow.                                             |
 | `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                                        |
-| `context`    |    yes     |    no    | Context-construction hint: `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`, `code-execution-preferred`, `analytical`, or `full-scope`. |
+| `context`    |    yes     |    no    | Context-construction hint: `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`, `code-execution-preferred`, `analytical`, or `full-scope`.              |
+| `workflow`   |     no     |    no    | `single-surface` or `cross-surface`. Omit or use `single-surface` for normal one-host work.                                                                                      |
+| `source`     |    yes     | cross-surface | Source app/scope, starting with a surface, e.g. `excel document`.                                                                                                           |
+| `target`     |    yes     | cross-surface | Target app/scope, starting with a surface, e.g. `powerpoint deck`.                                                                                                         |
+| `phase`      |    yes     | cross-surface | A per-host phase, starting with a surface, e.g. `excel prepare the handoff packet`.                                                                                        |
+| `handoff`    |    yes     | cross-surface | The user-visible artifact passed between phases: summary data, refs, draft text, constraints, provenance, next action.                                                     |
 | `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                                   |
 | `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                                                            |
 | `clarify`    |    yes     |    no    | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                                  |
@@ -102,6 +115,44 @@ Emit `clarify` (and keep the plan minimal) when a material choice can't be infer
 
 A plan carrying any `clarify` line is surfaced to the user as a question; the host re-plans
 with the answer rather than dispatching a guess to the executor.
+
+## Cross-surface workflow grammar
+
+Use `workflow cross-surface` when the request explicitly spans apps, for example Excel workbook →
+PowerPoint deck, Outlook thread/attachment → Excel analysis, Teams transcript → Word notes, or Word
+report → PowerPoint summary.
+
+Cross-surface does **not** mean a single host may mutate another host. It means the host creates a
+typed handoff packet after the active-surface phase, then the user resumes in the target app.
+
+Required shape:
+
+```
+workflow cross-surface
+source   <surface> <scope>
+target   <surface> <scope>
+phase    <surface> <intention for that host>
+phase    <surface> <intention for the next host>
+handoff  <artifact contents and constraints>
+```
+
+The `surface` scalar remains the active starting app. A `phase` line must start with a surface. A
+`handoff` should name enough to be auditably replayed: source refs, generated outline/table/draft,
+constraints, exclusions, provenance, and next action.
+
+Bad:
+
+```
+step Excel writes the PowerPoint deck directly
+```
+
+Good:
+
+```
+phase excel create a slide-ready handoff packet from the workbook analysis
+phase powerpoint create an executive deck from the approved handoff packet
+handoff slide outline, chart-ready table, source refs, exclusions, provenance
+```
 
 ## The fenced block
 

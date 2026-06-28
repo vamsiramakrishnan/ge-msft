@@ -22,6 +22,7 @@ import importlib.util
 import base64
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -41,6 +42,7 @@ def _load(module_name: str, filename: str):
 # Import lazily-dependent modules. These must NOT pull in google.auth / requests at import time.
 create_skill = _load("create_skill", "create_skill.py")
 update_skills = _load("update_skills", "update_skills.py")
+extract_widget_credentials = _load("extract_widget_credentials", "extract_widget_credentials.py")
 
 
 def _fake_jwt(payload):
@@ -395,6 +397,79 @@ class TestRequestHardening(unittest.TestCase):
         self.assertEqual(final[1], "https://content-discoveryengine.googleapis.com/upload/session")
         self.assertEqual(final[2]["headers"]["x-goog-upload-command"], "upload, finalize")
         self.assertEqual(final[2]["headers"]["x-goog-upload-offset"], "0")
+
+
+class TestWidgetCredentialExtraction(unittest.TestCase):
+    def test_extracts_raw_curl_widget_request(self):
+        token = _fake_jwt(
+            {
+                "iss": "https://vertexaisearch.cloud.google",
+                "aud": "https://content-discoveryengine.googleapis.com",
+                "exp": 4102444800,
+            }
+        )
+        text = f"""
+curl 'https://content-discoveryengine.googleapis.com/upload/v1alpha/projects/288406675721/locations/global/collections/default_collection/engines/ge-msft-plugin-test_1782382759735/assistants/default_assistant/agents/887/files:upload' \\
+  -H 'authorization: Bearer {token}' \\
+  -H 'x-server-token: CAMSAh0H' \\
+  --data-raw '{{"configId":"cd8248bf-0b65-487d-9a81-fdd48f3912e7"}}'
+"""
+        creds = extract_widget_credentials.extract_widget_credentials(text)
+        self.assertEqual(creds["token"], token)
+        self.assertEqual(creds["server_token"], "CAMSAh0H")
+        self.assertEqual(creds["config_id"], "cd8248bf-0b65-487d-9a81-fdd48f3912e7")
+        self.assertEqual(creds["project_number"], "288406675721")
+        self.assertEqual(creds["location"], "global")
+        self.assertEqual(creds["engine"], "ge-msft-plugin-test_1782382759735")
+
+    def test_extracts_har_widget_request(self):
+        token = _fake_jwt(
+            {
+                "iss": "https://vertexaisearch.cloud.google",
+                "aud": "https://content-discoveryengine.googleapis.com",
+                "exp": 4102444800,
+            }
+        )
+        har = {
+            "log": {
+                "entries": [
+                    {
+                        "request": {
+                            "headers": [
+                                {"name": "authorization", "value": f"Bearer {token}"},
+                                {"name": "x-server-token", "value": "CAMSAh0H"},
+                            ],
+                            "postData": {
+                                "text": json.dumps(
+                                    {
+                                        "configId": "cd8248bf-0b65-487d-9a81-fdd48f3912e7",
+                                    }
+                                )
+                            },
+                        }
+                    }
+                ]
+            }
+        }
+        creds = extract_widget_credentials.extract_widget_credentials(json.dumps(har))
+        self.assertEqual(creds["token"], token)
+        self.assertEqual(creds["server_token"], "CAMSAh0H")
+        self.assertEqual(creds["config_id"], "cd8248bf-0b65-487d-9a81-fdd48f3912e7")
+
+    def test_writes_sourceable_env_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "widget.env"
+            extract_widget_credentials._write_env_file(
+                env_path,
+                {
+                    "GE_WIDGET_CONFIG_ID": "cd8248bf-0b65-487d-9a81-fdd48f3912e7",
+                    "GE_ENGINE": "ge-msft-plugin-test_1782382759735",
+                },
+            )
+            body = env_path.read_text(encoding="utf-8")
+            self.assertIn("export GE_WIDGET_CONFIG_ID=", body)
+            self.assertIn("export GE_ENGINE=", body)
+            self.assertEqual(env_path.stat().st_mode & 0o777, 0o600)
 
 
 # ---------------------------------------------------------------------------

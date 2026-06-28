@@ -588,6 +588,28 @@ body {
 .chip .x:hover {
   color: var(--danger);
 }
+.chip .open-host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -2px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--psoft);
+  cursor: pointer;
+  font-size: var(--fz-xs);
+  line-height: 1;
+}
+.chip .open-host:hover,
+.chip .open-host:focus-visible {
+  border-color: var(--brand-soft);
+  background: var(--brand-tint);
+  color: var(--brand-ink);
+  outline: none;
+}
 .chip-wrap,
 .quick-action-wrap {
   display: inline-flex;
@@ -3546,5 +3568,66 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .tw-caret {
     transition: none;
+  }
+}
+
+/* ── Command strip: primary actions are VISIBLE compact chips (real-estate fix).
+ * They are the task accelerators — give them the space, don't hide them. The long-tail
+ * catalog stays in the bottom drawer; catalog routing stays behind the header gear. ──── */
+.surface-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+.surface-action {
+  width: auto;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 5px 11px 5px 8px;
+  box-shadow: none;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+.surface-action:hover:not(:disabled),
+.surface-action:focus-visible {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  background: color-mix(in srgb, var(--host) 5%, #fff);
+  transform: none;
+  box-shadow: none;
+}
+.surface-action:disabled {
+  opacity: 0.55;
+}
+.surface-action-mode {
+  min-height: 0;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 800;
+}
+.surface-action-label {
+  font-size: var(--fz-sm);
+  font-weight: 700;
+  line-height: 1.2;
+}
+/* one quiet grounding/turn line — not a 4-up grid anymore */
+.surface-metrics {
+  display: block;
+  color: var(--soft);
+  font-size: var(--fz-xs);
+  line-height: 1.3;
+  white-space: normal;
+}
+@media (min-width: 520px) {
+  /* keep the chips compact at preview width (override the old 3-up tall-row rule) */
+  .surface-action {
+    min-height: 30px;
   }
 }

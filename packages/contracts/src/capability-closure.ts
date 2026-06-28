@@ -49,7 +49,18 @@ export interface CapabilityClosureReport {
 
 /** The set of `ActuationKind`s reachable from some CLI write verb (the closure's verb input). */
 const VERB_REACHABLE_KINDS: ReadonlySet<ActuationKind> = new Set(Object.values(WRITE_VERB_TO_KIND));
-const RUNTIME_SERVED_READS: ReadonlySet<ReadVerb> = new Set(['context']);
+const RUNTIME_SERVED_READS: ReadonlySet<ReadVerb> = new Set([
+  'context',
+  'list',
+  'inspect',
+  'properties',
+  'comments',
+  'attachments',
+  'tables',
+  'slides',
+  'neighbors',
+  'open',
+]);
 
 /**
  * Compute the capability-closure report for a surface (pure). No I/O, no Office.js — just set

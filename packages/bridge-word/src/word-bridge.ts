@@ -35,7 +35,7 @@ import {
   originFromWordSource,
   selectionChangedEvent,
 } from './events.js';
-import { OfficeWordHost, type WordHost } from './host-port.js';
+import { canRevealWordContext, OfficeWordHost, type WordHost } from './host-port.js';
 
 /**
  * The exact `ActuationKind`s {@link WordBridge.actuate} handles — the SINGLE source of truth for
@@ -44,10 +44,16 @@ import { OfficeWordHost, type WordHost } from './host-port.js';
  * phantom (advertised-but-unhandled) or a silent handled-but-unadvertised kind fails the build.
  */
 export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
+  'insert-text',
+  'replace-selection',
+  'insert-ooxml',
   'tracked-change',
+  'fill-content-control',
   'add-comment',
   'comment-reply',
 ];
+
+const MAX_LISTED_PARAGRAPHS = 12;
 
 /**
  * The Word `DocBridge`. All Office.js access goes through the injectable {@link WordHost} port
@@ -70,9 +76,10 @@ export class WordBridge implements DocBridge {
   }
 
   async listContext(): Promise<ContextRef[]> {
-    const [selText, bodyText] = await Promise.all([
+    const [selText, bodyText, paragraphs] = await Promise.all([
       this.host.readSelectionText(),
       this.host.readBodyText(),
+      this.host.readParagraphs(),
     ]);
     const refs: ContextRef[] = [];
     if (selText.trim()) {
@@ -83,6 +90,24 @@ export class WordBridge implements DocBridge {
         title: 'Selection',
         preview: selText.slice(0, 120),
         live: true,
+      });
+    }
+    for (const [index, paragraph] of paragraphs.slice(0, MAX_LISTED_PARAGRAPHS).entries()) {
+      const text = paragraph.text.trim();
+      if (!text) continue;
+      const anchor = {
+        matchText: text,
+        contextHint: `Paragraph ${index + 1}`,
+        locator: `word:paragraph:${index + 1}`,
+      };
+      refs.push({
+        id: `word:paragraph:${index + 1}`,
+        kind: 'paragraph',
+        surface: 'word',
+        title: `Paragraph ${index + 1}`,
+        preview: text.slice(0, 120),
+        anchor,
+        hostRef: { type: 'word.range', anchor },
       });
     }
     refs.push({
@@ -99,6 +124,12 @@ export class WordBridge implements DocBridge {
     if (ref.kind === 'selection') {
       const text = await this.host.readSelectionText();
       return wordSelectionToContext(text);
+    }
+    if (ref.kind === 'paragraph') {
+      const paras = await this.host.readParagraphs();
+      const paragraph = findParagraphForRef(ref, paras);
+      if (!paragraph) return [];
+      return wordDocumentToContext(ref.id, ref.title, paragraphsToElements([paragraph]));
     }
     // Whole document → paragraphs (with style for heading levels) → native blocks → chunks.
     const paras = await this.host.readParagraphs();
@@ -134,6 +165,15 @@ export class WordBridge implements DocBridge {
     if (!q) return [];
     const hits = await this.host.searchText(q, false);
     return searchHitsToContext(q, hits);
+  }
+
+  canRevealContext(ref: ContextRef): boolean {
+    return canRevealWordContext(ref);
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    if (!this.canRevealContext(ref)) return;
+    await this.host.revealContext(ref);
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
@@ -342,6 +382,11 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      inverse: {
+        op: 'not-reversible',
+        reason:
+          'Word insert-text currently records provenance but has no durable inserted-range handle.',
+      },
       ...provFlags(req, dropped),
     };
   }
@@ -384,6 +429,7 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      inverse: { op: 'restore-text', anchor: outcome.location, priorText: outcome.priorText },
       ...provFlags(req, dropped),
     };
   }
@@ -431,6 +477,11 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      inverse: {
+        op: 'not-reversible',
+        reason:
+          'Word insert-ooxml currently records provenance but has no durable inserted-range handle.',
+      },
       ...provFlags(req, dropped),
     };
   }
@@ -485,6 +536,11 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      inverse: {
+        op: 'restore-content-control',
+        contentControlId: plan.contentControlId,
+        priorText: outcome.priorText,
+      },
       ...provFlags(req, dropped),
     };
   }
@@ -531,6 +587,24 @@ export class WordBridge implements DocBridge {
       },
     });
   }
+}
+
+function findParagraphForRef(
+  ref: ContextRef,
+  paragraphs: readonly { readonly text: string; readonly styleBuiltIn: string }[],
+): { readonly text: string; readonly styleBuiltIn: string } | undefined {
+  const index = wordParagraphIndex(ref);
+  if (index !== undefined) return paragraphs[index];
+  const match = ref.anchor?.matchText.trim();
+  if (!match) return undefined;
+  return paragraphs.find((paragraph) => paragraph.text.trim() === match);
+}
+
+function wordParagraphIndex(ref: ContextRef): number | undefined {
+  if (!ref.id.startsWith('word:paragraph:')) return undefined;
+  const oneBased = Number(ref.id.slice('word:paragraph:'.length));
+  if (!Number.isInteger(oneBased) || oneBased < 1) return undefined;
+  return oneBased - 1;
 }
 
 /**

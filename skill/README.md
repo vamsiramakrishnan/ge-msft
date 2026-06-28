@@ -6,6 +6,7 @@ against the `streamAssist` API in isolation (no other data sources connected).
 ````
 ge-skill-tooling/
 ├── create_skill.py            # create/upload a skill via public API or widget API mode
+├── extract_widget_credentials.py # dev-only helper: extract widget env from a saved cURL/HAR
 ├── test_skill.py              # multi-surface live test harness (+ offline self-check)
 ├── de_stub.py                 # streamAssist response stub + robust reader (thoughts/citations/…)
 ├── fixtures.py                # mock M365 docs: Excel analysis, Outlook thread, Word contract
@@ -58,10 +59,9 @@ export GE_ENGINE=your-engine_1700000000000
 
 There are two API modes:
 
-- `--api-mode public` uses `discoveryengine.googleapis.com` with OAuth/ADC. It is the preferred API
-  posture, but the caller must have Google IAM permissions such as `discoveryengine.agents.list`,
-  `discoveryengine.agents.create`, `discoveryengine.agents.delete`, and related update/upload
-  permissions on the assistant resource.
+- `--api-mode public` uses `discoveryengine.googleapis.com` with OAuth/ADC. It is useful only when
+  the public assistant-agent API is enabled for the target resource. It does **not** update the
+  numeric UI-created Gemini Enterprise widget skills used by the current dev app.
 - `--api-mode widget` mirrors the Gemini Enterprise web UI (`widgetCreateAgent`,
   `widgetListAvailableAgentViews`, resumable `files:upload`). It uses a short-lived Vertex AI
   Search widget JWT plus `GE_WIDGET_CONFIG_ID`; keep it dev-only and never commit the token.
@@ -80,23 +80,30 @@ python3 create_skill.py --api-mode public --agent-id m365-surface-commander --zi
 # Method A: single-file skill — push one markdown file as the instruction (no bundle)
 python3 create_skill.py --api-mode public --single-file m365-surface-commander/SKILL.md
 
-# Widget/dev update of existing UI-created skills. Put the short-lived widget JWT in a temp file
-# rather than in shell history.
-GE_WIDGET_BEARER_TOKEN_FILE=/tmp/ge-widget-token \
-GE_WIDGET_CONFIG_ID=<widget-config-guid> \
-GE_SURFACE_COMMANDER_AGENT_ID=<numeric-commander-agent> \
-GE_COMMAND_PLANNER_AGENT_ID=<numeric-planner-agent> \
-python3 update_skills.py --api-mode widget --live --upload-existing
+# Widget/dev update of existing UI-created skills. First export one authenticated
+# content-discoveryengine.googleapis.com request from DevTools as cURL or HAR, then extract only the
+# short-lived widget JWT/config into local env exports:
+python3 extract_widget_credentials.py /path/to/widget-request.curl \
+  --env-file /tmp/ge-widget.env \
+  --project saib-ai-playground \
+  --agent-surface 8870098647237058037 \
+  --agent-planner 17573173582293271726
+
+# Run the printed export lines, then replace the two skills with the current zip bundles:
+source /tmp/ge-widget.env
+python3 update_skills.py --api-mode widget --replace --yes --live
 
 # Useful flags
 python3 create_skill.py --api-mode public --replace      # delete an existing agent first
 python3 create_skill.py --api-mode public --share        # set sharingConfig.scope=ALL_USERS
 ```
 
-The public API and widget API are deliberately separate. Do not automate browser cookies or XSRF
-state. For widget mode, copy only the short-lived Bearer token from an authenticated
-`content-discoveryengine.googleapis.com` widget request into a local temp file and let the tooling
-validate that it is a Vertex AI Search widget JWT.
+The public API and widget API are deliberately separate. The current Gemini Enterprise dev app uses
+UI-created widget skills, so the operational update path is widget mode. Do not automate browser
+cookies, SAPISIDHASH, or XSRF state. `extract_widget_credentials.py` accepts only a saved request
+you explicitly export from DevTools, validates that the Authorization header is a Vertex AI Search
+widget JWT, stores that short-lived token in a local `0600` temp file, and prints the env vars needed
+by `update_skills.py`.
 
 ## Test / refine a skill
 

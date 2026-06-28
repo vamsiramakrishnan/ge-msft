@@ -16,14 +16,41 @@ describe('context + capability model', () => {
       surface: 'word',
       title: 'Selection',
       preview: 'available 99.5% of the time',
+      hostRef: { type: 'word.range', anchor: { matchText: 'available 99.5% of the time' } },
       live: true,
     });
     expect(ref.live).toBe(true);
+    expect(ref.hostRef?.type).toBe('word.range');
     const resolved = ResolvedContextSchema.parse({
       ref,
       value: { as: 'text', text: 'available 99.5% of the time' },
     });
     expect(resolved.value.as).toBe('text');
+  });
+
+  it('parses typed host refs for the major Office surfaces', () => {
+    for (const hostRef of [
+      { type: 'excel.range', worksheet: 'Sales', address: 'A1:C9' },
+      { type: 'excel.table', worksheet: 'Sales', name: 'TopRegions' },
+      { type: 'word.comment', commentId: 'c1' },
+      { type: 'word.contentControl', contentControlId: 'cc1' },
+      { type: 'powerpoint.slide', slideId: 's1' },
+      { type: 'powerpoint.shape', slideId: 's1', shapeId: 'shape2' },
+      { type: 'outlook.item', itemId: 'm1' },
+      { type: 'outlook.attachment', itemId: 'm1', attachmentId: 'a1' },
+      { type: 'onenote.page', pageId: 'p1', clientUrl: 'https://contoso.example/page' },
+      { type: 'teams.deepLink', url: 'https://teams.microsoft.com/l/message/1' },
+    ]) {
+      expect(() =>
+        ContextRefSchema.parse({
+          id: `ref:${hostRef.type}`,
+          kind: 'document',
+          surface: 'word',
+          title: hostRef.type,
+          hostRef,
+        }),
+      ).not.toThrow();
+    }
   });
 
   it('parses each resolved-context value kind', () => {

@@ -1,3 +1,12 @@
+---
+title: Outlook Semantics
+kind: reference
+skill: m365-surface-commander
+surface: outlook
+topics: [mail, compose, attachments, staged-draft]
+load_when: The active surface is Outlook or a plan mentions mail, thread, attachment, reply, or draft.
+---
+
 # Outlook semantics
 
 Load this when the active surface is Outlook. Cross-surface table:

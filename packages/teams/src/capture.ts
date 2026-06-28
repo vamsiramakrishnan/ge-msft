@@ -17,6 +17,8 @@ export interface TranscriptInput {
   meetingTitle?: string;
   transcript: string;
   participants?: string[];
+  /** Optional Teams deep link to the closest transcript/message/thread/channel context. */
+  deepLink?: string;
 }
 
 export function transcriptToContext(

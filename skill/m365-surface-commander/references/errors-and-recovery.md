@@ -1,3 +1,11 @@
+---
+title: Errors And Recovery
+kind: reference
+skill: m365-surface-commander
+topics: [corrections, parser-errors, stale-anchors, budget]
+load_when: A result block contains an error or a command failed validation.
+---
+
 # Errors and recovery
 
 When a command is wrong you get a short, CLI-style correction in the ` ```result ` block — not a

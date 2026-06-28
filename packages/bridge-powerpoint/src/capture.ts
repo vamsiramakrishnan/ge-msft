@@ -1,4 +1,4 @@
-import type { ResolvedContext } from '@ge/contracts';
+import type { ContextRef, ResolvedContext } from '@ge/contracts';
 import {
   native,
   toContextNative,
@@ -16,6 +16,13 @@ import {
  */
 
 /** An already-extracted PowerPoint slide: title-ish first line, body lines, optional notes. */
+export interface ShapeElement {
+  /** Stable host shape id within the slide. */
+  shapeId: string;
+  /** Text read from the shape's text frame; empty for non-text shapes. */
+  text: string;
+}
+
 export interface SlideElement {
   /** Zero-based slide index (position in the deck). */
   index: number;
@@ -27,6 +34,8 @@ export interface SlideElement {
   body: string[];
   /** Speaker notes for the slide, if any. */
   notes?: string;
+  /** Addressable shapes on the slide, when the bridge has read them. */
+  shapes?: ShapeElement[];
 }
 
 /**
@@ -76,6 +85,59 @@ export function slidesToContext(
 /** A single selected slide → context (same mapping as `slidesToContext`). */
 export function selectedSlideToContext(slide: SlideElement): ResolvedContext[] {
   return slidesToContext(`pp:slide:${slide.slideId ?? slide.index}`, undefined, [slide]);
+}
+
+export function slideContextRef(
+  slide: Pick<SlideElement, 'index' | 'slideId' | 'title'>,
+): ContextRef {
+  const slideId = slide.slideId ?? String(slide.index);
+  return {
+    id: `pp:slide:${slideId}`,
+    kind: 'slide',
+    surface: 'powerpoint',
+    title: `Slide ${slide.index + 1}${slide.title ? `: ${slide.title.slice(0, 60)}` : ''}`,
+    ...(slide.title ? { preview: slide.title.slice(0, 120) } : {}),
+    live: true,
+    anchor: { matchText: slide.title ?? `Slide ${slide.index + 1}`, locator: `slide:${slideId}` },
+    hostRef: { type: 'powerpoint.slide', slideId },
+  };
+}
+
+export function shapeContextRef(
+  slide: Pick<SlideElement, 'index' | 'slideId'>,
+  shape: ShapeElement,
+  ordinal: number,
+): ContextRef {
+  const slideId = slide.slideId ?? String(slide.index);
+  return {
+    id: `pp:shape:${slideId}:${shape.shapeId}`,
+    kind: 'shape',
+    surface: 'powerpoint',
+    title: `Shape ${ordinal + 1} on slide ${slide.index + 1}`,
+    ...(shape.text.trim() ? { preview: shape.text.trim().slice(0, 120) } : {}),
+    live: true,
+    anchor: {
+      matchText: shape.text.trim() || shape.shapeId,
+      locator: `pp:shape:${slideId}:${shape.shapeId}`,
+    },
+    hostRef: { type: 'powerpoint.shape', slideId, shapeId: shape.shapeId },
+  };
+}
+
+export function selectedShapeToContext(
+  slide: Pick<SlideElement, 'index' | 'slideId'>,
+  shape: ShapeElement,
+  ordinal = 0,
+): ResolvedContext[] {
+  const text = shape.text.trim();
+  if (!text) return [];
+  const ref = shapeContextRef(slide, shape, ordinal);
+  return [
+    {
+      ref,
+      value: { as: 'text', text, mimeType: 'text/plain' },
+    },
+  ];
 }
 
 /**

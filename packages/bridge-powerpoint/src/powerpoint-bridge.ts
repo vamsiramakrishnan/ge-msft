@@ -15,7 +15,10 @@ import { isSet } from './capabilities-runtime.js';
 import {
   parseSlideSelector,
   searchSlides,
+  selectedShapeToContext,
   selectedSlideToContext,
+  shapeContextRef,
+  slideContextRef,
   shapesToSlideText,
   slideElementsToDocStateBlocks,
   slidesToContext,
@@ -55,7 +58,7 @@ export const MAX_READ_SLIDES = 60;
  * truth). `set-speaker-notes` is deliberately ABSENT — it had no working write path (always
  * degraded) and was un-advertised. The conformance test asserts this equals the manifest's kinds.
  */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['insert-slide'];
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['insert-slide', 'set-shape-text'];
 
 export class PowerPointBridge implements DocBridge {
   readonly surface = 'powerpoint' as const;
@@ -77,13 +80,11 @@ export class PowerPointBridge implements DocBridge {
       const refs: ContextRef[] = [];
       const first = selected.items[0];
       if (first) {
-        refs.push({
-          id: `pp:slide:${first.id}`,
-          kind: 'slide',
-          surface: 'powerpoint',
-          title: `Slide ${first.index + 1}`,
-          live: true,
-        });
+        const slide = await readSlide(ctx, first);
+        refs.push(slideContextRef(slide));
+        for (const [index, shape] of (slide.shapes ?? []).entries()) {
+          refs.push(shapeContextRef(slide, shape, index));
+        }
       }
       refs.push({ id: 'pp:deck', kind: 'document', surface: 'powerpoint', title: 'Whole deck' });
       return refs;
@@ -91,7 +92,25 @@ export class PowerPointBridge implements DocBridge {
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
-    if (ref.kind === 'slide' || ref.kind === 'selection' || ref.kind === 'shape') {
+    if (ref.kind === 'shape') {
+      const target = shapeRevealTarget(ref);
+      if (!target) return [];
+      return PowerPoint.run(async (ctx) => readShapeContext(ctx, target));
+    }
+    if (ref.kind === 'slide') {
+      const target = slideRevealTarget(ref);
+      if (!target) return [];
+      try {
+        return await PowerPoint.run(async (ctx) => {
+          const slide = ctx.presentation.slides.getItem(target.slideId);
+          const element = await readSlide(ctx, slide);
+          return selectedSlideToContext(element);
+        });
+      } catch {
+        return [];
+      }
+    }
+    if (ref.kind === 'selection') {
       return PowerPoint.run(async (ctx) => {
         const selected = ctx.presentation.getSelectedSlides();
         selected.load('items/id,items/index');
@@ -171,6 +190,23 @@ export class PowerPointBridge implements DocBridge {
     });
   }
 
+  canRevealContext(ref: ContextRef): boolean {
+    return ref.surface === 'powerpoint' && powerpointRevealTarget(ref) !== undefined;
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    const target = powerpointRevealTarget(ref);
+    if (!target) return;
+    await PowerPoint.run(async (ctx) => {
+      ctx.presentation.setSelectedSlides([target.slideId]);
+      if (target.shapeId) {
+        const slide = ctx.presentation.slides.getItem(target.slideId);
+        slide.setSelectedShapes([target.shapeId]);
+      }
+      await ctx.sync();
+    });
+  }
+
   /**
    * Read up to {@link MAX_READ_SLIDES} slides of the deck into pure {@link SlideElement}s — the
    * shared host read behind `captureDocState`/`searchDocument`. Bounded so a huge deck can't blow
@@ -193,6 +229,8 @@ export class PowerPointBridge implements DocBridge {
     switch (req.kind) {
       case 'insert-slide':
         return this.applyInsertSlide(req);
+      case 'set-shape-text':
+        return this.applySetShapeText(req);
       default:
         return {
           ok: false,
@@ -200,6 +238,84 @@ export class PowerPointBridge implements DocBridge {
           kind: req.kind,
           error: { code: 'unsupported', message: `PowerPoint bridge cannot ${req.kind}` },
         };
+    }
+  }
+
+  private async applySetShapeText(req: ActuationRequest): Promise<ActuationResult> {
+    const slideId = req.params.target?.slideId;
+    const shapeId = req.params.target?.shapeId;
+    const text = req.params.text;
+    if (!slideId || !shapeId) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_target',
+          message: 'set-shape-text needs target.slideId and target.shapeId',
+        },
+      };
+    }
+    if (text === undefined) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'set-shape-text needs params.text' },
+      };
+    }
+    if (!isSet('PowerPointApi', '1.4')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'unsupported', message: 'PowerPointApi 1.4 is required for shape text.' },
+      };
+    }
+
+    try {
+      return await PowerPoint.run(async (ctx) => {
+        const slide = ctx.presentation.slides.getItem(slideId);
+        const shape = slide.shapes.getItemOrNullObject(shapeId);
+        shape.load('isNullObject');
+        await ctx.sync();
+        if (shape.isNullObject) {
+          return {
+            ok: false,
+            changeId: req.changeId,
+            kind: req.kind,
+            degraded: true,
+            error: {
+              code: 'target_conflict',
+              message: 'The selected PowerPoint shape no longer exists.',
+            },
+          };
+        }
+        const range = shape.textFrame.textRange;
+        range.load('text');
+        await ctx.sync();
+        const priorText = range.text ?? '';
+        range.text = text;
+        await ctx.sync();
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: `shape:${slideId}:${shapeId}`,
+          inverse: { op: 'restore-text', anchor: `pp:shape:${slideId}:${shapeId}`, priorText },
+        };
+      });
+    } catch {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'target_conflict',
+          message: 'The PowerPoint shape could not be re-read before writing.',
+        },
+      };
     }
   }
 
@@ -216,9 +332,12 @@ export class PowerPointBridge implements DocBridge {
     return PowerPoint.run(async (ctx) => {
       // Prebuilt deck path: the agent supplied a Base64 PPTX — let the host merge it (1.2).
       if (plan.base64) {
-        ctx.presentation.insertSlidesFromBase64(plan.base64);
+        const options = await deckInsertOptions(ctx, plan);
+        ctx.presentation.insertSlidesFromBase64(plan.base64, options);
         await ctx.sync();
-        return { ok: true, changeId: req.changeId, kind: req.kind, location: 'inserted-deck' };
+        const location =
+          plan.slideCount === undefined ? 'inserted-deck' : `inserted-deck:${plan.slideCount}`;
+        return { ok: true, changeId: req.changeId, kind: req.kind, location };
       }
       // Native compose path: append a slide, then fill its placeholder shapes with title/body.
       const slides = ctx.presentation.slides;
@@ -305,6 +424,70 @@ export class PowerPointBridge implements DocBridge {
   }
 }
 
+async function deckInsertOptions(
+  ctx: PowerPoint.RequestContext,
+  plan: ReturnType<typeof planInsertSlide>,
+): Promise<PowerPoint.InsertSlideOptions | undefined> {
+  const options: PowerPoint.InsertSlideOptions = {};
+  if (plan.formatting !== undefined) options.formatting = plan.formatting;
+  const targetSlideId = plan.targetSlideId ?? (await appendTargetSlideId(ctx, plan.targetIndex));
+  if (targetSlideId !== undefined) options.targetSlideId = targetSlideId;
+  return Object.keys(options).length === 0 ? undefined : options;
+}
+
+async function appendTargetSlideId(
+  ctx: PowerPoint.RequestContext,
+  targetIndex: number | undefined,
+): Promise<string | undefined> {
+  const slides = ctx.presentation.slides;
+  const count = slides.getCount();
+  await ctx.sync();
+  if (count.value <= 0) return undefined;
+  const index = targetIndex ?? count.value - 1;
+  const slide = slides.getItemAt(index);
+  slide.load('id');
+  await ctx.sync();
+  return slide.id;
+}
+
+interface PowerPointRevealTarget {
+  slideId: string;
+  shapeId?: string;
+}
+
+function powerpointRevealTarget(ref: ContextRef): PowerPointRevealTarget | undefined {
+  if (ref.surface !== 'powerpoint' || !isSet('PowerPointApi', '1.5')) return undefined;
+  return shapeRevealTarget(ref) ?? slideRevealTarget(ref);
+}
+
+function slideRevealTarget(ref: ContextRef): PowerPointRevealTarget | undefined {
+  const id =
+    prefixedValue(ref.id, 'pp:slide:', 'slide:') ?? prefixedValue(ref.anchor?.locator, 'slide:');
+  return id ? { slideId: id } : undefined;
+}
+
+function shapeRevealTarget(ref: ContextRef): PowerPointRevealTarget | undefined {
+  const fromId = prefixedValue(ref.id, 'pp:shape:', 'shape:');
+  const fromLocator = prefixedValue(ref.anchor?.locator, 'pp:shape:', 'shape:');
+  const raw = fromId ?? fromLocator;
+  if (!raw) return undefined;
+  const [slideId, shapeId] = raw.split(':');
+  if (!slideId || !shapeId) return undefined;
+  return { slideId, shapeId };
+}
+
+function prefixedValue(value: string | undefined, ...prefixes: string[]): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  for (const prefix of prefixes) {
+    if (trimmed.startsWith(prefix)) {
+      const rest = trimmed.slice(prefix.length).trim();
+      return rest || undefined;
+    }
+  }
+  return undefined;
+}
+
 /** Read one slide's shapes' text (+ id/index) into a pure {@link SlideElement}. */
 async function readSlide(
   ctx: PowerPoint.RequestContext,
@@ -325,7 +508,35 @@ async function readSlide(
 
   const shapeTexts = ranges.map((r) => r.text ?? '');
   const { title, body } = shapesToSlideText(shapeTexts);
-  return { index: slide.index, slideId: slide.id, title, body };
+  return {
+    index: slide.index,
+    slideId: slide.id,
+    title,
+    body,
+    shapes: shapes.items.map((shape, index) => ({
+      shapeId: shape.id,
+      text: shapeTexts[index] ?? '',
+    })),
+  };
+}
+
+async function readShapeContext(
+  ctx: PowerPoint.RequestContext,
+  target: PowerPointRevealTarget,
+): Promise<ResolvedContext[]> {
+  const slide = ctx.presentation.slides.getItem(target.slideId);
+  slide.load('id,index');
+  const shape = slide.shapes.getItemOrNullObject(target.shapeId ?? '');
+  shape.load('id,isNullObject');
+  await ctx.sync();
+  if (shape.isNullObject || !target.shapeId) return [];
+  const range = shape.textFrame.textRange;
+  range.load('text');
+  await ctx.sync();
+  return selectedShapeToContext(
+    { index: slide.index, slideId: slide.id },
+    { shapeId: shape.id, text: range.text ?? '' },
+  );
 }
 
 /**

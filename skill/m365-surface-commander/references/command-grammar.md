@@ -1,3 +1,11 @@
+---
+title: Command Grammar
+kind: reference
+skill: m365-surface-commander
+topics: [cmd-block, read-verbs, write-verbs, composition, recipes]
+load_when: Exact CLI syntax, selector forms, composed writes, or reusable recipe grammar is needed.
+---
+
 # Command grammar (full reference)
 
 A small set of commands shared across all six Office apps. Only the **selector** (how you
@@ -8,28 +16,44 @@ reviewable change.
 
 | App        | Selector                                         | Example                  |
 | ---------- | ------------------------------------------------ | ------------------------ |
-| Excel      | A1 range or named range                          | `Sales!C2:C7`, `Revenue` |
-| Word       | exact text to anchor on (re-found at apply time) | `"Q3 revenue grew 12%"`  |
-| PowerPoint | slide or shape                                   | `slide:4`                |
-| OneNote    | page / whole                                     | (whole page)             |
-| Outlook    | the open mail item (whole)                       | (whole item)             |
-| Teams      | the transcript window (whole)                    | (whole transcript)       |
+| Excel      | A1 range, table, or named range                  | `Sales!C2:C7`, `Revenue` |
+| Word       | exact text, paragraph, comment, or content control anchor | `"Q3 revenue grew 12%"`  |
+| PowerPoint | slide, shape, text box, table, or chart          | `slide:4`, `shape:logo`  |
+| OneNote    | page, paragraph, table, or image anchor          | `page:current`           |
+| Outlook    | current item, thread, compose body, draft target, or attachment | `item:current`           |
+| Teams      | message, thread, channel, transcript segment, or deep link | `thread:current`         |
 
 ## Read commands
 
-| Command   | Usage             | Notes                                                               |
-| --------- | ----------------- | ------------------------------------------------------------------- |
-| `outline` | `outline`         | Structure of the document/workbook. Not available in Outlook/Teams. |
-| `read`    | `read <selector>` | Excel: an addressable range. Others: whole or current section.      |
-| `search`  | `search <text>`   | Find content containing the text.                                   |
-| `context` | `context [hints]` | Ask the host for context/upload/code-execution strategy. Read-only. |
+| Command       | Usage                         | Notes                                                               |
+| ------------- | ----------------------------- | ------------------------------------------------------------------- |
+| `outline`     | `outline`                     | Structure of the document/workbook. Not available in Outlook/Teams. |
+| `read`        | `read <selector>`             | Excel: an addressable range. Others: whole or current section.      |
+| `search`      | `search <text>`               | Find content containing the text.                                   |
+| `list`        | `list [kind]`                 | List addressable context refs. `kind` is optional.                  |
+| `inspect`     | `inspect <refId\|selector>`   | Resolve one context ref or selector into readable content.          |
+| `properties`  | `properties <refId\|selector>`| Return safe metadata: id, kind, title, locator, host ref.           |
+| `comments`    | `comments [selector]`         | List comment refs, optionally scoped near a selector.               |
+| `attachments` | `attachments [selector]`      | List attachment refs, optionally scoped near a selector.            |
+| `tables`      | `tables [selector]`           | List table/range refs, optionally scoped near a selector.           |
+| `slides`      | `slides [selector]`           | List slide refs, optionally scoped near a selector.                 |
+| `neighbors`   | `neighbors [refId\|selector]` | Show nearby context refs around a target.                           |
+| `context`     | `context [hints]`             | Ask the host for context/upload/code-execution strategy. Read-only. |
+| `open`        | `open <refId\|selector>`      | Navigate/select in the host only. Never sends or mutates.           |
+
+Context kinds accepted by `list`: `selection`, `range`, `comment`, `slide`, `message`,
+`attachment`, `table`, `paragraph`, `shape`, `page`, `transcript`, `file`, `reference`.
+
+Use `list`/`inspect`/`properties` before a surgical action when the snapshot only says
+"selected range" or "current item". Use `open` only to help the user see the target in the host;
+it is not an approval and cannot apply a change.
 
 `context` accepts zero or more hints:
 
 `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`,
 `code-execution-preferred`, `analytical`, `full-scope`.
 
-Use it before escalating from bounded reads to full-file attachment or hosted analysis. It never
+Use `context` before escalating from bounded reads to full-file attachment or hosted analysis. It never
 uploads by itself, never runs code, never approves a write, and never grants a capability.
 
 ```
@@ -59,14 +83,24 @@ that support it (see [capability-map.md](capability-map.md)).
 | `table`   | create a table     | Excel       | `table <range> [headers] [name=NAME]` — promote a range to a native Table                             |
 | `chart`   | insert a chart     | Excel       | `chart <type> <range> [title="…"] [series=rows\|columns]` — types: `column bar line pie scatter area` |
 | `cf`      | conditional format | Excel       | `cf <range> >VALUE [fill=#hex]` · `cf <range> databar\|colorscale` · `cf <range> top=N`               |
+| `shape`   | replace shape text | PowerPoint  | `shape <pp:shape:slideId:shapeId> "new text"`                                                        |
 | `spill`   | write a table grid | Excel       | `spill <range> = (<table expr>)` — write a composed table as a cell grid                              |
+
+PowerPoint generated-deck import is a client-staged artifact path: the host compiles a bounded
+DeckSpec into one base64 `.pptx` and invokes `insert-slide` with `params.deck` after preview and
+approval. Do not ask the model to write raw PPTX base64 in the CLI.
 
 ## Control commands
 
 | Command | Meaning                      |
 | ------- | ---------------------------- |
 | `done`  | The whole task is complete.  |
-| `help`  | List the available commands. |
+| `help`  | List available commands, or `help <command>` for one generated playbook. |
+
+`<command> -h` and `<command> --help` are aliases for `help <command>`. Use targeted help before
+object-rich operations (`shape`, `chart`, `format`, specialized `/<kind>` commands) instead of
+guessing a long syntax from memory. Targeted help is read-only/control and comes from the same
+generated `m365-cli-1.0.json` manifest as the runtime grammar.
 
 ## Composition
 

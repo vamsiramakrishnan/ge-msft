@@ -1,3 +1,4 @@
+
 # StreamAssist — the streaming grounded assistant
 
 The primary chat/grounding entry point. The assistant (agents, Model Armor, grounding data stores) is configured **in the Gemini Enterprise engine** — the client only sends a query + optional session + tool/grounding scope. Note: in `v1alpha` there is **no** `agentsSpec` field on the request (the known agent-id bug is avoided by configuring routing on the assistant). The response streams as chunked JSON objects; accumulate `answer.replies[].groundedContent.content.text` for tokens and read `...textGroundingMetadata.references[]` for citations.

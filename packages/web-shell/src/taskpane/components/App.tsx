@@ -335,6 +335,7 @@ export function App({
       <ContextTray
         chips={state.chips}
         onToggle={onToggle}
+        onReveal={(id) => void controller.reveal(id)}
         onRefresh={() => void controller.refreshContext()}
       />
 

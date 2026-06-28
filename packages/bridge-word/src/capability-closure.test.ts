@@ -16,10 +16,17 @@ describe('Word capability closure', () => {
     expect(advertised).toEqual(handled);
   });
 
-  it('does NOT advertise the previously-phantom insert-ooxml / fill-content-control', () => {
+  it('advertises the bridge-backed direct Word write kinds', () => {
     const advertised = WORD_CAPABILITIES.actuations.map((a) => a.kind);
-    expect(advertised).not.toContain('insert-ooxml');
-    expect(advertised).not.toContain('fill-content-control');
+    expect(advertised).toEqual([
+      'insert-text',
+      'replace-selection',
+      'insert-ooxml',
+      'tracked-change',
+      'fill-content-control',
+      'add-comment',
+      'comment-reply',
+    ]);
   });
 
   it('advertised reads match the implemented read ports', () => {

@@ -1,3 +1,12 @@
+---
+title: Pattern - Anomaly Review
+kind: pattern
+skill: m365-surface-commander
+surface: excel
+topics: [anomaly, outlier, conditional-format, comment]
+load_when: A task asks to detect unusual values, spikes, outliers, or suspicious spreadsheet rows.
+---
+
 # Pattern: anomaly review
 
 A reasoning template, not a command. Read it for shape, then write the turn's algebra.

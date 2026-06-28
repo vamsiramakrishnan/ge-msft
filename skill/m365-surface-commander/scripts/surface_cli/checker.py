@@ -12,6 +12,11 @@ from .parser import (
 from .types import _parse_range, _overlap, _EXTERNAL, _EXTERNAL_KINDS
 from .generated_language import LANGUAGE_VERSION
 
+_READ_PHASE_VERBS = {
+    "outline", "read", "search", "list", "inspect", "properties", "comments", "attachments",
+    "tables", "slides", "neighbors", "context", "open",
+}
+
 
 def analyze(program_text: str, capabilities=None):
     """Parse + scope + type a program. Returns a structured result (no rendering, no side effects)."""
@@ -34,7 +39,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _names, unknown = _infer_pipeline_type(rhs)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}" in ${name}')
-                if src.split()[0] in ("read", "search", "outline", "context"):
+                if src.split()[0] in _READ_PHASE_VERBS:
                     reads.append(src)
                 for ref in re.findall(r"\$(\w+)", rhs):
                     if ref not in bound:
@@ -45,7 +50,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _n, unknown = _infer_pipeline_type(line)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}"')
-                if src.split()[0] in ("read", "search", "outline", "context"):
+                if src.split()[0] in _READ_PHASE_VERBS:
                     reads.append(src)
             continue
 
@@ -57,7 +62,7 @@ def analyze(program_text: str, capabilities=None):
             continue
 
         verb = rec["verb"]
-        if verb in ("outline", "read", "search", "context"):
+        if verb in _READ_PHASE_VERBS:
             reads.append(line)
             continue
         if verb in ("done", "help"):
@@ -78,7 +83,7 @@ def analyze(program_text: str, capabilities=None):
         # An effect. Capability-scope it against this turn's signature, if one was supplied.
         if capabilities is not None and verb not in capabilities:
             errors.append(f'"{verb}" is not in this turn\'s capabilities')
-        target = rec.get("range") or rec.get("cell")
+        target = rec.get("range") or rec.get("cell") or rec.get("selector")
         eff = {
             "verb": verb,
             "target": target,

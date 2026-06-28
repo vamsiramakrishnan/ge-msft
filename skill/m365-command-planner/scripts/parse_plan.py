@@ -21,8 +21,18 @@ import sys
 
 # `scope` is the orthogonal WHERE axis (CommandScope kind):
 #   selection | document | range | section | comment | this-item  (free-text ref ok)
-SCALAR_KEYS = {"intent", "surface", "scope", "confidence"}   # last one wins
-LIST_KEYS = {"ground", "context", "step", "exclude", "clarify"}  # accumulate, in order
+SCALAR_KEYS = {"intent", "surface", "scope", "confidence", "workflow"}   # last one wins
+LIST_KEYS = {
+    "ground",
+    "context",
+    "source",
+    "target",
+    "phase",
+    "handoff",
+    "step",
+    "exclude",
+    "clarify",
+}  # accumulate, in order
 BRACKETS = {"plan", "end"}                                   # optional, ignored
 ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 
@@ -31,6 +41,7 @@ ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft", "notes"}
 SURFACES = {"word", "excel", "powerpoint", "onenote", "outlook", "teams"}
 CONFIDENCE = {"high", "medium", "low"}
+WORKFLOWS = {"single-surface", "cross-surface"}
 CONTEXT_HINTS = {
     "incremental",
     "inline-preferred",
@@ -85,8 +96,14 @@ def parse_line(line: str):
         return {"error": f"unknown surface '{rest}' — expected one of {sorted(SURFACES)}"}
     if key == "confidence" and rest.lower() not in CONFIDENCE:
         return {"error": f"confidence must be high|medium|low — got '{rest}'"}
+    if key == "workflow" and rest.lower() not in WORKFLOWS:
+        return {"error": f"workflow must be single-surface|cross-surface — got '{rest}'"}
     if key == "context" and rest.lower() not in CONTEXT_HINTS:
         return {"error": f"unknown context hint '{rest}' — expected one of {sorted(CONTEXT_HINTS)}"}
+    if key in {"source", "target", "phase"}:
+        surface = rest.split(None, 1)[0].rstrip(":").lower()
+        if surface not in SURFACES:
+            return {"error": f"'{key}' must start with a surface ({sorted(SURFACES)}) — got '{rest}'"}
     if key == "ground":
         rest = rest.strip().strip('"')
     return (key, rest)
@@ -100,7 +117,8 @@ def parse_plan(model_text: str):
                 "note": "no ```plan fence (re-prompt, not an error)"}
 
     plan = {"intent": None, "surface": None, "scope": None, "confidence": None,
-            "ground": [], "context": [], "step": [], "exclude": [], "clarify": []}
+            "workflow": None, "ground": [], "context": [], "source": [], "target": [],
+            "phase": [], "handoff": [], "step": [], "exclude": [], "clarify": []}
     errors = []
     for raw in inner.splitlines():
         rec = parse_line(raw)
@@ -113,7 +131,7 @@ def parse_plan(model_text: str):
         if key == "bracket":
             continue
         if key in SCALAR_KEYS:
-            plan[key] = val.lower() if key in ("surface", "confidence") else val
+            plan[key] = val.lower() if key in ("surface", "confidence", "workflow") else val
         elif key == "context":
             plan[key].append(val.lower())
         else:
@@ -126,6 +144,13 @@ def parse_plan(model_text: str):
         errors.append("plan is missing 'surface'")
     if not plan["step"] and not plan["clarify"]:
         errors.append("plan needs at least one 'step' (or a 'clarify' to ask first)")
+    if plan["workflow"] == "cross-surface" and not plan["clarify"]:
+        if not plan["source"]:
+            errors.append("cross-surface plan needs at least one 'source <surface> ...' line")
+        if not plan["target"]:
+            errors.append("cross-surface plan needs at least one 'target <surface> ...' line")
+        if not plan["handoff"]:
+            errors.append("cross-surface plan needs at least one 'handoff ...' artifact line")
 
     plan["needs_clarification"] = bool(plan["clarify"])
     return {"block": inner, "plan": plan, "errors": errors}
@@ -165,8 +190,49 @@ step inspect
     if not any("unknown context hint" in e for e in unsafe["errors"]):
         failures.append("unsafe context hint was not rejected")
 
-    print(json.dumps({"sample": result, "unsafe": unsafe, "failures": failures}, indent=2,
-                     ensure_ascii=False))
+    cross = parse_plan("""```plan
+intent draft
+surface excel
+workflow cross-surface
+source excel document
+target powerpoint deck
+context analytical
+phase excel create a chart-ready summary and handoff packet
+phase powerpoint create slides from the approved handoff packet
+handoff chart-ready summary table, slide outline, source refs, and provenance
+step prepare the Excel analysis handoff; do not mutate PowerPoint from Excel
+confidence high
+```""")
+    cp = cross["plan"]
+    if cp["workflow"] != "cross-surface":
+        failures.append("cross-surface workflow did not parse")
+    if cp["source"] != ["excel document"] or cp["target"] != ["powerpoint deck"]:
+        failures.append(f"source/target did not parse: {cp['source']} -> {cp['target']}")
+    if cross["errors"]:
+        failures.append(f"cross-surface plan unexpectedly errored: {cross['errors']}")
+
+    paused = parse_plan("""```plan
+intent draft
+surface excel
+workflow cross-surface
+source excel selection
+context inline-preferred
+clarify Which target should receive the update: PowerPoint, Word, Outlook, or Teams?
+confidence low
+```""")
+    if paused["errors"]:
+        failures.append(f"clarification-gated cross-surface plan errored: {paused['errors']}")
+    if not paused["plan"]["needs_clarification"]:
+        failures.append("clarification-gated cross-surface plan did not mark needs_clarification")
+
+    print(
+        json.dumps(
+            {"sample": result, "unsafe": unsafe, "cross": cross, "paused": paused,
+             "failures": failures},
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )
     if failures:
         raise SystemExit(1)
 

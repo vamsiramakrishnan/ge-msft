@@ -1,3 +1,12 @@
+---
+title: Pattern - Evidence Backed Redline
+kind: pattern
+skill: m365-surface-commander
+surface: word
+topics: [redline, evidence, tracked-change, comments]
+load_when: A task asks to rewrite or review Word content against grounded evidence or policy.
+---
+
 # Pattern: evidence-backed redline
 
 A reasoning template, not a command. Read it for shape, then write the turn's algebra.

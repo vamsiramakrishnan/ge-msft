@@ -236,6 +236,10 @@ class FakeRange {
   get conditionalFormats(): FakeConditionalFormatCollection {
     return new FakeConditionalFormatCollection(this.seed, `${this.sheetName}!${this.a1}`);
   }
+  select(): void {
+    this.seed.activeSheet = this.sheetName;
+    this.seed.selection = `${this.sheetName}!${this.a1}`;
+  }
   commit(): void {
     if (this.nullObject) return;
     // format facets (write-only) → seed.formats keyed by address.
@@ -311,16 +315,27 @@ class FakeTable {
 class FakeTableCollection {
   constructor(
     private readonly seed: ExcelSeed,
-    private readonly sheetName: string,
+    private readonly sheetName?: string,
   ) {}
   added: Array<{ address: string; hasHeaders: boolean }> = [];
+  items: FakeTable[] = [];
+  load(): this {
+    this.items = this.seed.tables
+      .filter((t) => this.sheetName === undefined || t.sheet === this.sheetName)
+      .map((t) => {
+        const table = new FakeTable(this.seed, t);
+        table.load('name');
+        return table;
+      });
+    return this;
+  }
   add(address: string, hasHeaders: boolean): FakeTable {
     this.added.push({ address, hasHeaders });
     // The host assigns the name — NOT the caller. Mirror that: a deterministic minted name the
     // bridge must read back. (`Table1`, `Table2`, …)
     const name = `Table${++this.seed.tableCounter}`;
     const bang = address.lastIndexOf('!');
-    const sheet = bang >= 0 ? address.slice(0, bang) : this.sheetName;
+    const sheet = bang >= 0 ? address.slice(0, bang) : (this.sheetName ?? this.seed.activeSheet);
     const a1 = bang >= 0 ? address.slice(bang + 1) : address;
     const target: TableSeed = { name, sheet, address: a1, hasHeaders };
     this.seed.tables.push(target);
@@ -507,6 +522,9 @@ class FakeWorksheet {
   getRange(a1: string): FakeRange {
     return new FakeRange(this.seed, this.name, a1.replace(/\$/g, ''));
   }
+  activate(): void {
+    this.seed.activeSheet = this.name;
+  }
 }
 
 interface Handle {
@@ -609,10 +627,12 @@ class FakeCommentCollection {
 class FakeWorkbook {
   readonly worksheets: FakeWorksheetCollection;
   readonly names: FakeNamedItemCollection;
+  readonly tables: FakeTableCollection;
   readonly comments: FakeCommentCollection;
   constructor(private readonly seed: ExcelSeed) {
     this.worksheets = new FakeWorksheetCollection(seed);
     this.names = new FakeNamedItemCollection(seed);
+    this.tables = new FakeTableCollection(seed);
     this.comments = new FakeCommentCollection(seed);
   }
   getSelectedRange(): FakeRange {
@@ -853,13 +873,37 @@ describe('ExcelBridge.listContext (host wiring)', () => {
   it('lists the live selection and the used-range sheet, previewing both', async () => {
     active = installExcel(salesSeed());
     const refs = await new ExcelBridge().listContext();
-    expect(refs).toHaveLength(2);
+    expect(refs).toHaveLength(3);
     expect(refs[0]).toMatchObject({ kind: 'range', surface: 'excel', live: true });
     expect(refs[0]?.id).toBe('xl:Sales!A2:C2');
     expect(refs[0]?.preview).toContain('East'); // selection A2:C2 = East,Alice,300
-    expect(refs[1]).toMatchObject({ kind: 'sheet', surface: 'excel' });
-    expect(refs[1]?.id).toBe('xl:Sales!A1:C4');
-    expect(refs[1]?.live).toBeUndefined();
+    expect(refs[1]).toMatchObject({
+      id: 'xl:named:SalesTable',
+      kind: 'range',
+      surface: 'excel',
+      title: 'SalesTable',
+      preview: 'Sales!A1:C4',
+      hostRef: { type: 'excel.namedRange', name: 'SalesTable' },
+    });
+    expect(refs[2]).toMatchObject({ kind: 'sheet', surface: 'excel' });
+    expect(refs[2]?.id).toBe('xl:Sales!A1:C4');
+    expect(refs[2]?.live).toBeUndefined();
+  });
+
+  it('lists workbook tables as openable table refs', async () => {
+    const seed = salesSeed();
+    seed.tables.push({ name: 'RevenueTable', sheet: 'Sales', address: 'A1:C4', hasHeaders: true });
+    active = installExcel(seed);
+    const refs = await new ExcelBridge().listContext();
+    const table = refs.find((r) => r.id === 'xl:table:RevenueTable');
+    expect(table).toMatchObject({
+      kind: 'table',
+      surface: 'excel',
+      title: 'RevenueTable',
+      preview: 'Sales!A1:C4 · 4 × 3',
+      hostRef: { type: 'excel.table', name: 'RevenueTable', worksheet: 'Sales' },
+    });
+    expect(table?.anchor?.locator).toBe('range:Sales!A1:C4');
   });
 
   it('omits the selection chip when the selection has no content', async () => {
@@ -868,10 +912,9 @@ describe('ExcelBridge.listContext (host wiring)', () => {
     seed.activeSheet = 'Empty';
     active = installExcel(seed);
     const refs = await new ExcelBridge().listContext();
-    // No live selection chip — only the (empty) used-range sheet ref.
-    expect(refs.every((r) => r.kind !== 'range')).toBe(true);
-    expect(refs).toHaveLength(1);
-    expect(refs[0]?.kind).toBe('sheet');
+    // No live selection chip; workbook-level named ranges still remain available.
+    expect(refs.some((r) => r.live)).toBe(false);
+    expect(refs.map((r) => r.kind)).toEqual(['range', 'sheet']);
   });
 });
 
@@ -884,11 +927,39 @@ describe('ExcelBridge.resolveContext (host wiring)', () => {
       surface: 'excel',
       title: 'Sales!A1:C4',
     };
-    // Point the selection at the header+data so a table block is produced.
-    active.seed.selection = 'Sales!A1:C4';
     const ctx = await new ExcelBridge().resolveContext(ref);
     expect(ctx.length).toBeGreaterThan(0);
     for (const c of ctx) expect(() => ResolvedContextSchema.parse(c)).not.toThrow();
+    expect(ctx.some((c) => c.ref.anchor?.locator === 'range:Sales!A1:C4')).toBe(true);
+  });
+
+  it('resolves a named-range ref by its stable host ref rather than current selection', async () => {
+    active = installExcel(salesSeed());
+    active.seed.selection = 'Sales!A2:C2';
+    const ref: ContextRef = {
+      id: 'xl:named:SalesTable',
+      kind: 'range',
+      surface: 'excel',
+      title: 'SalesTable',
+      hostRef: { type: 'excel.namedRange', name: 'SalesTable' },
+    };
+    const ctx = await new ExcelBridge().resolveContext(ref);
+    expect(ctx.some((c) => c.ref.anchor?.locator === 'range:Sales!A1:C4')).toBe(true);
+  });
+
+  it('resolves a table ref through its range anchor', async () => {
+    const seed = salesSeed();
+    seed.tables.push({ name: 'RevenueTable', sheet: 'Sales', address: 'A1:C4', hasHeaders: true });
+    active = installExcel(seed);
+    const ref: ContextRef = {
+      id: 'xl:table:RevenueTable',
+      kind: 'table',
+      surface: 'excel',
+      title: 'RevenueTable',
+      anchor: { matchText: 'Sales!A1:C4', locator: 'range:Sales!A1:C4' },
+      hostRef: { type: 'excel.table', name: 'RevenueTable', worksheet: 'Sales' },
+    };
+    const ctx = await new ExcelBridge().resolveContext(ref);
     expect(ctx.some((c) => c.ref.anchor?.locator === 'range:Sales!A1:C4')).toBe(true);
   });
 
@@ -1003,6 +1074,63 @@ describe('ExcelBridge.readRange (ADR-0006 addressable read)', () => {
     active = installExcel(salesSeed());
     // A1:A20000 is 20_000 cells > MAX_READ_CELLS (10_000).
     expect(await new ExcelBridge().readRange('A1:A20000')).toEqual([]);
+  });
+});
+
+describe('ExcelBridge.revealContext (navigation-only host jump)', () => {
+  it('activates the referenced worksheet and selects the range chip address', async () => {
+    const seed = salesSeed();
+    seed.activeSheet = 'Empty';
+    seed.selection = 'Empty!A1';
+    active = installExcel(seed);
+
+    await new ExcelBridge().revealContext({
+      id: 'xl:Sales!B2:C3',
+      kind: 'range',
+      surface: 'excel',
+      title: 'Sales!B2:C3',
+    });
+
+    expect(seed.activeSheet).toBe('Sales');
+    expect(seed.selection).toBe('Sales!B2:C3');
+  });
+
+  it('resolves a named range chip before selecting it', async () => {
+    const seed = salesSeed();
+    seed.activeSheet = 'Empty';
+    seed.selection = 'Empty!A1';
+    active = installExcel(seed);
+
+    await new ExcelBridge().revealContext({
+      id: 'xl:SalesTable',
+      kind: 'range',
+      surface: 'excel',
+      title: 'SalesTable',
+    });
+
+    expect(seed.activeSheet).toBe('Sales');
+    expect(seed.selection).toBe('Sales!A1:C4');
+  });
+
+  it('ignores non-Excel refs and refs without an addressable selector', async () => {
+    const seed = salesSeed();
+    active = installExcel(seed);
+
+    await new ExcelBridge().revealContext({
+      id: 'word:selection',
+      kind: 'selection',
+      surface: 'word',
+      title: 'Selection',
+    });
+    await new ExcelBridge().revealContext({
+      id: 'ctx:opaque',
+      kind: 'document',
+      surface: 'excel',
+      title: 'Opaque',
+    });
+
+    expect(seed.activeSheet).toBe('Sales');
+    expect(seed.selection).toBe('Sales!A2:C2');
   });
 });
 

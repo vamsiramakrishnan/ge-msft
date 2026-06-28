@@ -9,6 +9,7 @@ import {
   VALUE_TYPES,
 } from './language-manifest.js';
 import { READ_VERBS, CONTROL_VERBS, WRITE_VERB_TO_KIND } from './command-grammar.js';
+import { COMMAND_HELP } from './command-help.js';
 import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
 import { ActuationKindSchema } from './capability.js';
 
@@ -31,6 +32,22 @@ describe('language manifest (ADR-0008 single source)', () => {
     expect(manifest.effectVerbs).toEqual([...EFFECT_VERBS].sort());
     expect(manifest.actuationKinds).toEqual([...ActuationKindSchema.options].sort());
     expect(manifest.valueTypes).toEqual([...VALUE_TYPES]);
+    expect(manifest.commandHelp).toEqual(
+      Object.fromEntries(Object.entries(COMMAND_HELP).sort(([a], [b]) => a.localeCompare(b))),
+    );
+  });
+
+  it('has a topic-help entry for every emitted verb and no non-language stray topics', () => {
+    const verbs = new Set([
+      ...manifest.verbs.read,
+      ...manifest.verbs.control,
+      ...manifest.verbs.write,
+    ]);
+    const kinds = new Set(manifest.actuationKinds);
+    for (const verb of verbs) expect(manifest.commandHelp[verb]).toBeDefined();
+    for (const topic of Object.keys(manifest.commandHelp)) {
+      expect(verbs.has(topic) || kinds.has(topic)).toBe(true);
+    }
   });
 
   it('is internally consistent — verbs map to real kinds, write verbs are effect terminals', () => {

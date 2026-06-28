@@ -22,6 +22,14 @@ export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['slide'],
     },
+    {
+      kind: 'set-shape-text',
+      surface: 'powerpoint',
+      title: 'Replace shape text',
+      description: 'Replace text in an explicitly addressed slide shape or text box.',
+      reversible: true,
+      appliesTo: ['shape'],
+    },
     // NOTE: `set-speaker-notes` was advertised but its `actuate()` case ALWAYS degrades — this
     // Office.js typings version has no `Slide.notes`/notesSlide write path. Un-advertised (ADR-0006
     // phantom: advertised-but-never-actuates). Re-add once the host typings expose a notes writer.

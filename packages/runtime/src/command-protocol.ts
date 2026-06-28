@@ -1,11 +1,14 @@
 import {
   ActuationRequestSchema,
+  COMMAND_HELP,
   WRITE_VERB_TO_KIND,
   grammarFor,
   type ActuationKind,
   type ActuationRequest,
   type CapabilityManifest,
   type ChangeId,
+  type ContextKind,
+  type CommandHelpEntry,
   type ParsedCommand,
   type PlanContextHint,
   type Surface,
@@ -29,13 +32,19 @@ export type ReadIntent =
   | { read: 'outline' } // → bridge.captureDocState()
   | { read: 'range'; selector: string } // → bridge.readRange() (Excel) — empty ⇒ whole doc
   | { read: 'search'; text: string } // → bridge.searchDocument()
-  | { read: 'context-strategy'; hints: PlanContextHint[] }; // → runtime context/upload strategy
+  | { read: 'list-context'; kind?: ContextKind } // → bridge.listContext(), metadata only
+  | { read: 'inspect-context'; selector: string } // → resolve one ref/selector to content
+  | { read: 'properties'; selector: string } // → metadata/hostRef/revealability only
+  | { read: 'context-kind'; kind: ContextKind; selector?: string } // → filtered list
+  | { read: 'neighbors'; selector?: string } // → nearby/current context refs
+  | { read: 'context-strategy'; hints: PlanContextHint[] } // → runtime context/upload strategy
+  | { read: 'open-context'; selector: string }; // → bridge.revealContext(), navigation only
 
 /** The result of compiling one command line. */
 export type CompiledCommand =
   | { kind: 'read'; intent: ReadIntent }
   | { kind: 'write'; request: ActuationRequest }
-  | { kind: 'control'; verb: 'done' | 'help' }
+  | { kind: 'control'; verb: 'done' | 'help'; topic?: string }
   | { error: string };
 
 export function isCompileError(c: CompiledCommand): c is { error: string } {
@@ -67,12 +76,64 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'range', selector: cmd.selector } };
     case 'search':
       return { kind: 'read', intent: { read: 'search', text: cmd.text } };
+    case 'list':
+      return {
+        kind: 'read',
+        intent: { read: 'list-context', ...(cmd.kind ? { kind: cmd.kind } : {}) },
+      };
+    case 'inspect':
+      return { kind: 'read', intent: { read: 'inspect-context', selector: cmd.selector } };
+    case 'properties':
+      return { kind: 'read', intent: { read: 'properties', selector: cmd.selector } };
+    case 'comments':
+      return {
+        kind: 'read',
+        intent: {
+          read: 'context-kind',
+          kind: 'comment',
+          ...(cmd.selector ? { selector: cmd.selector } : {}),
+        },
+      };
+    case 'attachments':
+      return {
+        kind: 'read',
+        intent: {
+          read: 'context-kind',
+          kind: 'attachment',
+          ...(cmd.selector ? { selector: cmd.selector } : {}),
+        },
+      };
+    case 'tables':
+      return {
+        kind: 'read',
+        intent: {
+          read: 'context-kind',
+          kind: 'table',
+          ...(cmd.selector ? { selector: cmd.selector } : {}),
+        },
+      };
+    case 'slides':
+      return {
+        kind: 'read',
+        intent: {
+          read: 'context-kind',
+          kind: 'slide',
+          ...(cmd.selector ? { selector: cmd.selector } : {}),
+        },
+      };
+    case 'neighbors':
+      return {
+        kind: 'read',
+        intent: { read: 'neighbors', ...(cmd.selector ? { selector: cmd.selector } : {}) },
+      };
     case 'context':
       return { kind: 'read', intent: { read: 'context-strategy', hints: cmd.hints } };
+    case 'open':
+      return { kind: 'read', intent: { read: 'open-context', selector: cmd.selector } };
     case 'done':
       return { kind: 'control', verb: 'done' };
     case 'help':
-      return { kind: 'control', verb: 'help' };
+      return { kind: 'control', verb: 'help', ...(cmd.topic ? { topic: cmd.topic } : {}) };
     case 'set':
       return compileWrite(WRITE_VERB_TO_KIND.set, ctx, {
         target: { range: cmd.cell },
@@ -171,6 +232,16 @@ export function compileCommand(
         conditional: { range: cmd.range, rule: rule.rule },
       });
     }
+    case 'shape': {
+      // PowerPoint `set-shape-text`: the selector must carry both slide and shape id. A shape id
+      // alone is ambiguous across slides, so fail closed before building a write.
+      const target = powerpointShapeTargetFromSelector(cmd.selector);
+      if ('error' in target) return target;
+      return compileWrite(WRITE_VERB_TO_KIND.shape, ctx, {
+        target,
+        text: cmd.text,
+      });
+    }
     case 'spill':
       // ADR-0007 §3 `spill` → write-cells with the resolved grid. The runtime fills `cmd.cells` from
       // the table expression at dry-run; an unresolved spill (cells absent) is a defensive empty grid
@@ -204,16 +275,35 @@ function paramsFromInvoke(
   args: string[],
 ): ActuationRequest['params'] {
   const p: Record<string, unknown> = {};
+  const genericTarget = targetFromInvokeProps(props);
+  if (genericTarget) p.target = genericTarget;
   if (props.text !== undefined) p.text = props.text;
   if (props.html !== undefined) p.html = props.html;
   if (props.ooxml !== undefined) p.ooxml = props.ooxml;
 
   switch (kind) {
+    case 'insert-slide': {
+      const deckBase64 = props.deckBase64 ?? props.base64;
+      if (deckBase64 !== undefined) {
+        const slideCount = positiveIntFromProp(props.slideCount);
+        p.deck = {
+          base64: deckBase64,
+          ...(slideCount !== undefined ? { slideCount } : {}),
+          ...(props.formatting === 'KeepSourceFormatting' ||
+          props.formatting === 'UseDestinationTheme'
+            ? { formatting: props.formatting }
+            : {}),
+          ...(props.targetSlideId ? { targetSlideId: props.targetSlideId } : {}),
+          ...(props.specFingerprint ? { specFingerprint: props.specFingerprint } : {}),
+        };
+      }
+      break;
+    }
     case 'insert-image':
       p.image = { base64: props.base64 ?? '', ...(props.alt ? { altText: props.alt } : {}) };
       break;
     case 'fill-content-control':
-      p.target = { contentControlId: props.id ?? props.cc ?? '' };
+      p.target = { ...(genericTarget ?? {}), contentControlId: props.id ?? props.cc ?? '' };
       break;
     case 'insert-hyperlink':
       p.hyperlink = {
@@ -231,6 +321,17 @@ function paramsFromInvoke(
     case 'set-page-title':
       p.pageTitle = props.title ?? args[0] ?? '';
       break;
+    case 'set-shape-text': {
+      const selector =
+        props.ref ??
+        props.selector ??
+        (props.slide && props.shape ? `pp:shape:${props.slide}:${props.shape}` : undefined) ??
+        args[0];
+      const target = selector ? powerpointShapeTargetFromSelector(selector) : undefined;
+      if (target && !('error' in target)) p.target = target;
+      if (props.text !== undefined) p.text = props.text;
+      break;
+    }
     case 'add-note-tag':
       p.noteTag = { type: props.type ?? args[0] ?? 'toDo', status: props.status ?? 'unknown' };
       break;
@@ -240,8 +341,52 @@ function paramsFromInvoke(
   return p as ActuationRequest['params'];
 }
 
+function positiveIntFromProp(value: string | undefined): number | undefined {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
+  return Number.parseInt(value, 10);
+}
+
+function targetFromInvokeProps(
+  props: Record<string, string>,
+): NonNullable<ActuationRequest['params']['target']> | undefined {
+  const target: NonNullable<ActuationRequest['params']['target']> = {};
+  if (props.range !== undefined) target.range = props.range;
+  if (props.match !== undefined) target.matchText = props.match;
+  if (props.matchText !== undefined) target.matchText = props.matchText;
+  if (props.anchor !== undefined) target.matchText = props.anchor;
+  if (props.contextHint !== undefined) target.contextHint = props.contextHint;
+  if (props.hint !== undefined) target.contextHint = props.hint;
+  if (props.commentId !== undefined) target.commentId = props.commentId;
+  if (props.contentControlId !== undefined) target.contentControlId = props.contentControlId;
+  if (props.cc !== undefined) target.contentControlId = props.cc;
+  if (props.slide !== undefined) target.slideId = props.slide;
+  if (props.slideId !== undefined) target.slideId = props.slideId;
+  if (props.shape !== undefined) target.shapeId = props.shape;
+  if (props.shapeId !== undefined) target.shapeId = props.shapeId;
+  return Object.keys(target).length > 0 ? target : undefined;
+}
+
 type ChartType = NonNullable<ActuationRequest['params']['chart']>['chartType'];
 type ConditionalRule = NonNullable<ActuationRequest['params']['conditional']>['rule'];
+
+function powerpointShapeTargetFromSelector(
+  selector: string,
+): NonNullable<ActuationRequest['params']['target']> | { error: string } {
+  const trimmed = selector.trim();
+  const raw = stripPrefix(trimmed, 'pp:shape:') ?? stripPrefix(trimmed, 'shape:') ?? trimmed;
+  const parts = raw.split(':');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return {
+      error:
+        'shape selector must include slide and shape id — usage: shape <pp:shape:slideId:shapeId> "text"',
+    };
+  }
+  return { slideId: parts[0], shapeId: parts[1] };
+}
+
+function stripPrefix(value: string, prefix: string): string | undefined {
+  return value.startsWith(prefix) ? value.slice(prefix.length) : undefined;
+}
 
 /** Map a CLI operator symbol/word to the schema's `cellValue` operator enum. */
 const CF_OPERATORS: Record<string, 'gt' | 'lt' | 'ge' | 'le' | 'eq' | 'ne' | 'between'> = {
@@ -409,6 +554,70 @@ export function renderGrammarPrompt(manifest: CapabilityManifest): string {
     `- On an error I return a CLI-style correction; fix the command and continue.`,
     `- When the whole task is complete, emit a \`\`\`cmd block containing only: done`,
   ].join('\n');
+}
+
+export function renderCommandHelp(manifest: CapabilityManifest, topic?: string): string {
+  const normalized = topic?.trim().toLowerCase();
+  if (!normalized) return renderGrammarPrompt(manifest);
+  const specs = grammarFor(manifest);
+  const withoutSlash = normalized.startsWith('/') ? normalized.slice(1) : normalized;
+  const match = specs.find((spec) => spec.verb === withoutSlash);
+  if (match) {
+    const entry = (COMMAND_HELP as Record<string, CommandHelpEntry>)[match.verb];
+    return renderCommandHelpEntry(entry ?? fallbackHelp(match.verb, match.usage, match.hint));
+  }
+
+  if (withoutSlash === 'shape' || withoutSlash === 'set-shape-text') {
+    return [
+      `Command unavailable on this surface: shape`,
+      `This turn's capability set does not advertise set-shape-text.`,
+      `Use list/properties/open to inspect available context, then choose a supported command from help.`,
+    ].join('\n');
+  }
+
+  return [
+    `No targeted help for "${topic}".`,
+    `Run help for the full grammar, or list/inspect/properties on a context ref before writing.`,
+  ].join('\n');
+}
+
+function renderCommandHelpEntry(entry: CommandHelpEntry): string {
+  return [
+    `Command: ${entry.command}`,
+    `Use when: ${entry.useWhen}`,
+    `Syntax: ${entry.syntax}`,
+    section('Discovery sequence', entry.discovery),
+    section('Action sequence', entry.sequence),
+    section('Examples', entry.examples),
+    section('Do not', entry.doNot),
+    section('Failure modes', entry.failureModes),
+    section('Safety', entry.safety),
+  ]
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+function section(title: string, lines: readonly string[]): string {
+  if (lines.length === 0) return '';
+  return [`${title}:`, ...lines.map((line, index) => `${index + 1}. ${line}`)].join('\n');
+}
+
+function fallbackHelp(verb: string, usage: string, hint: string): CommandHelpEntry {
+  return {
+    command: verb,
+    useWhen: hint,
+    syntax: usage,
+    discovery: [],
+    sequence: [
+      'Read or list the target context first.',
+      'Emit the smallest valid command.',
+      'Wait for the result before done.',
+    ],
+    examples: [usage],
+    doNot: ['Do not infer unseen content.'],
+    failureModes: ['Unsupported capability returns a corrective error.'],
+    safety: ['Follow the current turn capability set.'],
+  };
 }
 
 function surfaceNoun_(surface: Surface): string {

@@ -68,6 +68,8 @@ export type PlanNode = z.infer<typeof PlanNodeSchema>;
  * the `not-reversible` inverse marker + the catalogue's "hard" rows.
  */
 export const IRREVERSIBLE_KINDS: ReadonlySet<ActuationKind> = new Set([
+  'insert-text',
+  'insert-ooxml',
   'resolve-revisions',
   'send-activity-notification',
   'delete-message',

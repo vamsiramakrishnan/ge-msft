@@ -1,3 +1,12 @@
+---
+title: Pattern - Executive Brief Handoff
+kind: pattern
+skill: m365-surface-commander
+workflow: cross-surface
+topics: [excel, powerpoint, handoff, executive-summary]
+load_when: A task asks to turn analysis from one Office artifact into an executive brief or deck.
+---
+
 # Pattern: executive brief (cross-surface handoff)
 
 A reasoning template, not a command. Read it for shape, then write the turn's algebra.

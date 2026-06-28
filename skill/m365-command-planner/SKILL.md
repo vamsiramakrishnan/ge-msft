@@ -9,6 +9,7 @@ description: >-
   indemnity alone"). It does NOT touch the document; it emits a plan that the
   m365-surface-commander executor skill then carries out as real commands.
 license: Proprietary
+allowed-tools: python3
 compatibility: >-
   Requires a Gemini Enterprise Microsoft 365 add-in host that supplies the active
   surface, the available action verbs, and the resolved @-mention sources each turn,
@@ -28,7 +29,8 @@ types a request that mixes a chosen action (a `/` verb), pinned sources (`@` men
 and **free text** with constraints, filters, and exclusions. Your job is to turn that into
 a **small structured plan** the user can read and approve in one glance — _not_ to edit the
 document. A sibling skill, **m365-surface-commander**, executes the approved plan as real,
-reviewable changes.
+reviewable changes. For cross-product requests, plan a **handoff workflow**; do not grant one
+Office host authority to mutate another.
 
 **Core principle:** _Plan, don't act._ You never read or write the document. You normalize
 intent into ordered steps and name the grounding. The executor reads the live document and
@@ -105,6 +107,11 @@ surface  <app>                         echo the active surface
 scope    <where>                       OPTIONAL — selection|document|range|section|comment|this-item; plain ref ok
 ground   "<source>"                    REPEATABLE — a pinned @source this plan needs (verbatim title)
 context  <hint>                        REPEATABLE — context strategy hint; see below
+workflow <single-surface|cross-surface> OPTIONAL — cross-surface only when more than one Office app is involved
+source   <surface> <scope>              REPEATABLE — cross-surface source app/scope
+target   <surface> <scope>              REPEATABLE — cross-surface target app/scope
+phase    <surface> <what happens there> REPEATABLE — per-host phase; no hidden cross-host writes
+handoff  <artifact contents>            REPEATABLE — what the source phase passes to the target phase
 step     <what to do, in order>        REPEATABLE — one intention per line, executor-shaped but NL
 exclude  <what to leave alone>         REPEATABLE — explicit carve-outs
 clarify  <question>                    OPTIONAL, REPEATABLE — ask before executing when ambiguous
@@ -125,6 +132,10 @@ Rules:
   can inline, reference, or upload a file. You only emit hints from:
   `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`,
   `code-execution-preferred`, `analytical`, `full-scope`.
+- **Use `workflow cross-surface` only for explicit cross-product work** such as Excel → PowerPoint,
+  Outlook attachment → Excel analysis, Teams transcript → Word notes, or Word report → PowerPoint.
+  Include `source`, `target`, `phase`, and `handoff` lines. This is a user-visible handoff, not a
+  single transaction.
 - **If anything material is ambiguous, emit `clarify` and stop short of over-specifying.**
   A plan with `clarify` lines is shown to the user as a question first; the host will not
   dispatch to the executor until the ambiguity is resolved.
@@ -164,6 +175,30 @@ Surface guidance:
 Never emit code, Python, or an upload command. Context hints influence the host's context
 constructor only; every write still goes through the executor CLI, preview, approval, and provenance.
 
+## Cross-product workflows
+
+Cross-product means the requested outcome spans more than one Office app. Plan it as separate host
+phases joined by a typed handoff packet. The commander still executes against the active host only.
+
+```
+workflow cross-surface
+source   excel document
+target   powerpoint deck
+phase    excel analyze the workbook and prepare a chart-ready handoff
+phase    powerpoint create slides from the approved handoff packet
+handoff  chart-ready summary table, slide outline, source refs, constraints, provenance
+```
+
+Rules:
+
+- The `surface` scalar is the active app where the workflow starts.
+- A `phase` names what happens in that host, not CLI commands.
+- A `handoff` names the packet contents: summary data, refs, draft text, slide outline,
+  constraints, provenance, and next action.
+- Never plan "Excel writes PowerPoint" or "Outlook sends Teams". The user opens/continues in the
+  target host, and the target host gets its own preview/approval.
+- If the user expects one-click mutation across apps, use `clarify` to explain the handoff boundary.
+
 ## How the plan is used
 
 1. The host parses your ` ```plan ` block (see `scripts/parse_plan.py`).
@@ -171,14 +206,24 @@ constructor only; every write still goes through the executor CLI, preview, appr
 3. Otherwise the host **renders the steps for one-tap confirmation** (the legibility gate),
    then dispatches the confirmed plan to **m365-surface-commander**, which executes it step
    by step — each change previewed, approved, applied, and recorded.
-4. You are done after emitting the plan; you do not see the result loop.
+4. If `workflow cross-surface` is present, the host runs only the active-surface phase first and
+   persists a handoff packet. The user resumes it in the target app, where commander executes the
+   next phase after a fresh preview/approval.
+5. You are done after emitting the plan; you do not see the result loop.
+
+The planner/commander split is deliberate: keep this skill semantic and compact, and let the
+commander do grounded `list`/`inspect`/`read`/`search` work against the live host. For exact handoff
+rules, read [references/handoff-contract.md](references/handoff-contract.md).
 
 ## Bundled resources (load on demand)
 
 | File                                                     | Read it when…                                                                                             |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [references/resource-index.md](references/resource-index.md) | you need to choose the smallest relevant planner reference or example to load                             |
 | [references/plan-grammar.md](references/plan-grammar.md) | you need the exact keyword rules, repeatability, and how steps map per surface                            |
+| [references/handoff-contract.md](references/handoff-contract.md) | you need to understand how an approved plan becomes a commander execution task without leaking authority |
 | [scripts/parse_plan.py](scripts/parse_plan.py)           | you want to verify a plan block parses before relying on it (`python3 scripts/parse_plan.py --self-test`) |
+| [assets/example-plans/](assets/example-plans/)           | you need a concrete single-surface, cross-surface, or clarification plan shape                            |
 
 ## Worked example
 
@@ -198,53 +243,13 @@ confidence high
 ```
 ````
 
-A free-text edit is `rewrite` (the verb is the WHAT; the instruction lives in the `step`):
+Load `assets/example-plans/` only when you need a concrete variant; use
+[references/resource-index.md](references/resource-index.md) for the full routing table:
 
-User (Word): `/rewrite the SLA availability figure to our 99.9% standard, as a tracked change`
-
-````text
-```plan
-intent   rewrite
-surface  word
-scope    selection
-context  inline-preferred
-step     rewrite the SLA availability figure to 99.9% as a tracked change
-confidence high
-```
-````
-
-If the control were ambiguous, instead:
-
-````text
-```plan
-intent   review
-surface  word
-scope    section §4–6
-ground   "Vendor Risk Policy v4"
-context  reference-preferred
-clarify  "breach APRA CPS 234" — the whole standard, or specifically §35 (offshore access)?
-confidence low
-```
-````
-
-Analytical Excel requests should hint that the runtime may need hosted code execution:
-
-User (Excel): `/visualize @this find schedule risks across the workbook and create a chart-ready table`
-
-````text
-```plan
-intent   draft
-surface  excel
-scope    document
-ground   this
-context  analytical
-context  full-scope
-context  upload-preferred
-context  code-execution-preferred
-step     analyze the workbook for schedule risks and produce a chart-ready summary table
-confidence high
-```
-````
+- `example-plan-excel-to-powerpoint.md` — cross-product Excel -> PowerPoint handoff.
+- `example-plan-clarify-cross-surface.md` — clarification before unsafe/ambiguous handoff.
+- `example-plan-word-rewrite.md` — simple single-surface rewrite plan.
+- `example-plan-excel-analytic.md` — Excel analytical plan with compute/upload hints.
 
 ## Common mistakes
 
@@ -254,4 +259,6 @@ confidence high
 - **Grounding on sources the user didn't pin.** Only echo `@`-mentions you were given.
 - **Treating `context` as execution.** It is only a host/runtime hint; never emit Python or upload
   commands.
+- **Treating cross-product as one host transaction.** Cross-surface plans are phased handoffs; each
+  target host gets its own commander run and approval.
 - **More than one fenced block, or prose outside it.** One ` ```plan ` block, keyword lines only.

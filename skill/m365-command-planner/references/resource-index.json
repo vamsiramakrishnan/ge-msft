@@ -1,0 +1,56 @@
+[
+  {
+    "path": "assets/example-plans/example-plan-clarify-cross-surface.md",
+    "title": "Example Plan - Clarify Cross-Surface",
+    "kind": "example",
+    "surface": "",
+    "workflow": "cross-surface",
+    "topics": "[clarification, handoff, target-surface]",
+    "load_when": "A cross-product request lacks target surface, scope, or approval boundary."
+  },
+  {
+    "path": "assets/example-plans/example-plan-excel-analytic.md",
+    "title": "Example Plan - Excel Analytical",
+    "kind": "example",
+    "surface": "excel",
+    "workflow": "single-surface",
+    "topics": "[excel, analytical, visualization, context]",
+    "load_when": "A user asks for workbook-scale analysis, reconciliation, charting, or schedule-risk work."
+  },
+  {
+    "path": "assets/example-plans/example-plan-excel-to-powerpoint.md",
+    "title": "Example Plan - Excel To PowerPoint",
+    "kind": "example",
+    "surface": "excel",
+    "workflow": "cross-surface",
+    "topics": "[excel, powerpoint, handoff, deck-generation]",
+    "load_when": "A user asks to create a PowerPoint deck from an Excel workbook or range."
+  },
+  {
+    "path": "assets/example-plans/example-plan-word-rewrite.md",
+    "title": "Example Plan - Word Rewrite",
+    "kind": "example",
+    "surface": "word",
+    "workflow": "single-surface",
+    "topics": "[rewrite, tracked-change, selection]",
+    "load_when": "A user asks for a single-surface Word rewrite or tracked change."
+  },
+  {
+    "path": "references/handoff-contract.md",
+    "title": "Planner To Commander Handoff",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[handoff, commander, cross-surface, orchestration]",
+    "load_when": "Explaining or constructing the approved-plan handoff from planner to surface commander."
+  },
+  {
+    "path": "references/plan-grammar.md",
+    "title": "Plan Grammar",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[plan-block, keywords, cross-surface, clarification]",
+    "load_when": "Exact plan keyword rules, cross-surface fields, or parser-compatible examples are needed."
+  }
+]

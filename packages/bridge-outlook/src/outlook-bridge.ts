@@ -67,6 +67,28 @@ export class OutlookBridge implements DocBridge {
     return mail ? mailItemToContext(mail) : [];
   }
 
+  canRevealContext(ref: ContextRef): boolean {
+    return (
+      ref.surface === 'outlook' &&
+      ref.kind === 'mail-item' &&
+      outlookItemIdFromRef(ref) !== undefined
+    );
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    const itemId = outlookItemIdFromRef(ref);
+    if (!itemId) return;
+    const mailbox = Office.context.mailbox;
+    if (!mailbox) return;
+    if (typeof mailbox.displayMessageForm === 'function') {
+      mailbox.displayMessageForm(itemId);
+      return;
+    }
+    if (typeof mailbox.displayMessageFormAsync === 'function') {
+      await getAsync<void>((cb) => mailbox.displayMessageFormAsync(itemId, cb));
+    }
+  }
+
   /**
    * ADR-0006 whole-item `read` (the runtime's empty-selector read → `captureDocState`): a mail item
    * has no addressable sub-range, so the "document" is the single active item. Builds a snapshot
@@ -249,6 +271,13 @@ function activeItemEvent(item: Office.Item | undefined): HostEvent | undefined {
 function readItemId(item: Office.Item): string | undefined {
   const id: unknown = (item as { itemId?: unknown }).itemId;
   return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+function outlookItemIdFromRef(ref: ContextRef): string | undefined {
+  if (ref.surface !== 'outlook' || ref.kind !== 'mail-item') return undefined;
+  if (ref.id && ref.id !== 'outlook:item') return ref.id;
+  const item = Office.context.mailbox?.item;
+  return item ? readItemId(item) : undefined;
 }
 
 /** Read the subject as a string (read-mode shape); empty when unavailable. */

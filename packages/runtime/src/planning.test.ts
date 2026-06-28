@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ActuationRequest, ChangeId } from '@ge/contracts';
+import { approvalClassOf, isReversibleKind } from '@ge/contracts';
 import { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';
 
 const cid = (s: string) => s as ChangeId;
@@ -69,6 +70,13 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
     expect(plan[3]!.approvalClass).toBe('irreversible');
     expect(plan[3]!.reversible).toBe(false);
     expect(plan[0]!.reversible).toBe(true);
+  });
+
+  it('treats direct Word insertion kinds as irreversible until they return durable inverses', () => {
+    expect(isReversibleKind('insert-text')).toBe(false);
+    expect(isReversibleKind('insert-ooxml')).toBe(false);
+    expect(approvalClassOf('insert-text')).toBe('irreversible');
+    expect(approvalClassOf('insert-ooxml')).toBe('irreversible');
   });
 
   it('carries the changeId as the idempotency key', () => {

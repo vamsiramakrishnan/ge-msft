@@ -120,6 +120,8 @@ export interface AssistLike {
 /** Lists what can be attached right now (the bridge). */
 export interface ContextLister {
   listContext(): Promise<ContextRef[]>;
+  canRevealContext?(ref: ContextRef): boolean;
+  revealContext?(ref: ContextRef): Promise<void>;
 }
 
 export interface ChatMessage {
@@ -139,6 +141,7 @@ export interface ContextChip {
   kind: ContextKind;
   attached: boolean;
   preview?: string;
+  revealable?: boolean;
 }
 
 export interface Suggestion {
@@ -369,6 +372,9 @@ export class PanelController {
           title: r.title,
           kind: r.kind,
           attached: attachedIds.has(r.id),
+          ...(this.lister.revealContext && (this.lister.canRevealContext?.(r) ?? true)
+            ? { revealable: true }
+            : {}),
           ...(r.preview ? { preview: r.preview } : {}),
         };
       });
@@ -392,6 +398,16 @@ export class PanelController {
   detach(id: string): void {
     this.session.detach(id);
     this.setChip(id, { attached: false });
+  }
+
+  async reveal(id: string): Promise<void> {
+    const ref = this.refs.get(id);
+    if (!ref || !this.lister.revealContext) return;
+    try {
+      await this.lister.revealContext(ref);
+    } catch (err) {
+      this.set({ error: errorText(err) });
+    }
   }
 
   // ---- ask / stream -------------------------------------------------------

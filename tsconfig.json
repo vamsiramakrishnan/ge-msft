@@ -7,6 +7,7 @@
     { "path": "packages/triggers" },
     { "path": "packages/gemini-client" },
     { "path": "packages/runtime" },
+    { "path": "packages/deck-compiler" },
     { "path": "packages/web-shell" },
     { "path": "packages/bridge-word" },
     { "path": "packages/bridge-excel" },

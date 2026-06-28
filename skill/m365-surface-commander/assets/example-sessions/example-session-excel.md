@@ -1,3 +1,12 @@
+---
+title: Example Session - Excel
+kind: example
+skill: m365-surface-commander
+surface: excel
+topics: [range, formula, comment, composition]
+load_when: A concrete Excel command-loop transcript is needed.
+---
+
 # Example session — Excel
 
 A multi-turn session: read a region, compute a per-region total, write it back as a native

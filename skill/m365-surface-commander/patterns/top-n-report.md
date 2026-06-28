@@ -1,3 +1,12 @@
+---
+title: Pattern - Top N Report
+kind: pattern
+skill: m365-surface-commander
+surface: excel
+topics: [top-n, table, chart, spill]
+load_when: A task asks for ranked rows, top/bottom items, summary table, or chart from spreadsheet data.
+---
+
 # Pattern: top-N report
 
 A reasoning template, **not** a command. Read it for the shape, then write the program in the

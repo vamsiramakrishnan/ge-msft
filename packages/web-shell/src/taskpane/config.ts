@@ -353,15 +353,19 @@ function routeSkillFromEnv(
   const parsed = parseEnv(env);
   const entry = parsed[key];
   if (!entry) return [];
-  return [parseSkillEntry(entry, assistantResourceName(assistantFromEnv(env)))];
+  const defaultLabel =
+    key === 'VITE_GE_COMMAND_PLANNER_SKILL' ? 'm365-command-planner' : 'm365-surface-commander';
+  return [parseSkillEntry(entry, assistantResourceName(assistantFromEnv(env)), defaultLabel)];
 }
 
 function parseSkillEntry(
   entry: string,
   assistant: string,
+  defaultLabel?: string,
 ): { resource: string; mention?: GeminiSkillMention } {
   const delimiter = entry.indexOf('=');
-  const label = delimiter >= 0 ? entry.slice(0, delimiter).trim() : undefined;
+  const explicitLabel = delimiter >= 0 ? entry.slice(0, delimiter).trim() : undefined;
+  const label = explicitLabel || defaultLabel;
   const skill = delimiter >= 0 ? entry.slice(delimiter + 1).trim() : entry.trim();
   if (!skill) throw new Error('VITE_GE_SKILL_IDS contains an empty skill resource.');
   const resource = skill.startsWith('projects/') ? skill : `${assistant}/agents/${skill}`;

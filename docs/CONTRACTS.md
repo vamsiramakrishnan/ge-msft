@@ -176,23 +176,38 @@ export interface ActionRequest {
 The client-direct surfaces expose a small, capability-scoped CLI grammar to the model. Each surface advertises only the verbs it can actually serve, derived from its `CapabilityManifest` (`packages/contracts/src/command-grammar.ts`). Three verb classes:
 
 - **Control verbs** (`done`, `help`) — always advertised; not actuations.
-- **Read verbs** (`outline`, `read`, `search`, `context`) — host reads are advertised per
-  `manifest.reads`; `context` is runtime-served and read-only (see below).
+- **Read/navigation verbs** (`outline`, `read`, `search`, `list`, `inspect`, `properties`,
+  `comments`, `attachments`, `tables`, `slides`, `neighbors`, `context`, `open`) — host reads are
+  advertised per `manifest.reads`; the context/ref verbs are runtime-served and read-only (see
+  below). `open` is host navigation/selection only; it never sends, writes, approves, or grants
+  authority.
 - **Write verbs** — each maps to exactly one `ActuationKind` via `WRITE_VERB_TO_KIND`, and is advertised for a surface ONLY when `manifest.actuations[]` includes its mapped kind. The parser, the grammar advertisement, and the runtime compiler all derive from this single map.
 
 ```ts
 export const WRITE_VERB_TO_KIND = {
   set:     'write-cells',     // Excel
-  suggest: 'tracked-change',  // Word/PPT
-  comment: 'add-comment',     // Word/Excel/PPT
+  suggest: 'tracked-change',  // Word
+  comment: 'add-comment',     // Word/Excel
   format:  'format-cells',    // Excel
   reply:   'comment-reply',   // Word/Excel — ADR-0006
+  table:   'create-table',    // Excel
+  chart:   'insert-chart',    // Excel
+  cf:      'format-conditional', // Excel
+  spill:   'write-cells',     // Excel
   slide:   'insert-slide',    // PowerPoint — ADR-0006 CLI parity
+  shape:   'set-shape-text',  // PowerPoint
   page:    'append-page',     // OneNote   — ADR-0006 CLI parity
   mail:    'reply-mail',      // Outlook   — ADR-0006 CLI parity
   post:    'post-message',    // Teams     — ADR-0006 CLI parity
+  compose: 'create-mail',     // Outlook
 } satisfies Record<string, ActuationKind>;
 ```
+
+Advertised bridge-backed kinds that do not have a composable bare verb are exposed through the
+specialized slash surface using the exact actuation kind, for example `/insert-text`,
+`/replace-selection`, `/insert-ooxml`, and `/fill-content-control` on Word. Slash commands still
+compile to `ActuationRequest`, appear in the same dry-run preview, require approval, pass the trigger
+gate, and record provenance; they are not an approval or capability bypass.
 
 ### `reply <commentId> "text"` → `comment-reply` (ADR-0006)
 
@@ -208,18 +223,36 @@ Replies to an existing comment by its host-opaque id. The first bare token is th
 }
 ```
 
-### CLI parity verbs `slide` / `page` / `mail` / `post` (ADR-0006)
+### CLI parity verbs and staged action verbs (ADR-0006)
 
-These four verbs reach `ActuationKind`s the bridges already **handle and advertise** but that previously had no CLI verb (ADR-0006 closure gaps). Each is gated/approved + provenanced like every other effect (it flows through the Phase-2 plan), is Zod-valid (`ActuationRequestSchema`), and mints its `changeId` exactly once at compile time. All four are **literal-only** this wave (no effect-arg `*Expr`); args are quote-aware via `scanQuoted`.
+These verbs reach `ActuationKind`s the bridges **handle and advertise**. Each is gated/approved +
+provenanced like every other effect (it flows through the Phase-2 plan), is Zod-valid
+(`ActuationRequestSchema`), and mints its `changeId` exactly once at compile time. Quote parsing is
+shared with the rest of the CLI; text/body/bullet slots may consume dry-run-resolved expressions
+where the parser exposes an `*Expr` field.
 
 ```
 slide "<title>" ["<bullet>" …]   → insert-slide   { params: { slide: { title, bullets[] } } }        (PowerPoint)
 page  "<title>" "<body>"          → append-page    { params: { target: { matchText: title }, text: body } }  (OneNote)
 mail  "<body>"                    → reply-mail     { params: { mail: { body } } }                       (Outlook)
 post  "<text>"                    → post-message   { params: { text } }                                 (Teams)
+compose "<subject>" "<body>"       → create-mail    { params: { mail: { subject, body } } }              (Outlook)
 ```
 
-The param shapes match each bridge's `actuate()`/plan: PowerPoint composes a slide from `params.slide`, OneNote takes the page title from `target.matchText` and the body from `params.text`, Outlook builds the draft from `params.mail.body`, Teams stages a reviewable post from `params.text`. (`reply` is already the comment-reply verb, so the Outlook reply verb is `mail`.) Each verb is advertised for a surface only when its mapped kind is in `manifest.actuations[]`, exactly as the other write verbs.
+The param shapes match each bridge's `actuate()`/plan: PowerPoint composes a slide from
+`params.slide`, OneNote takes the page title from `target.matchText` and the body from `params.text`,
+Outlook builds the draft from `params.mail.body`, Teams stages a reviewable post from `params.text`.
+(`reply` is already the comment-reply verb, so the Outlook reply verb is `mail`.) Each verb is
+advertised for a surface only when its mapped kind is in `manifest.actuations[]`, exactly as the
+other write verbs.
+
+PowerPoint also accepts a **client-staged generated deck artifact** on the same `insert-slide`
+actuation: `params.deck = { format: 'pptx', base64, slideCount, formatting?, targetSlideId?,
+specFingerprint? }`. This is the full-deck import path for DeckSpec/HTML-derived decks: the client
+compiles a bounded `DeckSpec` with PptxGenJS, previews the result, asks for approval, then the
+PowerPoint bridge inserts the whole base64 PPTX once via `insertSlidesFromBase64`. Models should not
+emit raw base64 PPTX in normal command blocks; the UI/runtime should stage large artifacts and pass
+only the validated artifact payload across the actuation boundary.
 
 ### Named skills: `def` / call (ADR-0005 Phase 3)
 
@@ -248,6 +281,24 @@ end                          ← terminates the body
 - An argument may **not** contain a newline or a code fence (\`\`\`) — so a substituted arg can never inject a new command line or truncate the synthetic fence on re-parse. Only **whole declared-identifier** `$param` tokens are replaced (`$ab` never matches a `$a` binding).
 - Every effect among the expanded lines still flows through dry-run + `approvePlan` + the actuation gate; substitution changes *what* a line says, never *whether* it gates. Reject the plan ⇒ the whole expansion is blocked (nothing actuates).
 - **Bounded:** the per-turn command budget is decremented for *every* processed entry (including those a call expands into), so an expansion cannot exceed `maxCommandsPerTurn`; the per-plan write cap bounds effects; the skill body is capped (`maxBodyLines`); and skill-call nesting is depth-bounded (`MAX_SKILL_DEPTH`) so a self-/mutually-recursive skill terminates with a corrective rather than recursing unboundedly.
+
+### Runtime context inspection and navigation reads
+
+Host bridges expose typed, surface-specific `ContextRef.hostRef` values for things the user can
+see or navigate to:
+
+- Excel: worksheet/range, workbook table, named range.
+- Word: anchored text range, comment range, paragraph/content-control range.
+- PowerPoint: slide, shape, text box, table, chart.
+- Outlook: current item, thread, attachment, compose-body/draft target; navigation only, never send.
+- OneNote: page plus paragraph/table/image anchors where available.
+- Teams: transcript segment, message/thread/channel, or the closest Teams deep link.
+
+The CLI verbs `list [kind]`, `inspect <refId|selector>`, `properties <refId|selector>`,
+`comments [selector]`, `attachments [selector]`, `tables [selector]`, `slides [selector]`,
+`neighbors [refId|selector]`, and `open <refId|selector>` operate over those refs. They compile to
+`ReadIntent`s only. A bridge may synthesize a safe navigation ref from a selector, but the operation
+is still read/navigation-only and cannot bypass approval, capability closure, or actuation gates.
 
 ### Read-scoping by `manifest.reads` (ADR-0006)
 

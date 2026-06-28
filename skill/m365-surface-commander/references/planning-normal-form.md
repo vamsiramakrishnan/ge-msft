@@ -1,3 +1,11 @@
+---
+title: Planning Normal Form
+kind: reference
+skill: m365-surface-commander
+topics: [observe, derive, effect, verify, approval-boundaries]
+load_when: A task needs a multi-step program, effect grouping, or semantic turn boundaries.
+---
+
 # Planning normal form
 
 The canonical shape of a non-trivial program, and where to stop one. This is the structure

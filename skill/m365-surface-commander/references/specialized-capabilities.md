@@ -1,3 +1,11 @@
+---
+title: Specialized Capabilities
+kind: reference
+skill: m365-surface-commander
+topics: [slash-kind, actuation-kind, long-tail, native-office]
+load_when: A task needs host-native capability beyond the core CLI verbs.
+---
+
 # The `/` specialized-capability surface
 
 There are two tiers of capability (ADR-0008 §two-tier):
@@ -17,9 +25,9 @@ You don't memorize the catalogue. You reach a specialized capability by name wit
 /<kind> [positional …] [key=value …]
 ```
 
-- **`<kind>` is the `ActuationKind` itself** — e.g. `/insert-image`, `/add-attachment`,
-  `/fill-content-control`, `/post-channel-message`, `/set-page-title`. There is no separate alias to
-  learn; the command name is the capability.
+- **`<kind>` is the `ActuationKind` itself** — e.g. `/insert-text`,
+  `/fill-content-control`, `/set-page-title`, or `/add-attachment` when the active surface advertises
+  that kind. There is no separate alias to learn; the command name is the capability.
 - Arguments use the same `key=value` (+ positional) grammar as `format`/`table`; quote values with
   spaces: `alt="Q3 revenue chart"`.
 - A `/` command is an **effect terminal** — it does not compose, you cannot pipe out of it, and its
@@ -37,18 +45,15 @@ name gets a catalogue did-you-mean (`unknown capability "/insert-imag" — did y
 
 ```
 # Word
-/insert-image base64=<…> alt="Top regions by revenue"
+/insert-text text=" Effective July 1." match="This agreement begins"
+/replace-selection text="The service level is 99.9%."
 /fill-content-control id=Title text="Q3 Business Review"
-/insert-hyperlink url=https://… text="the source"
+/insert-ooxml ooxml="<w:p><w:r><w:t>Approved</w:t></w:r></w:p>" match="Status:"
 
-# OneNote
+# Other surfaces, only when those exact kinds appear in live help/grammar
 /set-page-title title="Meeting notes — 2026-06-25"
 /add-note-tag type=toDo
-
-# Outlook (on the open draft)
 /add-attachment name="report.xlsx" base64=<…>
-
-# Teams / estate (only when the estate-write capability is advertised)
 /post-channel-message text="Summary posted to the deck channel"
 ```
 

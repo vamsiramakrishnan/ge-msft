@@ -1,3 +1,12 @@
+---
+title: Example Session - Word
+kind: example
+skill: m365-surface-commander
+surface: word
+topics: [tracked-change, comment, claim-review]
+load_when: A concrete Word redline/comment command-loop transcript is needed.
+---
+
 # Example session — Word
 
 A review pass: find unsupported claims, propose tracked changes anchored on exact text, and

@@ -3,6 +3,11 @@
 
 from .parser import _is_expr_line, parse_line, extract_command_block_meta
 
+_READ_PHASE_VERBS = {
+    "outline", "read", "search", "list", "inspect", "properties", "comments", "attachments",
+    "tables", "slides", "neighbors", "context", "open",
+}
+
 
 def _phase_of(line: str) -> str:
     """Classify a program line into its canonical phase: OBSERVE / DERIVE / EFFECT / CONTROL."""
@@ -12,7 +17,7 @@ def _phase_of(line: str) -> str:
     if rec is None or "error" in rec:
         return "EFFECT"  # keep unknowns where the model put them (in the effect tail)
     verb = rec["verb"]
-    if verb in ("outline", "read", "search", "context"):
+    if verb in _READ_PHASE_VERBS:
         return "OBSERVE"
     if verb in ("done", "help"):
         return "CONTROL"

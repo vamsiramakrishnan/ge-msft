@@ -1,3 +1,12 @@
+---
+title: Example Session - Outlook
+kind: example
+skill: m365-surface-commander
+surface: outlook
+topics: [mail, reply, compose, staged-draft]
+load_when: A concrete Outlook read/reply/draft command-loop transcript is needed.
+---
+
 # Example session — Outlook
 
 Draft a grounded reply to the open email. Shows reading the active item and staging a

@@ -4,6 +4,7 @@
   "include": ["src"],
   "references": [
     { "path": "../contracts" },
+    { "path": "../deck-compiler" },
     { "path": "../gemini-client" },
     { "path": "../runtime" },
     { "path": "../triggers" },

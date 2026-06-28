@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Validate local Gemini Enterprise skill bundles.
+
+This is intentionally dependency-free: it checks the progressive-disclosure structure that keeps
+SKILL.md concise while making references/assets discoverable.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import re
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_SKILLS = ("m365-command-planner", "m365-surface-commander")
+MAX_SKILL_LINES = 500
+
+REQUIRED_SKILL_FRONTMATTER = ("name", "description")
+REQUIRED_RESOURCE_FRONTMATTER = ("title", "kind", "skill", "load_when")
+MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+PLAN_BLOCK = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
+CMD_BLOCK = re.compile(r"```cmd[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
+
+
+def split_frontmatter(path: Path) -> tuple[dict[str, str], str] | None:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return None
+    raw = text[4:end]
+    body = text[end + 5 :]
+    data: dict[str, str] = {}
+    current_key: str | None = None
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith((" ", "\t")):
+            if current_key:
+                data[current_key] = f"{data[current_key]} {line.strip()}".strip()
+            continue
+        if ":" in line:
+            key, value = line.split(":", 1)
+            current_key = key.strip()
+            data[current_key] = value.strip()
+    return data, body
+
+
+def validate_links(path: Path) -> list[str]:
+    errors: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    for match in MARKDOWN_LINK.finditer(text):
+        target = match.group(1).strip()
+        if not target or target.startswith(("http://", "https://", "#", "mailto:")):
+            continue
+        file_part = target.split("#", 1)[0]
+        if not file_part:
+            continue
+        resolved = (path.parent / file_part).resolve()
+        if not resolved.exists():
+            errors.append(f"{path.relative_to(ROOT)} links to missing {target}")
+    return errors
+
+
+def validate_skill(skill_dir: Path) -> list[str]:
+    errors: list[str] = []
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        return [f"{skill_dir.name}: missing SKILL.md"]
+
+    fm = split_frontmatter(skill_md)
+    if fm is None:
+        errors.append(f"{skill_dir.name}/SKILL.md missing YAML frontmatter")
+    else:
+        frontmatter, _ = fm
+        for key in REQUIRED_SKILL_FRONTMATTER:
+            if not frontmatter.get(key):
+                errors.append(f"{skill_dir.name}/SKILL.md missing frontmatter field {key}")
+
+    line_count = len(skill_md.read_text(encoding="utf-8").splitlines())
+    if line_count > MAX_SKILL_LINES:
+        errors.append(f"{skill_dir.name}/SKILL.md has {line_count} lines; max is {MAX_SKILL_LINES}")
+
+    for md in sorted(skill_dir.rglob("*.md")):
+        errors.extend(validate_links(md))
+        if md.name == "SKILL.md":
+            continue
+        fm = split_frontmatter(md)
+        rel = md.relative_to(ROOT)
+        if fm is None:
+            errors.append(f"{rel} missing YAML frontmatter")
+            continue
+        frontmatter, _ = fm
+        for key in REQUIRED_RESOURCE_FRONTMATTER:
+            if not frontmatter.get(key):
+                errors.append(f"{rel} missing frontmatter field {key}")
+        if frontmatter.get("skill") != skill_dir.name:
+            errors.append(f"{rel} frontmatter skill must be {skill_dir.name}")
+
+    return errors
+
+
+def validate_zip(skill_name: str) -> list[str]:
+    zip_path = ROOT / f"{skill_name}.zip"
+    if not zip_path.exists():
+        return []
+    errors: list[str] = []
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+    if "SKILL.md" not in names:
+        errors.append(f"{zip_path.name} missing root SKILL.md")
+    forbidden = [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
+    if forbidden:
+        errors.append(f"{zip_path.name} contains Python cache files: {', '.join(forbidden)}")
+    return errors
+
+
+def import_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_planner_fixtures(skill_dir: Path) -> list[str]:
+    errors: list[str] = []
+    parser = import_module(skill_dir / "scripts" / "parse_plan.py", "m365_parse_plan")
+    for md in sorted((skill_dir / "assets" / "example-plans").glob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        blocks = PLAN_BLOCK.findall(text)
+        if not blocks:
+            errors.append(f"{md.relative_to(ROOT)} has no ```plan block")
+            continue
+        for index, block in enumerate(blocks, start=1):
+            parsed = parser.parse_plan(f"```plan\n{block.strip()}\n```")
+            if parsed["errors"]:
+                errors.append(
+                    f"{md.relative_to(ROOT)} plan block {index} has errors: {parsed['errors']}",
+                )
+    return errors
+
+
+def validate_commander_fixtures(skill_dir: Path) -> list[str]:
+    errors: list[str] = []
+    parser = import_module(
+        skill_dir / "scripts" / "parse_commands.py",
+        "m365_parse_commands",
+    )
+    fixture_roots = [skill_dir / "assets" / "example-sessions", skill_dir / "patterns"]
+    for root in fixture_roots:
+        for md in sorted(root.glob("*.md")):
+            text = md.read_text(encoding="utf-8")
+            blocks = CMD_BLOCK.findall(text)
+            if not blocks:
+                continue
+            for index, block in enumerate(blocks, start=1):
+                parsed = parser.parse_block(f"```cmd\n{block.strip()}\n```")
+                bad = [cmd["error"] for cmd in parsed["commands"] if "error" in cmd]
+                if bad:
+                    errors.append(
+                        f"{md.relative_to(ROOT)} cmd block {index} has parse errors: {bad}",
+                    )
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("skills", nargs="*", default=list(DEFAULT_SKILLS))
+    parser.add_argument("--check-zip", action="store_true", help="also validate built zip contents")
+    args = parser.parse_args()
+
+    errors: list[str] = []
+    for name in args.skills:
+        skill_dir = ROOT / name
+        if not skill_dir.exists():
+            errors.append(f"missing skill directory {name}")
+            continue
+        errors.extend(validate_skill(skill_dir))
+        if name == "m365-command-planner":
+            errors.extend(validate_planner_fixtures(skill_dir))
+        if name == "m365-surface-commander":
+            errors.extend(validate_commander_fixtures(skill_dir))
+        if args.check_zip:
+            errors.extend(validate_zip(name))
+
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    print("SKILL BUNDLE VALIDATION OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -54,6 +54,8 @@ interface NotebookSeed {
   page: PageSeed | null;
   /** The active section, or null to simulate "no active section". */
   section: SectionSeed | null;
+  navigatedPages: string[];
+  navigatedUrls: string[];
 }
 
 class FakeRichText {
@@ -179,7 +181,7 @@ class FakeApplication {
   readonly section: FakeSection;
   pageRequested = false;
   sectionRequested = false;
-  constructor(seed: NotebookSeed) {
+  constructor(private readonly seed: NotebookSeed) {
     this.page = new FakePage(seed.page);
     this.section = new FakeSection(seed.section);
   }
@@ -190,6 +192,13 @@ class FakeApplication {
   getActiveSectionOrNull(): FakeSection {
     this.sectionRequested = true;
     return this.section;
+  }
+  navigateToPage(page: FakePage): void {
+    this.seed.navigatedPages.push(page.id);
+  }
+  navigateToPageWithClientUrl(url: string): FakePage {
+    this.seed.navigatedUrls.push(url);
+    return this.page;
   }
 }
 
@@ -288,7 +297,7 @@ function notebook(page: PageSeed | null, section: SectionSeed | null = null): No
         })),
       }
     : null;
-  return { page: pageCopy, section };
+  return { page: pageCopy, section, navigatedPages: [], navigatedUrls: [] };
 }
 
 function section(id = 'sec-1'): SectionSeed {
@@ -394,6 +403,57 @@ describe('OneNoteBridge.resolveContext', () => {
     const ctx = await new OneNoteBridge().resolveContext(ref);
     const joined = ctx.map((c) => (c.value.as === 'text' ? c.value.text : '')).join('\n');
     expect(joined).toContain('kept paragraph');
+  });
+});
+
+/* ───────────────────────────── revealContext ───────────────────────────── */
+
+describe('OneNoteBridge.revealContext', () => {
+  it('navigates to the active page when the page ref matches', async () => {
+    const seed = notebook(SAMPLE_PAGE);
+    installed = install(seed);
+    const bridge = new OneNoteBridge();
+    const ref: ContextRef = {
+      id: 'on:page:pg-1',
+      kind: 'page',
+      surface: 'onenote',
+      title: 'Source review',
+    };
+
+    expect(bridge.canRevealContext(ref)).toBe(true);
+    await bridge.revealContext(ref);
+
+    expect(seed.navigatedPages).toEqual(['pg-1']);
+  });
+
+  it('can navigate a page client URL when supplied as an anchor locator', async () => {
+    const seed = notebook(SAMPLE_PAGE);
+    installed = install(seed);
+    await new OneNoteBridge().revealContext({
+      id: 'on:page:external',
+      kind: 'page',
+      surface: 'onenote',
+      title: 'External page',
+      anchor: {
+        matchText: 'External page',
+        locator: 'clientUrl:https://contoso.example/onenote/page',
+      },
+    });
+
+    expect(seed.navigatedUrls).toEqual(['https://contoso.example/onenote/page']);
+  });
+
+  it('does not navigate when the active page differs from the requested page id', async () => {
+    const seed = notebook(SAMPLE_PAGE);
+    installed = install(seed);
+    await new OneNoteBridge().revealContext({
+      id: 'on:page:other',
+      kind: 'page',
+      surface: 'onenote',
+      title: 'Other page',
+    });
+
+    expect(seed.navigatedPages).toEqual([]);
   });
 });
 

@@ -41,6 +41,36 @@ export const ContextKindSchema = z.enum([
 ]);
 export type ContextKind = z.infer<typeof ContextKindSchema>;
 
+/**
+ * A typed, surface-native pointer to an Office/Teams object. `ContextRef.id` stays the stable,
+ * human-debuggable handle for existing flows; `hostRef` is the structured form the UI/runtime can
+ * use for reveal, properties, and future typed operations without parsing ad-hoc id strings.
+ */
+export const HostRefSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('excel.range'),
+    address: z.string(),
+    worksheet: z.string().optional(),
+  }),
+  z.object({ type: z.literal('excel.table'), name: z.string(), worksheet: z.string().optional() }),
+  z.object({ type: z.literal('excel.namedRange'), name: z.string() }),
+  z.object({ type: z.literal('word.range'), anchor: AnchorSchema }),
+  z.object({ type: z.literal('word.comment'), commentId: z.string() }),
+  z.object({ type: z.literal('word.contentControl'), contentControlId: z.string() }),
+  z.object({ type: z.literal('powerpoint.slide'), slideId: z.string() }),
+  z.object({ type: z.literal('powerpoint.shape'), slideId: z.string(), shapeId: z.string() }),
+  z.object({ type: z.literal('outlook.item'), itemId: z.string() }),
+  z.object({ type: z.literal('outlook.attachment'), itemId: z.string(), attachmentId: z.string() }),
+  z.object({
+    type: z.literal('onenote.page'),
+    pageId: z.string(),
+    clientUrl: z.string().optional(),
+  }),
+  z.object({ type: z.literal('onenote.object'), pageId: z.string(), objectId: z.string() }),
+  z.object({ type: z.literal('teams.deepLink'), url: z.string() }),
+]);
+export type HostRef = z.infer<typeof HostRefSchema>;
+
 /** A lightweight handle to an attachable host object (what the UI lists). */
 export const ContextRefSchema = z.object({
   id: z.string(), // stable within a session (e.g. "word:selection", "xl:Sheet1!A1:D9")
@@ -52,6 +82,7 @@ export const ContextRefSchema = z.object({
   sizeBytes: z.number().optional(), // for budgeting/large-object warnings
   tokensEstimate: z.number().optional(), // approximate token cost (context-budget UI)
   anchor: AnchorSchema.optional(), // how to write back to this span (content chunks)
+  hostRef: HostRefSchema.optional(), // typed host object pointer for reveal/properties
   live: z.boolean().optional(), // true ⇒ re-resolve at send-time (e.g. "current selection")
 });
 export type ContextRef = z.infer<typeof ContextRefSchema>;

@@ -12,9 +12,11 @@ import type {
   ContextRef,
   ParsedCommand,
   ProvenancePayload,
+  ReadVerb,
   ResolvedContext,
   SessionId,
   SourceRef,
+  Surface,
   SseEvent,
   UnitDescriptor,
   CommandPlan,
@@ -54,6 +56,7 @@ import type { DocBridge } from './bridge.js';
 import {
   compileCommand,
   isCompileError,
+  renderCommandHelp,
   renderGrammarPrompt,
   type CompiledCommand,
   type ReadIntent,
@@ -312,6 +315,28 @@ const GROUNDING_VALUE_KINDS = new Set(['indexed-document', 'drive-document', 'pe
 /** What a `prime` turn asks of the engine: absorb the working context, don't act on it. */
 const PRIME_INSTRUCTION =
   'Note the attached working context for our conversation. Acknowledge briefly; take no action.';
+
+const READ_COMMAND_VERBS: ReadonlySet<ReadVerb> = new Set([
+  'outline',
+  'read',
+  'search',
+  'list',
+  'inspect',
+  'properties',
+  'comments',
+  'attachments',
+  'tables',
+  'slides',
+  'neighbors',
+  'context',
+  'open',
+]);
+
+type ReadCommand = Extract<ParsedCommand, { verb: ReadVerb }>;
+
+function isReadCommand(command: ParsedCommand): command is ReadCommand {
+  return READ_COMMAND_VERBS.has(command.verb as ReadVerb);
+}
 
 export class AssistSession {
   readonly context = new SessionContext();
@@ -901,15 +926,10 @@ export class AssistSession {
       return;
     }
     if (command.verb === 'help') {
-      plan.results.push({ help: renderGrammarPrompt(capabilities) });
+      plan.results.push({ help: renderCommandHelp(capabilities, command.topic) });
       return;
     }
-    if (
-      command.verb === 'outline' ||
-      command.verb === 'read' ||
-      command.verb === 'search' ||
-      command.verb === 'context'
-    ) {
+    if (isReadCommand(command)) {
       const compiled = compileCommand(command, {
         surface: this.bridge.surface,
         mintChangeId: () => asChangeId(crypto.randomUUID()),
@@ -924,7 +944,6 @@ export class AssistSession {
       yield { type: 'read-result', turn, intentLabel: label, result };
       return;
     }
-
     // EFFECT verb — type-check + dry-run (resolve, do NOT actuate). Reserve an ordered slot.
     const slotIndex = plan.results.length;
     plan.results.push(undefined); // placeholder, filled after approval (pass 2)
@@ -1392,15 +1411,131 @@ export class AssistSession {
           const reads = await this.bridge.searchDocument(intent.text);
           return { label: `search ${intent.text}`, result: readsToData(reads) };
         }
+        case 'list-context': {
+          const refs = await this.contextRefs(intent.kind);
+          return {
+            label: intent.kind ? `list ${intent.kind}` : 'list',
+            result: contextRefsToData(refs, this.bridge),
+          };
+        }
+        case 'inspect-context': {
+          const found = await this.findContextRef(intent.selector);
+          if (found?.found) {
+            const reads = await this.bridge.resolveContext(found.ref);
+            return { label: `inspect ${intent.selector}`, result: readsToData(reads) };
+          }
+          const fallback = await this.readSelectorFallback(intent.selector);
+          return { label: `inspect ${intent.selector}`, result: fallback };
+        }
+        case 'properties': {
+          const found = await this.findContextRef(intent.selector);
+          if (!found) {
+            return {
+              label: `properties ${intent.selector}`,
+              result: { error: `no context ref or safe selector found for "${intent.selector}"` },
+            };
+          }
+          return {
+            label: `properties ${intent.selector}`,
+            result: contextRefProperties(found.ref, this.bridge),
+          };
+        }
+        case 'context-kind': {
+          const refs = await this.contextRefs(intent.kind);
+          const filtered = intent.selector
+            ? refs.filter((ref) => matchesContextSelector(ref, intent.selector!))
+            : refs;
+          return {
+            label: [contextKindVerb(intent.kind), intent.selector].filter(Boolean).join(' '),
+            result: contextRefsToData(filtered, this.bridge),
+          };
+        }
+        case 'neighbors': {
+          const refs = await this.contextRefs();
+          const target =
+            intent.selector !== undefined
+              ? refs.findIndex((ref) => matchesContextSelector(ref, intent.selector!))
+              : -1;
+          const windowed =
+            target >= 0
+              ? refs.slice(Math.max(0, target - 4), Math.min(refs.length, target + 5))
+              : refs.slice(0, 12);
+          return {
+            label: intent.selector ? `neighbors ${intent.selector}` : 'neighbors',
+            result: {
+              targetFound: target >= 0,
+              refs: contextRefsToData(windowed, this.bridge),
+            },
+          };
+        }
         case 'context-strategy':
           return {
             label: `context ${intent.hints.join(' ')}`.trim(),
             result: contextStrategyResult(intent.hints),
           };
+        case 'open-context': {
+          const found = await this.findContextRef(intent.selector);
+          if (!found) {
+            return {
+              label: `open ${intent.selector}`,
+              result: { error: `no context ref or safe selector found for "${intent.selector}"` },
+            };
+          }
+          if (!this.bridge.revealContext || this.bridge.canRevealContext?.(found.ref) === false) {
+            return {
+              label: `open ${intent.selector}`,
+              result: {
+                error: `open is not supported for "${intent.selector}" on ${this.bridge.surface}`,
+              },
+            };
+          }
+          await this.bridge.revealContext(found.ref);
+          return {
+            label: `open ${intent.selector}`,
+            result: {
+              opened: true,
+              ref: contextRefProperties(found.ref, this.bridge),
+              navigationOnly: true,
+            },
+          };
+        }
       }
     } catch (err) {
       return { label: 'read', result: { error: `read failed: ${errMsg(err)}` } };
     }
+  }
+
+  private async contextRefs(kind?: ContextKind): Promise<ContextRef[]> {
+    const refs = await this.bridge.listContext();
+    if (!kind) return refs;
+    if (kind === 'table' && this.bridge.surface === 'excel') {
+      return refs.filter((ref) => ref.kind === 'table' || ref.kind === 'range');
+    }
+    return refs.filter((ref) => ref.kind === kind);
+  }
+
+  private async findContextRef(
+    selector: string,
+  ): Promise<{ ref: ContextRef; found: boolean } | undefined> {
+    const trimmed = selector.trim();
+    if (!trimmed) return undefined;
+    const refs = await this.bridge.listContext();
+    const found = refs.find((ref) => matchesContextSelector(ref, trimmed));
+    if (found) return { ref: found, found: true };
+    const synthetic = syntheticContextRef(this.bridge.surface, trimmed);
+    return synthetic ? { ref: synthetic, found: false } : undefined;
+  }
+
+  private async readSelectorFallback(selector: string): Promise<unknown> {
+    if (this.bridge.readRange) {
+      const reads = await this.bridge.readRange(selector);
+      if (reads.length > 0) return readsToData(reads);
+    }
+    if (this.bridge.searchDocument) {
+      const reads = await this.bridge.searchDocument(selector);
+      if (reads.length > 0) return readsToData(reads);
+    }
+    return { error: `inspect could not resolve "${selector}"` };
   }
 
   /**
@@ -1552,6 +1687,154 @@ function readsToData(reads: ResolvedContext[]): unknown {
   );
 }
 
+function contextRefsToData(refs: ContextRef[], bridge: DocBridge): unknown {
+  return refs.map((ref) => contextRefProperties(ref, bridge));
+}
+
+function contextRefProperties(ref: ContextRef, bridge: DocBridge): unknown {
+  const revealable = bridge.revealContext ? (bridge.canRevealContext?.(ref) ?? true) : false;
+  return {
+    id: ref.id,
+    kind: ref.kind,
+    surface: ref.surface,
+    title: ref.title,
+    ...(ref.preview ? { preview: ref.preview } : {}),
+    ...(ref.mimeType ? { mimeType: ref.mimeType } : {}),
+    ...(ref.sizeBytes !== undefined ? { sizeBytes: ref.sizeBytes } : {}),
+    ...(ref.tokensEstimate !== undefined ? { tokensEstimate: ref.tokensEstimate } : {}),
+    ...(ref.anchor ? { anchor: ref.anchor } : {}),
+    ...(ref.hostRef ? { hostRef: ref.hostRef } : {}),
+    live: ref.live === true,
+    revealable,
+  };
+}
+
+function matchesContextSelector(ref: ContextRef, selector: string): boolean {
+  const needle = selector.trim();
+  if (!needle) return false;
+  const candidates = [
+    ref.id,
+    ref.title,
+    ref.anchor?.locator,
+    ref.anchor?.matchText,
+    hostRefSelector(ref),
+  ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+  return candidates.some((candidate) => candidate === needle);
+}
+
+function hostRefSelector(ref: ContextRef): string | undefined {
+  const hostRef = ref.hostRef;
+  if (!hostRef) return undefined;
+  switch (hostRef.type) {
+    case 'excel.range':
+      return hostRef.worksheet ? `${hostRef.worksheet}!${hostRef.address}` : hostRef.address;
+    case 'excel.table':
+    case 'excel.namedRange':
+      return hostRef.name;
+    case 'word.range':
+      return hostRef.anchor.matchText;
+    case 'word.comment':
+      return hostRef.commentId;
+    case 'word.contentControl':
+      return hostRef.contentControlId;
+    case 'powerpoint.slide':
+      return hostRef.slideId;
+    case 'powerpoint.shape':
+      return `${hostRef.slideId}:${hostRef.shapeId}`;
+    case 'outlook.item':
+      return hostRef.itemId;
+    case 'outlook.attachment':
+      return hostRef.attachmentId;
+    case 'onenote.page':
+      return hostRef.pageId;
+    case 'onenote.object':
+      return hostRef.objectId;
+    case 'teams.deepLink':
+      return hostRef.url;
+  }
+}
+
+function syntheticContextRef(surface: Surface, selector: string): ContextRef | undefined {
+  const title = selector.trim();
+  if (!title) return undefined;
+  switch (surface) {
+    case 'excel':
+      return {
+        id: `xl:${title}`,
+        kind: 'range',
+        surface,
+        title,
+        hostRef: { type: 'excel.range', address: title },
+        live: true,
+      };
+    case 'word':
+      return {
+        id: `word:anchor:${title}`,
+        kind: 'paragraph',
+        surface,
+        title,
+        anchor: { matchText: title },
+        hostRef: { type: 'word.range', anchor: { matchText: title } },
+        live: true,
+      };
+    case 'powerpoint':
+      return {
+        id:
+          title.startsWith('pp:slide:') || title.startsWith('slide:') ? title : `pp:slide:${title}`,
+        kind: 'slide',
+        surface,
+        title,
+        hostRef: { type: 'powerpoint.slide', slideId: title.replace(/^pp:slide:|^slide:/, '') },
+        live: true,
+      };
+    case 'outlook':
+      return {
+        id: title,
+        kind: 'mail-item',
+        surface,
+        title,
+        hostRef: { type: 'outlook.item', itemId: title },
+        live: true,
+      };
+    case 'onenote':
+      return {
+        id: title.startsWith('on:page:') ? title : `on:page:${title}`,
+        kind: 'page',
+        surface,
+        title,
+        anchor: title.startsWith('http')
+          ? { matchText: title, locator: `clientUrl:${title}` }
+          : undefined,
+        hostRef: { type: 'onenote.page', pageId: title.replace(/^on:page:/, '') },
+        live: true,
+      };
+    case 'teams':
+      return {
+        id: title,
+        kind: 'transcript',
+        surface,
+        title,
+        hostRef: { type: 'teams.deepLink', url: title },
+        live: true,
+      };
+  }
+}
+
+function contextKindVerb(kind: ContextKind): string {
+  switch (kind) {
+    case 'comment':
+      return 'comments';
+    case 'attachment':
+      return 'attachments';
+    case 'table':
+      return 'tables';
+    case 'slide':
+      return 'slides';
+    default:
+      return `list ${kind}`;
+  }
+}
+
 function contextStrategyResult(hints: readonly PlanContextHint[]): unknown {
   const strategy = derivePlanContextStrategy(hints);
   const uploadLikely =
@@ -1676,6 +1959,7 @@ function renderCommandLine(
       return parts.join(' ');
     }
   }
+  return command.verb;
 }
 
 /** True when the effect's value/text/bullets came from a composed expression (not a literal). */

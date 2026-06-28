@@ -1,3 +1,11 @@
+---
+title: Composition Rules
+kind: reference
+skill: m365-surface-commander
+topics: [pipelines, let-bindings, materialize, normalize]
+load_when: A task requires read-derived values, table materialization, or more than one command phase.
+---
+
 # Composition rules
 
 How to assemble a correct program from the [algebra](algebra.md). The type laws say what _composes_;

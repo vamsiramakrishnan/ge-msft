@@ -126,6 +126,23 @@ export class TeamsBridge implements DocBridge {
     return searchTranscript(input, q);
   }
 
+  canRevealContext(ref: ContextRef): boolean {
+    return (
+      ref.surface === 'teams' &&
+      ref.kind === 'transcript' &&
+      this.resolveDeepLink() !== undefined &&
+      typeof this.options.teams?.app?.openLink === 'function'
+    );
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    if (!this.canRevealContext(ref)) return;
+    const link = this.resolveDeepLink();
+    const openLink = this.options.teams?.app?.openLink;
+    if (!link || typeof openLink !== 'function') return;
+    await Promise.resolve(openLink.call(this.options.teams?.app, link));
+  }
+
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
     switch (req.kind) {
       case 'post-message':
@@ -204,6 +221,12 @@ export class TeamsBridge implements DocBridge {
     return this.options.meetingId;
   }
 
+  private resolveDeepLink(): string | undefined {
+    const link =
+      this.options.deepLink ?? this.options.transcript?.deepLink ?? this.options.meetingId;
+    return isSafeTeamsLink(link) ? link : undefined;
+  }
+
   private async applyPostMessage(req: ActuationRequest): Promise<ActuationResult> {
     const plan = planPostMessage(req);
     if (!plan.text.trim() && plan.card === undefined) {
@@ -256,6 +279,8 @@ export class TeamsBridge implements DocBridge {
 export interface TeamsBridgeOptions {
   transcript?: TranscriptInput;
   meetingId?: string;
+  /** Explicit deep link to the closest navigable Teams context; not inferred from opaque ids. */
+  deepLink?: string;
   teams?: TeamsJsLike;
 }
 
@@ -267,6 +292,9 @@ export interface TeamsBridgeOptions {
  *   • `chat.openConversation` / `sharing.shareWebContent` — the reviewable compose/share path.
  */
 export interface TeamsJsLike {
+  app?: {
+    openLink?: (deepLink: string) => Promise<unknown> | unknown;
+  };
   meeting?: {
     registerMeetingEndHandler?: (handler: () => void) => void;
   };
@@ -301,6 +329,12 @@ function resolveComposeTarget(teams: TeamsJsLike | undefined): ComposeTarget | u
   const share = teams?.sharing?.shareWebContent;
   if (typeof share === 'function') return { fn: share, thisArg: teams?.sharing };
   return undefined;
+}
+
+function isSafeTeamsLink(link: string | undefined): link is string {
+  return (
+    typeof link === 'string' && /^(https:\/\/teams\.microsoft\.com\/|msteams:\/\/)/i.test(link)
+  );
 }
 
 /** Narrow an unknown thrown value to a message string without assuming `Error`. */

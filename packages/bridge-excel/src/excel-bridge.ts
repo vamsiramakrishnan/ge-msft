@@ -71,7 +71,21 @@ export class ExcelBridge implements DocBridge {
       sel.load('address,values');
       const used = sheet.getUsedRange();
       used.load('address,values');
+      const tables = ctx.workbook.tables;
+      if (isSet('ExcelApi', '1.1')) tables.load('items/name');
+      const names = ctx.workbook.names;
+      if (isSet('ExcelApi', '1.7')) names.load('items/name,items/type,items/formula');
       await ctx.sync();
+
+      const tableRanges: Array<{ name: string; range: Excel.Range }> = [];
+      if (isSet('ExcelApi', '1.1')) {
+        for (const table of tables.items) {
+          const range = table.getRange();
+          range.load('address,rowCount,columnCount');
+          tableRanges.push({ name: table.name, range });
+        }
+        await ctx.sync();
+      }
 
       const refs: ContextRef[] = [];
       const selValues = sel.values as string[][];
@@ -84,6 +98,33 @@ export class ExcelBridge implements DocBridge {
           preview: previewOf(selValues),
           live: true,
         });
+      }
+      for (const { name, range } of tableRanges) {
+        refs.push({
+          id: `xl:table:${name}`,
+          kind: 'table',
+          surface: 'excel',
+          title: name,
+          preview: `${range.address} · ${range.rowCount} × ${range.columnCount}`,
+          anchor: { matchText: range.address, locator: `range:${range.address}` },
+          hostRef: { type: 'excel.table', name, worksheet: parseAddress(range.address).sheetName },
+        });
+      }
+      if (isSet('ExcelApi', '1.7')) {
+        for (const named of names.items) {
+          if (named.type !== 'Range' || typeof named.formula !== 'string') continue;
+          const range = stripLeadingEquals(String(named.formula));
+          if (!range) continue;
+          refs.push({
+            id: `xl:named:${named.name}`,
+            kind: 'range',
+            surface: 'excel',
+            title: named.name,
+            preview: range,
+            anchor: { matchText: range, locator: `range:${range}` },
+            hostRef: { type: 'excel.namedRange', name: named.name },
+          });
+        }
       }
       refs.push({
         id: `xl:${used.address}`,
@@ -98,11 +139,26 @@ export class ExcelBridge implements DocBridge {
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
     if (ref.kind === 'selection' || ref.kind === 'range') {
+      const selector = ref.kind === 'selection' && ref.live ? undefined : excelSelectorFromRef(ref);
       return Excel.run(async (ctx) => {
-        const sel = ctx.workbook.getSelectedRange();
-        sel.load('address,values');
+        const sel = selector ? resolveReadRange(ctx, selector) : ctx.workbook.getSelectedRange();
+        if (!sel) return [];
+        sel.load('address,values,isNullObject');
         await ctx.sync();
+        if ((sel as { isNullObject?: boolean }).isNullObject === true) return [];
         return selectionValuesToContext(sel.address, sel.values as string[][]);
+      });
+    }
+    if (ref.kind === 'table') {
+      const selector = excelSelectorFromRef(ref);
+      if (!selector) return [];
+      return Excel.run(async (ctx) => {
+        const range = resolveReadRange(ctx, selector);
+        if (!range) return [];
+        range.load('address,values,isNullObject');
+        await ctx.sync();
+        if ((range as { isNullObject?: boolean }).isNullObject === true) return [];
+        return rangeToContext(range.address, range.values as string[][]);
       });
     }
     // Sheet / table → the used range as a native table → chunks.
@@ -111,6 +167,33 @@ export class ExcelBridge implements DocBridge {
       used.load('address,values');
       await ctx.sync();
       return rangeToContext(used.address, used.values as string[][]);
+    });
+  }
+
+  canRevealContext(ref: ContextRef): boolean {
+    return ref.surface === 'excel' && excelSelectorFromRef(ref) !== undefined;
+  }
+
+  async revealContext(ref: ContextRef): Promise<void> {
+    if (ref.surface !== 'excel') return;
+    const selector = excelSelectorFromRef(ref);
+    if (!selector) return;
+
+    await Excel.run(async (ctx) => {
+      const target = resolveReadRange(ctx, selector);
+      if (!target) return;
+      target.load('address,isNullObject');
+      await ctx.sync();
+      if ((target as { isNullObject?: boolean }).isNullObject === true) return;
+
+      const { sheetName, rangeAddress } = parseAddress(target.address);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      sheet.activate();
+      sheet.getRange(rangeAddress).select();
+      await ctx.sync();
     });
   }
 
@@ -912,6 +995,22 @@ function previewOf(values: string[][]): string {
     .map((c) => String(c ?? ''))
     .join(' | ')
     .slice(0, 120);
+}
+
+function excelSelectorFromRef(ref: ContextRef): string | undefined {
+  const anchor = ref.anchor?.locator;
+  if (anchor?.startsWith('range:')) return anchor.slice('range:'.length).trim();
+  if (ref.hostRef?.type === 'excel.range') {
+    return ref.hostRef.worksheet
+      ? `${ref.hostRef.worksheet}!${ref.hostRef.address}`
+      : ref.hostRef.address;
+  }
+  if (ref.hostRef?.type === 'excel.table')
+    return ref.anchor?.locator?.slice('range:'.length).trim();
+  if (ref.hostRef?.type === 'excel.namedRange') return ref.hostRef.name;
+  if (ref.id.startsWith('xl:')) return ref.id.slice('xl:'.length).trim();
+  const title = ref.title.trim();
+  return title && isA1Address(title) ? title : undefined;
 }
 
 /**

@@ -1,0 +1,218 @@
+[
+  {
+    "path": "assets/example-sessions/example-session-context-upload.md",
+    "title": "Example Session - Progressive Full File Context",
+    "kind": "example",
+    "surface": "",
+    "workflow": "",
+    "topics": "[context, upload, full-scope, code-execution]",
+    "load_when": "A task may need full-file upload or hosted analysis rather than bounded reads."
+  },
+  {
+    "path": "assets/example-sessions/example-session-excel.md",
+    "title": "Example Session - Excel",
+    "kind": "example",
+    "surface": "excel",
+    "workflow": "",
+    "topics": "[range, formula, comment, composition]",
+    "load_when": "A concrete Excel command-loop transcript is needed."
+  },
+  {
+    "path": "assets/example-sessions/example-session-outlook.md",
+    "title": "Example Session - Outlook",
+    "kind": "example",
+    "surface": "outlook",
+    "workflow": "",
+    "topics": "[mail, reply, compose, staged-draft]",
+    "load_when": "A concrete Outlook read/reply/draft command-loop transcript is needed."
+  },
+  {
+    "path": "assets/example-sessions/example-session-powerpoint.md",
+    "title": "Example Session - PowerPoint",
+    "kind": "example",
+    "surface": "powerpoint",
+    "workflow": "",
+    "topics": "[slide, deck, summary]",
+    "load_when": "A concrete PowerPoint slide insertion command-loop transcript is needed."
+  },
+  {
+    "path": "assets/example-sessions/example-session-word.md",
+    "title": "Example Session - Word",
+    "kind": "example",
+    "surface": "word",
+    "workflow": "",
+    "topics": "[tracked-change, comment, claim-review]",
+    "load_when": "A concrete Word redline/comment command-loop transcript is needed."
+  },
+  {
+    "path": "patterns/anomaly-review.md",
+    "title": "Pattern - Anomaly Review",
+    "kind": "pattern",
+    "surface": "excel",
+    "workflow": "",
+    "topics": "[anomaly, outlier, conditional-format, comment]",
+    "load_when": "A task asks to detect unusual values, spikes, outliers, or suspicious spreadsheet rows."
+  },
+  {
+    "path": "patterns/evidence-backed-redline.md",
+    "title": "Pattern - Evidence Backed Redline",
+    "kind": "pattern",
+    "surface": "word",
+    "workflow": "",
+    "topics": "[redline, evidence, tracked-change, comments]",
+    "load_when": "A task asks to rewrite or review Word content against grounded evidence or policy."
+  },
+  {
+    "path": "patterns/executive-brief.md",
+    "title": "Pattern - Executive Brief Handoff",
+    "kind": "pattern",
+    "surface": "",
+    "workflow": "cross-surface",
+    "topics": "[excel, powerpoint, handoff, executive-summary]",
+    "load_when": "A task asks to turn analysis from one Office artifact into an executive brief or deck."
+  },
+  {
+    "path": "patterns/meeting-summary.md",
+    "title": "Pattern - Meeting Summary To Notes",
+    "kind": "pattern",
+    "surface": "teams",
+    "workflow": "",
+    "topics": "[meeting, transcript, notes, action-items]",
+    "load_when": "A task asks to summarize a Teams meeting or turn transcript content into notes/actions."
+  },
+  {
+    "path": "patterns/top-n-report.md",
+    "title": "Pattern - Top N Report",
+    "kind": "pattern",
+    "surface": "excel",
+    "workflow": "",
+    "topics": "[top-n, table, chart, spill]",
+    "load_when": "A task asks for ranked rows, top/bottom items, summary table, or chart from spreadsheet data."
+  },
+  {
+    "path": "references/algebra.md",
+    "title": "Value Algebra",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[values, pipelines, transforms, effects, type-laws]",
+    "load_when": "A command needs pure computation, table shaping, aggregation, or composed write values."
+  },
+  {
+    "path": "references/capability-map.md",
+    "title": "Capability Map",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[surfaces, read-commands, write-commands, limits]",
+    "load_when": "Checking which commands each Office surface may advertise."
+  },
+  {
+    "path": "references/command-grammar.md",
+    "title": "Command Grammar",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[cmd-block, read-verbs, write-verbs, composition, recipes]",
+    "load_when": "Exact CLI syntax, selector forms, composed writes, or reusable recipe grammar is needed."
+  },
+  {
+    "path": "references/composition-rules.md",
+    "title": "Composition Rules",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[pipelines, let-bindings, materialize, normalize]",
+    "load_when": "A task requires read-derived values, table materialization, or more than one command phase."
+  },
+  {
+    "path": "references/errors-and-recovery.md",
+    "title": "Errors And Recovery",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[corrections, parser-errors, stale-anchors, budget]",
+    "load_when": "A result block contains an error or a command failed validation."
+  },
+  {
+    "path": "references/excel-semantics.md",
+    "title": "Excel Semantics",
+    "kind": "reference",
+    "surface": "excel",
+    "workflow": "",
+    "topics": "[ranges, tables, formulas, charts, formatting, compute]",
+    "load_when": "The active surface is Excel or a plan mentions ranges, formulas, tables, charts, or workbook analysis."
+  },
+  {
+    "path": "references/onenote-semantics.md",
+    "title": "OneNote Semantics",
+    "kind": "reference",
+    "surface": "onenote",
+    "workflow": "",
+    "topics": "[page, paragraph, note, append-page]",
+    "load_when": "The active surface is OneNote or a plan mentions pages, notebook notes, or append-page."
+  },
+  {
+    "path": "references/outlook-semantics.md",
+    "title": "Outlook Semantics",
+    "kind": "reference",
+    "surface": "outlook",
+    "workflow": "",
+    "topics": "[mail, compose, attachments, staged-draft]",
+    "load_when": "The active surface is Outlook or a plan mentions mail, thread, attachment, reply, or draft."
+  },
+  {
+    "path": "references/planning-normal-form.md",
+    "title": "Planning Normal Form",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[observe, derive, effect, verify, approval-boundaries]",
+    "load_when": "A task needs a multi-step program, effect grouping, or semantic turn boundaries."
+  },
+  {
+    "path": "references/powerpoint-semantics.md",
+    "title": "PowerPoint Semantics",
+    "kind": "reference",
+    "surface": "powerpoint",
+    "workflow": "",
+    "topics": "[slides, shapes, insert-slide, navigation]",
+    "load_when": "The active surface is PowerPoint or a handoff targets a PowerPoint deck."
+  },
+  {
+    "path": "references/progressive-disclosure.md",
+    "title": "Progressive Disclosure",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[context, host-refs, inspect, full-file, handoff]",
+    "load_when": "Deciding how much host, connector, upload, or compute context to request before acting."
+  },
+  {
+    "path": "references/specialized-capabilities.md",
+    "title": "Specialized Capabilities",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[slash-kind, actuation-kind, long-tail, native-office]",
+    "load_when": "A task needs host-native capability beyond the core CLI verbs."
+  },
+  {
+    "path": "references/teams-semantics.md",
+    "title": "Teams Semantics",
+    "kind": "reference",
+    "surface": "teams",
+    "workflow": "",
+    "topics": "[transcript, message, thread, post, deep-link]",
+    "load_when": "The active surface is Teams or a plan mentions meetings, transcript, channel, thread, or post."
+  },
+  {
+    "path": "references/word-semantics.md",
+    "title": "Word Semantics",
+    "kind": "reference",
+    "surface": "word",
+    "workflow": "",
+    "topics": "[tracked-changes, comments, anchors, paragraphs]",
+    "load_when": "The active surface is Word or a plan mentions redlines, comments, paragraphs, or text anchors."
+  }
+]

@@ -11,6 +11,7 @@ description: >-
   "update the doc", "fix this formula", "add a comment", "redline this", "make a
   slide from this", "draft a reply".
 license: Proprietary
+allowed-tools: python3
 compatibility: >-
   Requires a Gemini Enterprise Microsoft 365 add-in host that supplies the document
   snapshot each turn and applies the emitted commands. Optional scripts require Python 3.
@@ -94,6 +95,15 @@ outline                              show the document/workbook structure
 read <selector>                      Excel: read Sales!C2:C7 · others: read (whole/section)
 search <text>                        find content containing the text
 context [hints...]                   ask for context/upload/code-exec strategy; read-only
+list [kind]                          list addressable host context refs, optionally by kind
+inspect <refId|selector>             resolve a context ref or selector into readable content
+properties <refId|selector>          show safe metadata for a context ref or selector
+comments [selector]                  list comment refs, optionally near a selector
+attachments [selector]               list attachment refs, optionally near a selector
+tables [selector]                    list table/range refs, optionally near a selector
+slides [selector]                    list slide refs, optionally near a selector
+neighbors [refId|selector]           show nearby context refs around a target
+open <refId|selector>                navigate/select in the host only; never writes
 
 # write (one per line; only those available this turn)
 set <A1> <value|=formula>            Excel: write a cell        e.g. set Sales!F2 =C2-D2
@@ -106,6 +116,8 @@ chart <type> <range> [title="…"]     Excel: insert a chart (column|bar|line|pi
 cf <range> <rule>                    Excel: conditional format (>VALUE fill=#hex · databar · top=N)
 spill <range> = (<table expr>)       Excel: write a composed table as a cell grid (the table→grid sink)
 slide "Title" "bullet" ...           PowerPoint: insert a slide
+shape <pp:shape:slideId:shapeId> "text"
+                                     PowerPoint: replace text in one existing shape/text box
 page "Title" "body"                  OneNote: append a page
 mail "body"                          Outlook: stage a reviewable reply (never auto-sent)
 compose "Subject" "body"             Outlook: draft a new email (recipients left to user)
@@ -117,14 +129,21 @@ post "text"                          Teams: stage a reviewable post (never auto-
 
 # control
 done                                 the task is complete
-help                                 list available commands
+help [command]                       list available commands or one command's playbook
+<command> -h                         same as help <command>; read-only/control
 ```
+
+For complex objects with many properties, **do not guess the whole syntax from this overview**. Use
+targeted help as progressive disclosure: `help shape`, `shape -h`, `chart -h`, etc. The help text is
+generated from the same `m365-cli-1.0.json` manifest as the runtime grammar, so it is the safe place
+to discover command-specific sequences, selectors, examples, failure modes, and next actions.
 
 ### Progressive context strategy
 
 Use the cheapest useful context first. Escalate only when the task genuinely needs it.
 
-1. **Inline/current item**: use the provided snapshot, `outline`, `read`, and `search`.
+1. **Inline/current item**: use the provided snapshot, `outline`, `list`, `inspect`,
+   `properties`, `open`, `read`, and `search`.
 2. **Reference grounding**: use existing pinned or federated references when the host provides them.
 3. **Full-file upload candidate**: ask with `context upload-preferred full-scope` when bounded
    reads cannot expose enough of the artifact.
@@ -167,6 +186,11 @@ This is a summary. The model under it is the [value algebra](references/algebra.
 [capability map](references/capability-map.md) for exact syntax. Don't rely on memory for selector
 syntax or which commands an app supports.
 
+When a task arrives from **m365-command-planner**, treat the approved plan as the user's intended
+work order, not as document truth. Use its `scope`, `ground`, `context`, `step`, and `exclude` lines
+to choose the first observation commands, then read the live host before any write. For the full
+disclosure ladder, read [references/progressive-disclosure.md](references/progressive-disclosure.md).
+
 ## Output protocol (follow exactly)
 
 1. Reply with **exactly one** fenced ` ```cmd ` block — opened with ` ```cmd ` and
@@ -189,6 +213,7 @@ needs them, so you keep context small.
 
 | File                                                                             | Read it when…                                                                                                                                                            |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [references/resource-index.md](references/resource-index.md)                     | you need to choose the smallest relevant commander reference, pattern, or example to load                                                                                |
 | [references/algebra.md](references/algebra.md)                                   | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                        |
 | [references/composition-rules.md](references/composition-rules.md)               | you're composing more than a direct command — the operational laws + the composition decision procedure                                                                  |
 | [references/planning-normal-form.md](references/planning-normal-form.md)         | you're planning a multi-step program — the OBSERVE→DERIVE→EFFECT→VERIFY normal form and the six semantic break boundaries                                                |
@@ -196,6 +221,7 @@ needs them, so you keep context small.
 | [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`         |
 | [references/command-grammar.md](references/command-grammar.md)                   | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                           |
 | [references/capability-map.md](references/capability-map.md)                     | you need the cross-surface table of which read/write commands each app supports and their limits                                                                         |
+| [references/progressive-disclosure.md](references/progressive-disclosure.md)     | you're deciding how much host/context/file information to ask for before acting, especially from an approved planner handoff                                            |
 | `references/<surface>-semantics.md`                                              | load the ONE matching the active surface (excel / word / powerpoint / outlook / teams / onenote) for its reading/anchoring model, surface verbs + `/`-kinds, and gotchas |
 
 **`patterns/` — reasoning templates (read for shape, then write the turn's actual algebra):**
@@ -223,6 +249,7 @@ needs them, so you keep context small.
 | File                                                   | Purpose                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [scripts/parse_commands.py](scripts/parse_commands.py) | dependency-free checker: extracts the `cmd` block from a reply and parses each line into a structured record, flagging malformed commands (`python3 scripts/parse_commands.py --self-test`)                                                                  |
+| [scripts/command_help.py](scripts/command_help.py)     | generated command playbooks from `m365-cli-1.0.json`, e.g. `python3 scripts/command_help.py shape`; mirrors live `help <command>` / `<command> -h` progressive disclosure                      |
 | [scripts/surface_cli.py](scripts/surface_cli.py)       | the **preflight compiler**: `check` (parse + capability scope + inferred binding types), `budget` (reads/effects/cells vs limits), `plan` (effect dependency groups), `normalize` (reorder into OBSERVE→DERIVE→EFFECT form). Pure — never runs Office/Graph. |
 
 ### Preflight a program with `surface_cli` (when it's worth it)
@@ -233,6 +260,7 @@ overrun, a wrong dependency) that are easy to get wrong by hand. Pipe the `cmd` 
 
 ```
 printf '<your program>' | python3 scripts/surface_cli.py check --surface excel --capabilities set,table,chart,cf,spill
+python3 scripts/surface_cli.py help shape
 ```
 
 When to run it (don't bother for trivial actions):

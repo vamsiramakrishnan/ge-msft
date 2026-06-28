@@ -314,6 +314,36 @@ describe('PanelController — context tray', () => {
     expect(assist.detached).toEqual(['word:selection']);
     expect(c.getState().chips[0]?.attached).toBe(false);
   });
+
+  it('marks chips revealable when the bridge can reveal context and calls that bridge path', async () => {
+    const assist = new FakeAssist();
+    const selection = ref('word:selection', 'Selection');
+    const revealContext = vi.fn(async (_ref: ContextRef): Promise<void> => {});
+    const c = new PanelController(assist, {
+      listContext: () => Promise.resolve([selection]),
+      revealContext,
+    });
+
+    await c.refreshContext();
+    expect(c.getState().chips[0]).toMatchObject({ id: 'word:selection', revealable: true });
+
+    await c.reveal('word:selection');
+    expect(revealContext).toHaveBeenCalledWith(selection);
+  });
+
+  it('does not mark chips revealable when the bridge rejects that specific ref', async () => {
+    const assist = new FakeAssist();
+    const document = ref('word:document', 'Whole document');
+    const c = new PanelController(assist, {
+      listContext: () => Promise.resolve([document]),
+      canRevealContext: () => false,
+      revealContext: vi.fn(async (_ref: ContextRef): Promise<void> => {}),
+    });
+
+    await c.refreshContext();
+    expect(c.getState().chips[0]).toMatchObject({ id: 'word:document' });
+    expect(c.getState().chips[0]?.revealable).toBeUndefined();
+  });
 });
 
 describe('PanelController — ask / stream', () => {

@@ -18,6 +18,7 @@ import {
   type ParsedSkillDef,
 } from './skill-grammar.js';
 import { PlanContextHintSchema, type PlanContextHint } from './command-plan.js';
+import { ContextKindSchema, type ContextKind } from './context.js';
 
 /**
  * ADR-0004 — the command-line protocol grammar (the single source of truth).
@@ -34,16 +35,31 @@ import { PlanContextHintSchema, type PlanContextHint } from './command-plan.js';
  * corrective error (`unknown verb "writ" — did you mean "write"? (run help)`) the model
  * self-corrects on the next turn.
  *
- * SCOPE: `outline · read · search · context · set · suggest · comment · format · reply · slide ·
- * page · mail · post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the
- * host-native kinds).
+ * SCOPE: `outline · read · search · list · inspect · properties · comments · attachments · tables ·
+ * slides · neighbors · context · open · set · suggest · comment · format · reply · slide · page ·
+ * mail · post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the host-native
+ * kinds).
  */
 
 /**
  * Read verbs. `outline`/`read`/`search` are Layer-B host reads (ADR-0003). `context` is a
  * runtime-served read-only strategy probe: it never uploads a file, runs code, or writes content.
  */
-export const READ_VERBS = ['outline', 'read', 'search', 'context'] as const;
+export const READ_VERBS = [
+  'outline',
+  'read',
+  'search',
+  'list',
+  'inspect',
+  'properties',
+  'comments',
+  'attachments',
+  'tables',
+  'slides',
+  'neighbors',
+  'context',
+  'open',
+] as const;
 
 /** Control verbs. Always advertised; not actuations. */
 export const CONTROL_VERBS = ['done', 'help'] as const;
@@ -79,6 +95,8 @@ export const WRITE_VERB_TO_KIND = {
   table: 'create-table',
   chart: 'insert-chart',
   cf: 'format-conditional',
+  // PowerPoint shape/textbox surgery: replace the text of one explicitly addressed shape.
+  shape: 'set-shape-text',
   // `spill` is `write-cells` widened (ADR-0007 §3): its arg is a TABLE expression whose rows are
   // written as a grid (the missing table→cells sink), vs `set` which writes one scalar. It reuses
   // the existing write-cells kind/bridge/safety — no new host work — so it advertises wherever
@@ -117,7 +135,16 @@ export type ParsedCommand =
   | { verb: 'outline' }
   | { verb: 'read'; selector: string }
   | { verb: 'search'; text: string }
+  | { verb: 'list'; kind?: ContextKind }
+  | { verb: 'inspect'; selector: string }
+  | { verb: 'properties'; selector: string }
+  | { verb: 'comments'; selector?: string }
+  | { verb: 'attachments'; selector?: string }
+  | { verb: 'tables'; selector?: string }
+  | { verb: 'slides'; selector?: string }
+  | { verb: 'neighbors'; selector?: string }
   | { verb: 'context'; hints: PlanContextHint[] }
+  | { verb: 'open'; selector: string }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'suggest'; oldText: string; newText: string }
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
@@ -137,6 +164,7 @@ export type ParsedCommand =
   | { verb: 'table'; range: string; props: Record<string, string> }
   | { verb: 'chart'; chartType: string; range: string; props: Record<string, string> }
   | { verb: 'cf'; range: string; props: Record<string, string> }
+  | { verb: 'shape'; selector: string; text: string; textExpr?: ParsedExpr }
   // ADR-0007 §3 — the table→grid composition sink. `valueExpr` is the source TABLE expression
   // (pre-resolution); `cells` is the resolved grid (filled by the runtime at dry-run). Spill is
   // ALWAYS expression-driven — a bare literal grid is not expressible inline.
@@ -148,13 +176,22 @@ export type ParsedCommand =
   // compile, not here (the parser stays structural).
   | { verb: 'invoke'; kind: string; props: Record<string, string>; args: string[] }
   | { verb: 'done' }
-  | { verb: 'help' };
+  | { verb: 'help'; topic?: string };
 
 export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnion('verb', [
   z.object({ verb: z.literal('outline') }),
   z.object({ verb: z.literal('read'), selector: z.string() }),
   z.object({ verb: z.literal('search'), text: z.string() }),
+  z.object({ verb: z.literal('list'), kind: ContextKindSchema.optional() }),
+  z.object({ verb: z.literal('inspect'), selector: z.string() }),
+  z.object({ verb: z.literal('properties'), selector: z.string() }),
+  z.object({ verb: z.literal('comments'), selector: z.string().optional() }),
+  z.object({ verb: z.literal('attachments'), selector: z.string().optional() }),
+  z.object({ verb: z.literal('tables'), selector: z.string().optional() }),
+  z.object({ verb: z.literal('slides'), selector: z.string().optional() }),
+  z.object({ verb: z.literal('neighbors'), selector: z.string().optional() }),
   z.object({ verb: z.literal('context'), hints: z.array(PlanContextHintSchema) }),
+  z.object({ verb: z.literal('open'), selector: z.string() }),
   z.object({
     verb: z.literal('set'),
     cell: z.string(),
@@ -212,6 +249,12 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   }),
   z.object({ verb: z.literal('cf'), range: z.string(), props: z.record(z.string()) }),
   z.object({
+    verb: z.literal('shape'),
+    selector: z.string(),
+    text: z.string(),
+    textExpr: z.lazy(() => ParsedExprSchema).optional(),
+  }),
+  z.object({
     verb: z.literal('spill'),
     range: z.string(),
     valueExpr: z.lazy(() => ParsedExprSchema).optional(),
@@ -224,7 +267,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     args: z.array(z.string()),
   }),
   z.object({ verb: z.literal('done') }),
-  z.object({ verb: z.literal('help') }),
+  z.object({ verb: z.literal('help'), topic: z.string().optional() }),
 ]);
 
 /** A parse error carries a CLI-style corrective message the model self-corrects against. */
@@ -286,6 +329,7 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
 
   // ADR-0008 §two-tier — a `/<kind>` line is the SPECIALIZED surface (the long-tail catalogue),
   // dispatched before the core-verb switch. The bare verbs stay the composable algebra.
+  if (rest === '-h' || rest === '--help') return { verb: 'help', topic: rawVerb };
   if (rawVerb.startsWith('/')) return parseInvoke(rawVerb, rest);
 
   switch (verb) {
@@ -294,7 +338,7 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'done':
       return { verb: 'done' };
     case 'help':
-      return { verb: 'help' };
+      return { verb: 'help', ...(rest ? { topic: rest } : {}) };
 
     case 'read': {
       // Excel: an A1/NamedRange selector. Word: whole-doc (no selector) — empty string is fine,
@@ -307,6 +351,43 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       // Tolerate the model wrapping the query in quotes.
       return { verb: 'search', text: stripWrappingQuotes(rest) };
     }
+
+    case 'list': {
+      if (rest === '') return { verb: 'list' };
+      const kind = rest.toLowerCase();
+      const parsed = ContextKindSchema.safeParse(kind);
+      if (!parsed.success) {
+        return {
+          error: `unknown context kind "${rest}" — supported: ${ContextKindSchema.options.join(', ')}`,
+        };
+      }
+      return { verb: 'list', kind: parsed.data };
+    }
+
+    case 'inspect': {
+      if (rest === '')
+        return { error: 'inspect needs a ref id or selector — usage: inspect <refId|selector>' };
+      return { verb: 'inspect', selector: stripWrappingQuotes(rest) };
+    }
+
+    case 'properties': {
+      if (rest === '')
+        return {
+          error: 'properties needs a ref id or selector — usage: properties <refId|selector>',
+        };
+      return { verb: 'properties', selector: stripWrappingQuotes(rest) };
+    }
+
+    case 'comments':
+      return { verb: 'comments', ...(rest ? { selector: stripWrappingQuotes(rest) } : {}) };
+    case 'attachments':
+      return { verb: 'attachments', ...(rest ? { selector: stripWrappingQuotes(rest) } : {}) };
+    case 'tables':
+      return { verb: 'tables', ...(rest ? { selector: stripWrappingQuotes(rest) } : {}) };
+    case 'slides':
+      return { verb: 'slides', ...(rest ? { selector: stripWrappingQuotes(rest) } : {}) };
+    case 'neighbors':
+      return { verb: 'neighbors', ...(rest ? { selector: stripWrappingQuotes(rest) } : {}) };
 
     case 'context': {
       if (rest === '') return { verb: 'context', hints: [] };
@@ -322,6 +403,12 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
         hints.push(parsed.data);
       }
       return { verb: 'context', hints };
+    }
+
+    case 'open': {
+      if (rest === '')
+        return { error: 'open needs a ref id or selector — usage: open <refId|selector>' };
+      return { verb: 'open', selector: stripWrappingQuotes(rest) };
     }
 
     case 'set': {
@@ -380,6 +467,8 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return parseChart(rest);
     case 'cf':
       return parseCf(rest);
+    case 'shape':
+      return parseShape(rest);
     case 'spill':
       return parseSpill(rest);
 
@@ -571,6 +660,26 @@ function parseCf(rest: string): ParsedCommand | CommandParseError {
     };
   }
   return { verb: 'cf', range, props };
+}
+
+/**
+ * `shape <pp:shape:slideId:shapeId> "text"` — replace text on one explicitly addressed
+ * PowerPoint shape. The selector is intentionally host-ref shaped; a bare shape id is not enough
+ * because PowerPoint shape ids are only meaningful inside a slide.
+ */
+function parseShape(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'shape needs a shape ref and quoted text — usage: shape <pp:shape:slideId:shapeId> "new text"';
+  const quoteOffset = rest.indexOf('"');
+  if (quoteOffset < 0) return { error: usage };
+  const selector = rest.slice(0, quoteOffset).trim();
+  if (!selector) return { error: usage };
+  const quoted = scanQuoted(rest, quoteOffset);
+  if (!quoted) return { error: usage };
+  const text = quoted.value;
+  const after = rest.slice(quoted.end).trim();
+  if (after) return { error: usage };
+  return { verb: 'shape', selector, text };
 }
 
 /**
@@ -1069,17 +1178,63 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
     outline: { verb: 'outline', usage: 'outline', hint: 'show the document/workbook structure' },
     read: readSelector,
     search: { verb: 'search', usage: 'search <text>', hint: 'find content containing the text' },
+    list: {
+      verb: 'list',
+      usage: 'list [kind]',
+      hint: 'list addressable context refs without reading their content',
+    },
+    inspect: {
+      verb: 'inspect',
+      usage: 'inspect <refId|selector>',
+      hint: 'materialize one context ref or selector after listing it',
+    },
+    properties: {
+      verb: 'properties',
+      usage: 'properties <refId|selector>',
+      hint: 'show metadata, hostRef, anchor, and revealability without content',
+    },
+    comments: {
+      verb: 'comments',
+      usage: 'comments [refId|selector]',
+      hint: 'list comment context refs when the host exposes them',
+    },
+    attachments: {
+      verb: 'attachments',
+      usage: 'attachments [refId|selector]',
+      hint: 'list attachment refs when the host exposes them',
+    },
+    tables: {
+      verb: 'tables',
+      usage: 'tables [refId|selector]',
+      hint: 'list table/range refs before table-specific work',
+    },
+    slides: {
+      verb: 'slides',
+      usage: 'slides [refId|selector]',
+      hint: 'list slide refs before slide-specific work',
+    },
+    neighbors: {
+      verb: 'neighbors',
+      usage: 'neighbors [refId|selector]',
+      hint: 'list nearby addressable context around the current selection/item',
+    },
     context: {
       verb: 'context',
       usage:
         'context [incremental|inline-preferred|reference-preferred|upload-preferred|code-execution-preferred|analytical|full-scope ...]',
       hint: 'ask the host for a context/upload/code-execution strategy; read-only, never uploads by itself',
     },
+    open: {
+      verb: 'open',
+      usage: 'open <refId|selector>',
+      hint: 'navigate to an addressable host ref; navigation only, never mutates content',
+    },
   };
 
   const specs: VerbSpec[] = [];
   for (const verb of READ_VERBS) {
-    if (verb === 'context' || declaredReads.has(verb)) specs.push(readSpecByVerb[verb]);
+    if (isRuntimeServedRead(verb, manifest) || declaredReads.has(verb))
+      specs.push(readSpecByVerb[verb]);
   }
 
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a
@@ -1090,11 +1245,38 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
     specs.push(writeVerbSpec(verb, isExcelLike));
   }
 
+  // Specialized `/` surface: advertise long-tail actuation kinds that are live on this surface but
+  // not already reachable via a core composable verb. The parser accepts every catalogue kind
+  // structurally, but the runtime type-check still fails closed unless this turn's manifest
+  // advertises the kind.
+  const coreKinds = new Set<ActuationKind>(Object.values(WRITE_VERB_TO_KIND));
+  for (const kind of [...kinds].sort()) {
+    if (coreKinds.has(kind)) continue;
+    specs.push(specializedVerbSpec(kind));
+  }
+
   specs.push(
     { verb: 'done', usage: 'done', hint: 'finish — you have completed the task' },
     { verb: 'help', usage: 'help', hint: 'list the available commands' },
   );
   return specs;
+}
+
+function isRuntimeServedRead(verb: ReadVerb, manifest: CapabilityManifest): boolean {
+  if (['context', 'list', 'inspect', 'properties', 'open', 'neighbors'].includes(verb)) return true;
+  const kinds = new Set(manifest.contextKinds);
+  switch (verb) {
+    case 'comments':
+      return kinds.has('comment');
+    case 'attachments':
+      return kinds.has('attachment');
+    case 'tables':
+      return kinds.has('table') || kinds.has('range');
+    case 'slides':
+      return kinds.has('slide');
+    default:
+      return false;
+  }
 }
 
 /**
@@ -1194,6 +1376,47 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'spill',
         usage: 'spill <range> = (<table pipeline>)',
         hint: 'write a composed table as a grid, e.g. spill Report!A1 = ($top | select Region,Revenue)',
+      };
+    case 'shape':
+      return {
+        verb: 'shape',
+        usage: 'shape <pp:shape:slideId:shapeId> "text"',
+        hint: 'replace text in one selected/addressed PowerPoint shape',
+      };
+  }
+}
+
+function specializedVerbSpec(kind: ActuationKind): VerbSpec {
+  switch (kind) {
+    case 'insert-text':
+      return {
+        verb: kind,
+        usage: '/insert-text text="..." [match="exact anchor"] [contextHint="..."]',
+        hint: 'Word: insert plain text at the selection or after an exact content anchor',
+      };
+    case 'replace-selection':
+      return {
+        verb: kind,
+        usage: '/replace-selection text="..."',
+        hint: 'Word: replace the current selection; fails closed when nothing is selected',
+      };
+    case 'insert-ooxml':
+      return {
+        verb: kind,
+        usage: '/insert-ooxml ooxml="<w:p/>" [match="exact anchor"] [contextHint="..."]',
+        hint: 'Word: insert rich OOXML at the selection or after an exact content anchor',
+      };
+    case 'fill-content-control':
+      return {
+        verb: kind,
+        usage: '/fill-content-control id=<contentControlId> text="..."',
+        hint: 'Word: fill a known content control id',
+      };
+    default:
+      return {
+        verb: kind,
+        usage: `/${kind} [key=value ...]`,
+        hint: 'invoke a specialized host capability only when this surface advertises it',
       };
   }
 }

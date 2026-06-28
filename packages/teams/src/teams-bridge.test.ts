@@ -179,6 +179,56 @@ describe('TeamsBridge searchDocument (lazy search read)', () => {
   });
 });
 
+describe('TeamsBridge revealContext', () => {
+  it('opens the supplied Teams deep link for a transcript ref', async () => {
+    const opened: string[] = [];
+    const teams: TeamsJsLike = {
+      app: { openLink: (link) => opened.push(link) },
+    };
+    const bridge = new TeamsBridge({
+      teams,
+      transcript: {
+        meetingTitle: 'Sync',
+        transcript: 'Pat: hi.',
+        deepLink: 'https://teams.microsoft.com/l/message/19:abc/123',
+      },
+    });
+    const ref = (await bridge.listContext())[0]!;
+
+    expect(bridge.canRevealContext(ref)).toBe(true);
+    await bridge.revealContext(ref);
+    expect(opened).toEqual(['https://teams.microsoft.com/l/message/19:abc/123']);
+  });
+
+  it('does not advertise reveal when only an opaque meeting id is available', async () => {
+    const opened: string[] = [];
+    const bridge = new TeamsBridge({
+      meetingId: '19:opaque',
+      teams: { app: { openLink: (link) => opened.push(link) } },
+      transcript: { transcript: 'Pat: hi.' },
+    });
+    const ref = (await bridge.listContext())[0]!;
+
+    expect(bridge.canRevealContext(ref)).toBe(false);
+    await bridge.revealContext(ref);
+    expect(opened).toEqual([]);
+  });
+
+  it('does not open non-Teams URLs', async () => {
+    const opened: string[] = [];
+    const bridge = new TeamsBridge({
+      deepLink: 'https://example.com/not-teams',
+      teams: { app: { openLink: (link) => opened.push(link) } },
+      transcript: { transcript: 'Pat: hi.' },
+    });
+    const ref = (await bridge.listContext())[0]!;
+
+    expect(bridge.canRevealContext(ref)).toBe(false);
+    await bridge.revealContext(ref);
+    expect(opened).toEqual([]);
+  });
+});
+
 describe('TeamsBridge actuate (post-message)', () => {
   it('rejects an unsupported kind', async () => {
     const bridge = new TeamsBridge();

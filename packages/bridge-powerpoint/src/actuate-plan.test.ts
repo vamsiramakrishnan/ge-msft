@@ -33,6 +33,32 @@ describe('powerpoint insert-slide planning (pure)', () => {
     expect(plan.bullets).toEqual([]);
   });
 
+  it('extracts an explicit prebuilt deck artifact before legacy ooxml', () => {
+    const plan = planInsertSlide({
+      changeId: asChangeId('c-deck'),
+      kind: 'insert-slide',
+      surface: 'powerpoint',
+      params: {
+        ooxml: 'legacy',
+        deck: {
+          format: 'pptx',
+          base64: 'compiled',
+          slideCount: 4,
+          formatting: 'UseDestinationTheme',
+          targetSlideId: '256#3',
+          specFingerprint: 'abc123',
+        },
+      },
+    });
+    expect(plan).toMatchObject({
+      base64: 'compiled',
+      slideCount: 4,
+      formatting: 'UseDestinationTheme',
+      targetSlideId: '256#3',
+      specFingerprint: 'abc123',
+    });
+  });
+
   it('omits notes when blank and target when absent', () => {
     const plan = planInsertSlide({
       changeId: asChangeId('c3'),

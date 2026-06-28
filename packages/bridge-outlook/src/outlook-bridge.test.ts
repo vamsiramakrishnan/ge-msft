@@ -51,6 +51,7 @@ interface OutlookHandle {
 interface Installed {
   replyForms: ReplyFormCall[];
   newMessageForms: NewMessageFormCall[];
+  openedMessages: string[];
   handlers: OutlookHandle[];
   /** Swap the active item (or clear it) to simulate ItemChanged / a switch to a draft. */
   setItem(seed: MailItemSeed | undefined): void;
@@ -76,6 +77,7 @@ function installOutlook(
 ): Installed {
   const replyForms: ReplyFormCall[] = [];
   const newMessageForms: NewMessageFormCall[] = [];
+  const openedMessages: string[] = [];
   const handlers: OutlookHandle[] = [];
   let current: MailItemSeed | undefined = initial;
 
@@ -116,6 +118,9 @@ function installOutlook(
                 newMessageForms.push(arg);
               },
             }),
+        displayMessageForm(itemId: string): void {
+          openedMessages.push(itemId);
+        },
         addHandlerAsync(type: unknown, handler: () => void): void {
           if (opts.throwOnAdd) throw new Error('addHandlerAsync failed');
           handlers.push({ type, handler });
@@ -141,6 +146,7 @@ function installOutlook(
   return {
     replyForms,
     newMessageForms,
+    openedMessages,
     handlers,
     setItem(seed) {
       current = seed;
@@ -251,6 +257,38 @@ describe('OutlookBridge.resolveContext (host read → pure mapping)', () => {
   it('rejects when the host body read fails (getAsync failure propagates)', async () => {
     active = installOutlook({ ...readMail(), bodyFails: true });
     await expect(new OutlookBridge().resolveContext(ref)).rejects.toThrow('body read failed');
+  });
+});
+
+describe('OutlookBridge.revealContext', () => {
+  it('opens the saved mail item in a host message form', async () => {
+    active = installOutlook(readMail());
+    const bridge = new OutlookBridge();
+    const ref: ContextRef = {
+      id: 'AAMk-9',
+      kind: 'mail-item',
+      surface: 'outlook',
+      title: 'Email: SLA concerns',
+    };
+
+    expect(bridge.canRevealContext(ref)).toBe(true);
+    await bridge.revealContext(ref);
+
+    expect(active.openedMessages).toEqual(['AAMk-9']);
+    expect(active.replyForms).toHaveLength(0);
+    expect(active.newMessageForms).toHaveLength(0);
+  });
+
+  it('does not advertise an unsaved draft fallback ref as revealable', () => {
+    active = installOutlook({ subject: 'Draft', body: 'wip' });
+    expect(
+      new OutlookBridge().canRevealContext({
+        id: 'outlook:item',
+        kind: 'mail-item',
+        surface: 'outlook',
+        title: 'Current email',
+      }),
+    ).toBe(false);
   });
 });
 

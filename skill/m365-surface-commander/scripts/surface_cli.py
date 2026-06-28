@@ -17,6 +17,7 @@ Usage:
   surface_cli.py budget    --max-effects 8 --max-reads 8 --max-cells 10000 < program
   surface_cli.py plan      < program
   surface_cli.py normalize < program     # reorder into OBSERVE -> DERIVE -> EFFECT canonical form
+  surface_cli.py help shape               # generated targeted command playbook
   surface_cli.py --self-test
 """
 
@@ -29,6 +30,7 @@ from pathlib import Path
 # import; this file only runs as __main__), and so the package can reach parse_commands.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from surface_cli import analyze, normalize, _budget_exceeded, _cell_count  # noqa: E402
+from command_help import render as render_command_help  # noqa: E402
 
 
 # ───────────────────────────── rendering ─────────────────────────────
@@ -87,7 +89,12 @@ def _render(result, limits, show_budget=True, show_plan=True):
 
 def _run(argv):
     ap = argparse.ArgumentParser(prog="surface_cli", description="m365-cli preflight compiler")
-    ap.add_argument("command", choices=["check", "budget", "plan", "explain", "normalize"], nargs="?")
+    ap.add_argument(
+        "command",
+        choices=["check", "budget", "plan", "explain", "normalize", "help"],
+        nargs="?",
+    )
+    ap.add_argument("topic", nargs="?")
     ap.add_argument("--surface")
     ap.add_argument("--capabilities", help="comma-separated verbs live this turn (optional scope)")
     ap.add_argument("--max-effects", type=int, default=8)
@@ -99,6 +106,10 @@ def _run(argv):
 
     if args.self_test:
         return _self_test()
+
+    if args.command == "help":
+        print(render_command_help(args.topic))
+        return 0
 
     caps = set(args.capabilities.split(",")) if args.capabilities else None
     limits = {"max_effects": args.max_effects, "max_reads": args.max_reads, "max_cells": args.max_cells}
@@ -225,6 +236,11 @@ done
     rctx_bad = analyze("```cmd\ncontext run-python-now\ndone\n```")
     if not any("unknown context hint" in e for e in rctx_bad["errors"]):
         failures.append("unknown context hint not rejected")
+
+    # 12. Generated targeted help is available through the CLI front door.
+    help_text = render_command_help("shape")
+    if "Command: shape" not in help_text or "pp:shape:slideId:shapeId" not in help_text:
+        failures.append(f"targeted shape help did not render from generated manifest: {help_text}")
 
     if failures:
         print("SURFACE-CLI SELF-TEST FAIL", file=sys.stderr)

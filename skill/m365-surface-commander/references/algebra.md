@@ -1,3 +1,11 @@
+---
+title: Value Algebra
+kind: reference
+skill: m365-surface-commander
+topics: [values, pipelines, transforms, effects, type-laws]
+load_when: A command needs pure computation, table shaping, aggregation, or composed write values.
+---
+
 # The value algebra
 
 This is the language under the commands. The commands you emit are a surface syntax over a small,

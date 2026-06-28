@@ -149,6 +149,7 @@ export const ActuationParamsSchema = z.object({
       commentId: z.string().optional(),
       range: z.string().optional(),
       slideIndex: z.number().optional(),
+      slideId: z.string().optional(),
       // ADR-0007 cross-surface anchors: PowerPoint shapes, OneNote outline/paragraph/region,
       // and Plane-B Graph message ids. All optional — a kind reads the anchor it needs.
       shapeId: z.string().optional(),
@@ -212,6 +213,17 @@ export const ActuationParamsSchema = z.object({
     .optional(),
   slide: z
     .object({ title: z.string(), bullets: z.array(z.string()), notes: z.string().optional() })
+    .optional(),
+  /** PowerPoint prebuilt deck import: a generated PPTX artifact inserted atomically. */
+  deck: z
+    .object({
+      format: z.literal('pptx').default('pptx'),
+      base64: z.string().min(1),
+      slideCount: z.number().int().positive().optional(),
+      formatting: z.enum(['KeepSourceFormatting', 'UseDestinationTheme']).optional(),
+      targetSlideId: z.string().optional(),
+      specFingerprint: z.string().optional(),
+    })
     .optional(),
   mail: z
     .object({
@@ -646,7 +658,21 @@ export type ActuationResult = z.infer<typeof ActuationResultSchema>;
  * read port. `context` is runtime-served and read-only; it may appear here, but it is not a bridge
  * port requirement.
  */
-export const ReadVerbSchema = z.enum(['outline', 'read', 'search', 'context']);
+export const ReadVerbSchema = z.enum([
+  'outline',
+  'read',
+  'search',
+  'list',
+  'inspect',
+  'properties',
+  'comments',
+  'attachments',
+  'tables',
+  'slides',
+  'neighbors',
+  'context',
+  'open',
+]);
 
 /** A surface's full capability advertisement: what it can read and what it can write. */
 export const CapabilityManifestSchema = z.object({

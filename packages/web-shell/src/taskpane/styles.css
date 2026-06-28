@@ -3631,3 +3631,295 @@ body {
     min-height: 30px;
   }
 }
+
+/* ── Layout: spatial rhythm & hierarchy (redesign pass) ──────────────────────
+ * Three zones with deliberate rhythm — tight WITHIN a zone, generous BETWEEN:
+ *   1) command strip (prominent, panel-filled): host identity + readiness + the
+ *      3 primary action chips, with quiet tertiary metrics beneath;
+ *   2) utility band: the collapsed disclosures (context / skills / more actions)
+ *      grouped tightly and rendered quieter so they read as secondary;
+ *   3) thread: the product — delineated by a hairline and given the most air.
+ */
+.surface-center {
+  margin-top: var(--s4);
+  margin-bottom: var(--s1);
+  padding: var(--s3) var(--s4);
+  gap: var(--s2);
+}
+.surface-primary-actions {
+  margin-top: var(--s1);
+}
+.surface-metrics {
+  margin-top: var(--s1);
+  font-size: var(--fz-xs);
+  color: var(--muted);
+}
+
+/* Subordinate utility band — collapsed rows read as one quiet group, not peers
+ * of the command strip. Tighter stacking + a lighter fill than the panel. */
+.unit,
+.skills,
+.quick-actions.action-drawer {
+  margin-top: var(--s1);
+  background: color-mix(in srgb, var(--panel) 55%, var(--bg));
+}
+
+/* The thread is the main content: separated from the chrome and given the air. */
+.thread-region {
+  margin-top: var(--s3);
+  border-top: 1px solid var(--line);
+}
+.thread {
+  padding-block: var(--s5);
+  gap: var(--s5);
+}
+
+/* Composer clearly anchored at the foot. */
+.comp {
+  border-top: 1px solid var(--line);
+}
+
+/* Short panes: compress the chrome rhythm so the thread keeps its space. */
+@media (max-height: 680px) {
+  .surface-center {
+    margin-top: var(--s2);
+  }
+  .thread-region {
+    margin-top: var(--s2);
+  }
+  .thread {
+    padding-block: var(--s3);
+    gap: var(--s3);
+  }
+}
+
+/* ── Settings modal (catalog routing) — config in a real dialog, not inline chrome.
+ * Frees the default pane of the whole catalog block; opens in the top layer (no clipping). */
+.ge-modal {
+  margin: auto;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(80vh, 560px);
+  overflow: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: var(--sh);
+}
+.ge-modal::backdrop {
+  background: rgba(31, 31, 31, 0.32);
+}
+.ge-modal-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.ge-modal-title {
+  font-size: var(--fz-md);
+  font-weight: 760;
+  color: var(--ink);
+}
+.ge-modal-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--fill-2);
+  color: var(--soft);
+  cursor: pointer;
+}
+.ge-modal-close:hover,
+.ge-modal-close:focus-visible {
+  color: var(--host);
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+}
+/* The catalog inside the modal: the dialog frames it, so drop its own outer chrome. */
+.ge-modal .catalog {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--panel);
+}
+
+/* ── Icon toolbar (redesign): one compact bar replaces the stacked chrome.
+ * Product mark + wordmark, host glyph + readiness dot, and one icon per disclosure
+ * (Context / Actions / Skills) + a settings gear. Each icon opens ONE fixed sheet
+ * (escapes the thread's overflow clipping) holding the section in `embedded` mode. */
+.tw {
+  position: relative;
+  flex: none;
+}
+.tw-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.tw-brand {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--grad);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+.tw-name {
+  font-size: var(--fz-md);
+  font-weight: 760;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tw-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: var(--s2);
+}
+.tw-host-glyph {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--host) 88%, #1f1f1f);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 760;
+}
+.tw-host-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.tw-host-dot[data-state='busy'] {
+  background: var(--host);
+}
+.tw-host-dot[data-state='gate'] {
+  background: var(--warn);
+}
+.tw-spacer {
+  flex: 1 1 auto;
+}
+.tw-icon {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--fill-2);
+  color: var(--soft);
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+.tw-icon:hover,
+.tw-icon:focus-visible {
+  border-color: color-mix(in srgb, var(--host) 42%, var(--line));
+  background: color-mix(in srgb, var(--host) 7%, #fff);
+  color: var(--host);
+}
+.tw-icon.on {
+  border-color: color-mix(in srgb, var(--host) 50%, var(--line));
+  background: color-mix(in srgb, var(--host) 12%, #fff);
+  color: var(--host);
+}
+.tw-glyph {
+  font-size: 14px;
+  line-height: 1;
+}
+.tw-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--host);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* The disclosure sheet — fixed so it can't be clipped by the scrolling thread. */
+.tw-sheet {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  top: 50px;
+  z-index: 60;
+  max-height: min(62vh, 460px);
+  overflow: auto;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: var(--sh);
+}
+@media (min-width: 520px) {
+  .tw-sheet {
+    left: 50%;
+    right: auto;
+    width: min(520px, calc(100vw - 32px));
+    transform: translateX(-50%);
+  }
+}
+
+/* Embedded sections inside a sheet: the sheet frames them, so strip their own outer
+ * chrome and let their (now data-open) content flow inline rather than absolutely. */
+.tw-sheet .unit,
+.tw-sheet .skills,
+.tw-sheet .quick-actions.action-drawer,
+.tw-sheet .surface-center {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tw-sheet .unit + .quick-actions,
+.tw-sheet .surface-center + .quick-actions {
+  margin-top: var(--s3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--s3);
+}
+.tw-sheet .context-popover,
+.tw-sheet .skills-popover,
+.tw-sheet .action-drawer-list {
+  position: static;
+  display: flex;
+  inset: auto;
+  width: auto;
+  transform: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+.tw-sheet .action-drawer-list {
+  margin-top: var(--s2);
+}

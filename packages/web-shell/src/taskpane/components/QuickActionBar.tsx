@@ -16,6 +16,8 @@ export interface QuickActionBarProps {
   /** Dispatch a chosen action. The parent routes `chat` → `send`, `write`/`annotation` → the
    *  plan/approval loop (`runCommands`) — this component never chooses the gate itself. */
   onAction: (action: QuickAction) => void;
+  /** Render the list expanded inline (no self-collapse/toggle) for use inside the toolbar's icon sheet. */
+  embedded?: boolean;
 }
 
 /**
@@ -32,6 +34,7 @@ export function QuickActionBar({
   busy,
   excludeIds,
   onAction,
+  embedded = false,
 }: QuickActionBarProps): JSX.Element | null {
   const actions = useMemo(() => {
     const excluded = excludeIds ? new Set(excludeIds) : undefined;
@@ -54,10 +57,10 @@ export function QuickActionBar({
 
   return (
     <section
-      className="quick-actions action-drawer"
+      className={`quick-actions action-drawer${embedded ? ' action-drawer--embedded' : ''}`}
       aria-label="More actions"
       ref={containerRef}
-      data-open={open ? 'true' : 'false'}
+      data-open={embedded || open ? 'true' : 'false'}
     >
       <div className="action-drawer-head">
         <div className="action-drawer-copy">
@@ -79,7 +82,7 @@ export function QuickActionBar({
                 onClick={() => {
                   setPreferredGroup(group.output);
                   setExpanded(false);
-                  if (!open) toggle();
+                  if (!embedded && !open) toggle();
                 }}
               >
                 <span>{group.label}</span>
@@ -97,18 +100,20 @@ export function QuickActionBar({
               {expanded ? 'Less' : `+${hiddenCount}`}
             </button>
           ) : null}
-          <button
-            type="button"
-            className="action-drawer-toggle"
-            aria-expanded={open}
-            aria-controls="qa-drawer-list"
-            aria-label={open ? 'Hide actions' : 'Show actions'}
-            onClick={toggle}
-          >
-            <span className="tw-caret" aria-hidden="true">
-              ▾
-            </span>
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              className="action-drawer-toggle"
+              aria-expanded={open}
+              aria-controls="qa-drawer-list"
+              aria-label={open ? 'Hide actions' : 'Show actions'}
+              onClick={toggle}
+            >
+              <span className="tw-caret" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+          )}
         </div>
       </div>
 

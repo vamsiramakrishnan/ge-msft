@@ -11,8 +11,10 @@ export default defineConfig({
   root: __dirname,
   plugins: [react()],
   server: {
-    port: 3100,
+    // ≥10000 so Cloud Workstation's browser port-proxy allows it (ports <10000 are blocked).
+    port: 17100,
     strictPort: true,
+    host: true,
     open: '/preview.html',
   },
 });

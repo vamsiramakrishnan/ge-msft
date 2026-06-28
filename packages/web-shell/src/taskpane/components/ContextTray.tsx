@@ -6,6 +6,11 @@ export interface ContextTrayProps {
   onToggle: (id: string, attach: boolean) => void;
   onReveal: (id: string) => void;
   onRefresh: () => void;
+  /**
+   * Render expanded content inline (no self-collapse, no peek/toggle) for use inside the toolbar's
+   * icon-triggered sheet — the sheet itself is the disclosure, so a second one would double-gate.
+   */
+  embedded?: boolean;
 }
 
 const KIND_DOT: Readonly<Record<string, string>> = {
@@ -86,6 +91,7 @@ export function ContextTray({
   onToggle,
   onReveal,
   onRefresh,
+  embedded = false,
 }: ContextTrayProps): JSX.Element {
   // Read-only view shaping: surface attached sources first so the active grounding scope reads
   // top-to-bottom. The controller still owns the flat `chips` list and the `attached` flag.
@@ -93,12 +99,13 @@ export function ContextTray({
   const available = chips.filter((c) => !c.attached);
   const preview = attached.length > 0 ? attached : available;
   const { open, toggle, containerRef } = useDisclosure<HTMLElement>();
+  const expanded = embedded || open;
   return (
     <section
-      className="unit"
+      className={`unit${embedded ? ' unit--embedded' : ''}`}
       aria-label="Research unit grounding scope"
       ref={containerRef}
-      data-open={open ? 'true' : 'false'}
+      data-open={expanded ? 'true' : 'false'}
     >
       <div className="unit-h">
         <span className="nb" aria-hidden="true" />
@@ -114,30 +121,34 @@ export function ContextTray({
         >
           Refresh
         </button>
-        <button
-          type="button"
-          className="unit-toggle"
-          aria-expanded={open}
-          aria-controls="ctx-chips"
-          aria-label={open ? 'Hide context sources' : 'Show context sources'}
-          onClick={toggle}
-        >
-          <span className="tw-caret" aria-hidden="true">
-            ▾
-          </span>
-        </button>
-      </div>
-      <div className="unit-peek" aria-hidden="true">
-        {chips.length === 0 ? (
-          <span className="muted small">No host context loaded</span>
-        ) : (
-          preview.slice(0, 3).map((chip) => (
-            <span key={chip.id} className={`mini-chip${chip.attached ? ' on' : ''}`}>
-              {chip.title}
+        {!embedded && (
+          <button
+            type="button"
+            className="unit-toggle"
+            aria-expanded={open}
+            aria-controls="ctx-chips"
+            aria-label={open ? 'Hide context sources' : 'Show context sources'}
+            onClick={toggle}
+          >
+            <span className="tw-caret" aria-hidden="true">
+              ▾
             </span>
-          ))
+          </button>
         )}
       </div>
+      {!embedded && (
+        <div className="unit-peek" aria-hidden="true">
+          {chips.length === 0 ? (
+            <span className="muted small">No host context loaded</span>
+          ) : (
+            preview.slice(0, 3).map((chip) => (
+              <span key={chip.id} className={`mini-chip${chip.attached ? ' on' : ''}`}>
+                {chip.title}
+              </span>
+            ))
+          )}
+        </div>
+      )}
       <div id="ctx-chips" className="chips context-popover">
         {chips.length === 0 && (
           <span className="muted small">Nothing to attach yet. Refresh scans the host.</span>

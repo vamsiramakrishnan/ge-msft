@@ -433,6 +433,11 @@ export function App({
         onInvoke={onInvoke}
         placeholder={SURFACE_PLACEHOLDER[surface]}
       />
+
+      <footer className="pf" aria-label="Provenance">
+        <span>gemini enterprise · {surface} · client-direct</span>
+        <span className="pf-lamp">grounded · reversible</span>
+      </footer>
     </div>
   );
 }

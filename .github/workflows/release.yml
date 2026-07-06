@@ -1,0 +1,100 @@
+name: Release
+
+# Production release pipeline. Runs on version tags (v<package.json version>, e.g. v0.1.0) and
+# on manual dispatch (dry run: builds and gates everything, uploads a workflow artifact, but
+# publishes no GitHub Release).
+#
+# Required secrets (repository or environment scope) for the production manifest profile —
+# all are public identifiers/URLs, never credentials (client-direct per ADR-0001; no Google
+# secret exists to configure):
+#   GE_PROD_APP_ID           unified manifest app id (GUID registered for the tenant/AppSource)
+#   GE_PROD_ENTRA_CLIENT_ID  production Entra app registration client id (GUID)
+#   GE_PROD_ONENOTE_APP_ID   OneNote XML manifest app id (GUID, distinct from the unified id)
+#   GE_PROD_BOT_ID           Azure Bot registration id (GUID) for the Teams bot
+#   GE_PROD_WEB_ORIGIN       production static origin, e.g. https://addin.contoso-ge.com
+#   GE_PROD_DEVELOPER_NAME   publisher display name
+#   GE_PROD_PRIVACY_URL      HTTPS privacy statement URL (real host, not example.com)
+#   GE_PROD_TERMS_URL        HTTPS terms-of-use URL
+#   GE_PROD_SUPPORT_URL      HTTPS support URL
+#   GE_PROD_WEBSITE_URL      optional; defaults to GE_PROD_WEB_ORIGIN/
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: gate · package · publish
+    runs-on: ubuntu-latest
+    env:
+      GE_PROD_APP_ID: ${{ secrets.GE_PROD_APP_ID }}
+      GE_PROD_ENTRA_CLIENT_ID: ${{ secrets.GE_PROD_ENTRA_CLIENT_ID }}
+      GE_PROD_ONENOTE_APP_ID: ${{ secrets.GE_PROD_ONENOTE_APP_ID }}
+      GE_PROD_BOT_ID: ${{ secrets.GE_PROD_BOT_ID }}
+      GE_PROD_WEB_ORIGIN: ${{ secrets.GE_PROD_WEB_ORIGIN }}
+      GE_PROD_DEVELOPER_NAME: ${{ secrets.GE_PROD_DEVELOPER_NAME }}
+      GE_PROD_PRIVACY_URL: ${{ secrets.GE_PROD_PRIVACY_URL }}
+      GE_PROD_TERMS_URL: ${{ secrets.GE_PROD_TERMS_URL }}
+      GE_PROD_SUPPORT_URL: ${{ secrets.GE_PROD_SUPPORT_URL }}
+      GE_PROD_WEBSITE_URL: ${{ secrets.GE_PROD_WEBSITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # A tag vX.Y.Z must package exactly X.Y.Z — refuse to release a drifted tree.
+      - name: package.json version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION). Bump package.json or retag."
+            exit 1
+          fi
+
+      - name: typecheck
+        run: npm run typecheck
+      - name: lint
+        run: npm run lint
+      - name: test
+        run: npm run test
+      - name: build
+        run: npm run build
+
+      - name: generate production manifests
+        run: npm run manifests:generate:prod
+      - name: validate production manifests
+        run: npm run manifests:validate:prod
+      - name: package production bundle
+        run: npm run package:prod
+      - name: verify checksums
+        run: npm run release:checksums
+
+      - name: upload artifacts (all runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-release-${{ github.ref_name }}
+          path: |
+            dist/release/production-m365-v*.zip
+            dist/release/production-artifact.json
+            dist/release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/production-m365-v*.zip
+            dist/release/production-artifact.json
+            dist/release/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: true

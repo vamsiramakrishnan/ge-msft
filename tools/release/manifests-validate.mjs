@@ -37,11 +37,11 @@ if (errors.length > 0) {
 
 console.log(`validated ${path}`);
 
-function validateXmlManifest(path, checks) {
+function validateXmlManifest(path, checks, forbiddenTokens = ['REPLACE_', 'example.com']) {
   if (!existsSync(path)) return [`Generated XML manifest not found: ${path}`];
   const xml = readFileSync(path, 'utf8');
   const errors = [];
-  for (const token of ['REPLACE_', 'example.com']) {
+  for (const token of forbiddenTokens) {
     if (xml.includes(token)) errors.push(`${path} contains forbidden token ${token}`);
   }
   if (/\{\{[^}]+\}\}/.test(xml)) {
@@ -107,4 +107,28 @@ if (profile === 'development') {
     process.exit(1);
   }
   for (const { path } of xmlChecks) console.log(`validated ${path}`);
+}
+
+if (profile === 'production') {
+  const oneNotePath = generatedOneNoteManifestPath(profile);
+  const xmlErrors = validateXmlManifest(
+    oneNotePath,
+    [
+      { text: '<Host Name="Notebook"', message: 'does not declare the Notebook host' },
+      {
+        text: '<Permissions>ReadWriteDocument</Permissions>',
+        message: 'does not declare ReadWriteDocument',
+      },
+      {
+        text: 'taskpane.html?host=onenote',
+        message: 'does not point at the onenote taskpane URL',
+      },
+    ],
+    ['REPLACE_', 'example.com', 'localhost'],
+  );
+  if (xmlErrors.length > 0) {
+    for (const error of xmlErrors) console.error(error);
+    process.exit(1);
+  }
+  console.log(`validated ${oneNotePath}`);
 }

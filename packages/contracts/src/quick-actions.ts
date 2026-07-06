@@ -438,11 +438,13 @@ export const SURFACE_ACTIONS: QuickAction[] = [
   }),
   surfaceAction({
     id: 'audio-overview',
-    label: 'Make an audio overview',
+    // Honest label: this produces a SCRIPT in chat (output:'chat'), not rendered audio — the copy
+    // must not promise audio the surface cannot deliver (EXPERIENCE.md §2: stays `output:'chat'`).
+    label: 'Draft an audio-overview script',
     surfaces: ['onenote'],
     intent: 'ask',
     scope: DOCUMENT,
-    prompt: 'Produce an audio-overview script of the grounded sources.',
+    prompt: 'Draft an audio-overview script of the grounded sources.',
     ground: ['unit'],
     contextMenu: false,
   }),
@@ -497,6 +499,20 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     prompt: 'Draft a reviewable reply to this thread.',
     ground: ['this'],
     contextMenu: true,
+  }),
+  surfaceAction({
+    id: 'draft-reply-toned',
+    label: 'Draft a reply in a tone…',
+    surfaces: ['outlook'],
+    // Tone control on reply drafting (EXPERIENCE.md §2 — Copilot has tone; we expose it as a
+    // typed {{tone}} fill slot). The one-tap `draft-reply` above stays untouched.
+    intent: 'draft',
+    scope: DOCUMENT,
+    prompt:
+      'Draft a reply to this thread in a {{tone}} tone; keep commitments accurate and questions answered.',
+    ground: ['this'],
+    contextMenu: false,
+    parameters: [{ name: 'tone', label: 'Tone', hint: 'e.g. formal, warm, brief' }],
   }),
   surfaceAction({
     id: 'draft-new-email',

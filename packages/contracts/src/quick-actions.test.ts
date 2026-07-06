@@ -80,6 +80,27 @@ describe('re-tagged actions (the audit fixes)', () => {
     expect(byId('draft-reply').output).toBe('write');
   });
 
+  it('draft-reply-toned exposes tone control on reply drafting (EXPERIENCE.md §2) beside the one-tap draft-reply', () => {
+    const toned = byId('draft-reply-toned');
+    expect(toned.surfaces).toEqual(['outlook']);
+    expect(toned.intent).toBe('draft');
+    expect(toned.output).toBe('write'); // deriveOutput('draft')
+    expect(toned.scope).toEqual(byId('draft-reply').scope); // same scope as the one-tap action
+    expect(toned.label).toBe('Draft a reply in a tone…');
+    expect(toned.prompt).toContain('{{tone}}');
+    expect(actionParameters(toned).map((p) => p.name)).toEqual(['tone']);
+    // The one-tap draft-reply stays untouched: no fill slot, no parameters.
+    expect(actionParameters(byId('draft-reply'))).toEqual([]);
+    expect(promptPlaceholders(byId('draft-reply').prompt)).toEqual([]);
+  });
+
+  it('audio-overview promises a script, not audio (label matches the chat output)', () => {
+    const audio = byId('audio-overview');
+    expect(audio.output).toBe('chat');
+    expect(audio.label).toBe('Draft an audio-overview script');
+    expect(audio.prompt).toContain('script');
+  });
+
   it('risk-column and write-formula are rewrites (write)', () => {
     expect(byId('risk-column').intent).toBe('rewrite');
     expect(byId('write-formula').intent).toBe('rewrite');
@@ -117,6 +138,7 @@ describe('re-tagged actions (the audit fixes)', () => {
     expect(actionParameters(byId('draft-section')).map((p) => p.name)).toEqual(['topic']);
     expect(actionParameters(byId('draft-slide')).map((p) => p.name)).toEqual(['topic']);
     expect(actionParameters(byId('draft-new-email')).map((p) => p.name)).toEqual(['subject']);
+    expect(actionParameters(byId('draft-reply-toned')).map((p) => p.name)).toEqual(['tone']);
     expect(actionParameters(byId('ge-ask')).map((p) => p.name)).toEqual(['question', 'range']);
     expect(actionParameters(byId('review-against')).map((p) => p.name)).toEqual(['standard']);
   });

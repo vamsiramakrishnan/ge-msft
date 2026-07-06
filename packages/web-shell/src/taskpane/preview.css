@@ -1,45 +1,51 @@
 /*
  * Preview-harness chrome only — never shipped in the add-in. It frames the real panel at a typical
- * task-pane width (360px) against a neutral backdrop, with a toolbar to switch surface and toggle
- * cards. The panel itself is styled entirely by styles.css; nothing here leaks into the product.
+ * task-pane width (360px) as a Starlight spec sheet: warm paper backdrop, hairline toolbar, an
+ * ink-ruled specimen frame. The panel itself is styled entirely by styles.css; nothing here leaks
+ * into the product.
  */
 body {
-  background: #e9eaf0;
+  background: #fcf9f8;
 }
 .preview {
   display: flex;
   align-items: flex-start;
-  gap: 28px;
+  gap: 32px;
   min-height: 100vh;
-  padding: 28px;
-  font-family: 'Aptos', 'Segoe UI', system-ui, sans-serif;
+  padding: 32px;
+  font-family: 'Hanken Grotesk', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  color: #1b1c1c;
 }
 .preview-toolbar {
-  width: 240px;
+  width: 248px;
   flex: none;
   position: sticky;
-  top: 28px;
-  background: #fff;
-  border: 1px solid #e6e4e1;
-  border-radius: 14px;
-  padding: 18px;
-  box-shadow: 0 6px 24px rgba(16, 18, 40, 0.08);
+  top: 32px;
+  background: #ffffff;
+  border: 0.5px solid rgba(27, 28, 28, 0.4);
+  border-top: 2px solid #1b1c1c;
+  border-radius: 4px;
+  padding: 16px;
 }
 .preview-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: lowercase;
   margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 0.5px solid rgba(27, 28, 28, 0.4);
 }
 .preview-group {
   margin-bottom: 16px;
 }
 .preview-label {
   display: block;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #646579;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  color: #424752;
   margin-bottom: 8px;
 }
 .preview-surfaces {
@@ -48,20 +54,24 @@ body {
   gap: 6px;
 }
 .preview-chip {
-  font: inherit;
-  font-size: 12px;
-  text-transform: capitalize;
-  border: 1px solid #ececf1;
-  background: #f7f7fb;
-  border-radius: 16px;
-  padding: 4px 11px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  text-transform: lowercase;
+  border: 0.5px solid rgba(27, 28, 28, 0.4);
+  background: transparent;
+  color: #424752;
+  border-radius: 2px;
+  padding: 3px 9px;
   cursor: pointer;
 }
+.preview-chip:hover {
+  border-color: #1b1c1c;
+  color: #1b1c1c;
+}
 .preview-chip.on {
-  border-color: #b9a8f2;
-  background: #faf8ff;
-  color: #6d4ed1;
-  font-weight: 600;
+  background: #1b1c1c;
+  border-color: #1b1c1c;
+  color: #fcf9f8;
 }
 .preview-toggles {
   display: grid;
@@ -75,6 +85,9 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
+.preview-toggle input {
+  accent-color: #0057b8;
+}
 .preview-actions {
   display: flex;
   gap: 8px;
@@ -82,21 +95,24 @@ body {
 .preview-btn {
   font: inherit;
   font-size: 12px;
-  font-weight: 600;
-  border: 1px solid #ececf1;
-  background: #fff;
-  border-radius: 8px;
-  padding: 6px 10px;
+  font-weight: 500;
+  border: 0.5px solid #1b1c1c;
+  background: transparent;
+  color: #1b1c1c;
+  border-radius: 4px;
+  padding: 6px 12px;
   cursor: pointer;
 }
 .preview-btn:hover {
-  background: #f7f7fb;
+  background: #f0eded;
 }
 .preview-note {
   font-size: 11px;
-  color: #646579;
-  line-height: 1.5;
+  color: #727784;
+  line-height: 16px;
   margin: 4px 0 0;
+  padding-top: 10px;
+  border-top: 0.5px solid rgba(27, 28, 28, 0.4);
 }
 .preview-stage {
   flex: 1;
@@ -106,13 +122,12 @@ body {
 .preview-frame {
   width: 360px;
   height: 760px;
-  max-height: calc(100vh - 56px);
+  max-height: calc(100vh - 64px);
   flex: none;
-  background: #fff;
-  border: 1px solid #d8d6d3;
-  border-radius: 16px;
+  background: #fcf9f8;
+  border: 1px solid #1b1c1c;
+  border-radius: 4px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(16, 18, 40, 0.16);
 }
 /* The panel uses height:100vh; inside the frame we want it to fill the frame instead. */
 .preview-frame .panel {

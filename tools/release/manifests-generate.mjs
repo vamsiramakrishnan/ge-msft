@@ -8,6 +8,8 @@ import {
   generatedOfficeXmlManifestPath,
   oneNoteManifest,
   outlookXmlManifest,
+  PROD_ONENOTE_BRAND,
+  productionManifest,
   profileFromArgs,
   parseArgs,
   releaseConfig,
@@ -23,7 +25,12 @@ const profile = profileFromArgs(args);
 
 try {
   const cfg = releaseConfig(profile);
-  const manifest = profile === 'development' ? developmentManifest(cfg) : alphaManifest(cfg);
+  const manifest =
+    profile === 'development'
+      ? developmentManifest(cfg)
+      : profile === 'production'
+        ? productionManifest(cfg)
+        : alphaManifest(cfg);
   const out = generatedManifestPath(profile);
   ensureDir(dirname(out));
   writeJson(out, manifest);
@@ -41,6 +48,14 @@ try {
     const outlookOut = generatedOfficeXmlManifestPath(profile, 'outlook');
     writeFileSync(outlookOut, outlookXmlManifest(cfg));
     console.log(`generated ${outlookOut}`);
+  }
+  if (profile === 'production') {
+    // Production covers all surfaces: the unified manifest above (Word, Excel, PowerPoint,
+    // Outlook, Teams) plus the companion OneNote legacy XML package.
+    const oneNoteOut = generatedOneNoteManifestPath(profile);
+    ensureDir(dirname(oneNoteOut));
+    writeFileSync(oneNoteOut, oneNoteManifest(cfg, PROD_ONENOTE_BRAND));
+    console.log(`generated ${oneNoteOut}`);
   }
 } catch (err) {
   if (err?.code === 'BLOCKED_EXTERNAL') {

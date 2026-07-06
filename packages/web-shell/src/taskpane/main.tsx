@@ -30,6 +30,7 @@ import {
   msalConfigFromEnv,
   notebookIdFromEnv,
   releaseProfileFromEnv,
+  resolveRuntimeEnv,
   type RawEnv,
 } from './config.js';
 import './styles.css';
@@ -41,11 +42,28 @@ import './styles.css';
  *   Office.onReady → detect surface → selectBridge(surface) → composeSession(WIF + Discovery
  *   Engine + AssistSession) → new PanelController → render <App/>.
  *
- * Config (project/location/engine/WIF/Entra) is read from `import.meta.env` via `config.ts`; no
- * secret is ever hardcoded here. Failures render a readable message instead of a blank pane.
+ * Config (project/location/engine/WIF/Entra) is read from `import.meta.env` via `config.ts`,
+ * optionally overlaid by a same-origin runtime tenant config (`?cfg=` → /config/<cfg>.json,
+ * ADR-0009 first slice); no secret is ever hardcoded here. Failures render a readable message
+ * instead of a blank pane.
  */
 
-const env = import.meta.env as unknown as RawEnv;
+// Build-time env from Vite. WHY the runtime overlay exists: a central admin ships ONE bundle for
+// every tenant; per-tenant deployment coordinates ride on `?cfg=<name>` in the manifest's content
+// URL plus a same-origin static /config/<name>.json (ADR-0009 first slice). `env` is upgraded
+// exactly once, before any config accessor runs, by ensureRuntimeEnv() at the top of boot().
+const buildTimeEnv = import.meta.env as unknown as RawEnv;
+let env: RawEnv = buildTimeEnv;
+let runtimeEnvReady: Promise<void> | undefined;
+
+/** Resolve the runtime tenant config once; boot() retries reuse the same resolution. */
+function ensureRuntimeEnv(): Promise<void> {
+  runtimeEnvReady ??= resolveRuntimeEnv(buildTimeEnv).then((resolved) => {
+    env = resolved;
+  });
+  return runtimeEnvReady;
+}
+
 let root: Root | undefined;
 
 type AuthStart = () => Promise<void>;
@@ -294,6 +312,10 @@ async function boot(opts: BootOptions = {}): Promise<void> {
     interactiveAuth: opts.interactiveAuth === true,
     overrideInteractionInProgress: opts.overrideInteractionInProgress === true,
   });
+  // Overlay the runtime tenant config (fail-closed, same-origin; see config.ts) BEFORE any
+  // *FromEnv accessor below reads deployment coordinates. resolveRuntimeEnv never throws — a
+  // missing/invalid /config/<cfg>.json simply leaves the build-time env in force.
+  await ensureRuntimeEnv();
   const surface = resolveSurface();
   if (!isSupportedSurface(surface)) {
     recordAuthDebug('boot.unsupportedHost', { surface: surface ?? 'unknown' });

@@ -1,6 +1,37 @@
 # ADR-0009 — Tenant bootstrap, ring configuration, and bounded deployment envelopes
 
-**Status:** Proposed (2026-06-27) · extends ADR-0001 (client-direct architecture), ADR-0002 (capability model), ADR-0006 (capability closure), and ADR-0008 (Surface Commander algebra). Scope: deployment bootstrap, tenant configuration, rollout rings, and the trust boundary between Microsoft identity, SharePoint configuration, and Google Workforce Identity Federation.
+**Status:** Proposed (2026-06-27); first slice implemented (2026-07-06) — same-origin static config with a `?cfg=` selector and fail-closed validation ships in `packages/web-shell` (see "Implemented slice" below); the SharePoint/ring resolver remains proposed · extends ADR-0001 (client-direct architecture), ADR-0002 (capability model), ADR-0006 (capability closure), and ADR-0008 (Surface Commander algebra). Scope: deployment bootstrap, tenant configuration, rollout rings, and the trust boundary between Microsoft identity, SharePoint configuration, and Google Workforce Identity Federation.
+
+## Implemented slice (2026-07-06)
+
+The shell now resolves a **runtime tenant config** at boot (`resolveRuntimeEnv` in
+`packages/web-shell/src/taskpane/config.ts`, awaited in `main.tsx` before any config accessor):
+
+- A `?cfg=<name>` query parameter (validated against `^[a-z0-9][a-z0-9-]{0,63}$`; invalid values
+  are ignored, never interpolated) selects `${origin}/config/<name>.json`, with
+  `${origin}/config/default.json` as the fallback. Candidates are **same-origin only** by
+  construction; the fetch uses `cache: 'no-store'` and a ~4s timeout.
+- A fetched document must be a flat JSON object whose keys are exactly the known public `VITE_*`
+  config keys with string values. Unknown keys, non-string values, or anything matching the
+  browser secrets denylist rejects the **whole** document (fail closed to the build-time env).
+- Accepted values overlay the build-time env, and the merged result still runs through the
+  unchanged `parseEnv` validation (required keys, HTTPS-only, authority allowlist,
+  unknown-prod-key rejection). The runtime document can select values; it can never widen the
+  schema, mint a permission, or carry a secret.
+
+This lets one centrally hosted bundle serve multiple tenants (per-tenant coordinates ride on the
+manifest content URL's `?cfg=`), without yet building the SharePoint store, app-role rings, or
+locator service described below.
+
+Recorded residual risk (per security review of the slice): the runtime document may legally
+override any known public key, including `VITE_PROXY_URL` (any HTTPS host), the WIF pool/provider,
+and the GCP project — so write access to `/config/*.json` on the add-in origin is equivalent to
+retargeting the add-in's egress within the schema. Treat config publishing with the same change
+control as bundle publishing, never host weaker configs (dev proxies, test pools) on the
+production origin (`?cfg=` lets a crafted deep link select any published name), and before
+production tenants either narrow the runtime-overridable key set, allowlist the production proxy
+host (the `proxyRef` design below), or integrity-protect the document. WIF/IAM conditions (§7)
+remain the token-layer backstop that makes retargeted coordinates non-useful.
 
 ## Context
 

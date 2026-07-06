@@ -32,6 +32,7 @@ const catalog: GeminiCatalog = {
       suggested: true,
     },
   ],
+  connectors: [],
 };
 
 let container: HTMLDivElement | undefined;
@@ -130,5 +131,67 @@ describe('GeminiCatalogPanel', () => {
       }),
     );
     expect(container?.textContent).toContain('2 skills');
+    // With no connectors listed, the summary keeps its original wording.
+    expect(container?.textContent).toContain('1 connectors');
+  });
+
+  it('renders the connector board (lamp plus state word) above the store checkboxes', async () => {
+    const withConnectors: GeminiCatalog = {
+      ...catalog,
+      dataStores: [
+        ...catalog.dataStores,
+        {
+          name: 'projects/p/locations/global/collections/sharepoint-connector/dataStores/sp-files',
+          id: 'sp-files',
+          label: 'SharePoint files',
+        },
+      ],
+      connectors: [
+        {
+          name: 'projects/p/locations/global/collections/sharepoint-connector',
+          id: 'sharepoint-connector',
+          label: 'SharePoint',
+          source: 'sharepoint',
+          state: 'failed',
+          lastSyncTime: '2026-07-01T10:00:00Z',
+        },
+      ],
+    };
+    const listCatalogMock = vi.fn(async () => withConnectors);
+    render({
+      catalogClient: clientWith(
+        listCatalogMock as unknown as DiscoveryCatalogClient['listCatalog'],
+      ),
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Summary switches to the three-part wording when connectors exist.
+    expect(container?.textContent).toContain('2 skills · 1 connectors · 2 stores');
+
+    // Expand the settings grid.
+    const buttons = [...(container?.querySelectorAll<HTMLButtonElement>('.mini-btn') ?? [])];
+    const edit = buttons.find((button) => button.textContent === 'Edit');
+    expect(edit).toBeDefined();
+    act(() => edit!.click());
+
+    const board = container?.querySelector('.connector-board');
+    expect(board).toBeTruthy();
+    const row = board?.querySelector('.connector-row');
+    expect(row?.querySelector('.connector-lamp')?.getAttribute('data-tone')).toBe('err');
+    expect(row?.querySelector('.connector-state')?.textContent).toBe('failed');
+    expect(row?.querySelector('.connector-label')?.textContent).toBe('SharePoint');
+    expect(row?.querySelector('.connector-source')?.textContent).toBe('sharepoint');
+    expect(row?.querySelector('.connector-stores')?.textContent).toBe('1 store');
+    expect(row?.querySelector('.connector-sync')?.textContent).toBeTruthy();
+
+    // The board sits ABOVE the existing checkbox fieldset, which stays intact.
+    const grid = container?.querySelector('.catalog-grid');
+    const children = [...(grid?.children ?? [])];
+    expect(children.findIndex((el) => el.classList.contains('connector-board'))).toBeLessThan(
+      children.findIndex((el) => el.classList.contains('catalog-connectors')),
+    );
+    expect(grid?.querySelectorAll('.catalog-check input[type="checkbox"]')).toHaveLength(2);
   });
 });

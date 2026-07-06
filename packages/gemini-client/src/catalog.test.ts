@@ -3,6 +3,8 @@ import {
   DiscoveryCatalogClient,
   applyCatalogSelection,
   defaultCatalogSelection,
+  groupDataStoresByConnector,
+  type GeminiCatalogConnector,
 } from './catalog.js';
 import type { GeminiClientConfig } from './config.js';
 
@@ -46,7 +48,7 @@ describe('DiscoveryCatalogClient', () => {
           ],
         });
       }
-      if (url.endsWith('/dataStores')) return json({ dataStores: [] });
+      if (url.includes('/dataStores?')) return json({ dataStores: [] });
       return new Response('not found', { status: 404 });
     });
 
@@ -115,7 +117,7 @@ describe('DiscoveryCatalogClient', () => {
         }
         return json({ agentViews: [] });
       }
-      if (url.endsWith('/dataStores')) return json({ dataStores: [] });
+      if (url.includes('/dataStores?')) return json({ dataStores: [] });
       return new Response('not found', { status: 404 });
     });
 
@@ -164,7 +166,8 @@ describe('DiscoveryCatalogClient', () => {
           },
         });
       }
-      if (url.endsWith('/dataStores')) return new Response('should not be called', { status: 500 });
+      if (url.includes('/dataStores?'))
+        return new Response('should not be called', { status: 500 });
       return new Response('not found', { status: 404 });
     });
 
@@ -179,7 +182,7 @@ describe('DiscoveryCatalogClient', () => {
       fetchImpl as never,
     ).listCatalog();
 
-    expect(fetchImpl.mock.calls.some((call) => String(call[0]).endsWith('/dataStores'))).toBe(
+    expect(fetchImpl.mock.calls.some((call) => String(call[0]).includes('/dataStores?'))).toBe(
       false,
     );
     expect(catalog.dataStores).toEqual([
@@ -204,7 +207,7 @@ describe('DiscoveryCatalogClient', () => {
       const url = String(input);
       if (url.includes('/widgetListAvailableAgentViews')) return json({ agentViews: [] });
       if (url.includes('/lookupWidgetConfig')) return json({ widgetConfig: { displayName: 'GE' } });
-      if (url.endsWith('/dataStores')) {
+      if (url.includes('/dataStores?')) {
         return json({
           dataStores: [
             {
@@ -232,7 +235,7 @@ describe('DiscoveryCatalogClient', () => {
   it('lists assistant skills and collection data stores as the signed-in user', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/agents')) {
+      if (url.includes('/agents?')) {
         return json({
           agents: [
             {
@@ -247,7 +250,7 @@ describe('DiscoveryCatalogClient', () => {
           ],
         });
       }
-      if (url.endsWith('/dataStores')) {
+      if (url.includes('/dataStores?')) {
         return json({
           dataStores: [
             {
@@ -258,6 +261,7 @@ describe('DiscoveryCatalogClient', () => {
           ],
         });
       }
+      if (url.includes('/collections?')) return json({ collections: [] });
       return new Response('not found', { status: 404 });
     });
 
@@ -267,7 +271,7 @@ describe('DiscoveryCatalogClient', () => {
       fetchImpl as never,
     ).listCatalog();
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     const firstCall = fetchImpl.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
     const firstInit = firstCall[1];
     expect(firstInit.headers).toEqual({ Authorization: 'Bearer goog-token' });
@@ -305,6 +309,7 @@ describe('DiscoveryCatalogClient', () => {
     const defaults = defaultCatalogSelection({
       skills: [planner, commander],
       dataStores: [dataStore],
+      connectors: [],
     });
 
     expect(applyCatalogSelection(defaults)).toEqual({
@@ -323,7 +328,7 @@ describe('DiscoveryCatalogClient', () => {
     const commander = `${agentParent()}/agents/7404511736383961129`;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/agents')) {
+      if (url.includes('/agents?')) {
         return new Response(
           JSON.stringify({
             error: {
@@ -335,7 +340,7 @@ describe('DiscoveryCatalogClient', () => {
           { status: 403 },
         );
       }
-      if (url.endsWith('/dataStores')) return json({ dataStores: [] });
+      if (url.includes('/dataStores?')) return json({ dataStores: [] });
       return new Response('not found', { status: 404 });
     });
 
@@ -357,7 +362,268 @@ describe('DiscoveryCatalogClient', () => {
     ]);
     expect(catalog.warnings?.[0]).toContain('discoveryengine.agents.list');
   });
+
+  it('pages through collections.list and keeps only collections with a data connector', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/collections')) return new Response('not found', { status: 404 });
+      if (!url.searchParams.get('pageToken')) {
+        return json({
+          collections: [
+            {
+              name: 'projects/proj/locations/global/collections/default_collection',
+              displayName: 'Default',
+            },
+            {
+              name: 'projects/proj/locations/global/collections/sharepoint-connector',
+              displayName: 'SharePoint',
+              dataConnector: {
+                dataSource: 'sharepoint',
+                state: 'ACTIVE',
+                connectorModes: ['FEDERATED'],
+                lastSyncTime: '2026-07-01T10:00:00Z',
+                entities: [{ entityName: 'site' }, { entityName: 'file' }],
+              },
+            },
+          ],
+          nextPageToken: 'col-page-2',
+        });
+      }
+      return json({
+        collections: [
+          {
+            name: 'projects/proj/locations/global/collections/jira-connector',
+            dataConnector: {
+              dataSource: 'jira',
+              state: 'FAILED',
+              errors: [{ message: 'credential expired' }],
+              blockingReasons: ['ALLOWLIST_REQUIRED'],
+            },
+          },
+        ],
+      });
+    });
+
+    const connectors = await new DiscoveryCatalogClient(
+      tokenSource,
+      cfg,
+      fetchImpl as never,
+    ).listConnectors();
+
+    expect(fetchImpl.mock.calls.map((call) => String(call[0]))).toEqual([
+      'https://discoveryengine.googleapis.com/v1alpha/projects/proj/locations/global/collections?pageSize=100',
+      'https://discoveryengine.googleapis.com/v1alpha/projects/proj/locations/global/collections?pageSize=100&pageToken=col-page-2',
+    ]);
+    expect(connectors).toEqual([
+      {
+        name: 'projects/proj/locations/global/collections/sharepoint-connector',
+        id: 'sharepoint-connector',
+        label: 'SharePoint',
+        source: 'sharepoint',
+        state: 'active',
+        modes: ['FEDERATED'],
+        lastSyncTime: '2026-07-01T10:00:00Z',
+        entities: ['site', 'file'],
+      },
+      {
+        name: 'projects/proj/locations/global/collections/jira-connector',
+        id: 'jira-connector',
+        label: 'jira-connector',
+        source: 'jira',
+        state: 'failed',
+        errorCount: 1,
+        blockingReasons: ['ALLOWLIST_REQUIRED'],
+      },
+    ]);
+  });
+
+  it('maps INITIALIZATION_FAILED to failed and unrecognized connector states to unknown', async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        collections: [
+          {
+            name: 'projects/proj/locations/global/collections/init-failed',
+            dataConnector: { dataSource: 'jira', state: 'INITIALIZATION_FAILED' },
+          },
+          {
+            name: 'projects/proj/locations/global/collections/brand-new',
+            dataConnector: { dataSource: 'box', state: 'SOME_FUTURE_STATE' },
+          },
+        ],
+      }),
+    );
+
+    const connectors = await new DiscoveryCatalogClient(
+      tokenSource,
+      cfg,
+      fetchImpl as never,
+    ).listConnectors();
+
+    expect(connectors.map((c) => [c.id, c.state])).toEqual([
+      ['init-failed', 'failed'],
+      ['brand-new', 'unknown'],
+    ]);
+  });
+
+  it('degrades to an empty connector list with a warning when collections.list is denied', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/agents?')) return json({ agents: [] });
+      if (url.includes('/dataStores?')) {
+        return json({
+          dataStores: [
+            {
+              name: 'projects/proj/locations/global/collections/default_collection/dataStores/ds-1',
+              displayName: 'One',
+            },
+          ],
+        });
+      }
+      if (url.includes('/collections?')) {
+        return new Response(
+          JSON.stringify({
+            error: { code: 403, status: 'PERMISSION_DENIED', message: 'denied' },
+          }),
+          { status: 403 },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    });
+
+    const catalog = await new DiscoveryCatalogClient(
+      tokenSource,
+      cfg,
+      fetchImpl as never,
+    ).listCatalog();
+
+    expect(catalog.connectors).toEqual([]);
+    expect(catalog.dataStores.map((store) => store.id)).toEqual(['ds-1']);
+    expect(
+      catalog.warnings?.some((warning) => warning.includes('discoveryengine.collections.list')),
+    ).toBe(true);
+  });
+
+  it('follows nextPageToken across admin dataStores pages', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/dataStores')) return new Response('not found', { status: 404 });
+      if (!url.searchParams.get('pageToken')) {
+        return json({
+          dataStores: [{ name: `${collectionParent()}/dataStores/ds-1`, displayName: 'One' }],
+          nextPageToken: 'ds-page-2',
+        });
+      }
+      expect(url.searchParams.get('pageToken')).toBe('ds-page-2');
+      return json({
+        dataStores: [{ name: `${collectionParent()}/dataStores/ds-2`, displayName: 'Two' }],
+      });
+    });
+
+    const stores = await new DiscoveryCatalogClient(
+      tokenSource,
+      cfg,
+      fetchImpl as never,
+    ).listAdminDataStores();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/dataStores?pageSize=100');
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toContain('pageToken=ds-page-2');
+    expect(stores.map((store) => store.id)).toEqual(['ds-1', 'ds-2']);
+  });
+
+  it('follows nextPageToken across admin agent pages', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (!url.pathname.endsWith('/agents')) return new Response('not found', { status: 404 });
+      if (!url.searchParams.get('pageToken')) {
+        return json({
+          agents: [{ name: `${agentParent()}/agents/1`, displayName: 'skill-a' }],
+          nextPageToken: 'agents-page-2',
+        });
+      }
+      expect(url.searchParams.get('pageToken')).toBe('agents-page-2');
+      return json({ agents: [{ name: `${agentParent()}/agents/2`, displayName: 'skill-b' }] });
+    });
+
+    const skills = await new DiscoveryCatalogClient(
+      tokenSource,
+      cfg,
+      fetchImpl as never,
+    ).listAdminSkills();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('/agents?pageSize=100');
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toContain('pageToken=agents-page-2');
+    expect(skills.map((skill) => skill.label)).toEqual(['skill-a', 'skill-b']);
+  });
+
+  it('follows widget agent-view pages via listAvailableAgentViewsRequest.pageToken', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.includes('/widgetListAvailableAgentViews')) {
+        return new Response('not found', { status: 404 });
+      }
+      const request = JSON.parse(String(init?.body)).listAvailableAgentViewsRequest;
+      if (request.agentOrigin === 'GOOGLE') return json({ agentViews: [] });
+      if (!request.pageToken) {
+        return json({
+          agentViews: [
+            { agent: { name: `${agentParent()}/agents/1`, displayName: 'skill-a' }, uri: '1' },
+          ],
+          nextPageToken: 'views-page-2',
+        });
+      }
+      expect(request.pageToken).toBe('views-page-2');
+      return json({
+        agentViews: [
+          { agent: { name: `${agentParent()}/agents/2`, displayName: 'skill-b' }, uri: '2' },
+        ],
+      });
+    });
+
+    const skills = await new DiscoveryCatalogClient(
+      tokenSource,
+      { ...cfg, widget: { configId: 'test-widget-config-id' } },
+      fetchImpl as never,
+    ).listWidgetSkills();
+
+    const userBodies = fetchImpl.mock.calls
+      .map((call) => JSON.parse(String((call[1] as RequestInit).body)))
+      .filter((body) => body.listAvailableAgentViewsRequest.agentOrigin === 'USER');
+    expect(userBodies).toHaveLength(2);
+    expect(userBodies[1].listAvailableAgentViewsRequest.pageToken).toBe('views-page-2');
+    expect(skills.map((skill) => skill.label)).toEqual(['skill-a', 'skill-b']);
+  });
+
+  it('groups data stores under their connector collection and leaves the rest ungrouped', () => {
+    const connector: GeminiCatalogConnector = {
+      name: 'projects/proj/locations/global/collections/sharepoint-connector',
+      id: 'sharepoint-connector',
+      label: 'SharePoint',
+      source: 'sharepoint',
+      state: 'active',
+    };
+    const grouped = {
+      name: 'projects/proj/locations/global/collections/sharepoint-connector/dataStores/sp-files',
+      id: 'sp-files',
+      label: 'SP files',
+    };
+    const loose = {
+      name: 'projects/proj/locations/global/collections/default_collection/dataStores/ds-web',
+      id: 'ds-web',
+      label: 'Web',
+    };
+
+    expect(groupDataStoresByConnector([connector], [grouped, loose])).toEqual({
+      groups: [{ connector, stores: [grouped] }],
+      ungrouped: [loose],
+    });
+  });
 });
+
+function collectionParent(): string {
+  return 'projects/proj/locations/global/collections/default_collection';
+}
 
 function agentParent(): string {
   return (

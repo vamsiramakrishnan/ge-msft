@@ -31,6 +31,27 @@ jobs:
           git diff --exit-code skill/m365-surface-commander/scripts/m365-cli-1.0.json \
             || { echo "::error::m365-cli-1.0.json is stale — run 'npm run emit:language' and commit."; exit 1; }
 
+  manifests:
+    name: manifest generate · validate · lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # Placeholder-leakage and version-drift gate: generate the development-profile manifests
+      # from source and run the release validator over them, so a PR that bakes REPLACE_ tokens,
+      # example.com hosts, unresolved templates, or a stale version fails here.
+      - name: generate development manifests
+        run: npm run manifests:generate -- --profile development
+      - name: validate development manifests
+        run: npm run manifests:validate -- --profile development
+      # Lint the committed authoritative manifests (manifests/*) with the contracts test suite.
+      - name: manifest lint tests
+        run: npm run validate:manifests
+
   skill-python:
     name: skill parsers · parity · eval
     runs-on: ubuntu-latest

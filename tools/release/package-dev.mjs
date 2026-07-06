@@ -78,8 +78,18 @@ for (const { surface, path } of officeXmlManifests) {
 }
 copyDir(web, webDir);
 
+// The unified manifest references the stable ${origin}/assets/commands.js path; Vite emits a
+// hashed chunk. Copy it to the stable path — and fail loudly if the chunk is missing, because a
+// package without it ships a manifest pointing at a 404 commands runtime.
 const commandsChunk = walk(join(webDir, 'assets')).find((file) => /commands-.*\.js$/.test(file));
-if (commandsChunk) copyFile(commandsChunk, join(webDir, 'assets', 'commands.js'));
+if (!commandsChunk) {
+  console.error(
+    `Commands entry chunk (assets/commands-*.js) not found under ${join(webDir, 'assets')}. ` +
+      'The manifest references assets/commands.js; rebuild the web shell (npm run build).',
+  );
+  process.exit(1);
+}
+copyFile(commandsChunk, join(webDir, 'assets', 'commands.js'));
 
 const releaseNotes = [
   `# Gemini Enterprise Development Sideload Package v${rootVersion()}`,

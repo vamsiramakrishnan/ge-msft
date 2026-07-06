@@ -44,8 +44,16 @@ copyFile(manifest, join(outDir, 'manifest.json'));
 
 // The unified manifest names a stable commands script. Vite emits a hashed chunk; copy the first
 // command entry chunk to the stable package path while keeping the original HTML/chunks intact.
+// Fail loudly if the chunk is missing — the manifest would otherwise point at a 404 runtime.
 const commandsChunk = walk(join(outDir, 'assets')).find((file) => /commands-.*\.js$/.test(file));
-if (commandsChunk) copyFile(commandsChunk, join(outDir, 'assets', 'commands.js'));
+if (!commandsChunk) {
+  console.error(
+    `Commands entry chunk (assets/commands-*.js) not found under ${join(outDir, 'assets')}. ` +
+      'The manifest references assets/commands.js; rebuild the web shell (npm run build).',
+  );
+  process.exit(1);
+}
+copyFile(commandsChunk, join(outDir, 'assets', 'commands.js'));
 
 const releaseNotes = [
   `# Gemini Enterprise Internal Alpha v${rootVersion()}`,

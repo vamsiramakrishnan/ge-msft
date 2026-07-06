@@ -60,6 +60,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: skill/requirements.txt
+      # test_tooling.py loads create_skill.py, which imports requests at module level — the
+      # tooling deps must be installed or the job dies at import before any test runs.
+      - name: install skill tooling deps
+        run: pip install -r skill/requirements.txt
       - name: parse_commands self-test
         run: python3 skill/m365-surface-commander/scripts/parse_commands.py --self-test
       - name: surface_cli self-test
@@ -69,6 +75,14 @@ jobs:
         run: |
           python3 parity_test.py
           python3 parity_corpus_test.py
+      # The updater tests validate against the real bundle zips (dry-run plans, resumable
+      # upload framing), so both bundles must be built first — they are build artifacts,
+      # not committed files.
+      - name: build skill bundle zips
+        working-directory: skill
+        run: |
+          ./build_zip.sh m365-surface-commander
+          ./build_zip.sh m365-command-planner
       - name: tooling unit tests
         working-directory: skill
         run: python3 test_tooling.py

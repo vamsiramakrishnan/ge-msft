@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process';
 export const repoRoot = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 export const alphaProfile = 'internal-alpha-word-excel';
 export const devProfile = 'development';
+export const prodProfile = 'production';
 const DEFAULT_DEV_PORT = '13000';
 
 export function parseArgs(argv = process.argv.slice(2)) {
@@ -71,7 +72,7 @@ function devWebOrigin(env) {
 
 export function profileFromArgs(args) {
   const profile = String(args.profile ?? alphaProfile);
-  if (profile !== alphaProfile && profile !== devProfile) {
+  if (profile !== alphaProfile && profile !== devProfile && profile !== prodProfile) {
     throw new Error(`Unsupported profile "${profile}".`);
   }
   return profile;
@@ -170,6 +171,18 @@ const DEV_GUIDS = new Set([
   '11111111-1111-1111-1111-111111111111',
   '22222222-2222-2222-2222-222222222222',
 ]);
+const GUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+// The baked development GUIDs are one repeated hex digit plus the fixed version/variant nibbles
+// (e.g. 11111111-1111-4111-8111-111111111111). A real registered app id never looks like that.
+export function isPlaceholderGuid(guid) {
+  const lower = String(guid).toLowerCase();
+  if (DEV_GUIDS.has(lower)) return true;
+  const distinct = new Set(lower.replace(/-/g, ''));
+  distinct.delete('4');
+  distinct.delete('8');
+  return distinct.size <= 1;
+}
 
 export function releaseConfig(profile, env = process.env) {
   if (profile === devProfile) {
@@ -196,6 +209,57 @@ export function releaseConfig(profile, env = process.env) {
       termsUrl: devEnv.GE_DEV_TERMS_URL ?? `${webOrigin}/terms`,
       supportUrl: devEnv.GE_DEV_SUPPORT_URL ?? `${webOrigin}/support`,
     };
+  }
+
+  if (profile === prodProfile) {
+    const required = [
+      'GE_PROD_APP_ID',
+      'GE_PROD_ENTRA_CLIENT_ID',
+      'GE_PROD_ONENOTE_APP_ID',
+      'GE_PROD_BOT_ID',
+      'GE_PROD_WEB_ORIGIN',
+      'GE_PROD_DEVELOPER_NAME',
+      'GE_PROD_PRIVACY_URL',
+      'GE_PROD_TERMS_URL',
+      'GE_PROD_SUPPORT_URL',
+    ];
+    const missing = required.filter((key) => !env[key]);
+    if (missing.length) {
+      const err = new Error(`Missing release manifest configuration: ${missing.join(', ')}`);
+      err.code = 'BLOCKED_EXTERNAL';
+      throw err;
+    }
+    const webOrigin = env.GE_PROD_WEB_ORIGIN.replace(/\/+$/, '');
+    let webUrl;
+    try {
+      webUrl = new URL(webOrigin);
+    } catch {
+      throw new Error('GE_PROD_WEB_ORIGIN must be a valid https:// origin.');
+    }
+    if (webUrl.protocol !== 'https:') {
+      throw new Error('GE_PROD_WEB_ORIGIN must be an https:// origin.');
+    }
+    if (webUrl.pathname !== '/' || webUrl.search || webUrl.hash || webUrl.username || webUrl.port) {
+      throw new Error(
+        'GE_PROD_WEB_ORIGIN must be a bare https origin with no path, port, or credentials.',
+      );
+    }
+    const cfg = {
+      profile,
+      appId: env.GE_PROD_APP_ID,
+      oneNoteAppId: env.GE_PROD_ONENOTE_APP_ID,
+      entraClientId: env.GE_PROD_ENTRA_CLIENT_ID,
+      botId: env.GE_PROD_BOT_ID,
+      webOrigin,
+      webDomain: webUrl.hostname,
+      developerName: env.GE_PROD_DEVELOPER_NAME,
+      websiteUrl: env.GE_PROD_WEBSITE_URL ?? `${webOrigin}/`,
+      privacyUrl: env.GE_PROD_PRIVACY_URL,
+      termsUrl: env.GE_PROD_TERMS_URL,
+      supportUrl: env.GE_PROD_SUPPORT_URL,
+    };
+    validateReleaseConfig(cfg);
+    return cfg;
   }
 
   const required = [
@@ -231,15 +295,25 @@ export function releaseConfig(profile, env = process.env) {
 }
 
 export function validateReleaseConfig(cfg) {
-  if (!GUID.test(cfg.appId) || DEV_GUIDS.has(cfg.appId.toLowerCase())) {
-    throw new Error('GE_ALPHA_APP_ID must be a non-development GUID.');
+  const prefix = cfg.profile === prodProfile ? 'GE_PROD' : 'GE_ALPHA';
+  const domainVar = cfg.profile === prodProfile ? 'GE_PROD_WEB_ORIGIN' : 'GE_ALPHA_WEB_DOMAIN';
+  if (!GUID.test(cfg.appId) || isPlaceholderGuid(cfg.appId)) {
+    throw new Error(`${prefix}_APP_ID must be a non-development GUID.`);
   }
-  if (!GUID.test(cfg.entraClientId) || DEV_GUIDS.has(cfg.entraClientId.toLowerCase())) {
-    throw new Error('GE_ALPHA_ENTRA_CLIENT_ID must be a non-development GUID.');
+  if (!GUID.test(cfg.entraClientId) || isPlaceholderGuid(cfg.entraClientId)) {
+    throw new Error(`${prefix}_ENTRA_CLIENT_ID must be a non-development GUID.`);
   }
-  if (!HOST.test(cfg.webDomain)) throw new Error('GE_ALPHA_WEB_DOMAIN must be a bare DNS host.');
+  if (cfg.profile === prodProfile) {
+    if (!GUID.test(cfg.oneNoteAppId) || isPlaceholderGuid(cfg.oneNoteAppId)) {
+      throw new Error('GE_PROD_ONENOTE_APP_ID must be a non-development GUID.');
+    }
+    if (!GUID.test(cfg.botId) || isPlaceholderGuid(cfg.botId)) {
+      throw new Error('GE_PROD_BOT_ID must be a non-development GUID.');
+    }
+  }
+  if (!HOST.test(cfg.webDomain)) throw new Error(`${domainVar} must name a bare DNS host.`);
   if (/localhost|example\.com/i.test(cfg.webDomain)) {
-    throw new Error('GE_ALPHA_WEB_DOMAIN must not be localhost or example.com.');
+    throw new Error(`${domainVar} must not be localhost or example.com.`);
   }
   for (const key of ['websiteUrl', 'privacyUrl', 'termsUrl', 'supportUrl']) {
     const url = new URL(cfg[key]);
@@ -403,7 +477,9 @@ export function alphaManifest(cfg) {
   };
 }
 
-export function developmentManifest(cfg) {
+// Full-surface unified manifest (Word, Excel, PowerPoint, Outlook, Teams). Shared by the
+// development and production profiles; only the branding differs.
+function unifiedManifest(cfg, brand) {
   const origin = cfg.webOrigin;
   const domain = cfg.webDomain;
   return {
@@ -411,11 +487,8 @@ export function developmentManifest(cfg) {
     manifestVersion: '1.23',
     id: cfg.appId,
     version: rootVersion(),
-    name: { short: 'Gemini Enterprise Dev', full: 'Gemini Enterprise for Microsoft 365 Dev' },
-    description: {
-      short: 'Development package for Gemini Enterprise across Microsoft 365.',
-      full: 'Development sideload package for Word, Excel, PowerPoint, Outlook, and Teams. Not a production release artifact.',
-    },
+    name: brand.name,
+    description: brand.description,
     developer: {
       name: cfg.developerName,
       websiteUrl: cfg.websiteUrl,
@@ -423,7 +496,7 @@ export function developmentManifest(cfg) {
       termsOfUseUrl: cfg.termsUrl,
     },
     icons: { color: 'icon-color.png', outline: 'icon-outline.png' },
-    accentColor: '#5B5FC7',
+    accentColor: brand.accentColor,
     webApplicationInfo: {
       id: cfg.entraClientId,
       resource: `api://${domain}/${cfg.entraClientId}`,
@@ -564,11 +637,45 @@ export function developmentManifest(cfg) {
   };
 }
 
-export function oneNoteManifest(cfg) {
+export function developmentManifest(cfg) {
+  return unifiedManifest(cfg, {
+    name: { short: 'Gemini Enterprise Dev', full: 'Gemini Enterprise for Microsoft 365 Dev' },
+    description: {
+      short: 'Development package for Gemini Enterprise across Microsoft 365.',
+      full: 'Development sideload package for Word, Excel, PowerPoint, Outlook, and Teams. Not a production release artifact.',
+    },
+    accentColor: '#5B5FC7',
+  });
+}
+
+export function productionManifest(cfg) {
+  return unifiedManifest(cfg, {
+    name: { short: 'Gemini Enterprise', full: 'Gemini Enterprise for Microsoft 365' },
+    description: {
+      short: 'Grounded Gemini Enterprise assistance across Microsoft 365.',
+      full: 'Gemini Enterprise for Word, Excel, PowerPoint, Outlook, and Teams. Grounded on your research unit; every change is reviewable, reversible, and carries durable provenance.',
+    },
+    accentColor: '#1E6B52',
+  });
+}
+
+const DEV_ONENOTE_BRAND = {
+  comment: 'Development OneNote manifest. OneNote ships separately from the unified M365 package.',
+  displayName: 'Gemini Enterprise Dev (OneNote)',
+  description: 'Development OneNote add-in for Gemini Enterprise.',
+};
+
+export const PROD_ONENOTE_BRAND = {
+  comment: 'Production OneNote manifest. OneNote ships separately from the unified M365 package.',
+  displayName: 'Gemini Enterprise (OneNote)',
+  description: 'Gemini Enterprise research capture and synthesis for OneNote.',
+};
+
+export function oneNoteManifest(cfg, brand = DEV_ONENOTE_BRAND) {
   const origin = cfg.webOrigin;
   const esc = xmlEscape;
   return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- Development OneNote manifest. OneNote ships separately from the unified M365 package. -->
+<!-- ${esc(brand.comment)} -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
@@ -578,8 +685,8 @@ export function oneNoteManifest(cfg) {
   <Version>${esc(officeXmlVersion())}</Version>
   <ProviderName>${esc(cfg.developerName)}</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Gemini Enterprise Dev (OneNote)" />
-  <Description DefaultValue="Development OneNote add-in for Gemini Enterprise." />
+  <DisplayName DefaultValue="${esc(brand.displayName)}" />
+  <Description DefaultValue="${esc(brand.description)}" />
   <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
   <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
@@ -843,13 +950,33 @@ export function validateGeneratedManifest(manifest, profile) {
   const errors = [];
   const text = JSON.stringify(manifest);
   const forbiddenTokens =
-    profile === alphaProfile
-      ? ['REPLACE_', 'example.com', 'localhost']
-      : ['REPLACE_', 'example.com'];
+    profile === devProfile ? ['REPLACE_', 'example.com'] : ['REPLACE_', 'example.com', 'localhost'];
   for (const token of forbiddenTokens) {
     if (text.includes(token)) errors.push(`manifest contains forbidden token ${token}`);
   }
   if (/\{\{[^}]+\}\}/.test(text)) errors.push('manifest contains unresolved template syntax');
+  if (profile === prodProfile) {
+    for (const guid of text.match(GUID_ANYWHERE) ?? []) {
+      if (isPlaceholderGuid(guid)) {
+        errors.push(`production manifest contains development placeholder GUID ${guid}`);
+      }
+    }
+    const scopes = manifest.extensions?.[0]?.requirements?.scopes ?? [];
+    for (const requiredScope of ['mail', 'workbook', 'document', 'presentation']) {
+      if (!scopes.includes(requiredScope)) {
+        errors.push(`production manifest missing surface scope ${requiredScope}`);
+      }
+    }
+    if (!manifest.bots?.length) errors.push('production manifest missing the Teams bot');
+    if (!manifest.staticTabs?.length) {
+      errors.push('production manifest missing the Teams static tab');
+    }
+    if (manifest.version !== rootVersion()) {
+      errors.push(
+        `manifest version ${manifest.version} does not match package version ${rootVersion()}`,
+      );
+    }
+  }
   if (profile === alphaProfile) {
     const ext = manifest.extensions?.[0];
     const scopes = ext?.requirements?.scopes ?? [];
@@ -858,8 +985,10 @@ export function validateGeneratedManifest(manifest, profile) {
         errors.push(`alpha manifest advertises disabled scope ${allowed}`);
       }
     }
+    // Scan without the $schema URL, which legitimately contains ".../teams/...".
+    const surfaceText = JSON.stringify({ ...manifest, $schema: undefined });
     for (const disabled of ['mail', 'presentation', 'Notebook', 'team', 'groupChat']) {
-      if (text.includes(disabled))
+      if (surfaceText.includes(disabled))
         errors.push(`alpha manifest advertises disabled surface ${disabled}`);
     }
     if (

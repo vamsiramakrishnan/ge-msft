@@ -36,6 +36,7 @@
       "comment",
       "compose",
       "format",
+      "grid",
       "mail",
       "page",
       "post",
@@ -50,6 +51,7 @@
   },
   "writeVerbToKind": {
     "set": "write-cells",
+    "grid": "write-cells",
     "suggest": "tracked-change",
     "comment": "add-comment",
     "format": "format-cells",
@@ -83,6 +85,7 @@
     "comment",
     "compose",
     "format",
+    "grid",
     "mail",
     "page",
     "post",

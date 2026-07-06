@@ -13,10 +13,13 @@ export function renderCommandLine(request: ActuationRequest): string {
   const p = request.params;
   switch (request.kind) {
     case 'write-cells': {
-      // `set <cell> <value|=formula>` — first cell of the (single) write target.
-      const cell = p.target?.range ?? '<range>';
-      const value = firstCell(p.cells) ?? p.text ?? '';
-      return `set ${cell} ${value}`.trimEnd();
+      const range = p.target?.range ?? '<range>';
+      const cells = p.cells ?? [];
+      if (cells.length > 1 || (cells[0]?.length ?? 0) > 1) {
+        return `grid ${range} (${cells.length}x${cells[0]?.length ?? 0})`;
+      }
+      const value = firstCell(cells) ?? p.text ?? '';
+      return `set ${range} ${value}`.trimEnd();
     }
     case 'tracked-change': {
       // `suggest "<old>" => "<new>"` — content-anchored Word edit.

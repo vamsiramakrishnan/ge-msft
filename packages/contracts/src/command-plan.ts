@@ -182,14 +182,19 @@ const _FENCE = /```plan[^\S\n]*\r?\n([\s\S]*?)```/i;
 const _FENCE_OPEN = /```plan[^\S\n]*\r?\n([\s\S]*)$/i;
 
 /**
- * Return the inner text of the first ```plan fence, or `null` (→ re-prompt, not an error).
- * Tolerates an unclosed fence (a frequent real-world failure mode).
+ * Return the inner text of the first ```plan fence, a live plain `plan\n...` sentinel, or `null`
+ * (→ re-prompt, not an error). Tolerates an unclosed fence (a frequent real-world failure mode).
  */
 export function extractPlanBlock(text: string): string | null {
   const closed = text.match(_FENCE);
   if (closed) return closed[1]!.trim();
   const open = text.match(_FENCE_OPEN);
   if (open) return open[1]!.replace(/```\s*$/, '').trim();
+  const trimmed = text.trim();
+  if (!trimmed.includes('```')) {
+    const [first] = trimmed.split(/\r?\n/, 1);
+    if (first?.trim().toLowerCase() === 'plan') return trimmed;
+  }
   return null;
 }
 
@@ -263,7 +268,7 @@ function parseLine(line: string): ParsedLine {
 }
 
 /**
- * Parse the planner's reply: extract the ```plan fence, parse each keyword line, validate
+ * Parse the planner's reply: extract the ```plan fence/plain sentinel, parse each keyword line, validate
  * intent/surface/confidence, accumulate the list keys, and apply the structural rules (a plan needs
  * an `intent`, a `surface`, and at least one `step` — unless it asks a `clarify` first). Mirrors
  * `parse_plan.py`'s `parse_plan`; `plan` is `null` when there is no fence or the plan is structurally
@@ -276,7 +281,7 @@ export function parsePlanBlock(text: string): {
 } {
   const inner = extractPlanBlock(text);
   if (inner === null) {
-    // No ```plan fence — re-prompt, not an error (matches the python "note" path).
+    // No plan block — re-prompt, not an error (matches the python "note" path).
     return { plan: null, errors: [], needsClarification: false };
   }
 

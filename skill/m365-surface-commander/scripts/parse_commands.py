@@ -31,7 +31,7 @@ _MANIFEST_PATH = Path(__file__).with_name("m365-cli-1.0.json")
 # The self-test asserts this equals the manifest's write verbs — adding a verb to the manifest without
 # a Python arm here is a caught drift, not a silent "unhandled verb".
 HANDLED_WRITE_VERBS = {
-    "set", "suggest", "comment", "format", "reply",
+    "set", "grid", "suggest", "comment", "format", "reply",
     "slide", "page", "mail", "post", "compose",
     "shape",
     # ADR-0007 host-native Excel kinds — table/chart/cf take a literal range + props
@@ -162,6 +162,37 @@ def _scan_quoted(rest: str):
         return None
     val = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
     return val, rest.strip()[m.end():].strip()
+
+
+def _split_first_arg(rest: str):
+    """Split the first argument while preserving single-quoted sheet names.
+
+    Excel selectors such as `'Daily schedule'!C5:I23` must stay one token even though the
+    sheet name contains spaces.
+    """
+    s = rest.lstrip()
+    if not s:
+        return None
+    m = re.match(r'"([^"]*)"(\S*)|\'([^\']*)\'(\S*)|(\S+)', s)
+    if not m:
+        return None
+    if m.group(1) is not None:
+        arg = f"{m.group(1)}{m.group(2) or ''}"
+    elif m.group(3) is not None:
+        arg = f"'{m.group(3)}'{m.group(4) or ''}"
+    else:
+        arg = m.group(5)
+    return arg, s[m.end():]
+
+
+def _parse_grid_body(body: str):
+    normalized = body.replace("\\n", "\n").replace("\\t", "\t")
+    rows = []
+    for row in re.split(r"\r?\n", normalized):
+        cells = [cell.strip() for cell in row.split("\t")]
+        if any(cell != "" for cell in cells):
+            rows.append(cells)
+    return rows
 
 
 # Split a verb's argument string into positional tokens + key=value props, keeping `key="quoted
@@ -386,6 +417,25 @@ def parse_line(line: str):
         if not cell or not value:
             return {"error": "set needs a cell and a value — usage: set <A1> <value|=formula>"}
         return {"verb": "set", "cell": cell, "value": value}
+
+    if verb == "grid":
+        usage = 'grid needs a range and quoted TSV — usage: grid <range> = "a\\tb\\nc\\td"'
+        split = _split_first_arg(rest)
+        if not split:
+            return {"error": usage}
+        rng, tail = split[0], split[1].strip()
+        if tail.startswith("="):
+            tail = tail[1:].strip()
+        quoted = _scan_quoted(tail)
+        if not rng or not quoted or quoted[1].strip():
+            return {"error": usage}
+        cells = _parse_grid_body(quoted[0])
+        if not cells or all(all(cell == "" for cell in row) for row in cells):
+            return {"error": "grid body is empty — provide at least one non-empty cell"}
+        width = len(cells[0])
+        if width == 0 or any(len(row) != width for row in cells):
+            return {"error": "grid rows must be rectangular — every row needs the same number of cells"}
+        return {"verb": "grid", "range": rng, "cells": cells}
 
     if verb == "suggest":
         first = _scan_quoted(rest)
@@ -643,6 +693,16 @@ done
         failures.append("malformed let did not error")
     if "error" not in (parse_line("read Sales!A1:D20 | explode") or {}):
         failures.append("unknown transform did not error")
+
+    grid = parse_line("grid 'Daily schedule'!C5:D6 = \"Monday\\tTuesday\\nDeep Work\\tMusic Lesson\"")
+    if grid != {
+        "verb": "grid",
+        "range": "'Daily schedule'!C5:D6",
+        "cells": [["Monday", "Tuesday"], ["Deep Work", "Music Lesson"]],
+    }:
+        failures.append(f"grid did not parse: {grid}")
+    if "error" not in (parse_line('grid Report!A1:B2 = "A\\tB\\nC"') or {}):
+        failures.append("ragged grid did not error")
 
     # ADR-0008 §4 drift gate: every manifest write verb MUST have a parse arm here (and vice-versa),
     # so growing the manifest without a Python arm is caught — never a silent "unhandled verb".

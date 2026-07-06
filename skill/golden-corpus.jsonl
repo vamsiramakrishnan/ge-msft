@@ -43,7 +43,7 @@
 {"name": "suggest-one-string", "input": "suggest \"only one\"", "expect": {"error_substring": "two quoted strings"}}
 {"name": "outline-trailing-junk", "input": "outline Sales", "expect": {"error_substring": "takes no arguments"}}
 {"name": "done-trailing-junk", "input": "done now please", "expect": {"error_substring": "takes no arguments"}}
-{"name": "help-trailing-junk", "input": "help me", "expect": {"error_substring": "takes no arguments"}}
+{"name": "help-targeted", "input": "help shape", "expect": {"verbs": ["help"]}}
 {"name": "block-each-flat", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2\ndone\n```", "expect": {"verbs": ["read", "set", "done"], "complete": true}}
 {"name": "block-unclosed-fence", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2", "expect": {"verbs": ["read", "set"], "complete": false}}
 {"name": "block-done-with-error", "input": "```cmd\nwrit-cells A1 5\ndone\n```", "expect": {"has_error": true, "complete": false}}

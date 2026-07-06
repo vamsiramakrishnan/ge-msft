@@ -159,12 +159,13 @@ class FakeAssist implements AssistLike {
     errors: [],
     needsClarification: false,
   };
+  plannedQueue: { plan: CommandPlan | null; errors: string[]; needsClarification: boolean }[] = [];
   planTasks: string[] = [];
   plan(
     task: string,
   ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
     this.planTasks.push(task);
-    return Promise.resolve(this.planned);
+    return Promise.resolve(this.plannedQueue.shift() ?? this.planned);
   }
 
   apply(
@@ -350,6 +351,7 @@ describe('PanelController — ask / stream', () => {
   it('streams tokens + citations into the assistant message and toggles busy', async () => {
     const assist = new FakeAssist();
     assist.script = [
+      { type: 'activity', text: 'Reading selected policy' },
       { type: 'token', text: 'The SLA ' },
       { type: 'token', text: 'is fine.' },
       { type: 'citation', source: { title: 'Vendor Policy', uri: 'https://x' } },
@@ -367,6 +369,8 @@ describe('PanelController — ask / stream', () => {
     const msgs = c.getState().messages;
     expect(msgs.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(msgs[1]?.text).toBe('The SLA is fine.');
+    expect(msgs[1]?.text).not.toContain('Reading selected policy');
+    expect(c.getState().steps.map((s) => s.text)).toContain('Reading selected policy');
     expect(msgs[1]?.sources?.[0]?.title).toBe('Vendor Policy');
     expect(msgs[1]?.streaming).toBe(false);
     expect(c.getState().busy).toBe(false);
@@ -558,6 +562,7 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
         compiled: { kind: 'read', intent: { read: 'range', selector: 'Sales!C2:C7' } },
       }),
       ev({ type: 'read-result', turn: 1, intentLabel: 'Sales!C2:C7', result: [1, 2] }),
+      ev({ type: 'activity', text: 'Calculating the margin' }),
       ev({ type: 'code-execution', language: 'python', code: 'print(12)' }),
       ev({ type: 'code-execution-result', outcome: 'OUTCOME_OK', output: '12\n' }),
       ev({ type: 'token', text: 'The margin ' }),
@@ -577,6 +582,7 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
       'turn-start',
       'command',
       'read-result',
+      'activity',
       'code-execution',
       'code-execution',
       'done',
@@ -962,6 +968,12 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     // The command plan cleared and the EXECUTOR ran (its own effect-level gate is now staged).
     expect(c.getState().pendingCommandPlan).toBeUndefined();
     expect(c.getState().pendingPlan).toBeDefined();
+    expect(assist.runTasks[0]).toContain('<confirmed_plan>');
+    expect(assist.runTasks[0]).toContain('intent: rewrite');
+    expect(assist.runTasks[0]).toContain(
+      'step 1: rewrite the SLA figure to 99.9% as a tracked change',
+    );
+    expect(assist.runTasks[0]).toContain('exclude: the indemnity clause');
   });
 
   it('cancel discards the plan and runs nothing', async () => {
@@ -992,6 +1004,41 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     expect(last?.role).toBe('assistant');
     expect(last?.text).toContain('which section');
     expect(c.getState().pendingPlan).toBeUndefined();
+    expect(c.getState().pendingPlanClarification?.questions).toEqual(['which section — §4 or §5?']);
+  });
+
+  it('routes a clarification answer back through the planner and then stages the confirmed plan', async () => {
+    const assist = new FakeAssist();
+    assist.plannedQueue = [
+      {
+        plan: {
+          ...wordPlan,
+          steps: [],
+          clarify: ['what routine should the schedule reflect?'],
+        },
+        errors: [],
+        needsClarification: true,
+      },
+      { plan: wordPlan, errors: [], needsClarification: false },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.proposePlan('/rewrite Help me create a solid mock schedule', undefined);
+    expect(c.getState().pendingPlanClarification).toBeDefined();
+
+    c.answerPlanClarification('Google SWE in Sunnyvale with India team calls and fitness');
+    await tick();
+    await tick();
+
+    expect(assist.planTasks[1]).toContain('/rewrite Help me create a solid mock schedule');
+    expect(assist.planTasks[1]).toContain(
+      'User clarification:\nGoogle SWE in Sunnyvale with India team calls and fitness',
+    );
+    expect(c.getState().pendingPlanClarification).toBeUndefined();
+    expect(c.getState().pendingCommandPlan?.plan).toEqual(wordPlan);
+    expect(c.getState().messages.at(-1)?.text).toBe(
+      'Google SWE in Sunnyvale with India team calls and fitness',
+    );
   });
 
   it('degrades to the executor when the planner yields no parseable plan', async () => {

@@ -166,8 +166,8 @@ def _documented_verbs() -> set:
     cap_map = HERE / "m365-surface-commander" / "references" / "capability-map.md"
     text = cap_map.read_text(encoding="utf-8")
     verbs = set(DOCUMENTED_CONTROL_VERBS)
-    # Read verbs are referenced inline as table columns.
-    for v in ("outline", "read", "search", "context"):
+    # Read verbs are referenced inline in the read table and read-body prose.
+    for v in sorted(parse_commands.READ_VERBS):
         if f"`{v}`" in text:
             verbs.add(v)
     # Write verbs: rows of the Writes table begin with `| \`<verb>\``.
@@ -176,7 +176,11 @@ def _documented_verbs() -> set:
         if stripped.startswith("| `") and "|" in stripped[1:]:
             cell = stripped.split("|", 2)[1].strip()  # first column
             if cell.startswith("`") and cell.endswith("`"):
-                verbs.add(cell.strip("`"))
+                verb = cell.strip("`")
+                # Slash-specialized capabilities are parsed through the `invoke` arm, not as
+                # top-level core verbs, so they are covered by golden invoke cases instead.
+                if not verb.startswith("/"):
+                    verbs.add(verb)
     return verbs
 
 
@@ -204,7 +208,7 @@ def _check_manifest_parity() -> list:
         failures.append(f"  [manifest] write verbs without a parse arm: "
                         f"{sorted(manifest_write - parse_commands.HANDLED_WRITE_VERBS)}")
     # 3. doc ≡ manifest (the human capability-map matches the generated source).
-    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - {"outline", "read", "search", "context"}
+    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - set(parse_commands.READ_VERBS)
     if doc_write != manifest_write:
         failures.append(f"  [manifest] capability-map writes != manifest writes: "
                         f"doc-only {sorted(doc_write - manifest_write)}, "

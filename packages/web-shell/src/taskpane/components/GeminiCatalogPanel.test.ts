@@ -32,6 +32,7 @@ const catalog: GeminiCatalog = {
       suggested: true,
     },
   ],
+  connectors: [],
 };
 
 let container: HTMLDivElement | undefined;

@@ -55,6 +55,7 @@ export function isCompileError(c: CompiledCommand): c is { error: string } {
  * Compile one parsed command into a read intent, a typed `ActuationRequest`, or a control verb.
  *
  *   set <cell> <value>          → write-cells   { target:{ range:cell }, cells:[[value]] }
+ *   grid <range> "a\tb\nc\td"  → write-cells   { target:{ range }, cells:[[a,b],[c,d]] }
  *   suggest "old" => "new"      → tracked-change { target:{ matchText:oldText }, text:newText }
  *   comment <sel> "text"        → add-comment   { target:{ range|matchText }, text }  (per surface)
  *   format <range> k=v ...      → format-cells  { target:{ range }, format:{…} }
@@ -138,6 +139,11 @@ export function compileCommand(
       return compileWrite(WRITE_VERB_TO_KIND.set, ctx, {
         target: { range: cmd.cell },
         cells: [[cmd.value]],
+      });
+    case 'grid':
+      return compileWrite(WRITE_VERB_TO_KIND.grid, ctx, {
+        target: { range: cmd.range },
+        cells: cmd.cells,
       });
     case 'suggest':
       return compileWrite(WRITE_VERB_TO_KIND.suggest, ctx, {

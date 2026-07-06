@@ -59,6 +59,26 @@ describe('parsePlanBlock', () => {
     });
   });
 
+  it('parses the live plain plan sentinel shape without a fence', () => {
+    const text = `plan
+intent   rewrite
+surface  excel
+scope    document
+step     Generate a mock weekly schedule for a Google SWE based in Sunnyvale
+exclude  overwrite existing headers
+confidence high`;
+    expect(extractPlanBlock(text)).toBe(text);
+    const { plan, errors, needsClarification } = parsePlanBlock(text);
+    expect(errors).toEqual([]);
+    expect(needsClarification).toBe(false);
+    expect(plan?.intent).toBe('rewrite');
+    expect(plan?.scope).toEqual({ kind: 'document' });
+    expect(plan?.steps).toEqual([
+      'Generate a mock weekly schedule for a Google SWE based in Sunnyvale',
+    ]);
+    expect(plan?.excludes).toEqual(['overwrite existing headers']);
+  });
+
   it('parses a bare ground token and a function-form scope', () => {
     const text =
       '```plan\nintent rewrite\nsurface word\nscope section(§4)\nground unit\nground this\nstep tighten\n```';

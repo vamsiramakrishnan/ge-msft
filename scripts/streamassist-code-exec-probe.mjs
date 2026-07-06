@@ -73,6 +73,14 @@ Line 6,AMER,105,65`,
       'Use code execution if available to evaluate 1 / 0 in Python, then explain the failure in one sentence without a stack trace.',
     mustMatch: [/zero|division|fail|error/i],
   },
+  {
+    id: 'schedule-csv',
+    title: 'Large rectangular schedule generation',
+    expectCode: true,
+    query:
+      'Use code execution if available to generate a CSV-shaped weekly schedule with columns Time, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday. Include 30-minute rows from 08:00 through 18:00 for a Sunnyvale Google SWE who has Tuesday 08:00 music, morning India team overlap, late afternoon Australia manager overlap, daily fitness, and focused coding blocks. Return the CSV header, the first two data rows, the last data row, and the total row count.',
+    mustMatch: [/Time,Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday/i, /Music/i, /India/i, /Australia|manager/i, /21|twenty-one/i],
+  },
 ];
 
 const OUT_JSON = 'dist/probes/streamassist-code-exec.json';
@@ -242,7 +250,12 @@ function parseStreamAssistPayload(raw, fallbackSession) {
     const answer = chunk?.answer || chunk?.streamAssistResponse?.answer;
     for (const reply of answer?.replies || []) {
       const content = reply?.groundedContent?.content || {};
-      if (content.thought === true) continue;
+      if (content.thought === true) {
+        if (typeof content.text === 'string' && content.text.trim()) {
+          events.push({ type: 'activity', text: compactActivity(content.text) });
+        }
+        continue;
+      }
       if (content.executableCode?.code) {
         events.push({ type: 'code-execution', code: content.executableCode.code });
       }
@@ -260,6 +273,15 @@ function parseStreamAssistPayload(raw, fallbackSession) {
     }
   }
   return { rawHash: sha256(raw), chunks: chunks.length, text, events, session };
+}
+
+function compactActivity(text) {
+  const compact = text
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  return compact.length > 160 ? `${compact.slice(0, 157)}...` : compact;
 }
 
 function parseChunks(raw) {

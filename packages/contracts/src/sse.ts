@@ -8,6 +8,9 @@ import { ProvenancePayloadSchema } from './provenance.js';
  */
 export const SseEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('token'), text: z.string() }),
+  // Non-answer progress text from StreamAssist thought/activity frames. This is rendered as
+  // transient activity, not appended to the assistant answer and not included in provenance hashes.
+  z.object({ type: z.literal('activity'), text: z.string() }),
   z.object({ type: z.literal('finding'), finding: FindingSchema }),
   z.object({
     type: z.literal('slide'),

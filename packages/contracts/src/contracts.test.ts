@@ -90,6 +90,7 @@ describe('contracts — validation rejects bad shapes', () => {
 describe('contracts — SSE wire format', () => {
   const events: SseEvent[] = [
     { type: 'token', text: 'hello ' },
+    { type: 'activity', text: 'Reading selected range' },
     { type: 'citation', source: { title: 'Policy v4' } },
     { type: 'code-execution', language: 'python', code: 'print(1)' },
     { type: 'code-execution-result', outcome: 'OUTCOME_OK', output: '1\n' },

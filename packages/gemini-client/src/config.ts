@@ -140,18 +140,49 @@ export function lookupWidgetConfigUrl(cfg: GeminiClientConfig): string {
   return `${CONTENT_GLOBAL_HOST}/v1alpha/locations/${cfg.assistant.location}/lookupWidgetConfig`;
 }
 
-/** Absolute URL for listing assistant agents/skills. */
-export function assistantAgentsUrl(cfg: GeminiClientConfig): string {
-  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/catalog/agents`;
-  const host = discoveryEngineHost(cfg.assistant.location);
-  return `${host}/v1alpha/${assistantResourceName(cfg.assistant)}/agents`;
+/** Absolute URL for GE widget connector-node discovery under the signed-in user's widget view. */
+export function widgetQueryAvailableConnectorNodesUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/widgetQueryAvailableConnectorNodes`;
+  return `${CONTENT_GLOBAL_HOST}/v1alpha/locations/${cfg.assistant.location}/widgetQueryAvailableConnectorNodes`;
 }
 
-/** Absolute URL for listing collection data stores/connectors. */
-export function dataStoresUrl(cfg: GeminiClientConfig): string {
-  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/catalog/dataStores`;
+/**
+ * Query string for paged catalog list calls: a bounded page size plus the follow-up
+ * token from the previous page's `nextPageToken`.
+ */
+function listPageQuery(pageToken?: string): string {
+  const params = new URLSearchParams({ pageSize: '100' });
+  if (pageToken) params.set('pageToken', pageToken);
+  return `?${params.toString()}`;
+}
+
+/** Absolute URL for listing assistant agents/skills (one page; pass `nextPageToken` to follow). */
+export function assistantAgentsUrl(cfg: GeminiClientConfig, pageToken?: string): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/catalog/agents${listPageQuery(pageToken)}`;
   const host = discoveryEngineHost(cfg.assistant.location);
-  return `${host}/v1alpha/${collectionResourceName(cfg.assistant)}/dataStores`;
+  return `${host}/v1alpha/${assistantResourceName(cfg.assistant)}/agents${listPageQuery(pageToken)}`;
+}
+
+/** Absolute URL for listing collection data stores (one page; pass `nextPageToken` to follow). */
+export function dataStoresUrl(cfg: GeminiClientConfig, pageToken?: string): string {
+  if (cfg.proxyUrl) {
+    return `${proxyBase(cfg.proxyUrl)}/catalog/dataStores${listPageQuery(pageToken)}`;
+  }
+  const host = discoveryEngineHost(cfg.assistant.location);
+  return `${host}/v1alpha/${collectionResourceName(cfg.assistant)}/dataStores${listPageQuery(pageToken)}`;
+}
+
+/**
+ * Absolute URL for listing project+location collections (one page; pass `nextPageToken` to
+ * follow). Each collection embeds its output-only `dataConnector`, so this single list is the
+ * whole connector catalog — no per-connector GET is needed.
+ */
+export function collectionsUrl(cfg: GeminiClientConfig, pageToken?: string): string {
+  if (cfg.proxyUrl) {
+    return `${proxyBase(cfg.proxyUrl)}/catalog/collections${listPageQuery(pageToken)}`;
+  }
+  const host = discoveryEngineHost(cfg.assistant.location);
+  return `${host}/v1alpha/${projectLocationResourceName(cfg.assistant)}/collections${listPageQuery(pageToken)}`;
 }
 
 /** Absolute URL for listing engine sessions. */

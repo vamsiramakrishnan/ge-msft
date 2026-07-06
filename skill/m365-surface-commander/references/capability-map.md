@@ -35,6 +35,7 @@ bridge; `open` only navigates/selects in the host and is never a write or a send
 | Command   | Change             | Word | Excel | PPT | OneNote | Outlook | Teams |
 | --------- | ------------------ | :--: | :---: | :-: | :-----: | :-----: | :---: |
 | `set`     | write a cell       |      |  yes  |     |         |         |       |
+| `grid`    | write a cell grid  |      |  yes  |     |         |         |       |
 | `format`  | format cells       |      |  yes  |     |         |         |       |
 | `table`   | create a table     |      |  yes  |     |         |         |       |
 | `chart`   | insert a chart     |      |  yes  |     |         |         |       |
@@ -64,6 +65,23 @@ The Excel `table`/`chart`/`cf`/`spill` writes are reversible by a recorded inver
 created object, clear the rule, restore prior values). `chart` and `table` read a **range** —
 to visualize a computed result, first `spill` the composed table into a grid, then point
 `table`/`chart` at the resulting range (see the table → grid sink in command-grammar.md).
+Use `grid` instead of repeated `set` commands when the whole rectangular cell payload is already
+known, such as generated schedules, seed tables, and CSV-shaped results.
+
+## Structured-operation equivalents by app
+
+| App        | Best native shape for bulk/structured output                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------------- |
+| Excel      | `grid` for literal rectangles; `spill` for computed tables; then `table`, `chart`, `cf` over the range.       |
+| Word       | `suggest` for paragraph-level surgical changes; `/insert-table`, `/insert-content-control`, `/insert-html`, and `/insert-ooxml` for structured insertions. |
+| PowerPoint | `slide` for simple bullets; `/add-table-slide`, `/add-shape`, `/set-shape-text`, `/format-shape`, `/insert-image`, and `/insert-html`-derived image/slides for designed layouts. |
+| OneNote    | `page` for new synthesized pages; `/add-outline`, `/insert-table`, `/append-rich-text`, and `/insert-image` for structured page regions. |
+| Outlook    | `mail`/`compose` and `/set-body`/`/prepend-body` for draft bodies; `/add-attachment` for generated files. Nothing auto-sends. |
+| Teams      | `post` for reviewable text; `/post-card` for structured Adaptive Cards; Graph post/update/reply kinds only when estate writes are advertised. |
+
+When the generated payload is large enough that a model should not hand-type it, first ask `context
+analytical full-scope upload-preferred code-execution-preferred`. The host may return file/code
+context; the model consumes only that structured result, then uses the native shape above.
 
 ## Out of scope
 

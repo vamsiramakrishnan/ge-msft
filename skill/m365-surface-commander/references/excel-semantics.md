@@ -20,6 +20,10 @@ one must use that exact ref, not the current selection.
 **Writing is address-anchored** — `set <cell> <value|=formula>` lands an exact cell. Prefer a native
 formula (`=SUMIF(...)`) or a value you read over a guessed number.
 
+**Bulk generated rectangles:** use `grid <range> = "a\tb\nc\td"` for a known rectangular payload
+such as a mock schedule, seed table, or CSV-shaped result. This is one reviewable `write-cells`
+effect. Do not emit dozens of scalar `set` commands for one logical table.
+
 **Formula safety:** a `=`-prefixed value is evaluated as a formula, but model/host-derived text is
 screened — `WEBSERVICE`/`DDE`/external-reference/active-content formulas are refused, not evaluated.
 Don't try to route untrusted content through a formula.
@@ -29,7 +33,8 @@ writes it as a grid at an origin cell; `table`/`chart`/`cf` then consume the **d
 (`spill Report!A1` of a 10×2 table → `Report!A1:B11`). The dependent effects depend on the spill —
 see [planning-normal-form.md](planning-normal-form.md) and the `top-n-report` pattern.
 
-**Core verbs:** `set`, `format`, `comment` (cell-anchored), `reply`, `table`, `chart`, `cf`, `spill`.
+**Core verbs:** `set`, `grid`, `format`, `comment` (cell-anchored), `reply`, `table`, `chart`, `cf`,
+`spill`.
 **Specialized (`/`):** `/set-entity-card` (linked data type — typings-limited; may degrade).
 
 **Gotchas:** comments anchor on a cell you've read; conditional formats apply to a whole range in one

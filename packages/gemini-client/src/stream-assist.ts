@@ -176,7 +176,10 @@ export class StreamAssistClient {
           };
         }
         const text = content?.text;
-        if (text && content?.thought !== true) {
+        if (text && content?.thought === true) {
+          const activity = activityText(text);
+          if (activity) yield { type: 'activity', text: activity };
+        } else if (text) {
           accumulated += text;
           yield { type: 'token', text };
         }
@@ -358,6 +361,16 @@ function codeExecutionOutcome(
     default:
       return 'OUTCOME_UNSPECIFIED';
   }
+}
+
+function activityText(text: string): string | undefined {
+  const compact = text
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (!compact) return undefined;
+  return compact.length > 160 ? `${compact.slice(0, 157)}...` : compact;
 }
 
 function agentId(cfg: GeminiClientConfig, skills: string[]): string {

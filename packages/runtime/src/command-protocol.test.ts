@@ -541,12 +541,41 @@ describe('compileCommand', () => {
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
+
+  it('compiles `grid` literal TSV → one write-cells request', () => {
+    const c = compileCommand(
+      {
+        verb: 'grid',
+        range: "'Daily schedule'!C5:D6",
+        cells: [
+          ['Monday', 'Tuesday'],
+          ['Deep Work', 'Music Lesson'],
+        ],
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'write-cells',
+        params: {
+          target: { range: "'Daily schedule'!C5:D6" },
+          cells: [
+            ['Monday', 'Tuesday'],
+            ['Deep Work', 'Music Lesson'],
+          ],
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
 });
 
 describe('renderGrammarPrompt', () => {
   it('advertises set for Excel and not suggest', () => {
     const prompt = renderGrammarPrompt(excelManifest);
     expect(prompt).toContain('set <A1> <value|=formula>');
+    expect(prompt).toContain('grid <range> = "a\\tb\\nc\\td"');
     expect(prompt).toContain('read <A1|NamedRange>');
     expect(prompt).toContain('context [incremental|inline-preferred');
     expect(prompt).not.toContain('suggest "old text"');

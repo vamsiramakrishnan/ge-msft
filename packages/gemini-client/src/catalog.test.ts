@@ -139,6 +139,7 @@ describe('DiscoveryCatalogClient', () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('/widgetListAvailableAgentViews')) return json({ agentViews: [] });
+      if (url.includes('/widgetQueryAvailableConnectorNodes')) return json({ connectorNodes: [] });
       if (url.includes('/lookupWidgetConfig')) {
         expect(JSON.parse(String(init?.body))).toEqual({
           widgetConfigId: 'test-widget-config-id',
@@ -153,6 +154,8 @@ describe('DiscoveryCatalogClient', () => {
                       'collections/default_collection/dataStores/msft-onedrive-fed_1779469629030_file',
                     displayName: 'OneDrive files',
                     type: 'GENERIC',
+                    dataConnector:
+                      'projects/proj/locations/global/collections/msft-onedrive-fed_1779469629030/dataConnector',
                   },
                   {
                     dataStoreId: 'msft-outlook-fed_1779468500280_mail',
@@ -188,6 +191,7 @@ describe('DiscoveryCatalogClient', () => {
         id: 'msft-onedrive-fed_1779469629030_file',
         label: 'OneDrive files',
         type: 'GENERIC',
+        connectorId: 'msft-onedrive-fed_1779469629030',
         suggested: true,
       },
       {
@@ -199,12 +203,90 @@ describe('DiscoveryCatalogClient', () => {
     ]);
   });
 
+  it('uses widget connector-node discovery before admin collections.list', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/lookupWidgetConfig')) {
+        return json({
+          widgetConfig: {
+            toolsSpec: {
+              vertexAiSearchSpec: {
+                dataStoreSpecs: [
+                  {
+                    dataStore:
+                      'collections/default_collection/dataStores/msft-onedrive-fed_1779469629030_file',
+                    dataConnector:
+                      'projects/proj/locations/global/collections/msft-onedrive-fed_1779469629030/dataConnector',
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      if (url.includes('/widgetQueryAvailableConnectorNodes')) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          configId: 'test-widget-config-id',
+          queryAvailableConnectorNodesRequest: {
+            parent: 'projects/proj/locations/global',
+            dataConnectors: [
+              'projects/proj/locations/global/collections/msft-onedrive-fed_1779469629030/dataConnector',
+            ],
+            engine:
+              'projects/proj/locations/global/collections/default_collection/engines/test-engine',
+            view: 'FULL',
+            toolType: 'CONNECTOR_NODE',
+          },
+          location: 'global',
+        });
+        return json({
+          connectorNodes: [
+            {
+              dataConnector:
+                'projects/proj/locations/global/collections/msft-onedrive-fed_1779469629030/dataConnector',
+              displayName: 'OneDrive',
+              dataSource: 'onedrive',
+              state: 'ACTIVE',
+              lastSyncTime: '2026-07-01T10:00:00Z',
+            },
+          ],
+        });
+      }
+      if (url.includes('/collections?'))
+        return new Response('admin collections should not be called', { status: 500 });
+      return new Response('not found', { status: 404 });
+    });
+
+    const connectors = await new DiscoveryCatalogClient(
+      tokenSource,
+      {
+        ...cfg,
+        widget: { configId: 'test-widget-config-id' },
+      },
+      fetchImpl as never,
+    ).listConnectors();
+
+    expect(fetchImpl.mock.calls.some((call) => String(call[0]).includes('/collections?'))).toBe(
+      false,
+    );
+    expect(connectors).toEqual([
+      {
+        name: 'projects/proj/locations/global/collections/msft-onedrive-fed_1779469629030',
+        id: 'msft-onedrive-fed_1779469629030',
+        label: 'OneDrive',
+        source: 'onedrive',
+        state: 'active',
+        lastSyncTime: '2026-07-01T10:00:00Z',
+      },
+    ]);
+  });
+
   it('falls back to admin dataStores.list when widget config lookup has no connector metadata', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/widgetListAvailableAgentViews')) return json({ agentViews: [] });
       if (url.includes('/lookupWidgetConfig')) return json({ widgetConfig: { displayName: 'GE' } });
-      if (url.endsWith('/dataStores')) {
+      if (url.includes('/dataStores?')) {
         return json({
           dataStores: [
             {
@@ -232,7 +314,7 @@ describe('DiscoveryCatalogClient', () => {
   it('lists assistant skills and collection data stores as the signed-in user', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/agents')) {
+      if (url.includes('/agents?')) {
         return json({
           agents: [
             {
@@ -247,7 +329,7 @@ describe('DiscoveryCatalogClient', () => {
           ],
         });
       }
-      if (url.endsWith('/dataStores')) {
+      if (url.includes('/dataStores?')) {
         return json({
           dataStores: [
             {
@@ -258,6 +340,7 @@ describe('DiscoveryCatalogClient', () => {
           ],
         });
       }
+      if (url.includes('/collections?')) return json({ collections: [] });
       return new Response('not found', { status: 404 });
     });
 
@@ -267,7 +350,7 @@ describe('DiscoveryCatalogClient', () => {
       fetchImpl as never,
     ).listCatalog();
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     const firstCall = fetchImpl.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
     const firstInit = firstCall[1];
     expect(firstInit.headers).toEqual({ Authorization: 'Bearer goog-token' });
@@ -305,6 +388,7 @@ describe('DiscoveryCatalogClient', () => {
     const defaults = defaultCatalogSelection({
       skills: [planner, commander],
       dataStores: [dataStore],
+      connectors: [],
     });
 
     expect(applyCatalogSelection(defaults)).toEqual({
@@ -323,7 +407,7 @@ describe('DiscoveryCatalogClient', () => {
     const commander = `${agentParent()}/agents/7404511736383961129`;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/agents')) {
+      if (url.includes('/agents?')) {
         return new Response(
           JSON.stringify({
             error: {
@@ -335,7 +419,8 @@ describe('DiscoveryCatalogClient', () => {
           { status: 403 },
         );
       }
-      if (url.endsWith('/dataStores')) return json({ dataStores: [] });
+      if (url.includes('/dataStores?')) return json({ dataStores: [] });
+      if (url.includes('/collections?')) return json({ collections: [] });
       return new Response('not found', { status: 404 });
     });
 

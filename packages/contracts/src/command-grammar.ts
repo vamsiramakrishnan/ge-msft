@@ -36,7 +36,7 @@ import { ContextKindSchema, type ContextKind } from './context.js';
  * self-corrects on the next turn.
  *
  * SCOPE: `outline · read · search · list · inspect · properties · comments · attachments · tables ·
- * slides · neighbors · context · open · set · suggest · comment · format · reply · slide · page ·
+ * slides · neighbors · context · open · set · grid · suggest · comment · format · reply · slide · page ·
  * mail · post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the host-native
  * kinds).
  */
@@ -72,6 +72,7 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
  */
 export const WRITE_VERB_TO_KIND = {
   set: 'write-cells',
+  grid: 'write-cells',
   suggest: 'tracked-change',
   comment: 'add-comment',
   format: 'format-cells',
@@ -146,6 +147,7 @@ export type ParsedCommand =
   | { verb: 'context'; hints: PlanContextHint[] }
   | { verb: 'open'; selector: string }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
+  | { verb: 'grid'; range: string; cells: string[][] }
   | { verb: 'suggest'; oldText: string; newText: string }
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'format'; range: string; props: Record<string, string> }
@@ -198,6 +200,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     value: z.string(),
     valueExpr: z.lazy(() => ParsedExprSchema).optional(),
   }),
+  z.object({ verb: z.literal('grid'), range: z.string(), cells: z.array(z.array(z.string())) }),
   z.object({ verb: z.literal('suggest'), oldText: z.string(), newText: z.string() }),
   z.object({
     verb: z.literal('comment'),
@@ -291,8 +294,25 @@ export function isCommandParseError(c: ParsedCommand | CommandParseError): c is 
 export function extractCommandBlock(modelText: string): string | null {
   // Non-greedy capture of the first ```cmd … ``` fence. `[^\S\n]` = horizontal whitespace,
   // so a `cmd` tag with trailing spaces still matches but a different language tag does not.
-  const match = modelText.match(/```cmd[^\S\n]*\r?\n([\s\S]*?)```/i);
-  return match ? match[1]!.trim() : null;
+  const match = modelText.match(/^```cmd[^\S\n]*\r?\n([\s\S]*?)^```[^\S\n]*(?:\r?\n|$)/im);
+  if (match) return match[1]!.trim();
+
+  // Live StreamAssist can occasionally stream the opening cmd fence and finish the answer without
+  // the closing fence. Recover only the whole-response shape: the first non-empty bytes must be the
+  // cmd fence, and no later fence marker may appear. Any prose before the fence still fails closed.
+  const unclosed = modelText.trim();
+  const unclosedMatch = /^```cmd[^\S\n]*\r?\n([\s\S]+)$/i.exec(unclosed);
+  if (unclosedMatch && !unclosedMatch[1]!.includes('```')) {
+    return unclosedMatch[1]!.trim();
+  }
+
+  // Some StreamAssist surfaces have returned the language marker as a plain first line (`cmd`)
+  // instead of preserving the Markdown fence. Accept only that whole-response shape: first
+  // non-empty line exactly `cmd`, followed by command lines. Prose before `cmd` still fails closed
+  // as a no-fence turn, and other plain markers (`python`, `json`, `bash`) remain non-executable.
+  const plain = modelText.trim();
+  const plainMatch = /^cmd[^\S\n]*\r?\n([\s\S]+)$/i.exec(plain);
+  return plainMatch ? plainMatch[1]!.trim() : null;
 }
 
 /* ───────────────────────────── line parsing ───────────────────────────── */
@@ -430,6 +450,9 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return { verb: 'set', cell, value, valueExpr: expr };
     }
 
+    case 'grid':
+      return parseGrid(rest);
+
     case 'suggest': {
       const parsed = parseSuggest(rest);
       return parsed;
@@ -475,6 +498,39 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     default:
       return { error: unknownVerbError(verb) };
   }
+}
+
+/**
+ * `grid <range> = "a\tb\nc\td"` — write a rectangular literal grid as ONE write-cells effect.
+ * This is the bulk-write sibling of `set`: the quoted body is TSV with escaped `\t` and `\n`.
+ */
+function parseGrid(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'grid needs a range and quoted TSV — usage: grid <range> = "a\\tb\\nc\\td"';
+  const split = splitFirstArg(rest);
+  if (!split) return { error: usage };
+  const range = split.arg;
+  let tail = split.tail.trim();
+  if (tail.startsWith('=')) tail = tail.slice(1).trim();
+  if (range === '' || tail === '') return { error: usage };
+  const quoted = scanQuoted(tail, 0);
+  if (!quoted || tail.slice(quoted.end).trim() !== '') return { error: usage };
+  const cells = parseGridBody(quoted.value);
+  if (cells.length === 0 || cells.every((row) => row.every((cell) => cell === ''))) {
+    return { error: 'grid body is empty — provide at least one non-empty cell' };
+  }
+  const width = cells[0]?.length ?? 0;
+  if (width === 0 || cells.some((row) => row.length !== width)) {
+    return { error: 'grid rows must be rectangular — every row needs the same number of cells' };
+  }
+  return { verb: 'grid', range, cells };
+}
+
+function parseGridBody(body: string): string[][] {
+  const normalized = body.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  return normalized
+    .split(/\r?\n/)
+    .map((row) => row.split('\t').map((cell) => cell.trim()))
+    .filter((row) => row.some((cell) => cell !== ''));
 }
 
 /**
@@ -1307,6 +1363,12 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
         verb: 'set',
         usage: 'set <A1> <value|=formula>',
         hint: 'write one cell, e.g. set Sales!F2 =C2-D2',
+      };
+    case 'grid':
+      return {
+        verb: 'grid',
+        usage: 'grid <range> = "a\\tb\\nc\\td"',
+        hint: 'write a rectangular TSV grid as one effect, e.g. grid Report!A1:B2 = "Region\\tRevenue\\nEast\\t100"',
       };
     case 'suggest':
       return {

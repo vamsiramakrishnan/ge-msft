@@ -51,6 +51,7 @@ type is the **last** operator's result type — a trailing `sum`/`count` yields 
 
 ```
 set     : Range × Scalar  -> Effect          # one cell
+grid    : Range × Grid    -> Effect          # a literal rectangular cell grid
 spill   : Range × Table   -> Effect          # a whole table as a grid (the table→grid sink)
 table   : Range           -> Effect          # promote a range to a native Table
 chart   : Range × Spec    -> Effect          # a chart over a range
@@ -75,8 +76,10 @@ signature, effects are terminal.)
   sorting gives you the wrong N rows. This is the single most common composition bug.
 - `sum(k, T) : Number` and `select(C, T) : Table` — an aggregation collapses a Table to a scalar;
   a projection keeps it a Table. A `set` wants a scalar; a `spill` wants a Table.
-- `set(range, value) : Effect` and `spill(range, table) : Effect` — both terminate. You bind the
-  _value_ before the effect (`let $x = …`), never the _effect_.
+- `set(range, value) : Effect`, `grid(range, cells) : Effect`, and `spill(range, table) : Effect`
+  all terminate. You bind the _value_ before the effect (`let $x = …`), never the _effect_.
+- Use `grid` for a literal rectangular payload. Use `spill` for a `Table` value produced by a
+  pipeline. Do not expand either into many scalar `set` effects.
 
 ## How the algebra reaches the commands
 

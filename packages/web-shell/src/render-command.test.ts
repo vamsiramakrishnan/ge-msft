@@ -26,6 +26,20 @@ describe('renderCommandLine', () => {
     ).toBe('set Sales!A1 42');
   });
 
+  it('renders multi-cell write-cells as a grid summary', () => {
+    expect(
+      renderCommandLine(
+        req('write-cells', {
+          target: { range: "'Daily schedule'!C5:D6" },
+          cells: [
+            ['Monday', 'Tuesday'],
+            ['Deep Work', 'Music Lesson'],
+          ],
+        }),
+      ),
+    ).toBe("grid 'Daily schedule'!C5:D6 (2x2)");
+  });
+
   it('renders tracked-change as `suggest "old" => "new"`', () => {
     expect(
       renderCommandLine(req('tracked-change', { target: { matchText: 'old' }, text: 'new' })),

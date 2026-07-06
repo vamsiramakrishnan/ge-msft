@@ -10,6 +10,7 @@ import { SseEventSchema, serializeSseEvent, parseSseEvent, type SseEvent } from 
 describe('SSE — every event variant round-trips', () => {
   const variants: SseEvent[] = [
     { type: 'token', text: 'hi' },
+    { type: 'activity', text: 'Analyzing selected range' },
     {
       type: 'finding',
       finding: {

@@ -1934,6 +1934,8 @@ function renderCommandLine(
       const value = command.valueExpr ? `= ${renderExprArg(command.valueExpr)}` : command.value;
       return `set ${command.cell} ${value}`;
     }
+    case 'grid':
+      return `grid ${command.range} (${command.cells.length}x${command.cells[0]?.length ?? 0})`;
     case 'suggest':
       return `suggest "${command.oldText}" => "${command.newText}"`;
     case 'comment': {

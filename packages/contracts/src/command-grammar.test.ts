@@ -36,6 +36,7 @@ describe('command-grammar — verb map', () => {
   it('maps write verbs to actuation kinds', () => {
     expect(WRITE_VERB_TO_KIND).toEqual({
       set: 'write-cells',
+      grid: 'write-cells',
       suggest: 'tracked-change',
       comment: 'add-comment',
       format: 'format-cells',
@@ -403,6 +404,38 @@ describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', 
     });
   });
 
+  it('parses grid <range> as a rectangular escaped TSV literal', () => {
+    expect(parseCommandLine('grid Report!A1:B2 = "Region\\tRevenue\\nEast\\t100"')).toEqual({
+      verb: 'grid',
+      range: 'Report!A1:B2',
+      cells: [
+        ['Region', 'Revenue'],
+        ['East', '100'],
+      ],
+    });
+  });
+
+  it('parses grid with a single-quoted sheet name', () => {
+    expect(
+      parseCommandLine(
+        'grid \'Daily schedule\'!C5:D6 = "Monday\\tTuesday\\nDeep Work\\tMusic Lesson"',
+      ),
+    ).toEqual({
+      verb: 'grid',
+      range: "'Daily schedule'!C5:D6",
+      cells: [
+        ['Monday', 'Tuesday'],
+        ['Deep Work', 'Music Lesson'],
+      ],
+    });
+  });
+
+  it('rejects ragged grid literals', () => {
+    expect(parseCommandLine('grid Report!A1:B2 = "A\\tB\\nC"')).toMatchObject({
+      error: expect.stringContaining('rectangular'),
+    });
+  });
+
   it('spill rejects a literal (it is the composition sink, not a verbatim writer)', () => {
     expect(parseCommandLine('spill Report!A1 = just text')).toMatchObject({
       error: expect.stringContaining('composed table'),
@@ -638,6 +671,28 @@ describe('command-grammar — fence extraction', () => {
     expect(extractCommandBlock('**thought** still thinking, no commands yet.')).toBeNull();
     // A non-cmd fence (e.g. ```answer) is not a command block.
     expect(extractCommandBlock('```answer\nall done\n```')).toBeNull();
+  });
+
+  it('accepts a plain cmd marker only when it starts the whole response', () => {
+    expect(extractCommandBlock('cmd\nread Sales!C2:C7\nset Sales!F2 =SUM(C2:C7)')).toBe(
+      'read Sales!C2:C7\nset Sales!F2 =SUM(C2:C7)',
+    );
+    expect(
+      extractCommandBlock('**thought** I will write cells.\ncmd\nset Sales!A1 "unsafe"'),
+    ).toBeNull();
+  });
+
+  it('accepts an unterminated cmd fence only when it starts the whole response', () => {
+    expect(extractCommandBlock('```cmd\nread Sales!C2:C7\n')).toBe('read Sales!C2:C7');
+    expect(extractCommandBlock('**thought**\n```cmd\nread Sales!C2:C7\n')).toBeNull();
+    expect(extractCommandBlock('```cmd\nread Sales!C2:C7\n```\nextra')).toBe('read Sales!C2:C7');
+    expect(extractCommandBlock('```cmd\nread Sales!C2:C7\n```answer\nno')).toBeNull();
+  });
+
+  it('rejects plain non-cmd markers as non-executable', () => {
+    expect(extractCommandBlock('python\nprint("no")')).toBeNull();
+    expect(extractCommandBlock('json\n{"verb":"set"}')).toBeNull();
+    expect(extractCommandBlock('bash\necho no')).toBeNull();
   });
 });
 

@@ -9,6 +9,7 @@ import { scanQuoted } from './command-grammar.js';
  */
 export const EFFECT_VERBS: ReadonlySet<string> = new Set([
   'set',
+  'grid',
   'suggest',
   'comment',
   'format',

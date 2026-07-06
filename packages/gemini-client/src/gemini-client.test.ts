@@ -10,6 +10,7 @@ import {
   sessionsUrl,
   streamAssistUrl,
   widgetListAvailableAgentViewsUrl,
+  widgetQueryAvailableConnectorNodesUrl,
   widgetStreamAssistUrl,
   type GeminiClientConfig,
 } from './config.js';
@@ -97,6 +98,9 @@ describe('config', () => {
     );
     expect(lookupWidgetConfigUrl(cfg())).toBe(
       'https://content-discoveryengine.googleapis.com/v1alpha/locations/eu/lookupWidgetConfig',
+    );
+    expect(widgetQueryAvailableConnectorNodesUrl(cfg())).toBe(
+      'https://content-discoveryengine.googleapis.com/v1alpha/locations/eu/widgetQueryAvailableConnectorNodes',
     );
     expect(sessionsUrl(cfg())).toBe(
       'https://discoveryengine.eu.rep.googleapis.com/v1alpha/projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions',
@@ -539,6 +543,41 @@ describe('StreamAssistClient', () => {
     if (prov?.type === 'provenance') {
       expect(prov.payload.sources[0]?.title).toBe('Vendor Risk Policy v4');
       expect(prov.payload.agentId).toContain('eng1');
+    }
+  });
+
+  it('maps StreamAssist thought text to activity without polluting answer text or provenance', async () => {
+    const chunk = {
+      sessionInfo: { session: 'sess_thoughts' },
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          { groundedContent: { content: { thought: true, text: 'Drafting schedule entries\n' } } },
+          {
+            groundedContent: {
+              content: {
+                text: '```cmd\nset Daily!B2 "Time"\n```',
+              },
+            },
+          },
+        ],
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+
+    expect(events.map((e) => e.type)).toEqual(['activity', 'token', 'provenance', 'done']);
+    expect(events[0]).toEqual({ type: 'activity', text: 'Drafting schedule entries' });
+    const answer = events
+      .filter((e): e is Extract<SseEvent, { type: 'token' }> => e.type === 'token')
+      .map((e) => e.text)
+      .join('');
+    expect(answer).toBe('```cmd\nset Daily!B2 "Time"\n```');
+    const prov = events.find((e) => e.type === 'provenance');
+    if (prov?.type === 'provenance') {
+      expect(prov.payload.contentHash).toBe(await contentHash(answer));
+      expect(prov.payload.contentHash).not.toBe(await contentHash('Drafting schedule entries'));
     }
   });
 

@@ -250,15 +250,49 @@ export interface PendingPlan {
  * The planner's {@link CommandPlan} awaiting the user's confirm BEFORE the executor runs
  * (EXPERIENCE.md §F — the front-door stage for complex free-text). This is the high-level INTENTION
  * (intent · scope · ordered steps · exclusions), distinct from {@link PendingPlan} (the executor's
- * dry-run effect-set). On confirm the controller runs `runCommands(task)` — which then stages its
- * own `pendingPlan` for the effect-level gate. A plan carrying `clarify` lines is surfaced as a
- * question instead (it never reaches confirm).
+ * dry-run effect-set). On confirm the controller runs the normalized, user-confirmed plan through
+ * `runCommands` — which then stages its own `pendingPlan` for the effect-level gate. A plan carrying
+ * `clarify` lines is surfaced as a question instead (it never reaches confirm).
  */
 export interface PendingCommandPlan {
   plan: CommandPlan;
-  /** The original free-text task, run through the executor verbatim on confirm. */
+  /** The original free-text task, preserved for display and as context inside the confirmed plan. */
   task: string;
   grounding?: ResolvedGrounding;
+}
+
+export interface PendingPlanClarification {
+  /** The planner request that produced the clarify question. */
+  task: string;
+  questions: string[];
+  grounding?: ResolvedGrounding;
+}
+
+function renderConfirmedPlanTask(pending: PendingCommandPlan): string {
+  const { plan, task } = pending;
+  const lines: string[] = [
+    'Execute this user-confirmed plan in the open Microsoft 365 surface.',
+    'Treat the plan as approved intent only: read live host content before any write, respect exclusions, emit only the supported cmd protocol, and let the normal preview/approval gate run.',
+    '',
+    '<confirmed_plan>',
+    `original_request: ${task}`,
+    `intent: ${plan.intent}`,
+    `surface: ${plan.surface}`,
+  ];
+  if (plan.scope) {
+    lines.push(
+      `scope: ${plan.scope.ref ? `${plan.scope.kind} ${plan.scope.ref}` : plan.scope.kind}`,
+    );
+  }
+  for (const ground of plan.ground) {
+    lines.push(`ground: ${ground.ref ? `${ground.kind} ${ground.ref}` : ground.kind}`);
+  }
+  for (const hint of plan.context) lines.push(`context: ${hint}`);
+  for (const [i, step] of plan.steps.entries()) lines.push(`step ${i + 1}: ${step}`);
+  for (const exclude of plan.excludes) lines.push(`exclude: ${exclude}`);
+  if (plan.confidence) lines.push(`confidence: ${plan.confidence}`);
+  lines.push('</confirmed_plan>');
+  return lines.join('\n');
 }
 
 /** One narrated step of the command loop, surfaced so the user can see the loop's progress. */
@@ -276,6 +310,7 @@ export interface RunStep {
     | 'done'
     | 'exhausted'
     | 'code-execution'
+    | 'activity'
     | 'error';
   text: string;
 }
@@ -297,6 +332,8 @@ export interface PanelState {
    * (EXPERIENCE.md §F — the complex-free-text front door). Distinct from `pendingPlan`.
    */
   pendingCommandPlan?: PendingCommandPlan;
+  /** A planner clarify question awaiting the user's natural-language answer. */
+  pendingPlanClarification?: PendingPlanClarification;
   /**
    * In-session skills (ADR-0005 `def`) registered for this surface, surfaced so the user can see
    * what's invokable and preview a skill's plan. Optional/back-compat: absent means "no skills
@@ -455,6 +492,9 @@ export class PanelController {
           case 'token':
             this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
             break;
+          case 'activity':
+            this.addStep('activity', ev.text);
+            break;
           case 'citation':
             sources.push(ev.source);
             this.patchMessage(reply.id, () => ({ sources: [...sources] }));
@@ -500,7 +540,11 @@ export class PanelController {
    * own fail-closed gate, so the user's command still works. The planner turn neither reads nor
    * writes the document.
    */
-  async proposePlan(task: string, grounding?: ResolvedGrounding): Promise<void> {
+  async proposePlan(
+    task: string,
+    grounding?: ResolvedGrounding,
+    displayText?: string,
+  ): Promise<void> {
     const t = task.trim();
     if (!t) return;
     if (this.state.busy) {
@@ -508,8 +552,11 @@ export class PanelController {
       this.turnQueue.enqueue({ mode: 'commands', task: t, ...(grounding ? { grounding } : {}) });
       return;
     }
-    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
-    this.beginTurn({ messages: [...this.state.messages, userMsg] });
+    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: displayText ?? t };
+    this.beginTurn({
+      messages: [...this.state.messages, userMsg],
+      pendingPlanClarification: undefined,
+    });
     const controller = new AbortController();
     this.inflight = controller;
     try {
@@ -531,6 +578,11 @@ export class PanelController {
             ...this.state.messages,
             { id: this.id('a'), role: 'assistant', text: `Before I plan this — ${qs}` },
           ],
+          pendingPlanClarification: {
+            task: t,
+            questions: plan.clarify,
+            ...(grounding ? { grounding } : {}),
+          },
           busy: false,
         });
         return;
@@ -548,14 +600,32 @@ export class PanelController {
   }
 
   /**
-   * Confirm the staged planner {@link CommandPlan}: clear it and run the executor on the original
-   * task — which then stages its OWN effect-level gate (`pendingPlan`) before anything actuates.
+   * Resume the planner after it asked for clarification. The visible user message is the user's
+   * answer, while the planner receives the original request plus that answer as structured context.
+   */
+  answerPlanClarification(answer: string): void {
+    const a = answer.trim();
+    if (!a) return;
+    const pending = this.state.pendingPlanClarification;
+    if (!pending) {
+      void this.send(a);
+      return;
+    }
+    const task = `${pending.task}\n\nUser clarification:\n${a}`;
+    this.set({ pendingPlanClarification: undefined });
+    void this.proposePlan(task, pending.grounding, a);
+  }
+
+  /**
+   * Confirm the staged planner {@link CommandPlan}: clear it and run the executor on the normalized,
+   * user-confirmed plan — which then stages its OWN effect-level gate (`pendingPlan`) before anything
+   * actuates.
    */
   confirmCommandPlan(): void {
     const p = this.state.pendingCommandPlan;
     if (!p) return;
     this.set({ pendingCommandPlan: undefined });
-    void this.runCommands(p.task, p.grounding);
+    void this.runCommands(renderConfirmedPlanTask(p), p.grounding);
   }
 
   /** Discard the staged planner plan without running anything (fail-closed: nothing executes). */
@@ -686,7 +756,10 @@ export class PanelController {
     try {
       const runner = this.session.runCommandProgram
         ? this.session.runCommandProgram(p, opts)
-        : this.session.runCommands(`Run this exact command program:\n\`\`\`cmd\n${p}\n\`\`\``, opts);
+        : this.session.runCommands(
+            `Run this exact command program:\n\`\`\`cmd\n${p}\n\`\`\``,
+            opts,
+          );
       for await (const ev of runner) {
         this.reduceLoopEvent(ev, reply.id, sources);
       }
@@ -742,6 +815,9 @@ export class PanelController {
         return;
       case 'code-execution-result':
         this.addStep('code-execution', codeExecutionResultText(ev));
+        return;
+      case 'activity':
+        this.addStep('activity', ev.text);
         return;
       case 'turn-start':
         this.addStep('turn-start', `Turn ${ev.turn}`);

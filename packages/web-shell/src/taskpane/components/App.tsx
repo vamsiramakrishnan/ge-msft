@@ -259,6 +259,16 @@ export function App({
   // `invocationToGrounding` → `resolveGrounding`, and passed as the turn's grounding — never discarded
   // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
+    const clarificationAnswer = inv.raw.trim();
+    if (
+      state.pendingPlanClarification &&
+      clarificationAnswer &&
+      inv.intent === undefined &&
+      !clarificationAnswer.startsWith('/')
+    ) {
+      void controller.answerPlanClarification(clarificationAnswer);
+      return;
+    }
     const directProgram = extractDirectCommandProgram(inv.raw);
     if (directProgram) {
       void controller.runDirectCommands(directProgram);

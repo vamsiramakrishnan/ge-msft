@@ -71,6 +71,7 @@ that support it (see [capability-map.md](capability-map.md)).
 | Command   | Effect             | Apps        | Usage                                                                                                 |
 | --------- | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------- |
 | `set`     | write a cell       | Excel       | `set <A1> <value\|=formula>` — e.g. `set Sales!F2 =C2-D2`                                             |
+| `grid`    | write a cell grid  | Excel       | `grid <range> = "a\tb\nc\td"` — write a rectangular literal TSV grid as one change                    |
 | `suggest` | tracked change     | Word        | `suggest "old text" => "new text"` (anchored on exact text)                                           |
 | `comment` | add a comment      | Word, Excel | `comment <cell> "text"` or `comment "anchor" "text"`                                                  |
 | `format`  | format cells       | Excel       | `format <range> k=v …` — keys: `bold italic fill numberFormat`                                        |
@@ -139,6 +140,26 @@ set B3 = $total
 
 All writes in a turn are previewed together as one set of changes, approved once, then
 applied and recorded one by one.
+
+### Literal grids (Excel): generated tables and schedules
+
+Use **`grid`** when you already have a complete rectangular literal table, such as generated
+schedule seed data or CSV-shaped output. It compiles to one `write-cells` effect, so the user sees
+one preview and one approval for the rectangle instead of repeated single-cell approvals.
+
+```
+grid 'Daily schedule'!C5:E7 = "Monday\tTuesday\tWednesday\nIndia Sync\tMusic Lesson\tIndia Sync\nDeep Work\tDeep Work\tDeep Work"
+```
+
+Rules:
+
+- The body is a quoted TSV literal: use escaped `\t` for columns and escaped `\n` for rows.
+- Rows must be rectangular. Ragged rows are rejected.
+- The target range must name the rectangle being written. Prefer explicit ranges for legibility.
+- Use `set` for one scalar cell.
+- Use `spill` when the grid comes from a composed table expression, not literal generated data.
+- For very large, algorithmic, or file-derived grids, ask `context analytical full-scope
+  upload-preferred code-execution-preferred` first and wait for structured host context.
 
 ### The table → grid sink (Excel): analyze → shape → materialize → visualize
 

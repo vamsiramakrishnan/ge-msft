@@ -158,7 +158,9 @@ Surface guidance:
 
 - **Excel:** pivots, formulas over many rows/sheets, anomaly detection, reconciliation,
   forecasting, chart-ready tables → `context analytical`, `context upload-preferred`,
-  `context code-execution-preferred`, often `context full-scope`.
+  `context code-execution-preferred`, often `context full-scope`. Generated schedules, seed tables,
+  or CSV-shaped outputs should plan as one bulk rectangular materialization; if the rectangle is
+  large or algorithmic, include `context analytical` and `context code-execution-preferred`.
 - **Word:** clause review over a section/selection → `incremental` or `inline-preferred`; whole
   agreement comparison or defined-term audit → `full-scope` and maybe `reference-preferred` if
   grounded on pinned policies.

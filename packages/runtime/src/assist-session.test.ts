@@ -1053,6 +1053,43 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(bridge.applied[0]?.params.cells?.[0]).toEqual(['region', 'amount']);
   });
 
+  it('runs a literal grid as one write-cells plan effect', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ngrid Report!A1:B2 = "Region\\tRevenue\\nEast\\t100"\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    let previewed: PlanEffect[] | undefined;
+    await collectLoop(
+      session.runCommands('materialize a literal grid', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    expect(previewed).toHaveLength(1);
+    expect(previewed?.[0]?.request).toMatchObject({
+      kind: 'write-cells',
+      params: {
+        target: { range: 'Report!A1:B2' },
+        cells: [
+          ['Region', 'Revenue'],
+          ['East', '100'],
+        ],
+      },
+    });
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]?.params.cells).toEqual([
+      ['Region', 'Revenue'],
+      ['East', '100'],
+    ]);
+  });
+
   it('rejects a spill whose expression resolves to a scalar (composition guard, ADR-0007)', async () => {
     const bridge = new ComposeBridge();
     const { fetch } = scriptedFetch([

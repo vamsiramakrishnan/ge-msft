@@ -12,12 +12,14 @@ import { assertNever } from './assert-never.js';
 export type QueuedTurn =
   | { mode: 'ask'; query: string; grounding?: ResolvedGrounding }
   | { mode: 'commands'; task: string; grounding?: ResolvedGrounding }
+  | { mode: 'direct-commands'; program: string }
   | { mode: 'skill'; name: string; args: Record<string, string> };
 
 /** The mode-preserving drain handlers — one per {@link QueuedTurn} variant. */
 export interface DrainHandlers {
   ask(query: string, grounding?: ResolvedGrounding): void;
   commands(task: string, grounding?: ResolvedGrounding): void;
+  directCommands(program: string): void;
   skill(name: string, args: Record<string, string>): void;
 }
 
@@ -53,6 +55,9 @@ export class TurnQueue {
         return;
       case 'commands':
         handlers.commands(next.task, next.grounding);
+        return;
+      case 'direct-commands':
+        handlers.directCommands(next.program);
         return;
       case 'skill':
         handlers.skill(next.name, next.args);

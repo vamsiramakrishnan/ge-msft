@@ -325,12 +325,12 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     }
 
     case 'set': {
-      const sp = rest.search(/\s/);
-      if (sp === -1) {
+      const split = splitFirstArg(rest);
+      if (!split) {
         return { error: 'set needs a cell and a value — usage: set <A1> <value|=formula>' };
       }
-      const cell = rest.slice(0, sp);
-      const value = rest.slice(sp + 1).trim();
+      const cell = split.arg;
+      const value = unquoteSetValue(split.tail.trim());
       if (cell === '' || value === '') {
         return { error: 'set needs a cell and a value — usage: set <A1> <value|=formula>' };
       }
@@ -474,27 +474,43 @@ function parseComment(rest: string): ParsedCommand | CommandParseError {
  */
 function parseFormat(rest: string): ParsedCommand | CommandParseError {
   const usage = 'format needs a range and at least one key=value — usage: format <range> k=v ...';
-  const tokens = rest.split(/\s+/).filter((t) => t !== '');
-  if (tokens.length === 0) return { error: usage };
+  const { positional, props } = tokenizeArgs(rest);
+  if (positional.length === 0) return { error: usage };
 
-  const range = tokens[0]!;
-  const pairs = tokens.slice(1);
-  if (pairs.length === 0) return { error: usage };
-
-  const props: Record<string, string> = {};
-  for (const pair of pairs) {
-    const eq = pair.indexOf('=');
-    if (eq <= 0) {
-      return {
-        error: `format expects key=value pairs — got "${pair}" (usage: format <range> k=v)`,
-      };
-    }
-    const key = pair.slice(0, eq);
-    const value = pair.slice(eq + 1);
-    props[key] = value;
+  const range = positional[0]!;
+  if (positional.length > 1) {
+    const bad = positional[1]!;
+    return {
+      error: `format expects key=value pairs — got "${bad}" (usage: format <range> k=v)`,
+    };
   }
+  if (Object.keys(props).length === 0) return { error: usage };
 
   return { verb: 'format', range, props };
+}
+
+/**
+ * Split the first command argument while respecting Excel's single-quoted sheet prefix:
+ * `'Daily schedule'!B2` remains one selector. A fully quoted selector (`"Sales Q1"!A1`) is accepted
+ * too. Used by verbs whose remainder is free text, so generic tokenization would lose spacing.
+ */
+function splitFirstArg(rest: string): { arg: string; tail: string } | undefined {
+  const s = rest.trimStart();
+  if (!s) return undefined;
+  const m = /^"([^"]*)"(\S*)|'([^']*)'(\S*)|(\S+)/.exec(s);
+  if (!m) return undefined;
+  const arg =
+    m[1] !== undefined
+      ? `${m[1]}${m[2] ?? ''}`
+      : m[3] !== undefined
+        ? `'${m[3]}'${m[4] ?? ''}`
+        : m[5]!;
+  return { arg, tail: s.slice(m[0]!.length) };
+}
+
+/** `set A1 "hello world"` is a scalar cell value, not a request to include quote characters. */
+function unquoteSetValue(value: string): string {
+  return stripWrappingQuotes(value);
 }
 
 /**

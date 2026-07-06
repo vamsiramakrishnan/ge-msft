@@ -57,6 +57,9 @@ export type ApprovePlan = NonNullable<RunCommandsOptions['approvePlan']>;
 /** The per-write approver type — the CANONICAL runtime option (Finding #6: not redeclared here). */
 type ApproveWrite = NonNullable<RunCommandsOptions['approveWrite']>;
 
+/** Direct pasted CLI is user-authored and fully previewed, so it can stage larger exact programs. */
+const DIRECT_COMMAND_LIMIT = 128;
+
 /**
  * The `plan-preview` command-loop event (ADR-0005 §3) — re-exported as the CANONICAL runtime variant
  * (Finding #6: the controller no longer declares a parallel structural copy). The runtime emits the
@@ -105,6 +108,14 @@ export interface AssistLike {
    * once for a composed plan's full effect-set (fail-closed) before any effect actuates.
    */
   runCommands(task: string, opts?: RunCommandsOptions): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  /**
+   * Execute explicit user-authored CLI lines without asking the model to restate them. Implemented by
+   * AssistSession; optional so older unit-test fakes can still exercise the controller fallback.
+   */
+  runCommandProgram?(
+    program: string,
+    opts?: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
   /**
    * The planner pre-stage (EXPERIENCE.md §F): stream one turn that proposes a confirmable
    * {@link CommandPlan} for a complex free-text request, WITHOUT reading or writing the document.
@@ -621,6 +632,66 @@ export class PanelController {
   }
 
   /**
+   * Run an explicit pasted CLI program (`set …`, `chart …`, `spill …`) through the same fail-closed
+   * plan/approval loop as model-emitted commands, but without a Gemini echo turn. This is the manual
+   * command escape hatch for power users and for copied examples from docs.
+   */
+  async runDirectCommands(program: string): Promise<void> {
+    const p = program.trim();
+    if (!p) return;
+    if (this.state.busy) {
+      this.turnQueue.enqueue({ mode: 'direct-commands', program: p });
+      return;
+    }
+
+    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: p };
+    const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
+    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
+
+    const controller = new AbortController();
+    this.inflight = controller;
+    const sources: SourceRef[] = [];
+
+    const approveWrite: ApproveWrite = (request) =>
+      this.approvals.awaitWrite(
+        { changeId: request.changeId, kind: request.kind, command: renderCommandLine(request) },
+        request.changeId,
+      );
+    const approvePlan: ApprovePlan = (effects) =>
+      this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
+    const opts: RunCommandsOptions = {
+      signal: controller.signal,
+      approveWrite,
+      approvePlan,
+      maxCommandsPerTurn: DIRECT_COMMAND_LIMIT,
+      maxWritesPerTurn: DIRECT_COMMAND_LIMIT,
+    };
+
+    try {
+      const runner = this.session.runCommandProgram
+        ? this.session.runCommandProgram(p, opts)
+        : this.session.runCommands(`Run this exact command program:\n\`\`\`cmd\n${p}\n\`\`\``, opts);
+      for await (const ev of runner) {
+        this.reduceLoopEvent(ev, reply.id, sources);
+      }
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) {
+        this.patchMessage(reply.id, () => ({ cancelled: true }));
+        this.currentTurnProvenance = undefined;
+      } else {
+        this.patchMessage(reply.id, () => ({ error: errorText(err) }));
+        this.addStep('error', errorText(err));
+      }
+    } finally {
+      this.approvals.releaseAll();
+      if (this.inflight === controller) this.inflight = undefined;
+      this.patchMessage(reply.id, () => ({ streaming: false }));
+      this.set({ busy: false, changes: this.store.list() });
+      this.drainPendingTurn();
+    }
+  }
+
+  /**
    * Reduce ONE command-loop event (the merged `SseEvent | CommandLoopEvent` union) into panel state.
    * Finding #6: handled EXHAUSTIVELY with an {@link assertNever} terminator, so a new event variant
    * is a compile error here rather than a silently-dropped step. SSE variants the run transcript does
@@ -879,6 +950,7 @@ export class PanelController {
     this.turnQueue.drain({
       ask: (query, grounding) => void this.send(query, grounding),
       commands: (task, grounding) => void this.runCommands(task, grounding),
+      directCommands: (program) => void this.runDirectCommands(program),
       skill: (name, args) => void this.invokeSkill(name, args),
     });
   }

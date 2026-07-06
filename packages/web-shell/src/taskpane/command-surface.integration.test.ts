@@ -175,6 +175,37 @@ describe('command surface — composer / and @ (full-stack)', () => {
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
   });
 
+  it('an imperative Excel populate request is promoted to the gated write-cells command path', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Daily',
+            origin: 'A1',
+            values: Array.from({ length: 12 }, () => Array.from({ length: 9 }, () => '')),
+          },
+        ],
+        activeSheet: 'Daily',
+        selection: 'Daily!B2:I12',
+      }),
+    );
+    const sc = scriptedClient([
+      '```cmd\nset Daily!B2 "Time"\nset Daily!C2 "Monday"\nset Daily!D2 "Tuesday"\n```',
+      '```cmd\ndone\n```',
+    ]);
+    ui = mountStack({ surface: 'excel', client: sc });
+    await ui.flush();
+
+    await typeAndSubmit('Help populate a sample schedule here please');
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+
+    expect(sc.queries[0]).toContain('TASK:\n/rewrite Help populate a sample schedule here please');
+    expect(ui.controller.getState().pendingPlan?.effects.map((effect) => effect.request.kind)).toEqual(
+      ['write-cells', 'write-cells', 'write-cells'],
+    );
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+  });
+
   it('a pasted Excel CLI program routes directly to the gate and writes after approval without a model echo', async () => {
     sim = installFakeExcel(
       excelSeed({
@@ -259,6 +290,30 @@ describe('command surface — implicit intent inference', () => {
         ...base,
         raw: 'create a chart from A1:B8',
         instruction: 'create a chart from A1:B8',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('promotes only clear imperative Excel population when write-cells is allowed', () => {
+    expect(
+      inferImplicitIntent('excel', ['rewrite'], {
+        ...base,
+        raw: 'Help populate a sample schedule here please',
+        instruction: 'Help populate a sample schedule here please',
+      }),
+    ).toBe('rewrite');
+    expect(
+      inferImplicitIntent('excel', ['rewrite'], {
+        ...base,
+        raw: 'Can you explain how to populate a schedule?',
+        instruction: 'Can you explain how to populate a schedule?',
+      }),
+    ).toBeUndefined();
+    expect(
+      inferImplicitIntent('excel', ['ask', 'summarize', 'explain'], {
+        ...base,
+        raw: 'Help populate a sample schedule here please',
+        instruction: 'Help populate a sample schedule here please',
       }),
     ).toBeUndefined();
   });

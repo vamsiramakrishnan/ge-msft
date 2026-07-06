@@ -93,6 +93,8 @@ const EXCEL_CHART_CREATE_RE =
   /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|make|insert|add|build|generate|plot|visuali[sz]e)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
 const EXCEL_CHART_CONVERT_RE =
   /^\s*(?:please\s+)?(?:turn|convert)\b[\s\S]*\b(?:into|to)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
+const EXCEL_POPULATE_RE =
+  /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:help(?:\s+me)?\s+)?(?:populate|fill(?:\s+in)?|create|make|build|generate|insert|add|write|lay\s+out)\b[\s\S]*\b(?:schedule|table|template|sheet|range|rows?|columns?|cells?|mock\s+data|sample\s+data|dataset|formula|formulas)\b/i;
 const WORD_REWRITE_RE =
   /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:rewrite|revise|tighten|edit|replace|improve)\b[\s\S]*\b(?:selection|selected text|paragraph|text|wording|clause|sentence)\b/i;
 const WORD_REVIEW_RE =
@@ -127,10 +129,16 @@ export function inferImplicitIntent(
   if (!raw || raw.startsWith('/')) return undefined;
   switch (surface) {
     case 'excel':
-      return intentAllowed('visualize', allowedIntents) &&
+      if (
+        intentAllowed('visualize', allowedIntents) &&
         (EXCEL_CHART_CREATE_RE.test(raw) || EXCEL_CHART_CONVERT_RE.test(raw))
-        ? 'visualize'
-        : undefined;
+      ) {
+        return 'visualize';
+      }
+      if (intentAllowed('rewrite', allowedIntents) && EXCEL_POPULATE_RE.test(raw)) {
+        return 'rewrite';
+      }
+      return undefined;
     case 'word':
       if (intentAllowed('rewrite', allowedIntents) && WORD_REWRITE_RE.test(raw)) return 'rewrite';
       if (intentAllowed('review', allowedIntents) && WORD_REVIEW_RE.test(raw)) return 'review';

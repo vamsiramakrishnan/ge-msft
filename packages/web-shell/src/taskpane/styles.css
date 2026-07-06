@@ -173,19 +173,20 @@ body {
 /* ============ masthead ============ */
 .ph {
   flex: none;
-  padding: var(--s4) var(--s5) var(--s3);
+  padding: 3px var(--s5);
   background: var(--paper);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 0.5px solid var(--hairline);
 }
 .pht {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s2);
+  min-height: 22px;
 }
 /* wordmark plate — an ink square, not a gradient */
 .av {
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
   flex: none;
   border-radius: var(--r-chip);
   background: var(--plate);
@@ -195,7 +196,7 @@ body {
 .av::after {
   content: 'ge';
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   letter-spacing: 0;
   color: var(--paper);
@@ -203,20 +204,27 @@ body {
 .ph-id {
   min-width: 0;
   flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
 }
 .pn {
-  font-size: 14px;
+  flex: none;
+  font-size: var(--fz-md);
   font-weight: 700;
   letter-spacing: 0;
   text-transform: lowercase;
-  line-height: 18px;
+  line-height: 14px;
 }
 .pss {
+  display: none;
   font-family: var(--mono);
   font-size: var(--fz-xs);
   color: var(--ink-2);
   text-transform: lowercase;
-  line-height: 14px;
+  line-height: 12px;
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -224,8 +232,8 @@ body {
 /* settings knob — hairline circle, tone shift only */
 .ph-settings {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   border-radius: 9999px;
   border: 0.5px solid var(--ink);
   background: transparent;
@@ -255,7 +263,7 @@ body {
   flex: none;
   background: var(--paper);
   border-bottom: 0.5px solid var(--hairline);
-  padding: var(--s3) var(--s5);
+  padding: 6px var(--s5);
 }
 
 /* ============ surface command center ============ */
@@ -263,18 +271,18 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s4);
+  gap: var(--s3);
 }
 .surface-identity {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s2);
   min-width: 0;
 }
 .surface-glyph {
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border: 0.5px solid var(--ink);
   border-radius: var(--r-chip);
   display: grid;
@@ -293,12 +301,13 @@ body {
   font-weight: 600;
   letter-spacing: 0;
   text-transform: lowercase;
-  line-height: 17px;
+  line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .surface-subtitle {
+  display: none;
   font-size: var(--fz-sm);
   color: var(--ink-2);
   text-transform: lowercase;
@@ -312,16 +321,16 @@ body {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-family: var(--mono);
-  font-size: var(--fz-sm);
+  font-size: var(--fz-xs);
   color: var(--ink-2);
   text-transform: lowercase;
 }
 .surface-state::before {
   content: '';
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 9999px;
   background: var(--lamp-hold);
 }
@@ -342,18 +351,21 @@ body {
 .surface-center-controls {
   display: flex;
   align-items: center;
-  gap: var(--s3);
-  margin-top: var(--s3);
-  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+  margin-left: auto;
+  flex: none;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .surface-actions-trigger,
 .surface-detail-trigger {
   display: inline-flex;
   align-items: center;
-  gap: var(--s3);
-  height: 28px;
-  padding: 0 10px;
+  gap: var(--s2);
+  height: 24px;
+  padding: 0 8px;
   border: 0.5px solid var(--hairline);
   border-radius: var(--r);
   background: transparent;
@@ -384,6 +396,7 @@ body {
   color: var(--ink-3);
 }
 .surface-detail-trigger {
+  max-width: 118px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -625,18 +638,18 @@ body {
 .unit-h {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--s2);
   min-width: 0;
 }
 .unit-h .nb {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 9999px;
   background: var(--lamp-on);
 }
 .unit-title {
-  font-size: var(--fz-lg);
+  font-size: var(--fz-md);
   font-weight: 600;
   text-transform: lowercase;
   letter-spacing: 0;
@@ -654,31 +667,7 @@ body {
   text-overflow: ellipsis;
 }
 .unit .link {
-  font-size: var(--fz-md);
-}
-.unit-peek {
-  display: flex;
-  gap: var(--s2);
-  margin-top: var(--s2);
-  overflow: hidden;
-}
-.mini-chip {
-  flex: none;
-  max-width: 40%;
-  font-family: var(--mono);
-  font-size: var(--fz-xs);
-  color: var(--ink-3);
-  border: 0.5px solid var(--hairline);
-  border-radius: var(--r-chip);
-  padding: 1px 6px;
-  text-transform: lowercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mini-chip.on {
-  color: var(--ink);
-  border-color: var(--ink);
+  font-size: var(--fz-sm);
 }
 .chips {
   display: flex;
@@ -689,7 +678,7 @@ body {
 .context-popover {
   position: absolute;
   z-index: 30;
-  top: calc(100% - 4px);
+  top: calc(100% - 2px);
   left: var(--s5);
   right: var(--s5);
   display: none;
@@ -837,17 +826,17 @@ body {
 .skills-h {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--s2);
 }
 .skills-mark {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 9999px;
   background: var(--lamp-on);
 }
 .skills-title {
-  font-size: var(--fz-lg);
+  font-size: var(--fz-md);
   font-weight: 600;
   text-transform: lowercase;
   letter-spacing: 0;
@@ -869,7 +858,7 @@ body {
 .skills-popover {
   position: absolute;
   z-index: 30;
-  top: calc(100% - 4px);
+  top: calc(100% - 2px);
   left: var(--s5);
   right: var(--s5);
   display: none;
@@ -881,6 +870,10 @@ body {
   border-radius: var(--r);
   max-height: 320px;
   overflow: auto;
+}
+.skills[data-placement='above'] .skills-popover {
+  top: auto;
+  bottom: calc(100% - 2px);
 }
 .skills:hover .skills-popover,
 .skills:focus-within .skills-popover {
@@ -1090,7 +1083,7 @@ body {
 .action-drawer-head {
   display: flex;
   flex-direction: column;
-  gap: var(--s2);
+  gap: 4px;
 }
 .action-drawer-copy {
   display: flex;
@@ -1127,7 +1120,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 5px 9px;
   margin-bottom: -1px;
   border: none;
   border-bottom: 2px solid transparent;
@@ -1230,7 +1223,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--s5);
-  padding: var(--s5);
+  padding: var(--s4) var(--s5) var(--s5);
 }
 .m {
   display: flex;
@@ -2272,7 +2265,7 @@ button.cite:hover {
 /* ============ composer ============ */
 .comp {
   flex: none;
-  padding: var(--s3) var(--s5) var(--s4);
+  padding: var(--s2) var(--s5) var(--s3);
   border-top: 1px solid var(--rule);
   background: var(--paper);
   position: relative;
@@ -2285,7 +2278,7 @@ button.cite:hover {
   border: 0.5px solid var(--ink);
   border-radius: var(--r);
   overflow: hidden;
-  margin-bottom: var(--s3);
+  margin-bottom: var(--s2);
 }
 .scope-option {
   min-width: 0;

@@ -8,6 +8,8 @@ export interface SkillsPanelProps {
   onInvoke: (name: string, args: Record<string, string>) => void;
   /** Render expanded inline (no self-collapse/toggle) for use inside the toolbar's icon sheet. */
   embedded?: boolean;
+  /** Direction the popover opens from the persistent summary row. */
+  placement?: 'below' | 'above';
 }
 
 /**
@@ -92,6 +94,7 @@ export function SkillsPanel({
   disabled = false,
   onInvoke,
   embedded = false,
+  placement = 'below',
 }: SkillsPanelProps): JSX.Element | null {
   if (skills.length === 0) return null;
   return (
@@ -99,6 +102,7 @@ export function SkillsPanel({
       className={`skills detail-hover${embedded ? ' skills--embedded' : ''}`}
       aria-label="Skills"
       aria-disabled={disabled}
+      data-placement={placement}
     >
       <div className="skills-h">
         <span className="skills-mark" aria-hidden="true" />

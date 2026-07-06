@@ -93,7 +93,6 @@ export function ContextTray({
   // top-to-bottom. The controller still owns the flat `chips` list and the `attached` flag.
   const attached = chips.filter((c) => c.attached);
   const available = chips.filter((c) => !c.attached);
-  const preview = attached.length > 0 ? attached : available;
   return (
     <section
       className={`unit detail-hover${embedded ? ' unit--embedded' : ''}`}
@@ -114,19 +113,6 @@ export function ContextTray({
           Refresh
         </button>
       </div>
-      {!embedded && (
-        <div className="unit-peek" aria-hidden="true">
-          {chips.length === 0 ? (
-            <span className="muted small">No host context loaded</span>
-          ) : (
-            preview.slice(0, 3).map((chip) => (
-              <span key={chip.id} className={`mini-chip${chip.attached ? ' on' : ''}`}>
-                {chip.title}
-              </span>
-            ))
-          )}
-        </div>
-      )}
       <div className="chips context-popover">
         {chips.length === 0 && (
           <span className="muted small">Nothing to attach yet. Refresh scans the host.</span>

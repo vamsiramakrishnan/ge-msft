@@ -105,7 +105,8 @@ export function SurfaceCommandCenter({
   const actions = surfacePrimaryActions(surface, allowedIntents);
   if (actions.length === 0) return null;
   const copy = SURFACE_COPY[surface];
-  const status = hasGate ? 'Decision needed' : busy ? 'Working' : 'Ready';
+  const status = hasGate ? 'Gate' : busy ? 'Working' : 'Ready';
+  const statusLabel = hasGate ? 'Decision needed' : status;
   const state = hasGate ? 'gate' : busy ? 'busy' : 'ready';
 
   return (
@@ -117,117 +118,117 @@ export function SurfaceCommandCenter({
           </span>
           <div className="surface-copy">
             <div className="surface-title">{copy.title}</div>
-            <div className="surface-subtitle">{copy.subtitle}</div>
           </div>
         </div>
-        <span className="surface-state" data-state={state}>
-          {status}
-        </span>
-      </div>
 
-      <div className="surface-center-controls">
-        <div className="detail-hover surface-actions">
-          <button
-            type="button"
-            className="surface-actions-trigger"
-            aria-describedby="surface-actions-pop"
-          >
-            <span>Quick actions</span>
-            <span className="surface-actions-count" aria-hidden="true">
-              {actions.length}
-            </span>
-            <span className="tw-caret" aria-hidden="true">
-              +
-            </span>
-          </button>
-          <div
-            id="surface-actions-pop"
-            className="detail-popover surface-actions-popover"
-            role="group"
-            aria-label={`Primary actions for ${copy.title}`}
-          >
-            <div className="surface-primary-actions">
-              {actions.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  className="surface-action"
-                  data-action-id={action.id}
-                  data-output={action.output}
-                  data-intent={action.intent}
-                  disabled={busy || hasGate}
-                  onClick={() => onAction(action)}
-                >
-                  <span
-                    className="surface-action-mode"
+        <div className="surface-center-controls">
+          <span className="surface-state" data-state={state} aria-label={statusLabel}>
+            {status}
+          </span>
+
+          <div className="detail-hover surface-actions">
+            <button
+              type="button"
+              className="surface-actions-trigger"
+              aria-describedby="surface-actions-pop"
+            >
+              <span>Actions</span>
+              <span className="surface-actions-count" aria-hidden="true">
+                {actions.length}
+              </span>
+              <span className="tw-caret" aria-hidden="true">
+                +
+              </span>
+            </button>
+            <div
+              id="surface-actions-pop"
+              className="detail-popover surface-actions-popover"
+              role="group"
+              aria-label={`Primary actions for ${copy.title}`}
+            >
+              <div className="surface-primary-actions">
+                {actions.map((action) => (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className="surface-action"
+                    data-action-id={action.id}
                     data-output={action.output}
-                    aria-hidden="true"
+                    data-intent={action.intent}
+                    disabled={busy || hasGate}
+                    onClick={() => onAction(action)}
                   >
-                    {shortMode(action)}
-                  </span>
-                  <span className="surface-action-body">
-                    <span className="surface-action-label">{action.label}</span>
-                    <span className="surface-action-meta">
-                      {action.intent} · {action.scope.kind} · {actionMode(action)}
+                    <span
+                      className="surface-action-mode"
+                      data-output={action.output}
+                      aria-hidden="true"
+                    >
+                      {shortMode(action)}
+                    </span>
+                    <span className="surface-action-body">
+                      <span className="surface-action-label">{action.label}</span>
+                      <span className="surface-action-meta">
+                        {action.intent} · {action.scope.kind} · {actionMode(action)}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="detail-hover surface-details">
+            <button
+              type="button"
+              className="surface-detail-trigger"
+              aria-describedby="surface-details"
+            >
+              <span>{attachedCount} ctx</span>
+              <span>{messageCount} turns</span>
+            </button>
+            <div
+              id="surface-details"
+              className="detail-popover surface-details-popover"
+              role="tooltip"
+            >
+              <strong>{copy.subtitle}</strong>
+              <div className="surface-metrics" aria-label="Current work state">
+                <span>
+                  <strong>{attachedCount}</strong> attached
+                </span>
+                <span>
+                  <strong>{availableCount}</strong> nearby
+                </span>
+                <span>
+                  <strong>{messageCount}</strong> turns
+                </span>
+                <span>
+                  <strong>{proposalCount}</strong> proposals
+                </span>
+              </div>
+
+              <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
+                {entrypoints(copy.object).map((entry) => (
+                  <span key={entry.id} className="detail-hover surface-entry-wrap">
+                    <span
+                      className="surface-entry"
+                      tabIndex={0}
+                      aria-describedby={`entry-${entry.id}`}
+                    >
+                      <span className="surface-entry-dot" aria-hidden="true" />
+                      <span>{entry.label}</span>
+                    </span>
+                    <span
+                      id={`entry-${entry.id}`}
+                      className="detail-popover surface-entry-detail"
+                      role="tooltip"
+                    >
+                      <strong>{entry.title}</strong>
+                      <span>{entry.detail}</span>
                     </span>
                   </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="detail-hover surface-details">
-          <button
-            type="button"
-            className="surface-detail-trigger"
-            aria-describedby="surface-details"
-          >
-            <span>{attachedCount} attached</span>
-            <span>{availableCount} nearby</span>
-            <span>{messageCount} turns</span>
-          </button>
-          <div
-            id="surface-details"
-            className="detail-popover surface-details-popover"
-            role="tooltip"
-          >
-            <div className="surface-metrics" aria-label="Current work state">
-              <span>
-                <strong>{attachedCount}</strong> attached
-              </span>
-              <span>
-                <strong>{availableCount}</strong> nearby
-              </span>
-              <span>
-                <strong>{messageCount}</strong> turns
-              </span>
-              <span>
-                <strong>{proposalCount}</strong> proposals
-              </span>
-            </div>
-
-            <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
-              {entrypoints(copy.object).map((entry) => (
-                <span key={entry.id} className="detail-hover surface-entry-wrap">
-                  <span
-                    className="surface-entry"
-                    tabIndex={0}
-                    aria-describedby={`entry-${entry.id}`}
-                  >
-                    <span className="surface-entry-dot" aria-hidden="true" />
-                    <span>{entry.label}</span>
-                  </span>
-                  <span
-                    id={`entry-${entry.id}`}
-                    className="detail-popover surface-entry-detail"
-                    role="tooltip"
-                  >
-                    <strong>{entry.title}</strong>
-                    <span>{entry.detail}</span>
-                  </span>
-                </span>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </div>

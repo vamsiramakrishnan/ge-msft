@@ -77,7 +77,7 @@ describe('<App/> render smoke', () => {
     expect(center).not.toBeNull();
     expect(center?.querySelector('.surface-title')?.textContent).toBe('Word workspace');
     expect(center?.querySelectorAll('.surface-action').length).toBe(3);
-    expect(center?.textContent).toContain('Decision needed');
+    expect(center?.textContent).toContain('Gate');
   });
 
   it('renders surface-specific primary actions and keeps the secondary row deduplicated', () => {

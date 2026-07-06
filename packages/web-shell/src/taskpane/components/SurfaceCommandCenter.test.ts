@@ -87,7 +87,7 @@ describe('SurfaceCommandCenter', () => {
   it('renders host-specific copy and compact state metrics', () => {
     render('outlook');
     expect(container?.querySelector('.surface-title')?.textContent).toBe('Outlook workspace');
-    expect(container?.querySelector('.surface-subtitle')?.textContent).toContain('Threads');
+    expect(container?.querySelector('.surface-details-popover')?.textContent).toContain('Threads');
     expect(container?.querySelector('.surface-metrics')?.textContent).toContain('2 attached');
     expect(container?.querySelector('.surface-metrics')?.textContent).toContain('1 proposals');
   });
@@ -122,6 +122,6 @@ describe('SurfaceCommandCenter', () => {
     });
     expect(buttons().length).toBe(3);
     expect(buttons().every((button) => button.disabled)).toBe(true);
-    expect(container?.querySelector('.surface-state')?.textContent).toBe('Decision needed');
+    expect(container?.querySelector('.surface-state')?.textContent).toBe('Gate');
   });
 });

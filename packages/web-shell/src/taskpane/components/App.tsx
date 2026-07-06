@@ -375,12 +375,6 @@ export function App({
         </section>
       )}
 
-      <SkillsPanel
-        skills={state.skills ?? []}
-        disabled={actionBlocked}
-        onInvoke={(name, args) => void controller.invokeSkill(name, args)}
-      />
-
       <main className="thread-region" aria-label="Conversation and activity">
         <MessageThread messages={state.messages} surface={surface} />
 
@@ -426,6 +420,13 @@ export function App({
         busy={actionBlocked}
         excludeIds={primaryActionIds}
         onAction={onQuickAction}
+      />
+
+      <SkillsPanel
+        skills={state.skills ?? []}
+        disabled={actionBlocked}
+        onInvoke={(name, args) => void controller.invokeSkill(name, args)}
+        placement="above"
       />
 
       <QuickActionParamForm

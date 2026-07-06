@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   defaultCatalogSelection,
+  groupDataStoresByConnector,
   type DiscoveryCatalogClient,
   type GeminiCatalog,
   type GeminiCatalogSelection,
   type GeminiCatalogSkill,
+  type GeminiConnectorState,
 } from '@ge/gemini-client';
 
 export interface GeminiCatalogPanelProps {
@@ -24,6 +26,7 @@ type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 
 const EMPTY_SKILLS: GeminiCatalogSkill[] = [];
 const EMPTY_DATA_STORES: GeminiCatalog['dataStores'] = [];
+const EMPTY_CONNECTORS: GeminiCatalog['connectors'] = [];
 
 export function GeminiCatalogPanel({
   catalogClient,
@@ -47,6 +50,12 @@ export function GeminiCatalogPanel({
 
   const skills = catalog?.skills ?? EMPTY_SKILLS;
   const dataStores = catalog?.dataStores ?? EMPTY_DATA_STORES;
+  const connectors = catalog?.connectors ?? EMPTY_CONNECTORS;
+
+  const connectorGroups = useMemo(
+    () => groupDataStoresByConnector(connectors, dataStores).groups,
+    [connectors, dataStores],
+  );
 
   const selection = useMemo(
     (): GeminiCatalogSelection => ({
@@ -104,7 +113,13 @@ export function GeminiCatalogPanel({
         <div>
           <div className="eyebrow">Gemini Enterprise catalog</div>
           <div className="catalog-summary">
-            {summary(loadState, skills.length, dataStores.length, catalog?.warnings?.length ?? 0)}
+            {summary(
+              loadState,
+              skills.length,
+              connectors.length,
+              dataStores.length,
+              catalog?.warnings?.length ?? 0,
+            )}
           </div>
         </div>
         <div className="catalog-actions">
@@ -196,6 +211,33 @@ export function GeminiCatalogPanel({
             </select>
           </label>
 
+          {connectors.length > 0 ? (
+            <div className="connector-board" role="list" aria-label="Connector status">
+              <div className="connector-board-label">connector status</div>
+              {connectorGroups.map(({ connector, stores }) => (
+                <div key={connector.name} className="connector-row" role="listitem">
+                  {/* status is a lamp PLUS the state word — never color alone */}
+                  <span
+                    className="connector-lamp"
+                    data-tone={lampTone(connector.state)}
+                    aria-hidden="true"
+                  />
+                  <span className="connector-state">{connector.state ?? 'unknown'}</span>
+                  <span className="connector-label">{connector.label}</span>
+                  {connector.source ? (
+                    <span className="connector-source">{connector.source}</span>
+                  ) : null}
+                  <span className="connector-stores">
+                    {stores.length} {stores.length === 1 ? 'store' : 'stores'}
+                  </span>
+                  {connector.lastSyncTime ? (
+                    <span className="connector-sync">{syncLabel(connector.lastSyncTime)}</span>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <fieldset className="catalog-connectors" disabled={disabled}>
             <legend>Connectors</legend>
             {dataStores.length === 0 ? (
@@ -238,14 +280,35 @@ function optionLabel(skill: GeminiCatalogSkill): string {
   return skill.suggestedRoute ? `${skill.label} (${skill.suggestedRoute})` : skill.label;
 }
 
-function summary(state: LoadState, skills: number, dataStores: number, warnings: number): string {
+function summary(
+  state: LoadState,
+  skills: number,
+  connectors: number,
+  dataStores: number,
+  warnings: number,
+): string {
   if (state === 'loading') return 'Loading skills and connectors...';
   if (state === 'error') return 'Use fallback routing until the catalog can be listed.';
   if (state === 'ready') {
     const suffix = warnings > 0 ? ' · limited by permissions' : '';
+    if (connectors > 0) {
+      return `${skills} skills · ${connectors} connectors · ${dataStores} stores${suffix}`;
+    }
     return `${skills} skills · ${dataStores} connectors${suffix}`;
   }
   return 'Not loaded';
+}
+
+/** Lamp tone for a connector state; always rendered next to the state word, never alone. */
+function lampTone(state: GeminiConnectorState | undefined): 'on' | 'hold' | 'err' {
+  if (state === 'active' || state === 'running') return 'on';
+  if (state === 'failed' || state === 'warning') return 'err';
+  return 'hold';
+}
+
+function syncLabel(lastSyncTime: string): string {
+  const at = new Date(lastSyncTime);
+  return Number.isNaN(at.getTime()) ? lastSyncTime : at.toLocaleString();
 }
 
 function findOne<T extends { name: string }>(items: readonly T[], name: string): T | undefined {

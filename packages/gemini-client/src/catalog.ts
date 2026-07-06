@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   assistantAgentsUrl,
+  collectionsUrl,
   dataStoresUrl,
   lookupWidgetConfigUrl,
   widgetListAvailableAgentViewsUrl,
@@ -29,9 +30,38 @@ export interface GeminiCatalogDataStore {
   suggested?: boolean;
 }
 
+/** Normalized DataConnector lifecycle state (lowercased for lamp+word rendering). */
+export type GeminiConnectorState =
+  | 'active'
+  | 'creating'
+  | 'running'
+  | 'warning'
+  | 'failed'
+  | 'updating'
+  | 'unknown';
+
+/**
+ * A third-party connector: a Collection whose output-only `dataConnector` is set.
+ * Its data stores live under `projects/{p}/locations/{l}/collections/{id}/dataStores/...`.
+ */
+export interface GeminiCatalogConnector {
+  name: string;
+  id: string;
+  label: string;
+  /** Connector source, e.g. "sharepoint", "jira". */
+  source?: string;
+  state?: GeminiConnectorState;
+  modes?: string[];
+  lastSyncTime?: string;
+  errorCount?: number;
+  blockingReasons?: string[];
+  entities?: string[];
+}
+
 export interface GeminiCatalog {
   skills: GeminiCatalogSkill[];
   dataStores: GeminiCatalogDataStore[];
+  connectors: GeminiCatalogConnector[];
   warnings?: string[];
 }
 
@@ -55,6 +85,7 @@ const AgentListSchema = z
   .object({
     agents: z.array(AgentSchema).optional(),
     skills: z.array(AgentSchema).optional(),
+    nextPageToken: z.string().optional(),
   })
   .passthrough();
 
@@ -90,8 +121,40 @@ const DataStoreSchema = z
 const DataStoreListSchema = z
   .object({
     dataStores: z.array(DataStoreSchema).optional(),
+    nextPageToken: z.string().optional(),
   })
   .passthrough();
+
+const DataConnectorSchema = z
+  .object({
+    dataSource: z.string().optional(),
+    state: z.string().optional(),
+    connectorModes: z.array(z.string()).optional(),
+    lastSyncTime: z.string().optional(),
+    entities: z.array(z.object({ entityName: z.string().optional() }).passthrough()).optional(),
+    errors: z.array(z.object({ message: z.string().optional() }).passthrough()).optional(),
+    blockingReasons: z.array(z.string()).optional(),
+    syncMode: z.string().optional(),
+  })
+  .passthrough();
+
+const CollectionSchema = z
+  .object({
+    name: z.string(),
+    displayName: z.string().optional(),
+    dataConnector: DataConnectorSchema.optional(),
+  })
+  .passthrough();
+
+const CollectionListSchema = z
+  .object({
+    collections: z.array(CollectionSchema).optional(),
+    nextPageToken: z.string().optional(),
+  })
+  .passthrough();
+
+/** Runaway guard for `nextPageToken` loops: never follow more than this many pages. */
+const MAX_LIST_PAGES = 10;
 
 const DATA_STORE_RESOURCE =
   /^(?:projects\/[^/]+\/locations\/[^/]+\/)?collections\/[^/]+\/dataStores\/[^/]+$/;
@@ -107,14 +170,16 @@ export class DiscoveryCatalogClient {
 
   async listCatalog(signal?: AbortSignal): Promise<GeminiCatalog> {
     const configured = configuredCatalog(this.config);
-    const [skillsResult, dataStoresResult] = await Promise.allSettled([
+    const [skillsResult, dataStoresResult, connectorsResult] = await Promise.allSettled([
       this.listSkills(signal),
       this.listDataStores(signal),
+      this.listConnectors(signal),
     ]);
     const warnings: string[] = [];
     const skills = skillsResult.status === 'fulfilled' ? skillsResult.value : configured.skills;
     const dataStores =
       dataStoresResult.status === 'fulfilled' ? dataStoresResult.value : configured.dataStores;
+    const connectors = connectorsResult.status === 'fulfilled' ? connectorsResult.value : [];
 
     if (skillsResult.status === 'rejected') {
       warnings.push(
@@ -131,7 +196,7 @@ export class DiscoveryCatalogClient {
     if (dataStoresResult.status === 'rejected') {
       warnings.push(
         catalogWarning(
-          'connectors',
+          'data stores',
           this.config.widget?.configId
             ? 'content-discoveryengine.lookupWidgetConfig or discoveryengine.dataStores.list'
             : 'discoveryengine.dataStores.list',
@@ -140,10 +205,23 @@ export class DiscoveryCatalogClient {
         ),
       );
     }
+    if (connectorsResult.status === 'rejected') {
+      // Connector metadata is informational: degrade to an empty board, never break
+      // the skills/dataStores routing catalog.
+      warnings.push(
+        catalogWarning(
+          'connectors',
+          'discoveryengine.collections.list',
+          connectorsResult.reason,
+          0,
+        ),
+      );
+    }
 
     return {
       skills,
       dataStores,
+      connectors,
       ...(warnings.length ? { warnings } : {}),
     };
   }
@@ -156,16 +234,21 @@ export class DiscoveryCatalogClient {
   }
 
   async listAdminSkills(signal?: AbortSignal): Promise<GeminiCatalogSkill[]> {
-    const raw = await getJson(
-      assistantAgentsUrl(this.config),
-      this.tokens,
-      this.fetchImpl,
-      signal,
-      this.retryOpts,
-    );
-    const parsed = AgentListSchema.parse(raw);
-    const agents = parsed.agents ?? parsed.skills ?? [];
-    return agents.map((agent) => normalizeSkill(agent.name, agent));
+    const skills: GeminiCatalogSkill[] = [];
+    await forEachPage(async (pageToken) => {
+      const raw = await getJson(
+        assistantAgentsUrl(this.config, pageToken),
+        this.tokens,
+        this.fetchImpl,
+        signal,
+        this.retryOpts,
+      );
+      const parsed = AgentListSchema.parse(raw);
+      const agents = parsed.agents ?? parsed.skills ?? [];
+      skills.push(...agents.map((agent) => normalizeSkill(agent.name, agent)));
+      return parsed.nextPageToken;
+    });
+    return skills;
   }
 
   async listWidgetSkills(signal?: AbortSignal): Promise<GeminiCatalogSkill[]> {
@@ -184,26 +267,32 @@ export class DiscoveryCatalogClient {
   ): Promise<GeminiCatalogSkill[]> {
     const widget = this.config.widget;
     if (!widget?.configId) return [];
-    const raw = await postJsonWithHeaders(
-      widgetListAvailableAgentViewsUrl(this.config),
-      {
-        configId: widget.configId,
-        additionalParams: { token: '-', origin: 'ORIGIN_UNSPECIFIED' },
-        listAvailableAgentViewsRequest: {
-          pageSize: 200,
-          filter: 'agent_type = SKILL_AGENT',
-          agentOrigin,
+    const skills: GeminiCatalogSkill[] = [];
+    await forEachPage(async (pageToken) => {
+      const raw = await postJsonWithHeaders(
+        widgetListAvailableAgentViewsUrl(this.config),
+        {
+          configId: widget.configId,
+          additionalParams: { token: '-', origin: 'ORIGIN_UNSPECIFIED' },
+          listAvailableAgentViewsRequest: {
+            pageSize: 200,
+            filter: 'agent_type = SKILL_AGENT',
+            agentOrigin,
+            ...(pageToken ? { pageToken } : {}),
+          },
         },
-      },
-      this.tokens,
-      this.fetchImpl,
-      widget.serverToken ? { 'x-server-token': widget.serverToken } : {},
-      signal,
-      this.retryOpts,
-    );
-    const parsed = WidgetAgentViewsResponseSchema.parse(raw);
-    const entries = parsed.agentViews ?? parsed.availableAgentViews ?? parsed.agents ?? [];
-    return entries.map((entry) => normalizeWidgetSkill(entry));
+        this.tokens,
+        this.fetchImpl,
+        widget.serverToken ? { 'x-server-token': widget.serverToken } : {},
+        signal,
+        this.retryOpts,
+      );
+      const parsed = WidgetAgentViewsResponseSchema.parse(raw);
+      const entries = parsed.agentViews ?? parsed.availableAgentViews ?? parsed.agents ?? [];
+      skills.push(...entries.map((entry) => normalizeWidgetSkill(entry)));
+      return parsed.nextPageToken;
+    });
+    return skills;
   }
 
   async listDataStores(signal?: AbortSignal): Promise<GeminiCatalogDataStore[]> {
@@ -244,15 +333,61 @@ export class DiscoveryCatalogClient {
   }
 
   async listAdminDataStores(signal?: AbortSignal): Promise<GeminiCatalogDataStore[]> {
-    const raw = await getJson(
-      dataStoresUrl(this.config),
-      this.tokens,
-      this.fetchImpl,
-      signal,
-      this.retryOpts,
-    );
-    const parsed = DataStoreListSchema.parse(raw);
-    return (parsed.dataStores ?? []).map((store) => normalizeDataStore(store.name, store));
+    const stores: GeminiCatalogDataStore[] = [];
+    await forEachPage(async (pageToken) => {
+      const raw = await getJson(
+        dataStoresUrl(this.config, pageToken),
+        this.tokens,
+        this.fetchImpl,
+        signal,
+        this.retryOpts,
+      );
+      const parsed = DataStoreListSchema.parse(raw);
+      stores.push(
+        ...(parsed.dataStores ?? []).map((store) => normalizeDataStore(store.name, store)),
+      );
+      return parsed.nextPageToken;
+    });
+    return stores;
+  }
+
+  /**
+   * List third-party connectors: `collections.list` at the project+location, keeping only
+   * collections whose output-only `dataConnector` is set (the embedded connector carries
+   * source/state/sync — no per-connector GET is needed).
+   */
+  async listConnectors(signal?: AbortSignal): Promise<GeminiCatalogConnector[]> {
+    const connectors: GeminiCatalogConnector[] = [];
+    await forEachPage(async (pageToken) => {
+      const raw = await getJson(
+        collectionsUrl(this.config, pageToken),
+        this.tokens,
+        this.fetchImpl,
+        signal,
+        this.retryOpts,
+      );
+      const parsed = CollectionListSchema.parse(raw);
+      for (const collection of parsed.collections ?? []) {
+        if (!collection.dataConnector) continue;
+        connectors.push(normalizeConnector(collection, collection.dataConnector));
+      }
+      return parsed.nextPageToken;
+    });
+    return connectors;
+  }
+}
+
+/**
+ * Follow a `nextPageToken` list loop: `fetchPage` returns the next token (or undefined when
+ * done). Hard-capped at MAX_LIST_PAGES as a runaway guard against a server echoing tokens.
+ */
+async function forEachPage(
+  fetchPage: (pageToken?: string) => Promise<string | undefined>,
+): Promise<void> {
+  let pageToken: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    pageToken = await fetchPage(pageToken);
+    if (!pageToken) return;
   }
 }
 
@@ -274,7 +409,42 @@ export function configuredCatalog(config: GeminiClientConfig): GeminiCatalog {
   return {
     skills: [...skills.values()],
     dataStores: (config.dataStores ?? []).map((name) => normalizeDataStore(name, {})),
+    // Connector (collection) metadata is discovered live only; there is no configured fallback.
+    connectors: [],
   };
+}
+
+/** One connector's data stores: every store living under `.../collections/{connector.id}/...`. */
+export interface GeminiConnectorGroup {
+  connector: GeminiCatalogConnector;
+  stores: GeminiCatalogDataStore[];
+}
+
+/**
+ * Group data stores under the connector (collection) whose id appears in their resource name
+ * prefix `projects/{p}/locations/{l}/collections/{id}/...`. Stores without a matching
+ * connector (e.g. `default_collection` stores) come back in `ungrouped`. Pure function.
+ */
+export function groupDataStoresByConnector(
+  connectors: readonly GeminiCatalogConnector[],
+  dataStores: readonly GeminiCatalogDataStore[],
+): { groups: GeminiConnectorGroup[]; ungrouped: GeminiCatalogDataStore[] } {
+  const byCollectionId = new Map<string, GeminiConnectorGroup>(
+    connectors.map((connector) => [connector.id, { connector, stores: [] }]),
+  );
+  const ungrouped: GeminiCatalogDataStore[] = [];
+  for (const store of dataStores) {
+    const collectionId = collectionIdFromResourceName(store.name);
+    const group = collectionId ? byCollectionId.get(collectionId) : undefined;
+    if (group) group.stores.push(store);
+    else ungrouped.push(store);
+  }
+  return { groups: [...byCollectionId.values()], ungrouped };
+}
+
+function collectionIdFromResourceName(name: string): string | undefined {
+  const match = /\/collections\/([^/]+)\//.exec(`${name}/`);
+  return match?.[1];
 }
 
 export function applyCatalogSelection(
@@ -383,6 +553,52 @@ function normalizeDataStore(
     ...(store.type ? { type: store.type } : {}),
     ...(suggestedDataStore(label, id) ? { suggested: true } : {}),
   };
+}
+
+function normalizeConnector(
+  collection: z.infer<typeof CollectionSchema>,
+  connector: z.infer<typeof DataConnectorSchema>,
+): GeminiCatalogConnector {
+  const id = tail(collection.name, '/collections/');
+  const label = collection.displayName?.trim() || id;
+  const state = connectorState(connector.state);
+  const entities = (connector.entities ?? [])
+    .map((entity) => entity.entityName)
+    .filter((entityName): entityName is string => Boolean(entityName));
+  return {
+    name: collection.name,
+    id,
+    label,
+    ...(connector.dataSource ? { source: connector.dataSource } : {}),
+    ...(state ? { state } : {}),
+    ...(connector.connectorModes?.length ? { modes: connector.connectorModes } : {}),
+    ...(connector.lastSyncTime ? { lastSyncTime: connector.lastSyncTime } : {}),
+    ...(connector.errors?.length ? { errorCount: connector.errors.length } : {}),
+    ...(connector.blockingReasons?.length ? { blockingReasons: connector.blockingReasons } : {}),
+    ...(entities.length ? { entities } : {}),
+  };
+}
+
+/** Map the raw DataConnector state enum onto the lamp+word vocabulary. */
+function connectorState(raw: string | undefined): GeminiConnectorState | undefined {
+  if (!raw) return undefined;
+  switch (raw) {
+    case 'ACTIVE':
+      return 'active';
+    case 'CREATING':
+      return 'creating';
+    case 'RUNNING':
+      return 'running';
+    case 'WARNING':
+      return 'warning';
+    case 'FAILED':
+    case 'INITIALIZATION_FAILED':
+      return 'failed';
+    case 'UPDATING':
+      return 'updating';
+    default:
+      return 'unknown';
+  }
 }
 
 function extractWidgetDataStores(

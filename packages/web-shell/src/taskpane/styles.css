@@ -2652,3 +2652,67 @@ button.cite:hover {
     right: max(var(--s5), calc((100% - 720px) / 2));
   }
 }
+
+/* ============ connector board (catalog settings) ============ */
+/* status = lamp + word, never color alone */
+.connector-board {
+  grid-column: 1 / -1;
+  display: grid;
+  padding-top: var(--s3);
+  border-top: 0.5px solid var(--hairline);
+}
+.connector-board-label {
+  font-size: var(--fz-sm);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  color: var(--ink-2);
+}
+.connector-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+  border-bottom: 0.5px solid var(--hairline);
+}
+.connector-row:last-child {
+  border-bottom: none;
+}
+.connector-lamp {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--lamp-hold);
+}
+.connector-lamp[data-tone='on'] {
+  background: var(--lamp-on);
+}
+.connector-lamp[data-tone='err'] {
+  background: var(--lamp-err);
+}
+.connector-state,
+.connector-source,
+.connector-stores,
+.connector-sync {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+.connector-state {
+  min-width: 52px;
+}
+.connector-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fz-md);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.connector-sync {
+  color: var(--ink-3);
+}

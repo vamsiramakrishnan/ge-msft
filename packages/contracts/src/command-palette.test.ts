@@ -81,6 +81,14 @@ describe('commandPaletteFor', () => {
     expect(teams).not.toContain('/explain'); // not in Teams' verb set
   });
 
+  it('keeps /review off PowerPoint (bridge has no add-comment/tracked-change actuation)', () => {
+    // The PPT bridge handles none of the kinds INTENT_REQUIRES maps for review, so an unfiltered
+    // palette would show a dead verb. Re-add when bridge-powerpoint ships comments.
+    const ppt = commandPaletteFor('powerpoint').verbs.map((v) => v.label);
+    expect(ppt).toEqual(['/ask', '/summarize', '/explain', '/draft']);
+    expect(ppt).not.toContain('/review');
+  });
+
   it('offers /visualize on Excel only', () => {
     const excel = commandPaletteFor('excel').verbs.map((v) => v.label);
     expect(excel).toContain('/visualize');

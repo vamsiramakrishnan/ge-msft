@@ -34,8 +34,9 @@ VITE_GE_ASSISTANT=default_assistant
 VITE_WIF_POOL_ID=<workforce-pool-id>
 VITE_WIF_PROVIDER_ID=<provider-id>
 
+VITE_ENTRA_TENANT_ID=<entra-tenant-guid>
 VITE_ENTRA_CLIENT_ID=<entra-public-client-app-id>
-VITE_ENTRA_AUTHORITY=https://login.microsoftonline.com/<tenant-id-or-domain>
+VITE_ENTRA_AUTHORITY=https://login.microsoftonline.com/<entra-tenant-guid>
 VITE_WIF_ID_TOKEN_SCOPES=openid profile email User.Read
 VITE_GRAPH_SCOPES=User.Read
 
@@ -52,6 +53,44 @@ VITE_GE_SURFACE_COMMANDER_SKILL=m365-surface-commander=<full-agent-resource>
 
 The task pane can also discover these through the Gemini Enterprise catalog dropdown when the user
 has permission.
+
+Notes:
+
+- `VITE_ENTRA_TENANT_ID` is the Entra directory (tenant) GUID and is required; the config
+  validation also requires `VITE_ENTRA_AUTHORITY` (when set) to contain that same GUID.
+
+## Central configuration (?cfg=)
+
+A central admin can serve one built bundle to many tenants without rebaking `.env` values into
+each deployment (ADR-0009, implemented first slice). Host a static JSON file next to the bundle,
+on the same origin:
+
+```text
+https://<addin-origin>/config/<tenant>.json     # e.g. /config/contoso-prod.json
+https://<addin-origin>/config/default.json      # optional fallback for all panes on this origin
+```
+
+The file is a flat object of the same public `VITE_*` keys used in `.env` (string values only —
+no secrets, no unknown keys, or the whole file is rejected and the built-in values are used):
+
+```json
+{
+  "VITE_GCP_PROJECT": "contoso-prod-project",
+  "VITE_GE_ENGINE": "contoso-engine",
+  "VITE_ENTRA_TENANT_ID": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Then point the tenant's manifest content URL at the shell with a `cfg` selector alongside the
+usual `host` parameter:
+
+```text
+https://<addin-origin>/taskpane.html?host=word&cfg=<tenant>
+```
+
+`cfg` must match `[a-z0-9][a-z0-9-]{0,63}`; anything else is ignored. The shell only ever fetches
+`/config/...` on its own origin, and the merged configuration passes through the same validation
+as build-time values.
 
 ## Microsoft Entra App Registration
 

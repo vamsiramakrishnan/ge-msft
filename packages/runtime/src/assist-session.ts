@@ -753,58 +753,13 @@ export class AssistSession {
       }
       pendingNoFenceReprompt = false;
 
-      // ADR-0005 Phase 2 — the turn's PLAN: type-check → dry-run (resolve, don't write) →
-      // preview → ONE plan-level approval → gated execution.
-      //
-      // Pass 1 (THIS loop): execute reads + pure (binding `$vars`, ADR-0005 Phase 1) inline, and
-      // DRY-RUN each effect — type-check it against the manifest, then evaluate any expression arg
-      // → render → compile to a Zod-valid `ActuationRequest`. Dry-run actuates NOTHING. Each effect
-      // reserves an ordered slot in `results` filled after the single approval (pass 2, below).
-      const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
-      const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
-      // `budget` is the per-turn command cap; `processEntry` decrements it for EVERY processed
-      // entry, including a skill call's expanded body — so expansion cannot exceed the cap.
-      const plan: PlanState = {
+      const { results, done } = yield* this.executeProgramTurn(
+        entries,
         turn,
-        results: [],
-        planSlots: [],
-        maxWrites,
-        budget: maxCommands,
-        done: false,
-      };
-      if (entries.length > maxCommands) {
-        yield {
-          type: 'capped',
-          turn,
-          reason: `command block truncated to ${maxCommands} (got ${entries.length})`,
-        };
-        plan.results.push({
-          error: `too many commands in one block; only the first ${maxCommands} ran`,
-        });
-      }
-      for (const entry of entries) {
-        if (plan.budget <= 0) break;
-        for await (const ev of this.processEntry(entry, plan, capabilities, 0)) yield ev;
-        if (plan.done) break;
-      }
-      const { results, planSlots, done } = plan;
-
-      // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then
-      // execute each effect through the existing gate + provenance. Fail-closed throughout.
-      if (planSlots.length > 0) {
-        const effects = planSlots.map((s) => s.effect);
-        // ADR-0008 §7 — infer the dependency DAG so the approval preview shows dependent GROUPS
-        // (spill ← table/chart), their approval classes, and reversibility, not a flat list.
-        const dag = analyseEffectDependencies(effects.map((e) => e.request));
-        // Surface the distinct approval authorities (severity-ordered) so the approver can never
-        // SILENTLY bundle, say, a workbook edit and an external post under one decision (audit §H).
-        const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
-        const present = new Set(effects.map((e) => e.approvalClass));
-        const approvalClasses = order.filter((c) => present.has(c));
-        yield { type: 'plan-preview', turn, effects, dag, approvalClasses };
-        for await (const ev of this.executePlan(turn, planSlots, opts, results, turnProvenance))
-          yield ev;
-      }
+        capabilities,
+        opts,
+        turnProvenance,
+      );
 
       if (done) {
         yield { type: 'done', turn, answer };
@@ -816,6 +771,96 @@ export class AssistSession {
     }
 
     yield { type: 'exhausted', turns: maxTurns, answer };
+  }
+
+  /**
+   * Execute an already-authored command program without a Gemini echo turn. This is for explicit
+   * user-pasted CLI (`set …`, `chart …`, `spill …`) and uses the SAME parser, type-check, dry-run,
+   * plan preview, explicit approval, trigger gate, bridge actuation, and result recording path as
+   * {@link runCommands}. It intentionally does not fabricate model provenance; direct manual writes
+   * remain visibly unattributed unless the caller supplies provenance through a future policy.
+   */
+  async *runCommandProgram(
+    program: string,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const body = program.trim();
+    if (!body) return;
+
+    const capabilities = await this.effectiveCapabilities();
+    this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
+    this.composeEnv.clear();
+    this.currentTurnProvenance = undefined;
+
+    const turn = 1;
+    yield { type: 'turn-start', turn };
+    const { entries } = parseProgramBlock(`\`\`\`cmd\n${body}\n\`\`\``, this.skills.names());
+    const { done } = yield* this.executeProgramTurn(entries, turn, capabilities, opts, undefined);
+    yield { type: 'done', turn, answer: done ? '' : '' };
+  }
+
+  /**
+   * ADR-0005 Phase 2 — one parsed command-program turn: type-check → dry-run (resolve, don't write)
+   * → preview → ONE plan-level approval → gated execution. Shared by model-authored command blocks
+   * and explicit user-authored CLI blocks so both paths have identical mutation safety.
+   */
+  private async *executeProgramTurn(
+    entries: readonly ProgramEntry[],
+    turn: number,
+    capabilities: CapabilityManifest,
+    opts: RunCommandsOptions,
+    turnProvenance: ProvenancePayload | undefined,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent, { results: unknown[]; done: boolean }, void> {
+    const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
+    const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
+    // `budget` is the per-turn command cap; `processEntry` decrements it for EVERY processed entry,
+    // including a skill call's expanded body, so expansion cannot exceed the cap.
+    const plan: PlanState = {
+      turn,
+      results: [],
+      planSlots: [],
+      maxWrites,
+      budget: maxCommands,
+      done: false,
+    };
+    if (entries.length > maxCommands) {
+      yield {
+        type: 'capped',
+        turn,
+        reason: `command block truncated to ${maxCommands} (got ${entries.length})`,
+      };
+      plan.results.push({
+        error: `too many commands in one block; only the first ${maxCommands} ran`,
+      });
+    }
+    for (const entry of entries) {
+      if (plan.budget <= 0) break;
+      for await (const ev of this.processEntry(entry, plan, capabilities, 0)) yield ev;
+      if (plan.done) break;
+    }
+
+    // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then execute
+    // each effect through the existing gate + provenance. Fail-closed throughout.
+    if (plan.planSlots.length > 0) {
+      const effects = plan.planSlots.map((s) => s.effect);
+      // ADR-0008 §7 — infer the dependency DAG so the approval preview shows dependent groups
+      // (spill ← table/chart), approval classes, and reversibility, not a flat list.
+      const dag = analyseEffectDependencies(effects.map((e) => e.request));
+      const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
+      const present = new Set(effects.map((e) => e.approvalClass));
+      const approvalClasses = order.filter((c) => present.has(c));
+      yield { type: 'plan-preview', turn, effects, dag, approvalClasses };
+      for await (const ev of this.executePlan(
+        turn,
+        plan.planSlots,
+        opts,
+        plan.results,
+        turnProvenance,
+      ))
+        yield ev;
+    }
+
+    return { results: plan.results, done: plan.done };
   }
 
   /**

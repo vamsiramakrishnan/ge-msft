@@ -5,6 +5,7 @@ import { quickActionSeed } from './components/quick-action-seed.js';
 import {
   installFakeExcel,
   installFakeWord,
+  excelSeed,
   scriptedClient,
   mountStack,
   type ExcelSimulator,
@@ -172,6 +173,55 @@ describe('command surface — composer / and @ (full-stack)', () => {
 
     expect(ui.controller.getState().pendingPlan?.effects[0]?.request.kind).toBe('insert-chart');
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+  });
+
+  it('a pasted Excel CLI program routes directly to the gate and writes after approval without a model echo', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Daily schedule',
+            origin: 'A1',
+            values: Array.from({ length: 12 }, () => Array.from({ length: 9 }, () => '')),
+          },
+        ],
+        activeSheet: 'Daily schedule',
+        selection: `'Daily schedule'!B2:I12`,
+      }),
+    );
+    const sc = scriptedClient([]);
+    ui = mountStack({ surface: 'excel', client: sc });
+    await ui.flush();
+
+    await typeAndSubmit(`
+Populate a mock schedule for this please
+set 'Daily schedule'!B2 "Time"
+set 'Daily schedule'!C2 "Monday"
+set 'Daily schedule'!D2 "Tuesday"
+set 'Daily schedule'!E2 "Wednesday"
+set 'Daily schedule'!F2 "Thursday"
+set 'Daily schedule'!G2 "Friday"
+set 'Daily schedule'!H2 "Saturday"
+set 'Daily schedule'!I2 "Sunday"
+set 'Daily schedule'!B3 "08:00 AM"
+set 'Daily schedule'!G12 "Wrap Up & Planning"
+/summarize @this Summarize the selected range.
+`);
+    await ui.waitFor((s) => s.pendingPlan !== undefined);
+
+    expect(sc.queries).toEqual([]);
+    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    await ui.act(() => ui!.controller.approvePlan());
+    await ui.waitFor((s) => s.pendingPlan === undefined && !s.busy);
+
+    const sheet = (sim as ExcelSimulator)
+      .snapshot()
+      .sheets.find((s) => s.name === 'Daily schedule')!;
+    expect(sheet.values[1]?.[1]).toBe('Time');
+    expect(sheet.values[1]?.[2]).toBe('Monday');
+    expect(sheet.values[1]?.[8]).toBe('Sunday');
+    expect(sheet.values[2]?.[1]).toBe('08:00 AM');
+    expect(sheet.values[11]?.[6]).toBe('Wrap Up & Planning');
   });
 });
 

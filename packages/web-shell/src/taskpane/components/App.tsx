@@ -32,6 +32,7 @@ import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { CommandPlanCard } from './CommandPlanCard.js';
 import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
 import { surfacePrimaryActions } from './SurfaceCommandCenter.js';
+import { extractDirectCommandProgram } from '../direct-command.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -258,6 +259,11 @@ export function App({
   // `invocationToGrounding` → `resolveGrounding`, and passed as the turn's grounding — never discarded
   // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
+    const directProgram = extractDirectCommandProgram(inv.raw);
+    if (directProgram) {
+      void controller.runDirectCommands(directProgram);
+      return;
+    }
     const effectiveIntent = inferImplicitIntent(surface, allowedIntents, inv);
     const routedInv =
       effectiveIntent !== undefined && effectiveIntent !== inv.intent

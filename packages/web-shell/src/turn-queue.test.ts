@@ -7,10 +7,12 @@ const grounding = { sources: [] } as unknown as ResolvedGrounding;
 const handlers = (): DrainHandlers & {
   ask: ReturnType<typeof vi.fn>;
   commands: ReturnType<typeof vi.fn>;
+  directCommands: ReturnType<typeof vi.fn>;
   skill: ReturnType<typeof vi.fn>;
 } => ({
   ask: vi.fn(),
   commands: vi.fn(),
+  directCommands: vi.fn(),
   skill: vi.fn(),
 });
 
@@ -22,6 +24,7 @@ describe('TurnQueue', () => {
     q.drain(h);
     expect(h.ask).not.toHaveBeenCalled();
     expect(h.commands).not.toHaveBeenCalled();
+    expect(h.directCommands).not.toHaveBeenCalled();
     expect(h.skill).not.toHaveBeenCalled();
   });
 
@@ -43,6 +46,16 @@ describe('TurnQueue', () => {
     expect(h.commands).toHaveBeenCalledWith('rewrite intro', undefined);
     expect(h.ask).not.toHaveBeenCalled();
     expect(h.skill).not.toHaveBeenCalled();
+  });
+
+  it('preserves a direct command program — never downgraded to model commands or ask', () => {
+    const q = new TurnQueue();
+    const h = handlers();
+    q.enqueue({ mode: 'direct-commands', program: 'set A1 42' });
+    q.drain(h);
+    expect(h.directCommands).toHaveBeenCalledWith('set A1 42');
+    expect(h.commands).not.toHaveBeenCalled();
+    expect(h.ask).not.toHaveBeenCalled();
   });
 
   it('preserves a skill turn with its args', () => {

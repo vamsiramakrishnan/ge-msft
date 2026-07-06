@@ -165,6 +165,22 @@ describe('command-grammar — set quoting (value is the full remainder)', () => 
     });
   });
 
+  it('treats an Excel single-quoted worksheet name as one cell selector', () => {
+    expect(parseCommandLine(`set 'Daily schedule'!B2 Time`)).toEqual({
+      verb: 'set',
+      cell: `'Daily schedule'!B2`,
+      value: 'Time',
+    });
+  });
+
+  it('unquotes a quoted scalar cell value', () => {
+    expect(parseCommandLine(`set 'Daily schedule'!G12 "Wrap Up & Planning"`)).toEqual({
+      verb: 'set',
+      cell: `'Daily schedule'!G12`,
+      value: 'Wrap Up & Planning',
+    });
+  });
+
   it('errors when set is missing a value', () => {
     expect(parseCommandLine('set A1')).toMatchObject({
       error: expect.stringContaining('cell and a value'),
@@ -525,6 +541,14 @@ describe('command-grammar — format (k=v pairs, values with # $ , . %)', () => 
       verb: 'format',
       range: 'A1',
       props: { numberFormat: '0.0%;=0' },
+    });
+  });
+
+  it('keeps a single-quoted worksheet range with spaces intact', () => {
+    expect(parseCommandLine(`format 'Daily schedule'!B2:I12 bold=true`)).toEqual({
+      verb: 'format',
+      range: `'Daily schedule'!B2:I12`,
+      props: { bold: 'true' },
     });
   });
 

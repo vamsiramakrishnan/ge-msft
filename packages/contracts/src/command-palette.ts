@@ -74,7 +74,11 @@ const VERB_BY_INTENT: Record<Intent, CommandVerb> = (Object.keys(DESCRIPTIONS) a
 export const VERBS_BY_SURFACE: Record<Surface, Intent[]> = {
   word: ['ask', 'summarize', 'explain', 'rewrite', 'review'],
   excel: ['ask', 'summarize', 'explain', 'rewrite', 'review', 'visualize'],
-  powerpoint: ['ask', 'summarize', 'explain', 'draft', 'review'],
+  // PowerPoint omits 'review': the bridge has no add-comment/tracked-change actuation (the kinds
+  // INTENT_REQUIRES maps for review), so /review could never run there — it was only saved by
+  // capability-closure filtering, and an unfiltered palette showed a dead verb. Re-add when
+  // bridge-powerpoint ships comments.
+  powerpoint: ['ask', 'summarize', 'explain', 'draft'],
   onenote: ['ask', 'summarize', 'explain', 'draft'],
   outlook: ['ask', 'summarize', 'explain', 'draft'],
   teams: ['ask', 'summarize', 'notes'],

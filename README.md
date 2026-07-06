@@ -128,7 +128,7 @@ All four compile to the same path; nothing bypasses the gate.
   actuating verb → the fail-closed `runCommands` plan gate.
 - **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
   `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
-- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (33 actions, `quickActionsForSurface()`
+- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (34 actions, `quickActionsForSurface()`
   closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
   `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc. An action
   with `{{name}}` slots declares typed `parameters` and collects them in a fill form before dispatch —

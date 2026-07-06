@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import type { Skill } from '../../controller.js';
-import { useDisclosure } from './useDisclosure.js';
 
 export interface SkillsPanelProps {
   skills: Skill[];
@@ -94,14 +93,10 @@ export function SkillsPanel({
   onInvoke,
   embedded = false,
 }: SkillsPanelProps): JSX.Element | null {
-  const { open, toggle, containerRef } = useDisclosure<HTMLElement>();
   if (skills.length === 0) return null;
-  const expanded = embedded || open;
   return (
     <section
-      ref={containerRef}
-      className={`skills${embedded ? ' skills--embedded' : ''}`}
-      data-open={expanded ? 'true' : 'false'}
+      className={`skills detail-hover${embedded ? ' skills--embedded' : ''}`}
       aria-label="Skills"
       aria-disabled={disabled}
     >
@@ -109,22 +104,8 @@ export function SkillsPanel({
         <span className="skills-mark" aria-hidden="true" />
         <span className="skills-title">Session skills</span>
         <span className="skills-summary">{skills.length} registered</span>
-        {!embedded && (
-          <button
-            className="skills-toggle"
-            type="button"
-            aria-expanded={open}
-            aria-controls="skills-list"
-            aria-label={open ? 'Hide session skills' : 'Show session skills'}
-            onClick={toggle}
-          >
-            <span className="tw-caret" aria-hidden="true">
-              ▾
-            </span>
-          </button>
-        )}
       </div>
-      <ul id="skills-list" className="skills-list skills-popover">
+      <ul className="skills-list skills-popover">
         {skills.map((skill) => (
           <SkillCard key={skill.name} skill={skill} disabled={disabled} onInvoke={onInvoke} />
         ))}

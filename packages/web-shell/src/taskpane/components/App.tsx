@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   deriveOutput,
   actionParameters,
@@ -20,9 +20,10 @@ import {
 } from '@ge/gemini-client';
 import type { PanelController } from '../../controller.js';
 import { usePanelState } from '../usePanelState.js';
-import { Toolbar } from './Toolbar.js';
+import { ContextTray } from './ContextTray.js';
 import { MessageThread } from './MessageThread.js';
 import { Composer, type ComposerInvocation, type ComposerMention } from './Composer.js';
+import { QuickActionBar } from './QuickActionBar.js';
 import { invocationToSeed, quickActionToInvocation } from './quick-action-seed.js';
 import { QuickActionParamForm } from './QuickActionParamForm.js';
 import { ProposalCard } from './ProposalCard.js';
@@ -30,8 +31,9 @@ import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { CommandPlanCard } from './CommandPlanCard.js';
+import { SkillsPanel } from './SkillsPanel.js';
 import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
-import { surfacePrimaryActions } from './SurfaceCommandCenter.js';
+import { SurfaceCommandCenter, surfacePrimaryActions } from './SurfaceCommandCenter.js';
 import { extractDirectCommandProgram } from '../direct-command.js';
 
 export interface AppProps {
@@ -209,23 +211,6 @@ export function App({
   // chrome, so the default pane stays task-focused (quiet by default). The catalog stays mounted
   // either way so its default routing still loads on open.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Settings (catalog routing) is config, so it earns a real modal dialog rather than inline chrome —
-  // it overlays without costing the default pane any vertical space. Driven imperatively off
-  // `settingsOpen`; guarded so jsdom / hosts without `showModal` degrade rather than throw.
-  const settingsDialogRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dlg = settingsDialogRef.current;
-    if (!dlg) return;
-    if (settingsOpen && typeof dlg.showModal === 'function' && !dlg.open) {
-      try {
-        dlg.showModal();
-      } catch {
-        /* unsupported host (e.g. jsdom) — the panel still renders, just not as a top-layer modal */
-      }
-    } else if (!settingsOpen && dlg.open) {
-      dlg.close();
-    }
-  }, [settingsOpen]);
   const hasBlockingGate = Boolean(
     state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite,
   );
@@ -320,55 +305,55 @@ export function App({
 
   return (
     <div className="panel" data-surface={surface} aria-busy={state.busy}>
-      <Toolbar
+      <header className="ph">
+        <div className="pht">
+          <div className="av" aria-hidden="true" />
+          <div className="ph-id">
+            <div className="pn">Gemini Enterprise</div>
+            <div className="pss">{agentLabel ?? 'Grounded on your research unit'}</div>
+          </div>
+          {catalogClient && (
+            <button
+              type="button"
+              className={`ph-settings${settingsOpen ? ' on' : ''}`}
+              aria-label={settingsOpen ? 'Close catalog settings' : 'Open catalog settings'}
+              aria-expanded={settingsOpen}
+              aria-controls="ge-catalog-settings"
+              onClick={() => setSettingsOpen((v) => !v)}
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+          )}
+        </div>
+      </header>
+
+      <GeminiCatalogPanel
+        catalogClient={catalogClient}
+        open={settingsOpen}
+        disabled={actionBlocked}
+        onApply={(selection: GeminiCatalogSelection) => {
+          onCatalogRouting?.(applyCatalogSelection(selection));
+        }}
+      />
+
+      <SurfaceCommandCenter
         surface={surface}
         allowedIntents={allowedIntents}
-        agentLabel={agentLabel}
-        busy={actionBlocked}
+        busy={state.busy}
         hasGate={hasBlockingGate}
-        chips={state.chips}
         attachedCount={attachedCount}
         availableCount={availableCount}
         messageCount={state.messages.length}
         proposalCount={proposalCount}
-        skills={state.skills ?? []}
-        primaryActionIds={primaryActionIds}
-        hasSettings={Boolean(catalogClient)}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onToggleChip={onToggle}
-        onRevealChip={(id) => void controller.reveal(id)}
-        onRefreshContext={() => void controller.refreshContext()}
-        onInvokeSkill={(name, args) => void controller.invokeSkill(name, args)}
-        onQuickAction={onQuickAction}
+        onAction={onQuickAction}
       />
 
-      <dialog
-        ref={settingsDialogRef}
-        className="ge-modal"
-        aria-label="Catalog and routing settings"
-        onClose={() => setSettingsOpen(false)}
-        onCancel={() => setSettingsOpen(false)}
-      >
-        <div className="ge-modal-head">
-          <span className="ge-modal-title">Catalog &amp; routing</span>
-          <button
-            type="button"
-            className="ge-modal-close"
-            aria-label="Close settings"
-            onClick={() => setSettingsOpen(false)}
-          >
-            <span aria-hidden="true">✕</span>
-          </button>
-        </div>
-        <GeminiCatalogPanel
-          catalogClient={catalogClient}
-          open={settingsOpen}
-          disabled={actionBlocked}
-          onApply={(selection: GeminiCatalogSelection) => {
-            onCatalogRouting?.(applyCatalogSelection(selection));
-          }}
-        />
-      </dialog>
+      <ContextTray
+        chips={state.chips}
+        onToggle={onToggle}
+        onReveal={(id) => void controller.reveal(id)}
+        onRefresh={() => void controller.refreshContext()}
+      />
 
       {state.suggestions.length > 0 && (
         <section className="suggestions" aria-label="Suggestions">
@@ -389,6 +374,12 @@ export function App({
           ))}
         </section>
       )}
+
+      <SkillsPanel
+        skills={state.skills ?? []}
+        disabled={actionBlocked}
+        onInvoke={(name, args) => void controller.invokeSkill(name, args)}
+      />
 
       <main className="thread-region" aria-label="Conversation and activity">
         <MessageThread messages={state.messages} surface={surface} />
@@ -429,6 +420,14 @@ export function App({
         </section>
       )}
 
+      <QuickActionBar
+        surface={surface}
+        allowedIntents={allowedIntents}
+        busy={actionBlocked}
+        excludeIds={primaryActionIds}
+        onAction={onQuickAction}
+      />
+
       <QuickActionParamForm
         key={paramFill?.id}
         action={paramFill}
@@ -451,6 +450,11 @@ export function App({
         onInvoke={onInvoke}
         placeholder={SURFACE_PLACEHOLDER[surface]}
       />
+
+      <footer className="pf" aria-label="Provenance">
+        <span>gemini enterprise · {surface} · client-direct</span>
+        <span className="pf-lamp">grounded · reversible</span>
+      </footer>
     </div>
   );
 }

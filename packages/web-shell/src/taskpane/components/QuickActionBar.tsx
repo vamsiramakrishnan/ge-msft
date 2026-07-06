@@ -1,8 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Surface, Intent } from '@ge/contracts';
 import { quickActionsForSurface, type QuickAction } from '@ge/contracts';
-import { useDisclosure } from './useDisclosure.js';
-import { MODE_LABEL } from './mode-labels.js';
 
 export interface QuickActionBarProps {
   /** The current surface — scopes which actions are offered (capability closure, ADR-0006). */
@@ -44,7 +42,6 @@ export function QuickActionBar({
   }, [allowedIntents, excludeIds, surface]);
   const [preferredGroup, setPreferredGroup] = useState<QuickAction['output']>('write');
   const [expanded, setExpanded] = useState(false);
-  const { open, toggle, containerRef } = useDisclosure<HTMLElement>();
   if (actions.length === 0) return null;
   const groups = groupActions(actions);
   const availableGroups = GROUPS.filter((group) => groups[group.output].length > 0);
@@ -59,8 +56,6 @@ export function QuickActionBar({
     <section
       className={`quick-actions action-drawer${embedded ? ' action-drawer--embedded' : ''}`}
       aria-label="More actions"
-      ref={containerRef}
-      data-open={embedded || open ? 'true' : 'false'}
     >
       <div className="action-drawer-head">
         <div className="action-drawer-copy">
@@ -82,7 +77,6 @@ export function QuickActionBar({
                 onClick={() => {
                   setPreferredGroup(group.output);
                   setExpanded(false);
-                  if (!embedded && !open) toggle();
                 }}
               >
                 <span>{group.label}</span>
@@ -100,24 +94,10 @@ export function QuickActionBar({
               {expanded ? 'Less' : `+${hiddenCount}`}
             </button>
           ) : null}
-          {!embedded && (
-            <button
-              type="button"
-              className="action-drawer-toggle"
-              aria-expanded={open}
-              aria-controls="qa-drawer-list"
-              aria-label={open ? 'Hide actions' : 'Show actions'}
-              onClick={toggle}
-            >
-              <span className="tw-caret" aria-hidden="true">
-                ▾
-              </span>
-            </button>
-          )}
         </div>
       </div>
 
-      <div id="qa-drawer-list" className="action-drawer-list" data-group={activeGroup}>
+      <div className="action-drawer-list" data-group={activeGroup}>
         {visibleActions.map((action) => (
           <span key={action.id} className="detail-hover quick-action-wrap">
             <button
@@ -130,15 +110,17 @@ export function QuickActionBar({
               aria-describedby={`qa-detail-${action.id}`}
               onClick={() => onAction(action)}
             >
-              <span className="quick-action-icon" data-output={action.output} aria-hidden="true" />
+              <span className="quick-action-icon" aria-hidden="true">
+                {actionIcon(action.output)}
+              </span>
               <span className="quick-action-main">{action.label}</span>
-              <span className="quick-action-meta">{MODE_LABEL[action.output]}</span>
+              <span className="quick-action-meta">{actionMeta(action.output)}</span>
             </button>
             <span id={`qa-detail-${action.id}`} className="detail-popover" role="tooltip">
               <strong>{action.label}</strong>
               <span>{action.prompt}</span>
               <span>
-                {action.intent} · {action.scope.kind} · {MODE_LABEL[action.output]}
+                {action.intent} · {action.scope.kind} · {actionMeta(action.output)}
               </span>
               {action.contextMenu ? <span>Also available from the host context menu.</span> : null}
             </span>
@@ -150,9 +132,9 @@ export function QuickActionBar({
 }
 
 const GROUPS: { output: QuickAction['output']; label: string }[] = [
-  { output: 'write', label: MODE_LABEL.write },
-  { output: 'annotation', label: MODE_LABEL.annotation },
-  { output: 'chat', label: MODE_LABEL.chat },
+  { output: 'write', label: 'Change' },
+  { output: 'annotation', label: 'Review' },
+  { output: 'chat', label: 'Ask' },
 ];
 
 function groupActions(actions: QuickAction[]): Record<QuickAction['output'], QuickAction[]> {
@@ -161,4 +143,26 @@ function groupActions(actions: QuickAction[]): Record<QuickAction['output'], Qui
     annotation: actions.filter((action) => action.output === 'annotation'),
     write: actions.filter((action) => action.output === 'write'),
   };
+}
+
+function actionIcon(output: QuickAction['output']): string {
+  switch (output) {
+    case 'chat':
+      return '?';
+    case 'annotation':
+      return '+';
+    case 'write':
+      return '>';
+  }
+}
+
+function actionMeta(output: QuickAction['output']): string {
+  switch (output) {
+    case 'chat':
+      return 'Ask';
+    case 'annotation':
+      return 'Review';
+    case 'write':
+      return 'Preview';
+  }
 }

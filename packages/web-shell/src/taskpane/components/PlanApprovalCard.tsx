@@ -59,7 +59,7 @@ function EffectRow({ effect, index }: { effect: PlanEffect; index: number }): JS
           {command}
         </pre>
         <span className="plan-effect-caret" aria-hidden="true">
-          {open ? '▾' : '▸'}
+          {open ? '-' : '+'}
         </span>
       </button>
       {open && (

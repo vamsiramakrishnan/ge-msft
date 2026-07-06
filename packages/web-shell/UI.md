@@ -50,32 +50,34 @@ Approvals are **fail-closed in the wiring**: nothing actuates until the user cli
 verbatim command line shown is the same `ActuationRequest` that executes — no render-benign /
 execute-malicious divergence. The view never reaches the host directly.
 
-## Design tokens
+## Design tokens — the Starlight / Ramsian language
 
-`src/taskpane/styles.css` is one token system in `:root` so every card shares the same chrome. The
-palette is lifted from `docs/mockups/*.html`. Token groups:
+`src/taskpane/styles.css` is one token system in `:root`; the reference is the Starlight component
+spec (Dieter Rams principles). The rules of the language, in order of importance:
 
-- **brand** — `--grad` (the Gemini gradient), `--brand` (fill `#8b5cf6`), `--brand-ink` (the
-  AA-compliant variant for small brand text labels), `--brand-soft`, `--brand-tint`.
-- **host accent** — `--host`, `--link` (Word default; overridden per surface).
-- **ink + surfaces** — `--ink`, `--ink-2`, `--soft`, `--psoft`, `--muted`, `--bg`, `--fill`, `--fill-2`.
-- **lines** — `--pl`, `--line`.
-- **status** — `--ok`, `--warn`, `--danger` (+ `--danger-bg` / `--danger-line`), `--teal`.
-- **spacing** — `--s1`…`--s6`.
-- **radii** — `--r-sm`, `--r-md`, `--r-lg`, `--r-pill`.
-- **typography** — `--pf`, `--mono`, `--fz-xs`…`--fz-xl`.
-- **elevation** — `--sh`, `--ring`.
+1. **Ground is warm paper** (`--paper #fcf9f8`); raised surfaces are plain white (`--surface`) —
+   never translucent, blurred, or shadowed. Structure is drawn with **0.5px hairlines**
+   (`--hairline`, ink at 40%) and 1–2px ink rules (`--rule`), not tinted boxes.
+2. **One functional blue** (`--blue #0057b8`, hover `#00408b`, active `#00336f`) marks the single
+   primary action per view, links, and focus. **Red** (`--red #bc000c`) means stop or destroy —
+   never emphasis. Everything else is ink (`--ink #1b1c1c`, `--ink-2`, `--ink-3`) on paper.
+3. **Status is a lamp plus a word**, never color alone: `--lamp-on` (blue), `--lamp-hold` (gray
+   `#c2c6d4`), `--lamp-err` (red). See `.surface-state`, `.status-line`, `.chip .dot`, `.cat`.
+4. **Type**: `--sans` (Hanken Grotesk; loaded in `taskpane.html`/`preview.html`, system fallbacks)
+   for prose; `--mono` (JetBrains Mono) for data — commands, counts, hashes, provenance. Numerals
+   tabular. Micro-labels (`.eyebrow`) are 11px and lowercase.
+5. **States shift tone only** — no size change, no shadow, no movement. The single animation is
+   the `lampPulse` (busy/streaming), disabled under `prefers-reduced-motion`. Collapse marks are
+   − / + set in mono; no rotating chevrons.
+6. **Radii**: `--r` (4px) for cards/buttons, `--r-chip` (2px) for chips/tags; knobs (send, stop,
+   settings) are circles. Verbatim commands (`.cmd`, `.md-code`) render on the ink plate
+   (`--plate` / `--plate-ink`). Inputs are rules, not boxes: bottom hairline, blue only on focus.
 
-Per-surface accent override: `.panel[data-surface='…']` re-points `--host` and `--link` to the host's
-color (Word `#185abd`, Excel `#107c41`, PowerPoint `#c43e1c`, Outlook `#0f6cbd`, Teams `#5b5fc7`)
-while the brand gradient stays constant. Existing class names (`panel/ph/pht/pn/pss/unit/chip/card/btn`)
-are unchanged from the mockups.
-
-**No new design tokens were added** for the latest views. The new class rules (the skills surface,
-the expandable plan-effect dry-run rows + `.diff-before`/`.diff-after`, the citation popover, the
-provenance `<dl>`, the surface-faithful proposal bodies `.proposal-formula`/`.proposal-redline`, and
-the `.entity-card`) all reuse the existing tokens — e.g. the redline reuses `--danger`/`--ok`, the
-entity-card header reuses `--grad`, the skills surface reuses `--brand-tint`/`--brand-soft`/`--brand-ink`.
+The per-surface `data-surface` attribute remains (behavioral hooks + tests), but the accent no
+longer forks per host — `--host`/`--link` resolve to the one blue on every surface; the surface
+identity is carried by the ink glyph plate and mono labels. Floating layers (popovers, palettes)
+use a solid surface with a 1px ink border instead of elevation. Class names
+(`panel/ph/pht/pn/pss/unit/chip/card/btn/…`) are unchanged from the feature-wave components.
 
 ## Guardrails
 

@@ -1,6 +1,5 @@
 import type { Intent, QuickAction, Surface } from '@ge/contracts';
 import { quickActionsForSurface } from '@ge/contracts';
-import { MODE_LABEL } from './mode-labels.js';
 
 export interface SurfaceCommandCenterProps {
   surface: Surface;
@@ -92,13 +91,6 @@ export function surfacePrimaryActions(
     .slice(0, 3);
 }
 
-/**
- * The surface command strip: who the host is, whether the pane is ready, the three highest-value
- * actions for this host as visible chips, and a one-line grounding/turn summary. The full action
- * catalog lives in the quick-action drawer; catalog routing lives behind the header settings. Keeping
- * the primary actions VISIBLE (not behind a disclosure) is the point — they are the task accelerators,
- * and hiding them wastes the strip. Everything else stays one compact line so the thread dominates.
- */
 export function SurfaceCommandCenter({
   surface,
   allowedIntents,
@@ -109,12 +101,12 @@ export function SurfaceCommandCenter({
   messageCount,
   proposalCount,
   onAction,
-}: SurfaceCommandCenterProps): JSX.Element {
+}: SurfaceCommandCenterProps): JSX.Element | null {
   const actions = surfacePrimaryActions(surface, allowedIntents);
+  if (actions.length === 0) return null;
   const copy = SURFACE_COPY[surface];
   const status = hasGate ? 'Decision needed' : busy ? 'Working' : 'Ready';
   const state = hasGate ? 'gate' : busy ? 'busy' : 'ready';
-  const disabled = busy || hasGate;
 
   return (
     <section className="surface-center" aria-label={`${copy.title} command center`}>
@@ -133,41 +125,146 @@ export function SurfaceCommandCenter({
         </span>
       </div>
 
-      {actions.length > 0 ? (
-        <div
-          className="surface-primary-actions"
-          role="group"
-          aria-label={`Primary actions for ${copy.title}`}
-        >
-          {actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className="surface-action"
-              data-action-id={action.id}
-              data-output={action.output}
-              data-intent={action.intent}
-              disabled={disabled}
-              title={action.prompt}
-              onClick={() => onAction(action)}
-            >
-              <span className="surface-action-mode" data-output={action.output} aria-hidden="true">
-                {MODE_LABEL[action.output]}
-              </span>
-              <span className="surface-action-label">{action.label}</span>
-            </button>
-          ))}
+      <div className="surface-center-controls">
+        <div className="detail-hover surface-actions">
+          <button
+            type="button"
+            className="surface-actions-trigger"
+            aria-describedby="surface-actions-pop"
+          >
+            <span>Quick actions</span>
+            <span className="surface-actions-count" aria-hidden="true">
+              {actions.length}
+            </span>
+            <span className="tw-caret" aria-hidden="true">
+              +
+            </span>
+          </button>
+          <div
+            id="surface-actions-pop"
+            className="detail-popover surface-actions-popover"
+            role="group"
+            aria-label={`Primary actions for ${copy.title}`}
+          >
+            <div className="surface-primary-actions">
+              {actions.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  className="surface-action"
+                  data-action-id={action.id}
+                  data-output={action.output}
+                  data-intent={action.intent}
+                  disabled={busy || hasGate}
+                  onClick={() => onAction(action)}
+                >
+                  <span
+                    className="surface-action-mode"
+                    data-output={action.output}
+                    aria-hidden="true"
+                  >
+                    {shortMode(action)}
+                  </span>
+                  <span className="surface-action-body">
+                    <span className="surface-action-label">{action.label}</span>
+                    <span className="surface-action-meta">
+                      {action.intent} · {action.scope.kind} · {actionMode(action)}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-      ) : (
-        <span className="surface-empty">No quick actions for this host yet.</span>
-      )}
 
-      <div className="surface-metrics" aria-label="Current work state">
-        {attachedCount} attached · {availableCount} nearby · {messageCount} turns · {proposalCount}{' '}
-        proposals
+        <div className="detail-hover surface-details">
+          <button
+            type="button"
+            className="surface-detail-trigger"
+            aria-describedby="surface-details"
+          >
+            <span>{attachedCount} attached</span>
+            <span>{availableCount} nearby</span>
+            <span>{messageCount} turns</span>
+          </button>
+          <div
+            id="surface-details"
+            className="detail-popover surface-details-popover"
+            role="tooltip"
+          >
+            <div className="surface-metrics" aria-label="Current work state">
+              <span>
+                <strong>{attachedCount}</strong> attached
+              </span>
+              <span>
+                <strong>{availableCount}</strong> nearby
+              </span>
+              <span>
+                <strong>{messageCount}</strong> turns
+              </span>
+              <span>
+                <strong>{proposalCount}</strong> proposals
+              </span>
+            </div>
+
+            <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
+              {entrypoints(copy.object).map((entry) => (
+                <span key={entry.id} className="detail-hover surface-entry-wrap">
+                  <span
+                    className="surface-entry"
+                    tabIndex={0}
+                    aria-describedby={`entry-${entry.id}`}
+                  >
+                    <span className="surface-entry-dot" aria-hidden="true" />
+                    <span>{entry.label}</span>
+                  </span>
+                  <span
+                    id={`entry-${entry.id}`}
+                    className="detail-popover surface-entry-detail"
+                    role="tooltip"
+                  >
+                    <strong>{entry.title}</strong>
+                    <span>{entry.detail}</span>
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
+}
+
+function entrypoints(
+  object: string,
+): { id: string; label: string; title: string; detail: string }[] {
+  return [
+    {
+      id: 'pane',
+      label: 'Pane',
+      title: 'Task pane',
+      detail: `Use chat, approvals, diagnostics, and grounded actions beside the active ${object}.`,
+    },
+    {
+      id: 'slash',
+      label: '/ verbs',
+      title: 'Command palette',
+      detail: 'Type / to reveal only the commands this host and profile can actually run.',
+    },
+    {
+      id: 'context',
+      label: 'Right-click',
+      title: 'Context menu',
+      detail: `Ask about the current selection without copying content out of the ${object}.`,
+    },
+    {
+      id: 'ribbon',
+      label: 'Ribbon',
+      title: 'Office command surface',
+      detail: 'Open the pane or trigger installed function commands from the add-in ribbon group.',
+    },
+  ];
 }
 
 function outputRank(action: QuickAction): number {
@@ -178,5 +275,27 @@ function outputRank(action: QuickAction): number {
       return 1;
     case 'chat':
       return 2;
+  }
+}
+
+function shortMode(action: QuickAction): string {
+  switch (action.output) {
+    case 'chat':
+      return 'Ask';
+    case 'annotation':
+      return 'Review';
+    case 'write':
+      return 'Change';
+  }
+}
+
+function actionMode(action: QuickAction): string {
+  switch (action.output) {
+    case 'chat':
+      return 'Answer';
+    case 'annotation':
+      return 'Review gate';
+    case 'write':
+      return 'Preview gate';
   }
 }

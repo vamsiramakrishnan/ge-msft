@@ -1,5 +1,4 @@
 import type { ContextChip } from '../../controller.js';
-import { useDisclosure } from './useDisclosure.js';
 
 export interface ContextTrayProps {
   chips: ContextChip[];
@@ -13,18 +12,12 @@ export interface ContextTrayProps {
   embedded?: boolean;
 }
 
-const KIND_DOT: Readonly<Record<string, string>> = {
-  document: 'var(--host)',
-  selection: 'var(--host)',
-  range: 'var(--host)',
-  'mail-item': 'var(--link)',
-  transcript: 'var(--teal)',
-};
-
 /**
  * The research-unit context tray: the grounding scope as removable chips. Attached chips carry an
  * × to detach; unattached chips are clickable to attach. "Refresh" re-reads what the host exposes
  * right now (selection/document/range/etc.). Matches the mockup's "Research unit · grounding scope".
+ * The chip's dot is a status lamp styled entirely in CSS — blue attached, gray available — so
+ * status is never color-alone-per-kind (Starlight spec: lamp + word).
  */
 function Chip({
   chip,
@@ -35,13 +28,16 @@ function Chip({
   onToggle: (id: string, attach: boolean) => void;
   onReveal: (id: string) => void;
 }): JSX.Element {
-  const dot = KIND_DOT[chip.kind] ?? 'var(--soft)';
   const detailId = `ctx-detail-${safeId(chip.id)}`;
   const revealLabel = `Open ${chip.title} in the host`;
   return (
     <span className="detail-hover chip-wrap">
-      <span className={`chip${chip.attached ? ' on' : ''}`} aria-describedby={detailId}>
-        <span className="dot" style={{ background: dot }} aria-hidden="true" />
+      <span
+        className={`chip${chip.attached ? ' on' : ''}`}
+        aria-describedby={detailId}
+        data-kind={chip.kind}
+      >
+        <span className="dot" aria-hidden="true" />
         {!chip.attached ? (
           <button
             type="button"
@@ -98,14 +94,10 @@ export function ContextTray({
   const attached = chips.filter((c) => c.attached);
   const available = chips.filter((c) => !c.attached);
   const preview = attached.length > 0 ? attached : available;
-  const { open, toggle, containerRef } = useDisclosure<HTMLElement>();
-  const expanded = embedded || open;
   return (
     <section
-      className={`unit${embedded ? ' unit--embedded' : ''}`}
+      className={`unit detail-hover${embedded ? ' unit--embedded' : ''}`}
       aria-label="Research unit grounding scope"
-      ref={containerRef}
-      data-open={expanded ? 'true' : 'false'}
     >
       <div className="unit-h">
         <span className="nb" aria-hidden="true" />
@@ -121,20 +113,6 @@ export function ContextTray({
         >
           Refresh
         </button>
-        {!embedded && (
-          <button
-            type="button"
-            className="unit-toggle"
-            aria-expanded={open}
-            aria-controls="ctx-chips"
-            aria-label={open ? 'Hide context sources' : 'Show context sources'}
-            onClick={toggle}
-          >
-            <span className="tw-caret" aria-hidden="true">
-              ▾
-            </span>
-          </button>
-        )}
       </div>
       {!embedded && (
         <div className="unit-peek" aria-hidden="true">
@@ -149,7 +127,7 @@ export function ContextTray({
           )}
         </div>
       )}
-      <div id="ctx-chips" className="chips context-popover">
+      <div className="chips context-popover">
         {chips.length === 0 && (
           <span className="muted small">Nothing to attach yet. Refresh scans the host.</span>
         )}

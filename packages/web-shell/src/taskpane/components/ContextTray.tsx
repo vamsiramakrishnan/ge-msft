@@ -6,18 +6,12 @@ export interface ContextTrayProps {
   onRefresh: () => void;
 }
 
-const KIND_DOT: Readonly<Record<string, string>> = {
-  document: 'var(--host)',
-  selection: 'var(--host)',
-  range: 'var(--host)',
-  'mail-item': '#2f6fed',
-  transcript: '#0f9d8c',
-};
-
 /**
  * The research-unit context tray: the grounding scope as removable chips. Attached chips carry an
  * × to detach; unattached chips are clickable to attach. "Refresh" re-reads what the host exposes
  * right now (selection/document/range/etc.). Matches the mockup's "Research unit · grounding scope".
+ * The chip's dot is a status lamp styled entirely in CSS — blue attached, gray available — so
+ * status is never color-alone-per-kind (Starlight spec: lamp + word).
  */
 function Chip({
   chip,
@@ -26,12 +20,11 @@ function Chip({
   chip: ContextChip;
   onToggle: (id: string, attach: boolean) => void;
 }): JSX.Element {
-  const dot = KIND_DOT[chip.kind] ?? '#9aa0b4';
   const detailId = `ctx-detail-${safeId(chip.id)}`;
   return (
     <span className="detail-hover chip-wrap">
       <span className={`chip${chip.attached ? ' on' : ''}`} aria-describedby={detailId}>
-        <span className="dot" style={{ background: dot }} aria-hidden="true" />
+        <span className="dot" aria-hidden="true" />
         {!chip.attached ? (
           <button
             type="button"

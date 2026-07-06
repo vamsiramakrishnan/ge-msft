@@ -137,7 +137,7 @@ export function SurfaceCommandCenter({
               {actions.length}
             </span>
             <span className="tw-caret" aria-hidden="true">
-              ▾
+              +
             </span>
           </button>
           <div

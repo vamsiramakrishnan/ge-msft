@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Gemini Enterprise</title>
+    <!-- Starlight type: Hanken Grotesk (prose) + JetBrains Mono (data). System fallbacks in CSS
+         keep the pane legible if the host webview blocks the font CDN. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
     <!-- Office.js (host-injected at runtime in a real host; harmless when absent in a browser tab). -->
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   </head>

@@ -30,7 +30,7 @@ describe('coreutils', () => {
   it('wc counts lines/bytes', async () => expect((await wc(fs(), '/work/a.txt')).lines).toBe(3));
 
   it('find without a glob recursively lists all files under a path', async () => {
-    const result = await find(fsMulti(), '/work');
+    const result = await find(fsMulti(), '/');
     expect(result.sort()).toEqual(['/work/a.txt', '/work/b.md']);
   });
 

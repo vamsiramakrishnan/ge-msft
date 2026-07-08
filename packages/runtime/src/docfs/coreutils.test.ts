@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { WorkspaceStore } from '../workspace.js';
 import { DocFsRouter } from './router.js';
 import { workMount } from './work-mount.js';
-import { cat, grep, head, ls, wc } from './coreutils.js';
+import { cat, find, grep, head, ls, wc } from './coreutils.js';
 
 function fs() {
   const s = new WorkspaceStore();
   s.save({ name: 'a.txt', sourceLabel: 't', content: 'one\ntwo\nthree\n' });
+  return new DocFsRouter([workMount(s)]);
+}
+
+function fsMulti() {
+  const s = new WorkspaceStore();
+  s.save({ name: 'a.txt', sourceLabel: 't', content: 'one\ntwo\nthree\n' });
+  s.save({ name: 'b.md', sourceLabel: 't', content: '# heading\n' });
   return new DocFsRouter([workMount(s)]);
 }
 
@@ -21,4 +28,26 @@ describe('coreutils', () => {
     expect(r.matches[0]).toMatchObject({ path: '/work/a.txt', line: 2, text: 'two' });
   });
   it('wc counts lines/bytes', async () => expect((await wc(fs(), '/work/a.txt')).lines).toBe(3));
+
+  it('find without a glob recursively lists all files under a path', async () => {
+    const result = await find(fsMulti(), '/work');
+    expect(result.sort()).toEqual(['/work/a.txt', '/work/b.md']);
+  });
+
+  it('find with a glob filters by leaf name pattern', async () => {
+    const result = await find(fsMulti(), '/work', '*.txt');
+    expect(result).toEqual(['/work/a.txt']);
+  });
+
+  it('cat throws on a missing file', async () => {
+    await expect(cat(fs(), '/work/missing.txt')).rejects.toThrow();
+  });
+
+  it('head throws on a missing file', async () => {
+    await expect(head(fs(), '/work/missing.txt')).rejects.toThrow();
+  });
+
+  it('wc throws on a missing file', async () => {
+    await expect(wc(fs(), '/work/missing.txt')).rejects.toThrow();
+  });
 });

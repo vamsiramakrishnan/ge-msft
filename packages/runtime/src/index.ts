@@ -47,3 +47,5 @@ export {
   type OrchestratorOptions,
 } from './orchestrator.js';
 export { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';
+export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
+export * from './docfs/index.js';

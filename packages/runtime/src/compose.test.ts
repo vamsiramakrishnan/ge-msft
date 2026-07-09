@@ -174,6 +174,45 @@ describe('TRANSFORMS — sort / head / tail', () => {
   });
 });
 
+describe('TRANSFORMS — sed', () => {
+  it('sed replaces the first match per row cell on a table (no /g flag)', () => {
+    const t: Value = { kind: 'table', columns: ['Region'], rows: [['East Coast'], ['West Coast']] };
+    const out = TRANSFORMS.sed!(t, 's/Coast/Region/');
+    expect(out).toEqual({
+      kind: 'table',
+      columns: ['Region'],
+      rows: [['East Region'], ['West Region']],
+    });
+  });
+
+  it('sed with /g replaces every match in a cell', () => {
+    const t: Value = { kind: 'table', columns: ['Label'], rows: [['aa-aa']] };
+    expect(TRANSFORMS.sed!(t, 's/a/x/g')).toEqual({
+      kind: 'table',
+      columns: ['Label'],
+      rows: [['xx-xx']],
+    });
+  });
+
+  it('sed operates on a text Value directly', () => {
+    expect(TRANSFORMS.sed!({ kind: 'text', value: 'hello world' }, 's/world/there/')).toEqual({
+      kind: 'text',
+      value: 'hello there',
+    });
+  });
+
+  it('sed rejects a number Value', () => {
+    const out = TRANSFORMS.sed!({ kind: 'number', value: 42 }, 's/4/9/');
+    expect(out).toHaveProperty('error');
+  });
+
+  it('sed rejects a malformed s/// expression', () => {
+    const out = TRANSFORMS.sed!({ kind: 'text', value: 'x' }, 'not-a-sed-expr');
+    expect(out).toHaveProperty('error');
+    expect((out as { error: string }).error).toMatch(/usage: sed/i);
+  });
+});
+
 /* ───────────────────────────── evalExpr ───────────────────────────── */
 
 /** A fake read host: maps a source to canned text (a GFM table for `read`). */

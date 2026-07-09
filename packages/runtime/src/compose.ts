@@ -130,6 +130,7 @@ export const TRANSFORMS: Record<string, Transform> = {
   sort,
   head: takeRows('head'),
   tail: takeRows('tail'),
+  sed,
 };
 
 /** One-line usage per transform, for the COMPOSITION advertisement in the prompt. */
@@ -144,6 +145,7 @@ export const TRANSFORM_USAGE: Record<string, string> = {
   sort: 'sort <col> [desc] — sort rows by a column',
   head: 'head <n> — first n rows',
   tail: 'tail <n> — last n rows',
+  sed: 'sed s/pattern/replacement/[g] — text/cell substitution',
 };
 
 /* ───────────────────────────── transform impls ───────────────────────────── */
@@ -355,6 +357,29 @@ function takeRows(which: 'head' | 'tail'): Transform {
         : table.rows.slice(Math.max(0, table.rows.length - n));
     return { kind: 'table', columns: table.columns, rows };
   };
+}
+
+/** `sed 's/pattern/replacement/[g]'` — literal-or-regex substitution, table cells or text. */
+function sed(input: Value, rawArgs: string): Value | EvalError {
+  const m = /^s\/((?:[^\\/]|\\.)*)\/((?:[^\\/]|\\.)*)\/(g?)$/.exec(rawArgs.trim());
+  if (!m) return { error: 'sed usage: sed s/pattern/replacement/[g] — e.g. sed s/Coast/Region/g' };
+  const [, pattern, replacement, flags] = m;
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern!.replace(/\\\//g, '/'), flags === 'g' ? 'g' : '');
+  } catch {
+    return { error: `sed: invalid pattern — ${pattern}` };
+  }
+  const repl = replacement!.replace(/\\\//g, '/');
+  if (input.kind === 'text') return { kind: 'text', value: input.value.replace(re, repl) };
+  if (input.kind === 'table') {
+    return {
+      kind: 'table',
+      columns: input.columns,
+      rows: input.rows.map((row) => row.map((cell) => cell.replace(re, repl))),
+    };
+  }
+  return { error: 'sed expects a table or text, got a number' };
 }
 
 function unquote(s: string): string {

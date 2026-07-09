@@ -595,6 +595,59 @@ describe('AssistSession.runCommands — loop bounds', () => {
     const turnStarts = events.filter((e) => e.type === 'turn-start');
     expect(turnStarts.length).toBe(2);
   });
+
+  it('a no-fence event carries a bounded, redacted snippet of the unparsed reply', async () => {
+    const bridge = new FlexBridge('word');
+    const { fetch } = scriptedFetch(['just prose, no fence', 'still no fence']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('chat', { maxTurns: 8 }));
+    const noFence = events.find((e) => e.type === 'no-fence') as
+      | Extract<CommandLoopEvent, { type: 'no-fence' }>
+      | undefined;
+    expect(noFence?.rawSnippet).toBeDefined();
+    expect(noFence!.rawSnippet!.length).toBeLessThanOrEqual(200);
+  });
+
+  it('a first no-fence landing on the LAST budgeted turn still gets its one recovery turn', async () => {
+    const bridge = new FlexBridge('word', {
+      captureDocState: () => Promise.resolve(snapshot()),
+    });
+    // Turn 1 is a normal read (not a no-fence, not `done`). maxTurns is 2, so turn 2 is the last
+    // budgeted turn — the FIRST no-fence lands exactly there. Turn 3 (the one-turn recovery
+    // reprompt) is also no-fence, so the loop breaks on the second no-fence rather than running
+    // forever.
+    const { fetch } = scriptedFetch([
+      '```cmd\noutline\n```',
+      'just prose, no fence',
+      'still no fence too',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('chat', { maxTurns: 2 }));
+    const noFence = events.filter((e) => e.type === 'no-fence');
+    // Proves the recovery turn actually ran: TWO no-fence events, not one.
+    expect(noFence.length).toBe(2);
+    // Proves the loop got exactly one extra turn past maxTurns to use the recovery reprompt.
+    const turnStarts = events.filter((e) => e.type === 'turn-start');
+    expect(turnStarts.length).toBe(3); // maxTurns (2) + 1 recovery turn
+  });
+
+  it('`exhausted.turns` reflects the actual last-started turn, not a hardcoded maxTurns', async () => {
+    const bridge = new FlexBridge('word');
+    // Two consecutive no-fence replies end the loop at turn 2, well before maxTurns (6).
+    const { fetch } = scriptedFetch(['just prose, no fence', 'still no fence']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('chat', { maxTurns: 6 }));
+    const exhausted = events.find((e) => e.type === 'exhausted') as
+      | Extract<CommandLoopEvent, { type: 'exhausted' }>
+      | undefined;
+    expect(exhausted?.turns).toBe(2);
+  });
 });
 
 /* ─────────────────── doc_state on command turns (nextCommandTurn) ────────── */

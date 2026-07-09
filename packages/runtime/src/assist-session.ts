@@ -175,8 +175,9 @@ export type CommandLoopEvent =
     }
   /** One write gated + actuated (or blocked). */
   | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
-  /** A turn produced no ```cmd fence — the loop re-prompts once. */
-  | { type: 'no-fence'; turn: number }
+  /** A turn produced no ```cmd fence — the loop re-prompts once. `rawSnippet` is a bounded,
+   * best-effort-redacted preview of the unparsed reply, for diagnosability. */
+  | { type: 'no-fence'; turn: number; rawSnippet: string }
   /** A per-turn command/write ceiling was hit; extra commands in the block were refused. */
   | { type: 'capped'; turn: number; reason: string }
   /** The model emitted `done`; the loop stops. `answer` is the final accumulated text. */
@@ -732,8 +733,10 @@ export class AssistSession {
     let query = await this.firstCommandTurn(capabilities, task);
     let answer = '';
     let pendingNoFenceReprompt = false;
+    let lastTurn = 0;
 
-    for (let turn = 1; turn <= maxTurns; turn++) {
+    for (let turn = 1; turn <= maxTurns || pendingNoFenceReprompt; turn++) {
+      lastTurn = turn;
       yield { type: 'turn-start', turn };
 
       // Stream this turn; accumulate the answer text and capture THIS turn's provenance locally.
@@ -766,7 +769,7 @@ export class AssistSession {
 
       // No fenced block → re-prompt ONCE (not an error). A second consecutive no-fence ends the loop.
       if (!found) {
-        yield { type: 'no-fence', turn };
+        yield { type: 'no-fence', turn, rawSnippet: redactedSnippet(turnText) };
         if (pendingNoFenceReprompt) break;
         pendingNoFenceReprompt = true;
         query = noFenceReprompt(turnHadCodeExecution);
@@ -791,7 +794,7 @@ export class AssistSession {
       query = await this.nextCommandTurn(results);
     }
 
-    yield { type: 'exhausted', turns: maxTurns, answer };
+    yield { type: 'exhausted', turns: lastTurn, answer };
   }
 
   /**
@@ -2345,6 +2348,20 @@ function isReadErrorResult(result: unknown): result is { error: string } {
 
 function renderExprSourceLabel(expr: ParsedExpr): string {
   return renderExprArg(expr);
+}
+
+/**
+ * A bounded, best-effort-redacted preview of a turn's unparsed reply, attached to `no-fence`
+ * events so a repeat of a parse-miss is diagnosable from telemetry instead of requiring a full
+ * transcript capture. Bounded to 200 chars total (100 head + 100 tail, the two ends most likely to
+ * show WHY extraction failed — a missing opening fence or a missing closing one) and strips
+ * anything that looks like a quoted string (a crude guard against accidentally logging pasted
+ * document content the model may have echoed back).
+ */
+function redactedSnippet(text: string): string {
+  const cleaned = text.replace(/"[^"]*"/g, '"…"').replace(/'[^']*'/g, "'…'");
+  if (cleaned.length <= 200) return cleaned;
+  return `${cleaned.slice(0, 100)}…${cleaned.slice(-100)}`;
 }
 
 function noFenceReprompt(turnHadCodeExecution: boolean): string {

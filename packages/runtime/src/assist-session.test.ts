@@ -965,6 +965,56 @@ describe('AssistSession.runCommands — ADR-0005 composition (pure)', () => {
   });
 });
 
+describe('AssistSession.runCommands — workspace cp/mv/rm dispatch (coreutils-parity Task 4)', () => {
+  it(
+    'routes cp/mv/rm through the real runCommands() dispatch, not just compileCommand — ' +
+      'ls/find previously parsed+compiled correctly yet were unreachable through this exact loop ' +
+      'because READ_COMMAND_VERBS/WORKSPACE_COMMAND_VERBS is a SEPARATE hand-maintained gate',
+    async () => {
+      const bridge = new ComposeBridge();
+      const { fetch } = scriptedFetch([
+        '```cmd\nsave a.tsv = "hello"\ncp a.tsv b.tsv\nmv b.tsv c.tsv\nrm c.tsv\ndone\n```',
+      ]);
+      const client = new StreamAssistClient(tokens, cfg, fetch);
+      const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+      const events = await collectLoop(session.runCommands('exercise the workspace lifecycle'));
+
+      const workspaceResults = events
+        .filter(
+          (e): e is Extract<CommandLoopEvent, { type: 'read-result' }> => e.type === 'read-result',
+        )
+        .map((e) => e.result as { workspace?: string; error?: string });
+
+      // Every one of the four commands reached WorkspaceStore and produced its own result kind —
+      // none fell through to the "verb ... not supported on this surface" EFFECT-verb dispatch
+      // branch, which is exactly the latent bug the ls/find task found and fixed for READ verbs.
+      expect(workspaceResults.map((r) => r.workspace)).toEqual(['save', 'cp', 'mv', 'rm']);
+      for (const r of workspaceResults) {
+        expect(r.error).toBeUndefined();
+      }
+    },
+  );
+
+  it('a dispatch-gate regression (cp/mv/rm missing from WORKSPACE_COMMAND_VERBS) would surface as "not supported on this surface", not a workspace error', async () => {
+    // Belt-and-suspenders: pin the exact failure SHAPE the ls/find bug produced, so a future
+    // refactor that re-drops cp/mv/rm from the hand-maintained WORKSPACE_COMMAND_VERBS set fails
+    // this test with a recognizable message instead of a silent behavior change.
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\ncp a.tsv b.tsv\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('copy a missing artifact'));
+    const result = events.find((e) => e.type === 'read-result') as
+      | Extract<CommandLoopEvent, { type: 'read-result' }>
+      | undefined;
+    // Reached WorkspaceStore.cp() (a corrective "not found", never the effect-verb fallback).
+    expect((result?.result as { workspace?: string }).workspace).toBe('error');
+    expect((result?.result as { error?: string }).error).toContain('workspace artifact not found');
+  });
+});
+
 /* ───────────────── ADR-0005 Phase 2 — gated effect composition (plan) ───────── */
 
 const planEvents = (

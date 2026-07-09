@@ -355,6 +355,9 @@ const WORKSPACE_COMMAND_VERBS: ReadonlySet<WorkspaceVerb> = new Set([
   'save',
   'cat',
   'grep',
+  'cp',
+  'mv',
+  'rm',
 ]);
 
 type WorkspaceCommand = Extract<ParsedCommand, { verb: WorkspaceVerb }>;
@@ -1480,6 +1483,18 @@ export class AssistSession {
             label: `grep ${intent.ref}`,
             result: this.workspace.grep(intent.ref, intent.pattern, intent.context ?? 0),
           };
+        case 'cp':
+          return {
+            label: `cp ${intent.src} ${intent.dst}`,
+            result: this.workspace.cp(intent.src, intent.dst),
+          };
+        case 'mv':
+          return {
+            label: `mv ${intent.src} ${intent.dst}`,
+            result: this.workspace.mv(intent.src, intent.dst),
+          };
+        case 'rm':
+          return { label: `rm ${intent.name}`, result: this.workspace.rm(intent.name) };
         case 'save': {
           const resolved = await this.resolveWorkspaceSource(intent.source);
           if ('error' in resolved) {

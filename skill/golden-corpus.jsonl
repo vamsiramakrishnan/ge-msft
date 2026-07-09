@@ -47,6 +47,12 @@
 {"name": "tail-path-n", "input": "tail /work/notes.md 20", "expect": {"verbs": ["tail"]}}
 {"name": "tail-missing-path", "input": "tail", "expect": {"error_substring": "tail needs a path"}}
 {"name": "tail-non-numeric-n", "input": "tail /work/notes.md abc", "expect": {"error_substring": "n must be a number"}}
+{"name": "cp-src-dst", "input": "cp a.tsv b.tsv", "expect": {"verbs": ["cp"]}}
+{"name": "cp-missing-dst", "input": "cp a.tsv", "expect": {"error_substring": "cp needs a source and destination"}}
+{"name": "mv-src-dst", "input": "mv a.tsv b.tsv", "expect": {"verbs": ["mv"]}}
+{"name": "mv-missing-dst", "input": "mv a.tsv", "expect": {"error_substring": "mv needs a source and destination"}}
+{"name": "rm-name", "input": "rm a.tsv", "expect": {"verbs": ["rm"]}}
+{"name": "rm-missing-name", "input": "rm", "expect": {"error_substring": "rm needs an artifact ref"}}
 {"name": "context-strategy", "input": "context analytical full-scope upload-preferred code-execution-preferred", "expect": {"verbs": ["context"]}}
 {"name": "context-unknown-hint", "input": "context run-python-now", "expect": {"error_substring": "unknown context hint"}}
 {"name": "suggest-one-string", "input": "suggest \"only one\"", "expect": {"error_substring": "two quoted strings"}}

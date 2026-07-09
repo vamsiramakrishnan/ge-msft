@@ -74,7 +74,7 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
  * host reads or pure composed values, but they never mutate Office content and never bypass the
  * write approval gate. The runtime stores only bounded data and returns compact artifact handles.
  */
-export const WORKSPACE_VERBS = ['workspace', 'save', 'cat', 'grep'] as const;
+export const WORKSPACE_VERBS = ['workspace', 'save', 'cat', 'grep', 'cp', 'mv', 'rm'] as const;
 
 /**
  * Write verbs → the `ActuationKind` (ADR-0002) they compile to. A write verb is advertised
@@ -167,6 +167,9 @@ export type ParsedCommand =
   | { verb: 'save'; name: string; source: WorkspaceSource }
   | { verb: 'cat'; ref: string; head?: number }
   | { verb: 'grep'; ref: string; pattern: string; context?: number }
+  | { verb: 'cp'; src: string; dst: string }
+  | { verb: 'mv'; src: string; dst: string }
+  | { verb: 'rm'; name: string }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'grid'; range: string; cells: string[][] }
   | { verb: 'suggest'; oldText: string; newText: string }
@@ -248,6 +251,9 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     pattern: z.string(),
     context: z.number().int().min(0).optional(),
   }),
+  z.object({ verb: z.literal('cp'), src: z.string(), dst: z.string() }),
+  z.object({ verb: z.literal('mv'), src: z.string(), dst: z.string() }),
+  z.object({ verb: z.literal('rm'), name: z.string() }),
   z.object({
     verb: z.literal('set'),
     cell: z.string(),
@@ -518,6 +524,15 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'grep':
       return parseGrep(rest);
 
+    case 'cp':
+      return parseCp(rest);
+
+    case 'mv':
+      return parseMv(rest);
+
+    case 'rm':
+      return parseRm(rest);
+
     case 'set': {
       const split = splitFirstArg(rest);
       if (!split) {
@@ -707,6 +722,42 @@ function parseGrep(rest: string): ParsedCommand | CommandParseError {
     pattern,
     ...(parsedContext.value !== undefined ? { context: parsedContext.value } : {}),
   };
+}
+
+/**
+ * `cp <src> <dst>` — duplicate a workspace artifact under a new name (a new id; `/work` only, never
+ * touches Office content). `src` is a bare ref (name or `ws:id`, resolved by `WorkspaceStore.get()`
+ * at execution); `dst` is validated as a fresh artifact name with `save`'s own rules (no path
+ * traversal, same character set) since it is the name a new alias is created under.
+ */
+function parseCp(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'cp needs a source and destination — usage: cp <src> <dst>';
+  const { positional, props } = tokenizeArgs(rest);
+  if (positional.length !== 2 || Object.keys(props).length > 0) return { error: usage };
+  const dst = normalizeWorkspaceName(positional[1]!);
+  if (typeof dst !== 'string') return dst;
+  return { verb: 'cp', src: positional[0]!, dst };
+}
+
+/**
+ * `mv <src> <dst>` — rename a workspace artifact in place (same id; `/work` only, never touches
+ * Office content). Same src/dst shape as {@link parseCp}.
+ */
+function parseMv(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'mv needs a source and destination — usage: mv <src> <dst>';
+  const { positional, props } = tokenizeArgs(rest);
+  if (positional.length !== 2 || Object.keys(props).length > 0) return { error: usage };
+  const dst = normalizeWorkspaceName(positional[1]!);
+  if (typeof dst !== 'string') return dst;
+  return { verb: 'mv', src: positional[0]!, dst };
+}
+
+/** `rm <name|ws:id>` — delete a workspace artifact (`/work` only, never touches Office content). */
+function parseRm(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'rm needs an artifact ref — usage: rm <name|ws:id>';
+  const { positional, props } = tokenizeArgs(rest);
+  if (positional.length !== 1 || Object.keys(props).length > 0) return { error: usage };
+  return { verb: 'rm', name: positional[0]! };
 }
 
 function normalizeWorkspaceName(name: string): string | CommandParseError {
@@ -1604,6 +1655,24 @@ function workspaceVerbSpec(verb: WorkspaceVerb): VerbSpec {
         verb,
         usage: 'grep <name|ws:id> "pattern" [context=N]',
         hint: 'search a workspace artifact locally and return compact line matches',
+      };
+    case 'cp':
+      return {
+        verb,
+        usage: 'cp <src> <dst>',
+        hint: 'duplicate a workspace artifact under a new name (new id); local /work only',
+      };
+    case 'mv':
+      return {
+        verb,
+        usage: 'mv <src> <dst>',
+        hint: 'rename a workspace artifact in place (same id); local /work only',
+      };
+    case 'rm':
+      return {
+        verb,
+        usage: 'rm <name|ws:id>',
+        hint: 'delete a workspace artifact; local /work only',
       };
   }
 }

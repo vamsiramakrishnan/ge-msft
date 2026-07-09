@@ -534,6 +534,28 @@ def parse_line(line: str):
             out["context"] = context
         return out
 
+    # `cp <src> <dst>` / `mv <src> <dst>` — duplicate/rename a workspace artifact (`/work` only,
+    # never touches Office content). `dst` is validated with the same rules as `save`'s name (it
+    # names a fresh alias); `src` is a bare ref, resolved by WorkspaceStore.get() at execution.
+    if verb in ("cp", "mv"):
+        usage = f"{verb} needs a source and destination — usage: {verb} <src> <dst>"
+        positional, props = _tokenize_args(rest)
+        if len(positional) != 2 or props:
+            return {"error": usage}
+        src, dst = positional
+        name_error = _validate_workspace_name(dst)
+        if name_error:
+            return {"error": name_error}
+        return {"verb": verb, "src": src, "dst": dst}
+
+    # `rm <name|ws:id>` — delete a workspace artifact (`/work` only, never touches Office content).
+    if verb == "rm":
+        usage = "rm needs an artifact ref — usage: rm <name|ws:id>"
+        positional, props = _tokenize_args(rest)
+        if len(positional) != 1 or props:
+            return {"error": usage}
+        return {"verb": "rm", "name": positional[0]}
+
     if verb == "set":
         sp = re.search(r"\s", rest)
         if not sp:
@@ -884,6 +906,22 @@ done
         failures.append("grep context did not parse")
     if "error" not in (parse_line("save ../bad = outline") or {}):
         failures.append("unsafe workspace artifact name did not error")
+    if parse_line("cp a.tsv b.tsv") != {"verb": "cp", "src": "a.tsv", "dst": "b.tsv"}:
+        failures.append("cp a.tsv b.tsv did not parse")
+    if parse_line("mv a.tsv b.tsv") != {"verb": "mv", "src": "a.tsv", "dst": "b.tsv"}:
+        failures.append("mv a.tsv b.tsv did not parse")
+    if parse_line("rm a.tsv") != {"verb": "rm", "name": "a.tsv"}:
+        failures.append("rm a.tsv did not parse")
+    if "error" not in (parse_line("cp a.tsv") or {}):
+        failures.append("cp with a missing destination did not error")
+    if "error" not in (parse_line("mv a.tsv") or {}):
+        failures.append("mv with a missing destination did not error")
+    if "error" not in (parse_line("rm") or {}):
+        failures.append("bare rm did not error")
+    if "error" not in (parse_line("cp a.tsv ../bad") or {}):
+        failures.append("unsafe cp destination name did not error")
+    if "error" not in (parse_line("mv a.tsv ../bad") or {}):
+        failures.append("unsafe mv destination name did not error")
 
     if failures:
         print("SELF-TEST FAIL", file=sys.stderr)

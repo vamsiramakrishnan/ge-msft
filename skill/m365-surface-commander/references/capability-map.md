@@ -46,6 +46,12 @@ entry under `/doc` or `/work`. It is NOT the pipeline `tail` transform used insi
 top-level command over a DocFs path. Like `cat`/`head`/`wc`, it errors on a missing file rather than
 returning an empty result; it never mutates the host.
 
+`cp <src> <dst>`, `mv <src> <dst>`, and `rm <name|ws:id>` round out the local virtual-workspace
+lifecycle alongside `workspace`/`save`/`cat`/`grep`: `cp` duplicates an artifact under a new name
+(a new id), `mv` renames one in place (same id), and `rm` deletes one. All three operate ONLY on
+`/work` — there is no `/doc` equivalent, and none of them ever touch Office content. An unknown
+source ref is a corrective error, never a silent no-op.
+
 ## Writes
 
 | Command   | Change             | Word | Excel | PPT | OneNote | Outlook | Teams |

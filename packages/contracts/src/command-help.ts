@@ -162,6 +162,56 @@ export const COMMAND_HELP = {
     failureModes: ['No matches is a valid result; stale artifacts must be refreshed with save.'],
     safety: ['Read-only local search; never mutates Office content.'],
   },
+  cp: {
+    command: 'cp',
+    useWhen:
+      'you need a working copy of a workspace artifact (e.g. before a lossy transform) without losing the original',
+    syntax: 'cp <src> <dst>',
+    discovery: ['workspace'],
+    sequence: [
+      'List artifacts with workspace if the handle is unknown.',
+      'Copy the artifact to a new name; the copy gets its own id.',
+      'Operate on the copy, keeping the original intact.',
+    ],
+    examples: ['cp schedule.tsv schedule-backup.tsv'],
+    doNot: [
+      'Do not use cp to touch Office content; it only duplicates a local /work artifact.',
+      "Do not invent a destination name outside save's naming rules (no path traversal).",
+    ],
+    failureModes: ['An unknown source ref returns a corrective error.'],
+    safety: ['Local /work only; never reads or writes Office content.'],
+  },
+  mv: {
+    command: 'mv',
+    useWhen: 'you need to rename a workspace artifact in place, e.g. after finalizing its contents',
+    syntax: 'mv <src> <dst>',
+    discovery: ['workspace'],
+    sequence: [
+      'List artifacts with workspace if the handle is unknown.',
+      'Rename the artifact; its id is unchanged, only the name changes.',
+      'Refer to the artifact by its new name afterward.',
+    ],
+    examples: ['mv draft.md final.md'],
+    doNot: [
+      'Do not use mv to move or touch Office content; it only renames a local /work artifact.',
+    ],
+    failureModes: ['An unknown source ref returns a corrective error.'],
+    safety: ['Local /work only; never reads or writes Office content.'],
+  },
+  rm: {
+    command: 'rm',
+    useWhen: 'a workspace artifact is stale or no longer needed and should be freed',
+    syntax: 'rm <name|ws:id>',
+    discovery: ['workspace'],
+    sequence: [
+      'List artifacts with workspace if the handle is unknown.',
+      'Delete the artifact by name or id; it no longer resolves afterward.',
+    ],
+    examples: ['rm schedule-backup.tsv'],
+    doNot: ['Do not use rm to delete Office content; it only frees a local /work artifact.'],
+    failureModes: ['An unknown ref returns a corrective error.'],
+    safety: ['Local /work only; never reads or writes Office content.'],
+  },
   ls: genericRead(
     'ls',
     'ls <path>',

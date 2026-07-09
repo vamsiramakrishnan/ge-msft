@@ -40,6 +40,9 @@ export type WorkspaceResult =
       matches: Array<{ line: number; text: string }>;
       truncated: boolean;
     }
+  | { workspace: 'cp'; artifact: WorkspaceArtifactSummary }
+  | { workspace: 'mv'; artifact: WorkspaceArtifactSummary }
+  | { workspace: 'rm'; name: string }
   | { workspace: 'error'; error: string };
 
 export interface SaveWorkspaceInput {
@@ -134,6 +137,60 @@ export class WorkspaceStore {
       matches,
       truncated: selected.size > GREP_MATCH_CAP,
     };
+  }
+
+  /**
+   * Duplicate an artifact under a new name/alias with a FRESH id — a copy is a distinct artifact
+   * for eviction purposes (see `evictOldest`), so it is inserted like any `save()`d artifact.
+   * `dst` is last-write-wins, matching `save()`'s `this.aliases.set(input.name, id)` semantics: an
+   * existing `dst` alias is silently overwritten to point at the new copy, orphaning whatever it
+   * previously named (recoverable only by its own `ws:id`, exactly like re-saving an existing name).
+   */
+  cp(src: string, dst: string): WorkspaceResult {
+    const source = this.get(src);
+    if (!source) return { workspace: 'error', error: `workspace artifact not found: ${src}` };
+    const id = `ws:${this.nextId++}`;
+    const copy: WorkspaceArtifact = {
+      ...source,
+      id,
+      name: dst,
+      createdAt: new Date().toISOString(),
+    };
+    this.artifacts.set(id, copy);
+    this.aliases.set(dst, id);
+    this.evictOldest();
+    return { workspace: 'cp', artifact: summaryOf(copy) };
+  }
+
+  /**
+   * Rename an artifact IN PLACE — same id, no new `artifacts` entry (so it keeps its original
+   * insertion-order age for `evictOldest`). `get()` resolves `src` by id OR alias, so the alias to
+   * drop is the artifact's OWN current `name` field, not necessarily the literal `src` string (which
+   * may itself have been a `ws:id`). Only drop that alias if it still points at this artifact — a
+   * `save()` that reused the same name for a DIFFERENT artifact since would have already repointed
+   * it, and this rename must not un-repoint someone else's alias. `dst` is last-write-wins, exactly
+   * like `save()`/`cp()`.
+   */
+  mv(src: string, dst: string): WorkspaceResult {
+    const artifact = this.get(src);
+    if (!artifact) return { workspace: 'error', error: `workspace artifact not found: ${src}` };
+    if (this.aliases.get(artifact.name) === artifact.id) {
+      this.aliases.delete(artifact.name);
+    }
+    artifact.name = dst;
+    this.aliases.set(dst, artifact.id);
+    return { workspace: 'mv', artifact: summaryOf(artifact) };
+  }
+
+  /** Delete an artifact so it no longer resolves by name OR id. Same alias-ownership care as `mv`. */
+  rm(name: string): WorkspaceResult {
+    const artifact = this.get(name);
+    if (!artifact) return { workspace: 'error', error: `workspace artifact not found: ${name}` };
+    this.artifacts.delete(artifact.id);
+    if (this.aliases.get(artifact.name) === artifact.id) {
+      this.aliases.delete(artifact.name);
+    }
+    return { workspace: 'rm', name: artifact.name };
   }
 
   private evictOldest(): void {

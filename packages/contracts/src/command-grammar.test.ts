@@ -266,6 +266,46 @@ describe('command-grammar — workspace artifact verbs', () => {
       error: expect.stringContaining('positive integer'),
     });
   });
+
+  it('parses cp/mv (source + validated destination name)', () => {
+    expect(parseCommandLine('cp a.tsv b.tsv')).toEqual({ verb: 'cp', src: 'a.tsv', dst: 'b.tsv' });
+    expect(parseCommandLine('mv a.tsv b.tsv')).toEqual({ verb: 'mv', src: 'a.tsv', dst: 'b.tsv' });
+  });
+
+  it('parses rm by name or ws:id ref', () => {
+    expect(parseCommandLine('rm a.tsv')).toEqual({ verb: 'rm', name: 'a.tsv' });
+    expect(parseCommandLine('rm ws:3')).toEqual({ verb: 'rm', name: 'ws:3' });
+  });
+
+  it('rejects cp/mv with a missing or extra argument', () => {
+    expect(parseCommandLine('cp a.tsv')).toMatchObject({
+      error: expect.stringContaining('cp needs a source and destination'),
+    });
+    expect(parseCommandLine('cp a.tsv b.tsv c.tsv')).toMatchObject({
+      error: expect.stringContaining('cp needs a source and destination'),
+    });
+    expect(parseCommandLine('mv a.tsv')).toMatchObject({
+      error: expect.stringContaining('mv needs a source and destination'),
+    });
+  });
+
+  it('rejects rm with a missing or extra argument', () => {
+    expect(parseCommandLine('rm')).toMatchObject({
+      error: expect.stringContaining('rm needs an artifact ref'),
+    });
+    expect(parseCommandLine('rm a.tsv b.tsv')).toMatchObject({
+      error: expect.stringContaining('rm needs an artifact ref'),
+    });
+  });
+
+  it('rejects a path-like or malformed cp/mv destination name (same rules as save)', () => {
+    expect(parseCommandLine('cp a.tsv ../secret')).toMatchObject({
+      error: expect.stringContaining('workspace artifact name'),
+    });
+    expect(parseCommandLine('mv a.tsv ../secret')).toMatchObject({
+      error: expect.stringContaining('workspace artifact name'),
+    });
+  });
 });
 
 describe('command-grammar — set quoting (value is the full remainder)', () => {
@@ -846,6 +886,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).not.toContain('suggest');
     expect(verbs).toContain('context');
     expect(verbs).toEqual(expect.arrayContaining(['workspace', 'save', 'cat', 'grep']));
+    expect(verbs).toEqual(expect.arrayContaining(['cp', 'mv', 'rm']));
     expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'open']));
     expect(verbs).toContain('tables');
     const read = grammarFor(excelManifest).find((v) => v.verb === 'read');
@@ -912,6 +953,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).toContain('list');
     expect(verbs).toContain('open');
     expect(verbs).toContain('slides');
+    expect(verbs).toEqual(expect.arrayContaining(['cp', 'mv', 'rm']));
     expect(verbs).not.toContain('set');
     expect(verbs).not.toContain('suggest');
   });
@@ -1003,6 +1045,9 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('ls /doc'),
       parseCommandLine('find /work'),
       parseCommandLine('tail /work/notes.md'),
+      parseCommandLine('cp a.tsv b.tsv'),
+      parseCommandLine('mv a.tsv b.tsv'),
+      parseCommandLine('rm a.tsv'),
       parseCommandLine('list range'),
       parseCommandLine('inspect xl:Sales!A1:C9'),
       parseCommandLine('properties xl:Sales!A1:C9'),
@@ -1051,6 +1096,24 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       path: '/work/notes.md',
       n: 20,
     });
+  });
+
+  it('accepts the cp verb', () => {
+    const cmd = parseCommandLine('cp a.tsv b.tsv');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'cp', src: 'a.tsv', dst: 'b.tsv' });
+  });
+
+  it('accepts the mv verb', () => {
+    const cmd = parseCommandLine('mv a.tsv b.tsv');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'mv', src: 'a.tsv', dst: 'b.tsv' });
+  });
+
+  it('accepts the rm verb', () => {
+    const cmd = parseCommandLine('rm a.tsv');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'rm', name: 'a.tsv' });
   });
 });
 

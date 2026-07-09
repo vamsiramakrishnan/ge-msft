@@ -52,7 +52,10 @@ export type WorkspaceIntent =
   | { workspace: 'summary'; ref: string }
   | { workspace: 'save'; name: string; source: WorkspaceSource }
   | { workspace: 'cat'; ref: string; head?: number }
-  | { workspace: 'grep'; ref: string; pattern: string; context?: number };
+  | { workspace: 'grep'; ref: string; pattern: string; context?: number }
+  | { workspace: 'cp'; src: string; dst: string }
+  | { workspace: 'mv'; src: string; dst: string }
+  | { workspace: 'rm'; name: string };
 
 /** The result of compiling one command line. */
 export type CompiledCommand =
@@ -182,6 +185,12 @@ export function compileCommand(
           ...(cmd.context !== undefined ? { context: cmd.context } : {}),
         },
       };
+    case 'cp':
+      return { kind: 'workspace', intent: { workspace: 'cp', src: cmd.src, dst: cmd.dst } };
+    case 'mv':
+      return { kind: 'workspace', intent: { workspace: 'mv', src: cmd.src, dst: cmd.dst } };
+    case 'rm':
+      return { kind: 'workspace', intent: { workspace: 'rm', name: cmd.name } };
     case 'done':
       return { kind: 'control', verb: 'done' };
     case 'help':

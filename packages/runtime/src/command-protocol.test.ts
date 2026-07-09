@@ -273,6 +273,21 @@ describe('compileCommand', () => {
       kind: 'workspace',
       intent: { workspace: 'grep', ref: 'schedule.tsv', pattern: 'Deep Work', context: 1 },
     });
+    expect(
+      compileCommand(
+        { verb: 'cp', src: 'a.tsv', dst: 'b.tsv' },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'workspace', intent: { workspace: 'cp', src: 'a.tsv', dst: 'b.tsv' } });
+    expect(
+      compileCommand(
+        { verb: 'mv', src: 'a.tsv', dst: 'b.tsv' },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'workspace', intent: { workspace: 'mv', src: 'a.tsv', dst: 'b.tsv' } });
+    expect(
+      compileCommand({ verb: 'rm', name: 'a.tsv' }, { surface: 'excel', mintChangeId: mint }),
+    ).toEqual({ kind: 'workspace', intent: { workspace: 'rm', name: 'a.tsv' } });
   });
 
   it('compiles control verbs', () => {

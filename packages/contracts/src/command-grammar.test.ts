@@ -119,6 +119,46 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     expect(result).toHaveProperty('error');
   });
 
+  // tail — the file-level DocFs read verb (last n lines of a file), distinct from compose.ts's
+  // pipeline `tail` transform (`(... | tail 5)`, a different grammar slot entirely).
+  it('parses tail with a path only', () => {
+    expect(parseCommandLine('tail /work/notes.md')).toEqual({
+      verb: 'tail',
+      path: '/work/notes.md',
+    });
+  });
+
+  it('parses tail with a path and an explicit n', () => {
+    expect(parseCommandLine('tail /work/notes.md 20')).toEqual({
+      verb: 'tail',
+      path: '/work/notes.md',
+      n: 20,
+    });
+  });
+
+  it('rejects tail with no path', () => {
+    expect(parseCommandLine('tail')).toMatchObject({
+      error: expect.stringContaining('tail needs a path'),
+    });
+  });
+
+  it('rejects tail with a non-numeric n', () => {
+    expect(parseCommandLine('tail /work/notes.md abc')).toMatchObject({
+      error: expect.stringContaining('n must be a number'),
+    });
+  });
+
+  it('ParsedCommandSchema.parse round-trips a parsed tail command without throwing', () => {
+    // Regression guard (ADR-0004): ParsedCommandSchema is annotated z.ZodType<ParsedCommand>, which
+    // only checks covariantly against the union — a missing discriminated-union branch for a new
+    // verb is invisible to tsc and only surfaces via a runtime .parse() call. This caught a real gap
+    // for `ls`/`find` when they first landed; guard `tail` the same way.
+    expect(() => ParsedCommandSchema.parse(parseCommandLine('tail /work/notes.md'))).not.toThrow();
+    expect(() =>
+      ParsedCommandSchema.parse(parseCommandLine('tail /work/notes.md 20')),
+    ).not.toThrow();
+  });
+
   it('parses context strategy hints as a read-only command', () => {
     const cmd = parseCommandLine('context analytical full-scope upload-preferred');
     expect(cmd).toEqual({
@@ -962,6 +1002,7 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('search foo'),
       parseCommandLine('ls /doc'),
       parseCommandLine('find /work'),
+      parseCommandLine('tail /work/notes.md'),
       parseCommandLine('list range'),
       parseCommandLine('inspect xl:Sales!A1:C9'),
       parseCommandLine('properties xl:Sales!A1:C9'),
@@ -1000,6 +1041,16 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
     const cmd = parseCommandLine('find /work');
     expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
     expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'find', path: '/work' });
+  });
+
+  it('accepts the tail verb', () => {
+    const cmd = parseCommandLine('tail /work/notes.md 20');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({
+      verb: 'tail',
+      path: '/work/notes.md',
+      n: 20,
+    });
   });
 });
 

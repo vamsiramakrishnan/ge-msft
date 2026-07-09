@@ -226,6 +226,18 @@ describe('compileCommand', () => {
     });
   });
 
+  it("compiles tail to a read intent (file-level DocFs verb, not compose.ts's pipeline tail transform)", () => {
+    const ctx = { surface: 'excel' as const, mintChangeId: () => asChangeId('c1') };
+    expect(compileCommand({ verb: 'tail', path: '/work/notes.md' }, ctx)).toEqual({
+      kind: 'read',
+      intent: { read: 'tail', path: '/work/notes.md' },
+    });
+    expect(compileCommand({ verb: 'tail', path: '/work/notes.md', n: 20 }, ctx)).toEqual({
+      kind: 'read',
+      intent: { read: 'tail', path: '/work/notes.md', n: 20 },
+    });
+  });
+
   it('compiles workspace verbs to local workspace intents', () => {
     expect(compileCommand({ verb: 'workspace' }, { surface: 'excel', mintChangeId: mint })).toEqual(
       {
@@ -1200,6 +1212,34 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
         result: expect.not.objectContaining({ error: expect.anything() }),
       });
     }
+    expect(loop.some((e) => e.type === 'command' && 'error' in e.compiled)).toBe(false);
+    expect(loop.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('tail (file-level DocFs verb) is dispatched as a read through the full command loop', async () => {
+    // Same regression guard as the `ls`/`find` test above, for `tail`: READ_COMMAND_VERBS in
+    // assist-session.ts is a THIRD hand-maintained verb set (separate from command-grammar.ts's
+    // READ_VERBS and command-protocol.ts's compileCommand switch) that gates whether a read verb
+    // is actually reachable through runCommands(). `ls`/`find` both parsed and compiled correctly
+    // in isolation yet were unreachable here until added to that set — exercise `tail` end-to-end,
+    // not just compileCommand/runReadIntent in isolation. `/doc/outline.md` always exists (it is
+    // the doc-mount's outline view, even when the outline is empty), so no extra fixture is needed.
+    // This is the DocFs file-level `tail`, distinct from compose.ts's pipeline `tail` transform
+    // (`(... | tail 5)`, a different grammar slot entirely).
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient(['```cmd\ntail /doc/outline.md\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('show the tail of the outline'));
+    const loop = loopEvents(events);
+
+    const reads = loop.filter((e) => e.type === 'read-result');
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'tail /doc/outline.md',
+      result: [{ text: '' }], // the fake bridge's doc-state has an empty outline.
+    });
     expect(loop.some((e) => e.type === 'command' && 'error' in e.compiled)).toBe(false);
     expect(loop.at(-1)).toMatchObject({ type: 'done' });
   });

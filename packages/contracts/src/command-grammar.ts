@@ -53,6 +53,7 @@ export const READ_VERBS = [
   'search',
   'ls',
   'find',
+  'tail',
   'list',
   'inspect',
   'properties',
@@ -151,6 +152,7 @@ export type ParsedCommand =
   | { verb: 'search'; text: string }
   | { verb: 'ls'; path: string }
   | { verb: 'find'; path: string; glob?: string }
+  | { verb: 'tail'; path: string; n?: number }
   | { verb: 'list'; kind?: ContextKind }
   | { verb: 'inspect'; selector: string }
   | { verb: 'properties'; selector: string }
@@ -212,6 +214,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('search'), text: z.string() }),
   z.object({ verb: z.literal('ls'), path: z.string() }),
   z.object({ verb: z.literal('find'), path: z.string(), glob: z.string().optional() }),
+  z.object({ verb: z.literal('tail'), path: z.string(), n: z.number().optional() }),
   z.object({ verb: z.literal('list'), kind: ContextKindSchema.optional() }),
   z.object({ verb: z.literal('inspect'), selector: z.string() }),
   z.object({ verb: z.literal('properties'), selector: z.string() }),
@@ -426,6 +429,16 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       if (rest === '') return { error: 'find needs a path — usage: find <path> [glob]' };
       const [path, glob] = rest.split(/\s+/, 2);
       return { verb: 'find', path: path!, ...(glob ? { glob } : {}) };
+    }
+
+    case 'tail': {
+      if (rest === '') return { error: 'tail needs a path — usage: tail <path> [n]' };
+      const [path, nStr] = rest.split(/\s+/, 2);
+      const n = nStr ? Number(nStr) : undefined;
+      if (nStr !== undefined && (n === undefined || Number.isNaN(n))) {
+        return { error: 'tail: n must be a number' };
+      }
+      return { verb: 'tail', path: path!, ...(n !== undefined ? { n } : {}) };
     }
 
     case 'search': {
@@ -1457,6 +1470,11 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
       verb: 'find',
       usage: 'find <path> [glob]',
       hint: 'recursively list DocFs file paths under /doc or /work, optionally filtered by a glob',
+    },
+    tail: {
+      verb: 'tail',
+      usage: 'tail <path> [n]',
+      hint: 'show the last n lines (default 10) of a DocFs file under /doc or /work',
     },
     list: {
       verb: 'list',

@@ -20,6 +20,24 @@ export async function head(fs: DocFs, path: string, n = 10): Promise<{ lines: st
   return { lines: v.text.split('\n').slice(0, n) };
 }
 
+/**
+ * The file-level `tail` coreutil — the LAST `n` lines of a DocFs file (default 10). Distinct from
+ * `compose.ts`'s pipeline `tail` transform (`(... | tail 5)`, operating on already-materialized
+ * `Value` rows); this one is a top-level DocFs read over a saved artifact or document entry, and
+ * mirrors `head`'s exact null-handling/splitting semantics: throw on a missing file (same as
+ * `head`/`cat`/`wc`, all of which throw rather than degrade to an empty result), and split on
+ * `\n` with no trailing-newline trimming, so `head`/`tail` agree on line-splitting for the same
+ * file content.
+ */
+export async function tail(fs: DocFs, path: string, n = 10): Promise<{ lines: string[] }> {
+  const v = await fs.readFile(path);
+  if (!v) throw new Error(`tail: no such file: ${path}`);
+  // `slice(-0) === slice(0)` (the whole array) — guard n<=0 explicitly so "the last 0 lines"
+  // means none, not everything.
+  if (n <= 0) return { lines: [] };
+  return { lines: v.text.split('\n').slice(-n) };
+}
+
 export async function grep(
   fs: DocFs,
   path: string,

@@ -75,17 +75,19 @@ CONTEXT_KINDS = {
 
 
 def _load_language():
-    """Load (read, control, write, transforms, effects, kinds, version) from the bundled manifest."""
+    """Load (read, workspace, control, write, transforms, effects, kinds, version) from the bundled manifest."""
     try:
         data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
         return (
             set(data["verbs"]["read"]),
+            set(data["verbs"].get("workspace", [])),
             set(data["verbs"]["control"]),
             set(data["verbs"]["write"]),
             set(data.get("transforms", [])),
             set(data.get("effectVerbs", [])),
             set(data.get("actuationKinds", [])),
             data.get("commandHelp", {}),
+            data.get("capabilityRegistry", []),
             data.get("version", "unknown"),
         )
     except (OSError, KeyError, ValueError):
@@ -96,27 +98,31 @@ def _load_language():
                 "outline", "read", "search", "list", "inspect", "properties", "comments",
                 "attachments", "tables", "slides", "neighbors", "context", "open",
             },
+            {"workspace", "save", "cat", "grep"},
             {"done", "help"},
             set(HANDLED_WRITE_VERBS),
             {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
             set(HANDLED_WRITE_VERBS),
             set(),
             {},
+            [],
             "fallback",
         )
 
 
 (
     READ_VERBS,
+    WORKSPACE_VERBS,
     CONTROL_VERBS,
     WRITE_VERBS,
     TRANSFORM_NAMES,
     EFFECT_VERBS,
     ACTUATION_KINDS,
     COMMAND_HELP,
+    CAPABILITY_REGISTRY,
     LANGUAGE_VERSION,
 ) = _load_language()
-ALL_VERBS = READ_VERBS | CONTROL_VERBS | WRITE_VERBS
+ALL_VERBS = READ_VERBS | WORKSPACE_VERBS | CONTROL_VERBS | WRITE_VERBS
 
 _FENCE = re.compile(r"```cmd[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
 # Lenient fallback: an opening ```cmd fence the model never closed — take to end of message.
@@ -325,6 +331,45 @@ def _parse_let(line: str):
     return {"kind": "let", "name": m.group(1)[1:], "pipeline": pipeline}
 
 
+def _validate_workspace_name(name: str):
+    if not name:
+        return "workspace artifact name cannot be empty"
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$", name):
+        return "workspace artifact name must start with a letter/number and contain only letters, numbers, ., _, -, or /"
+    if name.startswith("/") or name.endswith("/") or ".." in name.split("/"):
+        return 'workspace artifact name must be relative and cannot contain ".."'
+    return None
+
+
+def _parse_workspace_source(value: str):
+    src = value.strip()
+    if not src:
+        return {"error": "save source is empty"}
+    if src == "outline":
+        return {"src": "outline"}
+    if src.startswith('"'):
+        quoted = _scan_quoted(src)
+        if not quoted or quoted[1].strip():
+            return {"error": 'save literal source must be one quoted string — e.g. save note.md = "text"'}
+        return {"src": "literal", "text": quoted[0]}
+    if src.startswith("(") and src.endswith(")"):
+        pipeline = _parse_pipeline(src[1:-1].strip())
+        if "error" in pipeline:
+            return pipeline
+        return {"src": "expr", "expr": pipeline}
+    parts = src.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "read":
+        return {"src": "read", "selector": parts[1].strip()}
+    if len(parts) == 2 and parts[0].lower() == "search":
+        text = parts[1].strip()
+        if not text:
+            return {"error": "save search source needs text"}
+        return {"src": "search", "text": text.strip('"')}
+    return {
+        "error": 'save needs a source — usage: save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)'
+    }
+
+
 def _parse_invoke(verb: str, rest: str):
     """ADR-0008 §two-tier — `/<kind> positional… key=value…` (the specialized surface). The kind must
     be an ActuationKind from the catalogue (loaded from the manifest); an unknown kind yields a
@@ -394,6 +439,17 @@ def parse_line(line: str):
         if len(tokens) > 1:
             out["glob"] = tokens[1]
         return out
+    if verb == "tail":
+        if not rest:
+            return {"error": "tail needs a path — usage: tail <path> [n]"}
+        tokens = rest.split()
+        out = {"verb": "tail", "path": tokens[0]}
+        if len(tokens) > 1:
+            try:
+                out["n"] = int(tokens[1])
+            except ValueError:
+                return {"error": "tail: n must be a number"}
+        return out
     if verb == "list":
         if not rest:
             return {"verb": "list"}
@@ -420,6 +476,63 @@ def parse_line(line: str):
                 return {"error": f"unknown context hint '{raw}' — supported: {supported}"}
             hints.append(hint)
         return {"verb": "context", "hints": hints}
+
+    if verb == "workspace":
+        return {"verb": "workspace", **({"ref": rest.strip('"')} if rest else {})}
+
+    if verb == "save":
+        m = re.match(r"^(\S+)\s*=\s*(.+)$", rest)
+        if not m:
+            return {
+                "error": 'save needs a name and source — usage: save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)'
+            }
+        name = m.group(1)
+        name_error = _validate_workspace_name(name)
+        if name_error:
+            return {"error": name_error}
+        source = _parse_workspace_source(m.group(2))
+        if "error" in source:
+            return source
+        return {"verb": "save", "name": name, "source": source}
+
+    if verb == "cat":
+        split = _split_first_arg(rest)
+        if not split:
+            return {"error": "cat needs a workspace artifact ref — usage: cat <name|ws:id> [head=N]"}
+        ref, tail = split[0], split[1].strip()
+        out = {"verb": "cat", "ref": ref}
+        if tail:
+            m = re.fullmatch(r"head=(\d+)", tail)
+            if not m:
+                return {"error": "cat only accepts optional head=N — usage: cat <name|ws:id> [head=N]"}
+            out["head"] = int(m.group(1))
+        return out
+
+    if verb == "grep":
+        split = _split_first_arg(rest)
+        if not split:
+            return {"error": 'grep needs an artifact ref and pattern — usage: grep <name|ws:id> "pattern" [context=N]'}
+        ref, tail = split[0], split[1].strip()
+        if not tail:
+            return {"error": 'grep needs an artifact ref and pattern — usage: grep <name|ws:id> "pattern" [context=N]'}
+        context = None
+        ctx = re.search(r"(?:^|\s)context=(\d+)\s*$", tail)
+        if ctx:
+            context = int(ctx.group(1))
+            tail = tail[: ctx.start()].strip()
+        quoted = _scan_quoted(tail)
+        if quoted:
+            pattern, after = quoted
+            if after.strip():
+                return {"error": 'grep only accepts a quoted pattern plus optional context=N'}
+        else:
+            pattern = tail
+        if not pattern:
+            return {"error": "grep pattern cannot be empty"}
+        out = {"verb": "grep", "ref": ref, "pattern": pattern}
+        if context is not None:
+            out["context"] = context
+        return out
 
     if verb == "set":
         sp = re.search(r"\s", rest)
@@ -690,6 +803,18 @@ done
         failures.append("find /work *.tsv did not parse")
     if "error" not in (parse_line("find") or {}):
         failures.append("bare find did not error")
+    if parse_line("tail /work/notes.md") != {"verb": "tail", "path": "/work/notes.md"}:
+        failures.append("tail /work/notes.md did not parse")
+    if parse_line("tail /work/notes.md 20") != {
+        "verb": "tail",
+        "path": "/work/notes.md",
+        "n": 20,
+    }:
+        failures.append("tail /work/notes.md 20 did not parse")
+    if "error" not in (parse_line("tail") or {}):
+        failures.append("bare tail did not error")
+    if "error" not in (parse_line("tail /work/notes.md abc") or {}):
+        failures.append("tail with a non-numeric n did not error")
     if parse_line('open "Sales!A1:C9"') != {"verb": "open", "selector": "Sales!A1:C9"}:
         failures.append("open selector did not parse")
     if "error" not in (parse_line("list monster") or {}):
@@ -742,6 +867,23 @@ done
         failures.append("unknown /kind did not error")
     if "shape" in WRITE_VERBS and "shape" not in COMMAND_HELP:
         failures.append("generated commandHelp is missing shape")
+    if parse_line("save schedule.tsv = read 'Daily schedule'!B3:I53") != {
+        "verb": "save",
+        "name": "schedule.tsv",
+        "source": {"src": "read", "selector": "'Daily schedule'!B3:I53"},
+    }:
+        failures.append(f"save read did not parse: {parse_line('save schedule.tsv = read ' + chr(39) + 'Daily schedule' + chr(39) + '!B3:I53')}")
+    if parse_line('cat schedule.tsv head=12') != {"verb": "cat", "ref": "schedule.tsv", "head": 12}:
+        failures.append("cat head did not parse")
+    if parse_line('grep schedule.tsv "Deep Work" context=1') != {
+        "verb": "grep",
+        "ref": "schedule.tsv",
+        "pattern": "Deep Work",
+        "context": 1,
+    }:
+        failures.append("grep context did not parse")
+    if "error" not in (parse_line("save ../bad = outline") or {}):
+        failures.append("unsafe workspace artifact name did not error")
 
     if failures:
         print("SELF-TEST FAIL", file=sys.stderr)

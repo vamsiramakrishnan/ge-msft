@@ -72,7 +72,7 @@ import { analyseEffectDependencies } from './planning.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
 import { WorkspaceStore, type WorkspaceResult } from './workspace.js';
-import { createDocFs, ls as docFsLs, find as docFsFind } from './docfs/index.js';
+import { createDocFs, ls as docFsLs, find as docFsFind, tail as docFsTail } from './docfs/index.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -331,6 +331,7 @@ const READ_COMMAND_VERBS: ReadonlySet<ReadVerb> = new Set([
   'search',
   'ls',
   'find',
+  'tail',
   'list',
   'inspect',
   'properties',
@@ -1595,6 +1596,14 @@ export class AssistSession {
             return { label: `find ${intent.path}`, result: paths.map((text) => ({ text })) };
           } catch (err) {
             return { label: `find ${intent.path}`, result: { error: errMsg(err) } };
+          }
+        }
+        case 'tail': {
+          try {
+            const { lines } = await docFsTail(this.docFs, intent.path, intent.n);
+            return { label: `tail ${intent.path}`, result: lines.map((text) => ({ text })) };
+          } catch (err) {
+            return { label: `tail ${intent.path}`, result: { error: errMsg(err) } };
           }
         }
         case 'list-context': {

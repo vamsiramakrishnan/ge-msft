@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { WorkspaceStore } from '../workspace.js';
 import { DocFsRouter } from './router.js';
 import { workMount } from './work-mount.js';
-import { cat, find, grep, head, ls, wc } from './coreutils.js';
+import { cat, find, grep, head, ls, tail, wc } from './coreutils.js';
 
 function fs() {
   const s = new WorkspaceStore();
@@ -14,6 +14,12 @@ function fsMulti() {
   const s = new WorkspaceStore();
   s.save({ name: 'a.txt', sourceLabel: 't', content: 'one\ntwo\nthree\n' });
   s.save({ name: 'b.md', sourceLabel: 't', content: '# heading\n' });
+  return new DocFsRouter([workMount(s)]);
+}
+
+function fsWithContent(name: string, content: string) {
+  const s = new WorkspaceStore();
+  s.save({ name, sourceLabel: 't', content });
   return new DocFsRouter([workMount(s)]);
 }
 
@@ -59,5 +65,36 @@ describe('coreutils', () => {
 
   it('wc throws on a missing file', async () => {
     await expect(wc(fs(), '/work/missing.txt')).rejects.toThrow();
+  });
+
+  // tail — the file-level DocFs coreutil (last N lines of a saved artifact or document entry).
+  // Distinct from compose.ts's pipeline `tail` transform, which operates on already-materialized
+  // Value rows within a `(... | tail 5)` composition — this one reads a DocFs path directly.
+  it('tail returns the last n lines of a file (default 10)', async () => {
+    const content = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n');
+    const { lines } = await tail(fsWithContent('notes.md', content), '/work/notes.md');
+    expect(lines).toEqual(Array.from({ length: 10 }, (_, i) => `line ${i + 6}`));
+  });
+
+  it('tail respects an explicit n', async () => {
+    const fsInst = fsWithContent('notes.md', 'a\nb\nc\nd');
+    expect((await tail(fsInst, '/work/notes.md', 2)).lines).toEqual(['c', 'd']);
+  });
+
+  it('tail on n<=0 returns no lines (not the whole file — slice(-0) === slice(0) is a trap)', async () => {
+    const fsInst = fsWithContent('notes.md', 'a\nb\nc\nd');
+    expect((await tail(fsInst, '/work/notes.md', 0)).lines).toEqual([]);
+  });
+
+  it('tail throws on a missing file (matches head/cat/wc — no such file, not an empty result)', async () => {
+    await expect(tail(fs(), '/work/missing.md')).rejects.toThrow();
+  });
+
+  it('head and tail agree on line-splitting semantics for the same file', async () => {
+    const fsInst = fsWithContent('notes.md', 'one\ntwo\nthree\n');
+    // A trailing newline splits into a trailing empty-string "line" — head and tail both see it,
+    // neither one special-cases the trailing newline.
+    expect((await head(fsInst, '/work/notes.md', 4)).lines).toEqual(['one', 'two', 'three', '']);
+    expect((await tail(fsInst, '/work/notes.md', 4)).lines).toEqual(['one', 'two', 'three', '']);
   });
 });

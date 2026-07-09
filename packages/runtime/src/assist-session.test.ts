@@ -339,6 +339,18 @@ describe('AssistSession — runReadIntent (DocFs verbs)', () => {
     });
     expect(result).not.toHaveProperty('error');
   });
+
+  it("runs the tail read intent against DocFs (/doc/outline.md — the file-level DocFs verb, not compose.ts's pipeline tail transform)", async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+    // /doc/outline.md always exists (the doc-mount's outline view), so no extra fixture is needed.
+    const { result } = await (session as unknown as ReadIntentProbe).runReadIntent({
+      read: 'tail',
+      path: '/doc/outline.md',
+    });
+    expect(result).not.toHaveProperty('error');
+  });
 });
 
 /** A text context part with an id and a body sized to roughly `tokens` estimate (4 chars/token). */

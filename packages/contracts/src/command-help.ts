@@ -172,6 +172,11 @@ export const COMMAND_HELP = {
     'find <path> [glob]',
     'you need to locate an artifact or document entry by name pattern instead of listing everything',
   ),
+  tail: genericRead(
+    'tail',
+    'tail <path> [n]',
+    'you need only the last n lines (default 10) of a saved artifact or document entry, not the whole file',
+  ),
   set: genericWrite('set', 'set <A1> <value|=formula>', 'you need to write one Excel cell'),
   grid: {
     command: 'grid',

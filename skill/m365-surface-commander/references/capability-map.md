@@ -30,10 +30,21 @@ itself. `list`, `inspect`, `properties`, `comments`, `attachments`, `tables`, `s
 `neighbors`, and `open` are also runtime-served. They operate on typed host refs supplied by the
 bridge; `open` only navigates/selects in the host and is never a write or a send action.
 
+`workspace`, `save`, `cat`, and `grep` are available across surfaces as local virtual-workspace
+commands. They store and inspect bounded artifacts derived from reads, searches, outlines, literals,
+or pure pipelines. They are useful for large context, deterministic search, and cross-step handoff,
+but they are not host mutations and do not replace the surface-native write verbs below.
+
 `ls` and `find` are also available across surfaces as DocFs read commands. `ls <path>` lists what
 exists under `/doc` (the live document) or `/work` (saved workspace artifacts); `find <path> [glob]`
 locates an entry under the same tree by name pattern. Both are read-only, bounded, and return empty
 on bad input — they never mutate the host or infer content that isn't there.
+
+`tail` is also a DocFs read command: `tail <path> [n]` returns the last `n` lines (default 10) of one
+entry under `/doc` or `/work`. It is NOT the pipeline `tail` transform used inside a
+`(... | tail 5)` composition (which operates on already-materialized `Value` rows) — this is a bare
+top-level command over a DocFs path. Like `cat`/`head`/`wc`, it errors on a missing file rather than
+returning an empty result; it never mutates the host.
 
 ## Writes
 

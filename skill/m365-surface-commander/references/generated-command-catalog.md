@@ -14,7 +14,7 @@ Language version: `m365-cli/1.0`
 
 ## Core verbs
 
-- Read: `outline`, `read`, `search`, `ls`, `find`, `list`, `inspect`, `properties`, `comments`, `attachments`, `tables`, `slides`, `neighbors`, `context`, `open`
+- Read: `outline`, `read`, `search`, `ls`, `find`, `tail`, `list`, `inspect`, `properties`, `comments`, `attachments`, `tables`, `slides`, `neighbors`, `context`, `open`
 - Write: `cf`, `chart`, `comment`, `compose`, `format`, `grid`, `mail`, `page`, `post`, `reply`, `set`, `shape`, `slide`, `spill`, `suggest`, `table`
 - Control: `done`, `help`
 

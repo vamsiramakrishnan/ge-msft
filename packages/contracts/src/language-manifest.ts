@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { ActuationKindSchema } from './capability.js';
+import {
+  CapabilityRegistryEntrySchema,
+  assertCapabilityRegistryConsistent,
+} from './capability-registry.js';
 import { COMMAND_HELP, CommandHelpEntrySchema } from './command-help.js';
-import { READ_VERBS, CONTROL_VERBS, WRITE_VERB_TO_KIND } from './command-grammar.js';
+import {
+  READ_VERBS,
+  WORKSPACE_VERBS,
+  CONTROL_VERBS,
+  WRITE_VERB_TO_KIND,
+} from './command-grammar.js';
 import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
 
 /**
@@ -49,6 +58,7 @@ export const LanguageManifestSchema = z.object({
   valueTypes: z.array(z.string()),
   verbs: z.object({
     read: z.array(z.string()), // pipeline/command sources (outline/read/search)
+    workspace: z.array(z.string()), // local virtual artifact commands; never host mutations
     control: z.array(z.string()), // done/help — not actuations
     write: z.array(z.string()), // effect verbs reachable from the model (keys of writeVerbToKind)
   }),
@@ -62,6 +72,8 @@ export const LanguageManifestSchema = z.object({
   actuationKinds: z.array(z.string()),
   /** Topic-aware command help/playbooks emitted to the skill-side CLI. */
   commandHelp: z.record(CommandHelpEntrySchema),
+  /** Non-authorizing capability metadata emitted for skill/UI progressive disclosure. */
+  capabilityRegistry: z.array(CapabilityRegistryEntrySchema),
   /**
    * The `/<kind>` SPECIALIZED surface (ADR-0008 §two-tier): catalogue kinds NOT already reachable by
    * a core composable verb. These are named, typed, non-composing effect terminals invoked as
@@ -85,6 +97,7 @@ export function buildLanguageManifest(): LanguageManifest {
     valueTypes: [...VALUE_TYPES],
     verbs: {
       read: [...READ_VERBS],
+      workspace: [...WORKSPACE_VERBS],
       control: [...CONTROL_VERBS],
       write: Object.keys(WRITE_VERB_TO_KIND).sort(),
     },
@@ -93,6 +106,9 @@ export function buildLanguageManifest(): LanguageManifest {
     effectVerbs: [...EFFECT_VERBS].sort(),
     actuationKinds: [...ActuationKindSchema.options].sort(),
     commandHelp: sortedRecord(COMMAND_HELP),
+    capabilityRegistry: assertCapabilityRegistryConsistent().sort((a, b) =>
+      `${a.surface}:${a.kind}`.localeCompare(`${b.surface}:${b.kind}`),
+    ),
     // Specialized `/`-surface = catalogue kinds NOT covered by a core composable verb.
     specializedKinds: (() => {
       const core = new Set<string>(Object.values(WRITE_VERB_TO_KIND));
@@ -115,6 +131,7 @@ export function assertManifestConsistent(
   const kinds = new Set(parsed.actuationKinds);
   const effects = new Set(parsed.effectVerbs);
   const transforms = new Set(parsed.transforms);
+  const registry = parsed.capabilityRegistry;
   const errors: string[] = [];
 
   for (const [verb, kind] of Object.entries(parsed.writeVerbToKind)) {
@@ -129,7 +146,12 @@ export function assertManifestConsistent(
   // cover the whole catalogue — no kind is both, none is unreachable.
   const coreKinds = new Set(Object.values(parsed.writeVerbToKind));
   const specialized = new Set(parsed.specializedKinds);
-  const verbs = new Set([...parsed.verbs.read, ...parsed.verbs.control, ...parsed.verbs.write]);
+  const verbs = new Set([
+    ...parsed.verbs.read,
+    ...parsed.verbs.workspace,
+    ...parsed.verbs.control,
+    ...parsed.verbs.write,
+  ]);
   const help = new Set(Object.keys(parsed.commandHelp));
   for (const k of specialized) {
     if (coreKinds.has(k)) errors.push(`kind "${k}" is both core-verb-reachable and specialized`);
@@ -146,6 +168,21 @@ export function assertManifestConsistent(
   for (const topic of help) {
     if (!verbs.has(topic) && !kinds.has(topic)) {
       errors.push(`commandHelp topic "${topic}" is neither a language verb nor an actuation kind`);
+    }
+  }
+  try {
+    assertCapabilityRegistryConsistent(registry);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+  for (const entry of registry) {
+    if (!kinds.has(entry.kind)) {
+      errors.push(`capability registry entry "${entry.surface}:${entry.kind}" uses unknown kind`);
+    }
+    if (entry.exposure === 'specialized' && !specialized.has(entry.kind)) {
+      errors.push(
+        `capability registry entry "${entry.surface}:${entry.kind}" is specialized but not on the / surface`,
+      );
     }
   }
 

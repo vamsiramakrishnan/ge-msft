@@ -47,5 +47,7 @@ export {
   type OrchestratorOptions,
 } from './orchestrator.js';
 export { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';
+// Type-only; no runtime cost. @ge/runtime has no package.json subpath exports, so this barrel
+// is the only way web-shell/controller.ts's artifact rendering can reach these workspace types.
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
 export * from './docfs/index.js';

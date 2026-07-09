@@ -14,8 +14,10 @@ const plan = (summary: string): PendingPlan => ({ effects: [], summary });
 const share = (name: string): PendingShare => ({
   name,
   sourceLabel: 'read Sales!A1:B9',
-  preview: 'a\tb\n1\t2',
+  bytes: 7,
   truncated: false,
+  preview: 'a\tb\n1\t2',
+  previewTruncated: false,
 });
 
 /** A coordinator wired to spy callbacks so we can assert the card view-state pushes. */

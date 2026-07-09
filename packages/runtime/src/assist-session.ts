@@ -80,7 +80,7 @@ import {
   tail as docFsTail,
   type SharedStore,
 } from './docfs/index.js';
-import { byteLength } from './docfs/bytes.js';
+import { byteLength, truncateToBytes } from './docfs/bytes.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -140,6 +140,11 @@ const DEFAULT_MAX_TURNS = 12;
 /** Per-turn ceilings so an injected mega-block can't fan out into unbounded host work (ADR-0004). */
 const DEFAULT_MAX_COMMANDS_PER_TURN = 32;
 const DEFAULT_MAX_WRITES_PER_TURN = 8;
+
+/** Bound on one `share`'s content — the same cap `WorkspaceStore.save` applies to local artifacts. */
+const MAX_SHARE_BYTES = 256 * 1024;
+/** The reserved suffix `share` writes its provenance companion under; a `name` may not target it. */
+const SHARE_PROVENANCE_SUFFIX = '.provenance.json';
 
 /**
  * A small, typed event stream for the command loop (ADR-0004) so the panel can show steps. These
@@ -236,12 +241,6 @@ interface PlanState {
   /** Per-turn command budget (ADR-0004): decremented for EVERY processed entry, including those a
    * skill call expands into — so expansion can't exceed the cap (security finding). */
   budget: number;
-  /**
-   * Per-turn `share` attempt count. `share` never reaches `plan.planSlots` (it isn't a `PlanEffect` —
-   * see `runWorkspaceIntent`'s own fail-closed gates), so it needs its own counter to stay bounded by
-   * the same `maxWrites` cap — without this a single turn could stage unbounded approval prompts.
-   */
-  shareCount: number;
   done: boolean;
 }
 
@@ -287,7 +286,12 @@ export interface RunCommandsOptions {
    */
   approveShare?: (input: {
     name: string;
+    /** The exact content that will be written — already capped to `MAX_SHARE_BYTES` if needed. */
     text: string;
+    /** Byte length of `text` (the FULL amount that will be written, not just a card preview). */
+    bytes: number;
+    /** Whether `text` was truncated from a larger source before being shown here. */
+    truncated: boolean;
     sourceLabel: string;
   }) => boolean | Promise<boolean>;
   /** Max commands run per model turn (default 32); the rest of the block is refused. */
@@ -357,12 +361,11 @@ export interface AssistSessionOptions {
    */
   sharedStore?: SharedStore;
   /**
-   * Whether this session may execute `share` at all — mirrors `ReleaseProfile.estateWrites`
-   * (`@ge/contracts`), which is `false` in every release profile defined today. **Defaults to
-   * `false` (fail-closed):** `share` is scaffolded end-to-end (grammar, `/shared` mount, Graph
-   * plumbing) but stays inert — every attempt returns a corrective error — until a caller
-   * deliberately opts in here, matching the release profile's own policy rather than silently
-   * allowing a model turn to push host document/transcript content to external storage.
+   * Whether this session may execute `share` at all. **Defaults to `false` (fail-closed):**
+   * `share` returns a corrective error on every attempt until a caller deliberately opts in
+   * here. `web-shell` sets this from `ReleaseProfile.estateWrites` (`@ge/contracts`) — a real
+   * deployment/tenant lever — AND only when it has a `sharedStore` to actually write to, never
+   * unconditionally.
    */
   estateWritesEnabled?: boolean;
 }
@@ -427,6 +430,15 @@ export class AssistSession {
    * threads its turn-local provenance explicitly (so it never depends on this field at all).
    */
   private currentTurnProvenance: ProvenancePayload | undefined;
+  /**
+   * `share` attempt count for the WHOLE task (`runCommands`/`runCommandProgram` call), not just one
+   * turn — `share` never reaches `plan.planSlots` (it isn't a `PlanEffect`), so it needs its own
+   * counter. Deliberately task-scoped rather than per-turn: a per-turn counter would let a single
+   * task rack up `maxWritesPerTurn × maxTurns` approval prompts by spanning many turns (a security
+   * review finding) — this bounds the whole task by `maxWritesPerTurn` once, matching the stakes of
+   * an estate-class write.
+   */
+  private shareCountThisTask = 0;
   private readonly citations: SourceRef[] = [];
   private readonly compaction: Required<CompactionOptions>;
   /**
@@ -783,6 +795,7 @@ export class AssistSession {
     // Fresh ADR-0005 binding env per task: `$vars` persist across turns WITHIN this loop, but a
     // later independent runCommands() call must not read a binding it never computed.
     this.composeEnv.clear();
+    this.shareCountThisTask = 0;
 
     let query = await this.firstCommandTurn(capabilities, task);
     let answer = '';
@@ -868,6 +881,7 @@ export class AssistSession {
     const capabilities = await this.effectiveCapabilities();
     this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
     this.composeEnv.clear();
+    this.shareCountThisTask = 0;
     this.currentTurnProvenance = undefined;
 
     const turn = 1;
@@ -899,7 +913,6 @@ export class AssistSession {
       planSlots: [],
       maxWrites,
       budget: maxCommands,
-      shareCount: 0,
       done: false,
     };
     if (entries.length > maxCommands) {
@@ -1092,19 +1105,20 @@ export class AssistSession {
         return;
       }
       // `share` never reaches `plan.planSlots` (it isn't a `PlanEffect`), so it needs its own cap
-      // check here — the same per-turn ceiling as real writes, so a turn can't stage unbounded
-      // approval prompts (a residual gap flagged in security review, closed before enabling live use).
+      // check here — bounded for the WHOLE task (`this.shareCountThisTask`), not reset per turn, so
+      // a multi-turn task can't rack up `maxWritesPerTurn × maxTurns` approval prompts (a security
+      // review finding closed before enabling live use).
       if (compiled.intent.workspace === 'share') {
-        if (plan.shareCount >= plan.maxWrites) {
+        if (this.shareCountThisTask >= plan.maxWrites) {
           const result: WorkspaceResult = {
             workspace: 'error',
-            error: `share cap (${plan.maxWrites}/turn) reached`,
+            error: `share cap (${plan.maxWrites}/task) reached`,
           };
           plan.results.push(result);
-          yield { type: 'capped', turn, reason: `share cap ${plan.maxWrites}/turn` };
+          yield { type: 'capped', turn, reason: `share cap ${plan.maxWrites}/task` };
           return;
         }
-        plan.shareCount += 1;
+        this.shareCountThisTask += 1;
       }
       const { label, result } = await this.runWorkspaceIntent(compiled.intent, {
         approveShare: opts.approveShare,
@@ -1602,7 +1616,9 @@ export class AssistSession {
         case 'share': {
           // Fail-closed gate #1: `share` is an ADR-0008 `estate`-class write (leaves the open
           // document, persists externally) — it stays inert unless a caller has deliberately
-          // opted in, mirroring `ReleaseProfile.estateWrites` (false in every profile today).
+          // opted in. `web-shell` only sets this when the active `ReleaseProfile.estateWrites`
+          // actually permits it (a real, enforced deployment lever), not merely when Graph
+          // consent exists.
           if (!this.options.estateWritesEnabled) {
             return {
               label: `share ${intent.name}`,
@@ -1621,6 +1637,29 @@ export class AssistSession {
               },
             };
           }
+          // `<name>.provenance.json` is a reserved suffix (the provenance companion below) — a
+          // `share` targeting it directly could forge a companion for unrelated content.
+          if (intent.name.endsWith(SHARE_PROVENANCE_SUFFIX)) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: `share name must not end in "${SHARE_PROVENANCE_SUFFIX}" (reserved for provenance companions)`,
+              },
+            };
+          }
+          // No silent overwrite: `/shared` is a flat, unsigned namespace another surface's session
+          // may already be reading from — `share` never clobbers an existing name.
+          const existing = await this.options.sharedStore.list();
+          if (existing.some((f) => f.name === intent.name)) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: `"${intent.name}" already exists in /shared — share never overwrites; choose a different name`,
+              },
+            };
+          }
           const resolved = await this.resolveWorkspaceSource(intent.source);
           if ('error' in resolved) {
             return {
@@ -1628,15 +1667,24 @@ export class AssistSession {
               result: { workspace: 'error', error: resolved.error },
             };
           }
-          const text =
+          const rendered =
             typeof resolved.content === 'string' ? resolved.content : renderValue(resolved.content);
+          // Bound worst-case exfiltration size the same way `save` bounds local artifacts — the
+          // approval below sees and approves exactly this (possibly capped) content, never more.
+          const capped = truncateToBytes(rendered, MAX_SHARE_BYTES);
           // Fail-closed gate #2: per-share human-in-the-loop approval, exactly like every other
           // write's `approveWrite`/`approvePlan` — no approver (or a `false` decision) blocks the
           // write. The content being shared is untrusted (it may be shaped by host document/
           // transcript text), so it is shown to the user before it ever leaves the device.
           const approveShare = shareCtx?.approveShare;
           const approved = approveShare
-            ? await approveShare({ name: intent.name, text, sourceLabel: resolved.sourceLabel })
+            ? await approveShare({
+                name: intent.name,
+                text: capped.text,
+                bytes: byteLength(capped.text),
+                truncated: capped.truncated,
+                sourceLabel: resolved.sourceLabel,
+              })
             : false;
           if (!approved) {
             return {
@@ -1647,20 +1695,30 @@ export class AssistSession {
               },
             };
           }
-          await this.options.sharedStore.write(intent.name, text);
+          await this.options.sharedStore.write(intent.name, capped.text);
           // Every other write in this repo carries agent id/sources/identity/timestamp/content
           // hash (see docs/CONVENTIONS.md); `/shared` has no per-file metadata channel of its own
           // (it's a flat name→text store), so the turn's provenance is written as a companion
-          // `<name>.provenance.json` sitting beside the content.
+          // `<name>.provenance.json` sitting beside the content. A turn with no provenance still
+          // completes the share (never silently drops it) but flags it as unattributed below —
+          // the same "unattributed" signal `bridge.actuate()` writes already surface.
+          const provenanceMissing = !shareCtx?.turnProvenance;
           if (shareCtx?.turnProvenance) {
             await this.options.sharedStore.write(
-              `${intent.name}.provenance.json`,
+              `${intent.name}${SHARE_PROVENANCE_SUFFIX}`,
               JSON.stringify(shareCtx.turnProvenance),
             );
           }
           return {
             label: `share ${intent.name}`,
-            result: { workspace: 'share', name: intent.name, bytes: byteLength(text) },
+            result: {
+              workspace: 'share',
+              name: intent.name,
+              bytes: byteLength(capped.text),
+              sourceLabel: resolved.sourceLabel,
+              truncated: capped.truncated,
+              ...(provenanceMissing ? { provenanceMissing: true } : {}),
+            },
           };
         }
       }

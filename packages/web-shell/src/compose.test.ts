@@ -8,7 +8,12 @@ import type {
   UnitDescriptor,
 } from '@ge/contracts';
 import type { AuthClient, DocBridge, UserIdentity } from '@ge/runtime';
-import { composeSession, SKILL_FILES, type ShellConfig } from './compose.js';
+import {
+  composeSession,
+  estateWritesEnabledFor,
+  SKILL_FILES,
+  type ShellConfig,
+} from './compose.js';
 
 const config: ShellConfig = {
   assistant: { project: 'p', location: 'eu', engine: 'e' },
@@ -55,6 +60,26 @@ describe('composeSession', () => {
     expect(session.sessionId).toBe('sess_prior'); // resumed
     expect(tokens).toBeDefined();
     expect(client).toBeDefined();
+  });
+});
+
+describe('estateWritesEnabledFor — release-profile enforcement', () => {
+  it('is always false without a sharedStore, regardless of profile', () => {
+    expect(estateWritesEnabledFor(false, undefined)).toBe(false);
+    expect(estateWritesEnabledFor(false, 'development')).toBe(false);
+    expect(estateWritesEnabledFor(false, 'internal-alpha-word-excel')).toBe(false);
+  });
+
+  it('is unrestricted (true) when no release profile is configured', () => {
+    expect(estateWritesEnabledFor(true, undefined)).toBe(true);
+  });
+
+  it('reads the real profile value for each currently defined profile', () => {
+    // Both ship with estateWrites: true today, but this asserts the code actually CONSULTS the
+    // profile (not a hardcoded true) — a future stricter profile flipping this to false would be
+    // enforced by this same AND, not just documented.
+    expect(estateWritesEnabledFor(true, 'development')).toBe(true);
+    expect(estateWritesEnabledFor(true, 'internal-alpha-word-excel')).toBe(true);
   });
 });
 

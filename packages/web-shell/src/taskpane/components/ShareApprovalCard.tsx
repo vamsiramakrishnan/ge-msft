@@ -6,13 +6,19 @@ export interface ShareApprovalCardProps {
   onReject: () => void;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /**
  * The fail-closed approval affordance for `share` — an ADR-0008 **estate**-class write, distinct
- * from an in-document `WriteApprovalCard`: approving this persists `pending.preview`'s full source
- * content to the user's own Microsoft Graph app folder (`/shared`), readable back by every other
- * surface's session, rather than mutating the open Word/Excel/PowerPoint document. The card shows
- * the destination name, what produced the content, and a capped preview so the user approves
- * exactly what leaves the device — never a hidden or partial view of it.
+ * from an in-document `WriteApprovalCard`: approving this persists content to the user's own
+ * Microsoft Graph app folder (`/shared`), readable back by every other surface's session, rather
+ * than mutating the open Word/Excel/PowerPoint document. Discloses the ACTUAL total size that will
+ * be written (`pending.bytes`) — never just the card's own line-limited preview — so approving
+ * never means agreeing to something larger than what's shown.
  */
 export function ShareApprovalCard({
   pending,
@@ -31,13 +37,17 @@ export function ShareApprovalCard({
       <div className="card-in">
         <div className="cat">Approve share</div>
         <div className="w">
-          Publish <strong>{pending.name}</strong> to your cross-surface handoff store — readable by
-          name from any other surface's session — sourced from <em>{pending.sourceLabel}</em>. This
-          will not happen until you approve it.
+          Publish <strong>{pending.name}</strong> ({formatBytes(pending.bytes)}
+          {pending.truncated ? ', truncated to fit the size limit' : ''}) to your cross-surface
+          handoff store — readable by name from any other surface's session. This will not happen
+          until you approve it.
+        </div>
+        <div className="w">
+          Source: <code>{pending.sourceLabel}</code>
         </div>
         <pre className="cmd" aria-label="Content to be shared, shown verbatim">
           {pending.preview}
-          {pending.truncated ? '\n…' : ''}
+          {pending.previewTruncated ? `\n… (${formatBytes(pending.bytes)} total)` : ''}
         </pre>
         <div className="act">
           <button type="button" className="btn pr" onClick={onApprove}>

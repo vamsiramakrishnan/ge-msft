@@ -43,7 +43,16 @@ export type WorkspaceResult =
   | { workspace: 'cp'; artifact: WorkspaceArtifactSummary }
   | { workspace: 'mv'; artifact: WorkspaceArtifactSummary }
   | { workspace: 'rm'; name: string }
-  | { workspace: 'share'; name: string; bytes: number }
+  | {
+      workspace: 'share';
+      name: string;
+      bytes: number;
+      sourceLabel: string;
+      /** The content was capped from a larger source before being written (see `MAX_SHARE_BYTES`). */
+      truncated: boolean;
+      /** No turn provenance was available to stamp — the share landed unattributed. */
+      provenanceMissing?: boolean;
+    }
   | { workspace: 'error'; error: string };
 
 export interface SaveWorkspaceInput {

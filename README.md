@@ -404,13 +404,14 @@ Verification baseline: `bun run typecheck` clean · **2038 tests across 160 file
   `ProposalCard`, `ProvenanceDetail`, `RunSteps`, `SkillsPanel`), MSAL bootstrap, and the standalone
   preview harness.
 - **The `/shared` cross-surface handoff store** — a `share <name> = <source>` command (identical
-  source grammar to `save`) persists a bounded artifact to the signed-in user's own Microsoft Graph
-  app folder (`Files.ReadWrite.AppFolder`, the narrowest available Graph write scope), readable back
-  by name from any other surface's session. Fail-closed by construction: gated by
-  `AssistSessionOptions.estateWritesEnabled` (live only once a `sharedStore` is actually wired) AND a
-  dedicated per-share `ShareApprovalCard` approval, independent of the in-document write/plan gates
-  since it never touches `bridge.actuate()`. Security-reviewed twice (the write-approval gate, then
-  again after wiring the live UI).
+  source grammar to `save`) persists a bounded, size-capped artifact to the signed-in user's own
+  Microsoft Graph app folder (`Files.ReadWrite.AppFolder`, the narrowest available Graph write
+  scope), readable back by name from any other surface's session. Fail-closed by construction: gated
+  by the active `ReleaseProfile.estateWrites` policy AND a dedicated per-share `ShareApprovalCard`
+  that discloses the full write size (never just its own preview), independent of the in-document
+  write/plan gates since it never touches `bridge.actuate()`. Never silently overwrites, bounded
+  per-task (not per-turn), and every share lands on the panel's own audit ledger, flagged if
+  unattributed. Security-reviewed three times over its build-out.
 - **The `/` + `@` command surface** — `QUICK_ACTIONS` + `CommandPaletteSpec` + `CommandPlan` in
   `contracts`; the `QuickActionBar` and the `Composer` `/`-verb / `@`-mention palettes in `web-shell`;
   right-click context menus in both manifests with a hardened `askSelection` → pane seed. Unit +

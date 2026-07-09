@@ -68,7 +68,7 @@ type CommandAction =
    * as a `read-result` — mirroring how `runWorkspaceIntent`'s `share` case actually behaves (no
    * separate later `write-result`-style event; the write happens synchronously right after approval).
    */
-  | { share: { name: string; text: string; sourceLabel: string } };
+  | { share: { name: string; text: string; sourceLabel: string; truncated?: boolean } };
 
 const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
 
@@ -205,7 +205,13 @@ class FakeAssist implements AssistLike {
   planCalls: PlanEffect[][] = [];
   planResults: boolean[] = [];
   /** The share inputs passed to `approveShare` and the decisions returned, for assertions. */
-  shareCalls: Array<{ name: string; text: string; sourceLabel: string }> = [];
+  shareCalls: Array<{
+    name: string;
+    text: string;
+    bytes: number;
+    truncated: boolean;
+    sourceLabel: string;
+  }> = [];
   shareResults: boolean[] = [];
   async *runCommands(
     task: string,
@@ -296,11 +302,25 @@ class FakeAssist implements AssistLike {
         }
       } else if ('share' in action) {
         const input = action.share;
-        this.shareCalls.push(input);
-        const approved = opts?.approveShare ? await opts.approveShare(input) : false;
+        const truncated = input.truncated ?? false;
+        const approveInput = {
+          name: input.name,
+          text: input.text,
+          bytes: input.text.length,
+          truncated,
+          sourceLabel: input.sourceLabel,
+        };
+        this.shareCalls.push(approveInput);
+        const approved = opts?.approveShare ? await opts.approveShare(approveInput) : false;
         this.shareResults.push(approved);
         const result = approved
-          ? { workspace: 'share', name: input.name, bytes: input.text.length }
+          ? {
+              workspace: 'share',
+              name: input.name,
+              bytes: input.text.length,
+              sourceLabel: input.sourceLabel,
+              truncated,
+            }
           : { workspace: 'error', error: 'share requires user approval (none granted)' };
         yield {
           type: 'read-result',
@@ -744,7 +764,13 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
         type: 'read-result',
         turn: 1,
         intentLabel: 'share schedule.tsv',
-        result: { workspace: 'share', name: 'schedule.tsv', bytes: 1200 },
+        result: {
+          workspace: 'share',
+          name: 'schedule.tsv',
+          bytes: 1200,
+          sourceLabel: "read 'Daily schedule'!B3:I53",
+          truncated: false,
+        },
       } as unknown as CommandLoopEvent),
     ];
     const c = new PanelController(assist, lister([]));
@@ -753,7 +779,68 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
 
     const step = c.getState().steps.at(-1);
     expect(step?.text).toBe('shared schedule.tsv · 1.2 KB');
-    expect(step?.artifact).toMatchObject({ title: 'shared/schedule.tsv', meta: ['1.2 KB'] });
+    expect(step?.artifact).toMatchObject({
+      title: 'shared/schedule.tsv',
+      meta: ['1.2 KB', "source: read 'Daily schedule'!B3:I53"],
+    });
+  });
+
+  it('flags an unattributed share (no provenance) on both the step text and artifact meta', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'share note.txt',
+        result: {
+          workspace: 'share',
+          name: 'note.txt',
+          bytes: 5,
+          sourceLabel: '"hi"',
+          truncated: false,
+          provenanceMissing: true,
+        },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('share without provenance');
+
+    const step = c.getState().steps.at(-1);
+    expect(step?.text).toContain('⚠ unattributed — no provenance');
+    expect(step?.artifact?.meta).toContain('⚠ unattributed');
+  });
+
+  it('records an approved share on the audit ledger (state.shares), stamped with turn provenance', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'provenance', payload: PROV_A }),
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'share schedule.tsv',
+        result: {
+          workspace: 'share',
+          name: 'schedule.tsv',
+          bytes: 1200,
+          sourceLabel: 'outline',
+          truncated: false,
+        },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('share schedule');
+
+    expect(c.getState().shares).toEqual([
+      expect.objectContaining({
+        name: 'schedule.tsv',
+        bytes: 1200,
+        sourceLabel: 'outline',
+        truncated: false,
+        provenance: PROV_A,
+      }),
+    ]);
   });
 
   it('stages a share as pending and writes only after approvePendingShare() (resolves true)', async () => {
@@ -771,8 +858,10 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     expect(pending).toMatchObject({
       name: 'schedule.tsv',
       sourceLabel: 'read Sales!A1:B2',
-      preview: 'a\tb\n1\t2',
+      bytes: 7,
       truncated: false,
+      preview: 'a\tb\n1\t2',
+      previewTruncated: false,
     });
     expect(assist.shareResults).toEqual([]); // decision not made yet
     expect(c.getState().busy).toBe(true);
@@ -785,6 +874,23 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     const shareStep = c.getState().steps.find((s) => s.text.startsWith('shared '));
     expect(shareStep?.text).toBe('shared schedule.tsv · 7 B');
     expect(c.getState().busy).toBe(false);
+  });
+
+  it('defensively truncates an oversized (untrusted, model-controlled) sourceLabel before staging', async () => {
+    const assist = new FakeAssist();
+    const hostile = `search ${'x'.repeat(500)}`;
+    assist.commandScript = [{ share: { name: 'note.txt', text: 'hi', sourceLabel: hostile } }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share with a hostile source label');
+    await tick();
+
+    const pending = c.getState().pendingShare;
+    expect(pending?.sourceLabel.length).toBeLessThan(hostile.length);
+    expect(pending?.sourceLabel.endsWith('…')).toBe(true);
+
+    c.rejectPendingShare();
+    await run;
   });
 
   it('rejectPendingShare() resolves false: nothing is written and the card clears', async () => {

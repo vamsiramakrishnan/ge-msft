@@ -17,8 +17,25 @@ export interface ChangeRecord {
   at: string;
 }
 
+/**
+ * A `share` (estate write) the panel has recorded — the same "who/what/why" audit surface as
+ * `ChangeRecord`, but for `/shared` writes, which carry no `changeId`/`ActuationKind` (they never
+ * reach `bridge.actuate()`). Kept as its own list rather than folded into `ChangeRecord` so no
+ * existing `ChangeRecord` consumer has to widen its assumptions about what a "change" looks like.
+ */
+export interface ShareRecord {
+  name: string;
+  bytes: number;
+  sourceLabel: string;
+  truncated: boolean;
+  provenance?: ProvenancePayload;
+  /** When the panel recorded it (client clock). */
+  at: string;
+}
+
 export class ProvenanceStore {
   private readonly records = new Map<ChangeId, ChangeRecord>();
+  private readonly shares: ShareRecord[] = [];
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
@@ -38,12 +55,26 @@ export class ProvenanceStore {
     return rec;
   }
 
+  /** Record a successful `share` — the `/shared` analog of {@link record}, for the audit surface. */
+  recordShare(
+    input: { name: string; bytes: number; sourceLabel: string; truncated: boolean },
+    provenance?: ProvenancePayload,
+  ): ShareRecord {
+    const rec: ShareRecord = { ...input, ...(provenance ? { provenance } : {}), at: this.now() };
+    this.shares.push(rec);
+    return rec;
+  }
+
   get(changeId: ChangeId): ChangeRecord | undefined {
     return this.records.get(changeId);
   }
 
   list(): ChangeRecord[] {
     return [...this.records.values()];
+  }
+
+  listShares(): ShareRecord[] {
+    return [...this.shares];
   }
 
   get size(): number {

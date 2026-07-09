@@ -284,6 +284,7 @@ export const FIXTURE_STATE: PanelState = {
   suggestions: FIXTURE_SUGGESTIONS,
   proposals: FIXTURE_PROPOSALS,
   changes: [],
+  shares: [],
   steps: FIXTURE_STEPS,
   availableAgents: [],
   availableDataStores: [],

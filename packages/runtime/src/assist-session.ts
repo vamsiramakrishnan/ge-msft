@@ -1514,10 +1514,12 @@ export class AssistSession {
   }
 
   /**
-   * Execute a local workspace operation. Workspace commands are deliberately separate from host
-   * reads and writes: they may consume read results or pure composed values, but they only create or
-   * inspect bounded in-memory artifacts. They never actuate Office content and never imply upload or
-   * code-execution authority.
+   * Execute a local workspace operation. Most workspace commands are deliberately separate from
+   * host reads and writes: they may consume read results or pure composed values, but they only
+   * create or inspect bounded in-memory artifacts, and never actuate Office content or imply upload
+   * or code-execution authority. `share` is the one exception — a real, gated external write to the
+   * cross-surface `/shared` Graph store (see the fail-closed `estateWritesEnabled`/`approveShare`
+   * checks in its own case below), not a bounded in-memory artifact.
    */
   private async runWorkspaceIntent(
     intent: WorkspaceIntent,

@@ -52,6 +52,7 @@ export const READ_VERBS = [
   'read',
   'search',
   'ls',
+  'find',
   'list',
   'inspect',
   'properties',
@@ -149,6 +150,7 @@ export type ParsedCommand =
   | { verb: 'read'; selector: string }
   | { verb: 'search'; text: string }
   | { verb: 'ls'; path: string }
+  | { verb: 'find'; path: string; glob?: string }
   | { verb: 'list'; kind?: ContextKind }
   | { verb: 'inspect'; selector: string }
   | { verb: 'properties'; selector: string }
@@ -209,6 +211,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('read'), selector: z.string() }),
   z.object({ verb: z.literal('search'), text: z.string() }),
   z.object({ verb: z.literal('ls'), path: z.string() }),
+  z.object({ verb: z.literal('find'), path: z.string(), glob: z.string().optional() }),
   z.object({ verb: z.literal('list'), kind: ContextKindSchema.optional() }),
   z.object({ verb: z.literal('inspect'), selector: z.string() }),
   z.object({ verb: z.literal('properties'), selector: z.string() }),
@@ -417,6 +420,12 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'ls': {
       if (rest === '') return { error: 'ls needs a path — usage: ls <path>, e.g. ls /doc' };
       return { verb: 'ls', path: rest };
+    }
+
+    case 'find': {
+      if (rest === '') return { error: 'find needs a path — usage: find <path> [glob]' };
+      const [path, glob] = rest.split(/\s+/, 2);
+      return { verb: 'find', path: path!, ...(glob ? { glob } : {}) };
     }
 
     case 'search': {
@@ -1443,6 +1452,11 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
       verb: 'ls',
       usage: 'ls <path>',
       hint: 'list DocFs directory entries under /doc or /work',
+    },
+    find: {
+      verb: 'find',
+      usage: 'find <path> [glob]',
+      hint: 'recursively list DocFs file paths under /doc or /work, optionally filtered by a glob',
     },
     list: {
       verb: 'list',

@@ -328,6 +328,8 @@ const READ_COMMAND_VERBS: ReadonlySet<ReadVerb> = new Set([
   'outline',
   'read',
   'search',
+  'ls',
+  'find',
   'list',
   'inspect',
   'properties',
@@ -1582,6 +1584,14 @@ export class AssistSession {
             return { label: `ls ${intent.path}`, result: lines.map((text) => ({ text })) };
           } catch (err) {
             return { label: `ls ${intent.path}`, result: { error: errMsg(err) } };
+          }
+        }
+        case 'find': {
+          try {
+            const paths = await docFsFind(this.docFs, intent.path, intent.glob);
+            return { label: `find ${intent.path}`, result: paths.map((text) => ({ text })) };
+          } catch (err) {
+            return { label: `find ${intent.path}`, result: { error: errMsg(err) } };
           }
         }
         case 'list-context': {

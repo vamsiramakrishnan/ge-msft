@@ -214,6 +214,18 @@ describe('compileCommand', () => {
     expect(compiled).toEqual({ kind: 'read', intent: { read: 'ls', path: '/doc' } });
   });
 
+  it('compiles find to a read intent', () => {
+    const ctx = { surface: 'excel' as const, mintChangeId: () => asChangeId('c1') };
+    expect(compileCommand({ verb: 'find', path: '/work' }, ctx)).toEqual({
+      kind: 'read',
+      intent: { read: 'find', path: '/work' },
+    });
+    expect(compileCommand({ verb: 'find', path: '/work', glob: '*.tsv' }, ctx)).toEqual({
+      kind: 'read',
+      intent: { read: 'find', path: '/work', glob: '*.tsv' },
+    });
+  });
+
   it('compiles workspace verbs to local workspace intents', () => {
     expect(compileCommand({ verb: 'workspace' }, { surface: 'excel', mintChangeId: mint })).toEqual(
       {
@@ -1166,6 +1178,30 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(queries[0]).toContain('Analyze the sheet');
     // Turn 2 query is the ```result block fed back.
     expect(queries[1]).toContain('```result');
+  });
+
+  it('ls and find DocFs verbs are dispatched as reads through the full command loop', async () => {
+    // Regression guard: isReadCommand() gates dispatch on a hand-maintained READ_COMMAND_VERBS set
+    // in assist-session.ts that is separate from command-grammar.ts's READ_VERBS — a verb can parse
+    // and compile correctly yet never reach runReadIntent if it is missing from that set (exactly what
+    // happened for `ls` when it first landed: it worked in isolation but was routed as an unsupported
+    // effect verb inside runCommands()). Exercise both `ls` and `find` end-to-end, not just compile.
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient(['```cmd\nls /doc\nfind /doc\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('list DocFs entries'));
+    const loop = loopEvents(events);
+
+    const reads = loop.filter((e) => e.type === 'read-result');
+    expect(reads).toHaveLength(2);
+    for (const read of reads) {
+      expect(read).toMatchObject({
+        result: expect.not.objectContaining({ error: expect.anything() }),
+      });
+    }
+    expect(loop.some((e) => e.type === 'command' && 'error' in e.compiled)).toBe(false);
+    expect(loop.at(-1)).toMatchObject({ type: 'done' });
   });
 
   it('context returns upload and code-execution strategy without reading or writing host content', async () => {

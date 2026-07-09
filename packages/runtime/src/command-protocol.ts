@@ -36,6 +36,7 @@ export type ReadIntent =
   | { read: 'range'; selector: string } // → bridge.readRange() (Excel) — empty ⇒ whole doc
   | { read: 'search'; text: string } // → bridge.searchDocument()
   | { read: 'ls'; path: string } // → DocFs.readdir() via ls() coreutil
+  | { read: 'find'; path: string; glob?: string } // → DocFs coreutil find()
   | { read: 'list-context'; kind?: ContextKind } // → bridge.listContext(), metadata only
   | { read: 'inspect-context'; selector: string } // → resolve one ref/selector to content
   | { read: 'properties'; selector: string } // → metadata/hostRef/revealability only
@@ -92,6 +93,11 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'search', text: cmd.text } };
     case 'ls':
       return { kind: 'read', intent: { read: 'ls', path: cmd.path } };
+    case 'find':
+      return {
+        kind: 'read',
+        intent: { read: 'find', path: cmd.path, ...(cmd.glob ? { glob: cmd.glob } : {}) },
+      };
     case 'list':
       return {
         kind: 'read',

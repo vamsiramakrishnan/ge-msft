@@ -102,6 +102,23 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     expect(result).toHaveProperty('error');
   });
 
+  it('parses find with a path only', () => {
+    expect(parseCommandLine('find /work')).toEqual({ verb: 'find', path: '/work' });
+  });
+
+  it('parses find with a path and a glob', () => {
+    expect(parseCommandLine('find /work *.tsv')).toEqual({
+      verb: 'find',
+      path: '/work',
+      glob: '*.tsv',
+    });
+  });
+
+  it('rejects find with no path', () => {
+    const result = parseCommandLine('find');
+    expect(result).toHaveProperty('error');
+  });
+
   it('parses context strategy hints as a read-only command', () => {
     const cmd = parseCommandLine('context analytical full-scope upload-preferred');
     expect(cmd).toEqual({
@@ -944,6 +961,7 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('read A1'),
       parseCommandLine('search foo'),
       parseCommandLine('ls /doc'),
+      parseCommandLine('find /work'),
       parseCommandLine('list range'),
       parseCommandLine('inspect xl:Sales!A1:C9'),
       parseCommandLine('properties xl:Sales!A1:C9'),
@@ -976,6 +994,12 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
     const cmd = parseCommandLine('ls /doc');
     expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
     expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'ls', path: '/doc' });
+  });
+
+  it('accepts the find verb', () => {
+    const cmd = parseCommandLine('find /work');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'find', path: '/work' });
   });
 });
 

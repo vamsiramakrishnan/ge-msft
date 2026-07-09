@@ -13,8 +13,14 @@ import { StreamAssistClient } from '@ge/gemini-client';
 import type { DocStateSnapshot } from '@ge/contracts';
 import { AssistSession, DOC_STATE_REF_ID, READ_REF_PREFIX } from './assist-session.js';
 import type { CommandLoopEvent, PlanEffect } from './assist-session.js';
+import type { ReadIntent } from './command-protocol.js';
 import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
+
+/** A typed probe onto `AssistSession`'s private `runReadIntent` — avoids `any` in DocFs-verb tests. */
+interface ReadIntentProbe {
+  runReadIntent(intent: ReadIntent): Promise<{ label: string; result: unknown }>;
+}
 
 /** A fake Word-like bridge: a selection that resolves to one text chunk, and a recording actuator. */
 class FakeBridge implements DocBridge {
@@ -315,8 +321,22 @@ describe('AssistSession — runReadIntent (DocFs verbs)', () => {
     const bridge = new FakeBridge();
     const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
     const session = new AssistSession(bridge, client, { unit });
-    const { result } = await (session as any).runReadIntent({ read: 'ls', path: '/work' });
+    const { result } = await (session as unknown as ReadIntentProbe).runReadIntent({
+      read: 'ls',
+      path: '/work',
+    });
     // /work is empty (no artifacts saved yet in this session) — ls returns an empty listing, not an error.
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('runs the find read intent against DocFs (/work)', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+    const { result } = await (session as unknown as ReadIntentProbe).runReadIntent({
+      read: 'find',
+      path: '/work',
+    });
     expect(result).not.toHaveProperty('error');
   });
 });

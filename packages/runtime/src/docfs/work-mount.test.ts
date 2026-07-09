@@ -70,4 +70,34 @@ describe('workMount', () => {
     expect(await m.stat('q3.tsv')).toEqual({ path: '', kind: 'file', size: artifact.bytes });
     expect(await m.stat('nope')).toBeNull();
   });
+
+  it('readdir("") groups names containing "/" into one dir entry per top-level prefix', async () => {
+    const store = new WorkspaceStore();
+    store.save({ name: 'q3-review/sales.tsv', sourceLabel: 'test', content: 'a', kind: 'tsv' });
+    store.save({
+      name: 'q3-review/summary.md',
+      sourceLabel: 'test',
+      content: 'b',
+      kind: 'markdown',
+    });
+    store.save({ name: 'flat.tsv', sourceLabel: 'test', content: 'c', kind: 'tsv' });
+    const entries = await workMount(store).readdir('');
+    expect(entries).toContainEqual({ name: 'q3-review', kind: 'dir' });
+    expect(entries).toContainEqual(expect.objectContaining({ name: 'flat.tsv', kind: 'file' }));
+    expect(entries.find((e) => e.name === 'q3-review/sales.tsv')).toBeUndefined();
+  });
+
+  it('readdir("q3-review") lists only the artifacts directly under that prefix, names relative to it', async () => {
+    const store = new WorkspaceStore();
+    store.save({ name: 'q3-review/sales.tsv', sourceLabel: 'test', content: 'a', kind: 'tsv' });
+    const entries = await workMount(store).readdir('q3-review');
+    expect(entries).toContainEqual(expect.objectContaining({ name: 'sales.tsv', kind: 'file' }));
+  });
+
+  it('readFile still resolves a namespaced artifact by its full name', async () => {
+    const store = new WorkspaceStore();
+    store.save({ name: 'q3-review/sales.tsv', sourceLabel: 'test', content: 'hello', kind: 'tsv' });
+    const v = await workMount(store).readFile('q3-review/sales.tsv');
+    expect(v?.text).toBe('hello');
+  });
 });

@@ -11,8 +11,26 @@ const DEFAULT_MAX_BYTES = 256 * 1024;
 export function workMount(store: WorkspaceStore): Mount {
   return {
     prefix: 'work',
-    async readdir(): Promise<DirEntry[]> {
-      return store.list().map((a) => ({ name: a.name, kind: 'file' as const, size: a.bytes }));
+    async readdir(rel: string): Promise<DirEntry[]> {
+      // Artifact names are flat strings in WorkspaceStore; a `/` in a name is rendered here as a
+      // pseudo-directory — naming-convention only, no new persisted state. Partition by whether a
+      // name sits directly under `rel` (a file) or has a further segment past it (collapse to one
+      // `dir` entry per distinct next segment, deduped).
+      const prefix = rel === '' ? '' : `${rel}/`;
+      const dirs = new Set<string>();
+      const entries: DirEntry[] = [];
+      for (const a of store.list()) {
+        if (!a.name.startsWith(prefix)) continue;
+        const remainder = a.name.slice(prefix.length);
+        const slash = remainder.indexOf('/');
+        if (slash === -1) {
+          entries.push({ name: remainder, kind: 'file' as const, size: a.bytes });
+        } else {
+          dirs.add(remainder.slice(0, slash));
+        }
+      }
+      for (const name of dirs) entries.push({ name, kind: 'dir' as const });
+      return entries;
     },
     async stat(rel) {
       const artifact = store.get(rel);

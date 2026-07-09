@@ -52,6 +52,7 @@ export const TRANSFORM_NAMES = [
   'head',
   'tail',
   'sed',
+  'derive',
 ] as const;
 
 /**

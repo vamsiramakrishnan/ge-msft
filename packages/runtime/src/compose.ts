@@ -131,6 +131,7 @@ export const TRANSFORMS: Record<string, Transform> = {
   head: takeRows('head'),
   tail: takeRows('tail'),
   sed,
+  derive,
 };
 
 /** One-line usage per transform, for the COMPOSITION advertisement in the prompt. */
@@ -146,6 +147,7 @@ export const TRANSFORM_USAGE: Record<string, string> = {
   head: 'head <n> — first n rows',
   tail: 'tail <n> — last n rows',
   sed: 'sed s/pattern/replacement/[g] — text/cell substitution',
+  derive: 'derive <newCol> = <col|num> <+|-|*|/> <col|num> — append a computed column',
 };
 
 /* ───────────────────────────── transform impls ───────────────────────────── */
@@ -380,6 +382,62 @@ function sed(input: Value, rawArgs: string): Value | EvalError {
     };
   }
   return { error: 'sed expects a table or text, got a number' };
+}
+
+/** `<newCol> = <col|num> <op> <col|num>` where `<op>` is one of `+ - * /`. */
+const DERIVE_RE = /^(\S+)\s*=\s*(\S+)\s*([+\-*/])\s*(\S+)$/;
+
+/**
+ * `derive <newCol> = <col|num> <+|-|*|/> <col|num>` — append a new column computed by one
+ * arithmetic operation over two existing numeric columns (or a column and a literal), per row.
+ * Deliberately minimal (no chained expressions, no functions): the one concrete `awk`-parity gap,
+ * not a general expression language. Numeric coercion matches `aggregate`'s convention — a
+ * trimmed empty cell is NOT treated as `0` (unlike bare `Number('')`), so a blank cell is a
+ * corrective error rather than a silently-wrong zero.
+ */
+function derive(input: Value, rawArgs: string): Value | EvalError {
+  const got = requireTable(input, 'derive');
+  if ('error' in got) return got;
+  const { table } = got;
+
+  const m = DERIVE_RE.exec(rawArgs.trim());
+  if (!m) return { error: 'derive usage: derive <newCol> = <col|num> <+|-|*|/> <col|num>' };
+  const [, newCol, lhsRaw, op, rhsRaw] = m;
+  const { columns, rows } = table;
+
+  const resolve = (raw: string, rowIdx: number): number | EvalError => {
+    const idx = colIndex(columns, raw);
+    if (idx === -1) {
+      const n = Number(raw);
+      if (Number.isNaN(n)) return { error: `derive: unknown column or number "${raw}"` };
+      return n;
+    }
+    const cell = (rows[rowIdx]![idx] ?? '').trim();
+    const n = Number(cell);
+    if (cell === '' || Number.isNaN(n)) {
+      return { error: `derive: non-numeric cell in column "${raw}" (row ${rowIdx + 1})` };
+    }
+    return n;
+  };
+
+  const outRows: string[][] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const lhs = resolve(lhsRaw!, i);
+    if (typeof lhs !== 'number') return lhs;
+    const rhs = resolve(rhsRaw!, i);
+    if (typeof rhs !== 'number') return rhs;
+    // NOTE: division by zero is NOT special-cased — `lhs / 0` yields `Infinity`/`-Infinity` (or
+    // `NaN` for `0 / 0`), and `String(...)` renders those as the literal cells "Infinity"/"NaN".
+    // Value's table cells are untyped strings, so this doesn't crash or corrupt the table, but a
+    // downstream `sum`/`avg` over such a column would silently propagate `Infinity`, and `NaN`
+    // cells would be silently dropped (aggregate's `Number.isNaN` guard excludes them). Flagged
+    // here rather than fixed: rejecting it would require a policy call (error the whole derive?
+    // just that row? coerce to a sentinel?) that's out of scope for this minimal transform.
+    const value =
+      op === '+' ? lhs + rhs : op === '-' ? lhs - rhs : op === '*' ? lhs * rhs : lhs / rhs;
+    outRows.push([...rows[i]!, String(value)]);
+  }
+  return { kind: 'table', columns: [...columns, newCol!], rows: outRows };
 }
 
 function unquote(s: string): string {

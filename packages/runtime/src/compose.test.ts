@@ -213,6 +213,60 @@ describe('TRANSFORMS — sed', () => {
   });
 });
 
+describe('TRANSFORMS — derive', () => {
+  it('derive appends a computed column from two existing columns', () => {
+    const table: Value = {
+      kind: 'table',
+      columns: ['Budget', 'Actual'],
+      rows: [
+        ['100', '80'],
+        ['200', '250'],
+      ],
+    };
+    const out = TRANSFORMS.derive!(table, 'Variance = Budget - Actual');
+    expect(out).toEqual({
+      kind: 'table',
+      columns: ['Budget', 'Actual', 'Variance'],
+      rows: [
+        ['100', '80', '20'],
+        ['200', '250', '-50'],
+      ],
+    });
+  });
+
+  it('derive supports a column and a literal operand', () => {
+    const table: Value = { kind: 'table', columns: ['Revenue'], rows: [['100']] };
+    expect(TRANSFORMS.derive!(table, 'Doubled = Revenue * 2')).toEqual({
+      kind: 'table',
+      columns: ['Revenue', 'Doubled'],
+      rows: [['100', '200']],
+    });
+  });
+
+  it('derive rejects a reference to an unknown column', () => {
+    const table: Value = { kind: 'table', columns: ['A'], rows: [['1']] };
+    const out = TRANSFORMS.derive!(table, 'X = A - B');
+    expect(out).toHaveProperty('error');
+    expect((out as { error: string }).error).toMatch(/unknown column.*B/i);
+  });
+
+  it('derive rejects a non-numeric cell for the row it fails on', () => {
+    const table: Value = { kind: 'table', columns: ['A', 'B'], rows: [['x', '1']] };
+    const out = TRANSFORMS.derive!(table, 'C = A + B');
+    expect(out).toHaveProperty('error');
+  });
+
+  it('derive rejects a non-table Value', () => {
+    expect(TRANSFORMS.derive!({ kind: 'number', value: 1 }, 'X = A + B')).toHaveProperty('error');
+  });
+
+  it('derive rejects a malformed expression', () => {
+    expect(
+      TRANSFORMS.derive!({ kind: 'table', columns: ['A'], rows: [] }, 'not an expr'),
+    ).toHaveProperty('error');
+  });
+});
+
 /* ───────────────────────────── evalExpr ───────────────────────────── */
 
 /** A fake read host: maps a source to canned text (a GFM table for `read`). */

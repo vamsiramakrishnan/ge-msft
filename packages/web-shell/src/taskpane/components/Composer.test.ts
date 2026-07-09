@@ -171,6 +171,15 @@ describe('parseComposerInput', () => {
     expect(inv.mentions).toEqual([{ kind: 'this' }]);
   });
 
+  it('captures a @kind:ref mention (picked from the catalog refinement list) with its id', () => {
+    const inv = parseComposerInput(
+      '@datastore:sp-docs summarize the risk register',
+      SELECTION,
+      word,
+    );
+    expect(inv.mentions).toEqual([{ kind: 'datastore', ref: 'sp-docs' }]);
+  });
+
   it('returns no intent for a plain question and keeps the full instruction', () => {
     const inv = parseComposerInput('what is the renewal date?', SELECTION, word);
     expect(inv.intent).toBeUndefined();
@@ -228,7 +237,62 @@ describe('Composer / and @ palette + scope control + structured submit', () => {
     const kinds = [...container.querySelectorAll('.palette-mentions .palette-label')].map(
       (e) => e.textContent,
     );
-    expect(kinds).toEqual(['@this', '@unit']);
+    expect(kinds).toEqual(['@this', '@unit', '@datastore']);
+  });
+
+  it('opens the catalog refinement list once a configured kind + colon is typed', () => {
+    render({
+      surface: 'word',
+      mentionOptions: {
+        datastore: [
+          { id: 'sp-docs', label: 'SharePoint Docs' },
+          { id: 'sp-hr', label: 'HR Policies' },
+        ],
+      },
+    });
+    type('@datastore:');
+    const labels = [...container.querySelectorAll('.palette-mention-refine .palette-label')].map(
+      (e) => e.textContent,
+    );
+    expect(labels).toEqual(['SharePoint Docs', 'HR Policies']);
+    // The bare-kind picker is closed while refining — only one palette shows at a time.
+    expect(container.querySelector('.palette-mentions')).toBeNull();
+  });
+
+  it('filters the refinement list by what is typed after the colon', () => {
+    render({
+      surface: 'word',
+      mentionOptions: {
+        datastore: [
+          { id: 'sp-docs', label: 'SharePoint Docs' },
+          { id: 'sp-hr', label: 'HR Policies' },
+        ],
+      },
+    });
+    type('@datastore:hr');
+    const labels = [...container.querySelectorAll('.palette-mention-refine .palette-label')].map(
+      (e) => e.textContent,
+    );
+    expect(labels).toEqual(['HR Policies']);
+  });
+
+  it('picking a refinement option writes the addressable @kind:id token into the input', () => {
+    render({
+      surface: 'word',
+      mentionOptions: { datastore: [{ id: 'sp-docs', label: 'SharePoint Docs' }] },
+    });
+    type('@datastore:');
+    const item = container.querySelector<HTMLButtonElement>(
+      '.palette-mention-refine .palette-item',
+    )!;
+    act(() => item.click());
+    expect(input().value).toBe('@datastore:sp-docs ');
+  });
+
+  it('does not open a refinement list for a kind with no configured options', () => {
+    render({ surface: 'word', mentionOptions: { datastore: [] } });
+    type('@datastore:');
+    expect(container.querySelector('.palette-mention-refine')).toBeNull();
   });
 
   it('completing a verb writes the /verb token into the input', () => {

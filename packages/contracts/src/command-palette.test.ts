@@ -46,13 +46,13 @@ describe('commandPaletteFor', () => {
     }
   });
 
-  it('offers only immediately resolvable @-mention kinds, as a fresh array each call', () => {
+  it('offers the reference + catalog-refinable @-mention kinds, as a fresh array each call', () => {
     const a = commandPaletteFor('word');
     const b = commandPaletteFor('word');
-    expect(a.mentionKinds).toEqual(['this', 'unit']);
+    expect(a.mentionKinds).toEqual(['this', 'unit', 'datastore']);
     // Mutating one palette's array must not bleed into another (no shared module-level reference).
     a.mentionKinds.push('upload');
-    expect(b.mentionKinds).toEqual(['this', 'unit']);
+    expect(b.mentionKinds).toEqual(['this', 'unit', 'datastore']);
   });
 
   it('exposes surface-named scope options as data (default is the first entry)', () => {
@@ -95,7 +95,7 @@ describe('commandPaletteFor', () => {
     // An empty closure yields no verbs (but mention kinds + scope options remain).
     const none = commandPaletteFor('word', []);
     expect(none.verbs).toEqual([]);
-    expect(none.mentionKinds).toEqual(['this', 'unit']);
+    expect(none.mentionKinds).toEqual(['this', 'unit', 'datastore']);
     expect(none.scopeOptions.length).toBeGreaterThan(0);
   });
 

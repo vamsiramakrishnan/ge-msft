@@ -32,12 +32,15 @@ export interface CommandPaletteSpec {
 }
 
 /**
- * The fixed `@`-ground kinds offered in the free-text composer. Keep this to reference kinds that
- * can resolve without an additional object picker. Addressable kinds (`document`, `person`,
- * `datastore`, `upload`) are still valid in the structured grounding model, but they require a ref
- * selected from catalog/context UI rather than a bare `@datastore` token that would be dropped.
+ * The fixed `@`-ground kinds offered in the free-text composer. `this`/`unit` resolve without any
+ * further picker. `datastore` is included because the composer now has a working second-level
+ * refinement picker (`ComposerProps.mentionOptions`, fed from `PanelController`'s discovered
+ * `availableDataStores`) that turns a bare `@datastore` into an addressable `@datastore:<id>` before
+ * it ever reaches `mentionToSelection` — without a ref, an addressable mention is silently dropped
+ * rather than smuggled into the prompt as text. `document`/`person`/`upload` stay out until they have
+ * the same catalog-backed refinement wired (no `mentionOptions` source exists for them yet).
  */
-const MENTION_KINDS: GroundSource[] = ['this', 'unit'];
+const MENTION_KINDS: GroundSource[] = ['this', 'unit', 'datastore'];
 
 /**
  * Genuine label exceptions only. The default `/label` is `'/' + intent` (EXPERIENCE.md §1); this map

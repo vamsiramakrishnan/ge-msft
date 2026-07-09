@@ -487,6 +487,12 @@ export function App({
         onCancel={() => controller.cancel()}
         onInvoke={onInvoke}
         placeholder={SURFACE_PLACEHOLDER[surface]}
+        mentionOptions={{
+          datastore: state.availableDataStores.map((d) => ({
+            id: d.resourceName,
+            label: d.displayName,
+          })),
+        }}
       />
 
       <footer className="pf" aria-label="Provenance">

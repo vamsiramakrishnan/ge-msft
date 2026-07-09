@@ -45,6 +45,15 @@ export interface ComposerProps {
    *  back to the plain `onSend` routing so existing call sites keep working unchanged. */
   onInvoke?: (invocation: ComposerInvocation) => void;
   placeholder?: string;
+  /**
+   * Concrete, addressable options for an addressable `GroundSource` kind (`datastore`/`document`/
+   * `person`/`upload`) — e.g. `{ datastore: [{ id: dataStore.resourceName, label: dataStore.displayName }] }`
+   * from `PanelController`'s discovered catalog. Typing `@datastore:` opens a SECOND picker listing
+   * these, instead of leaving the mention as an unresolvable bare kind (a mention of an addressable
+   * kind with no `ref` is dropped by `mentionToSelection`, never reaching grounding). A kind with no
+   * entry here (or an empty list) just has no refinement step — `@kind ` alone is still accepted.
+   */
+  mentionOptions?: Partial<Record<GroundSource, { id: string; label: string }[]>>;
 }
 
 /** A `GroundSource` kind, as a fast membership test for the tokenizer's `@kind` recognition. */
@@ -76,10 +85,14 @@ export function parseComposerInput(
     verb = (verbMatch[1] ?? '').toLowerCase();
     instruction = trimmed.slice(verbMatch[0].length);
   }
-  const mentions: ComposerMention[] = [...trimmed.matchAll(/@(\w+)/g)]
-    .map((m) => m[1])
-    .filter((m): m is string => m !== undefined && GROUND_KINDS.has(m.toLowerCase()))
-    .map((m) => ({ kind: m.toLowerCase() as GroundSource }));
+  // `@kind` alone, or `@kind:ref` for an addressable kind picked from the refinement list (the `ref`
+  // is the id `mentionToSelection` needs to resolve — see `mentionOptions` on `ComposerProps`).
+  const mentions: ComposerMention[] = [];
+  for (const m of trimmed.matchAll(/@(\w+)(?::(\S+))?/g)) {
+    const kind = m[1]?.toLowerCase();
+    if (kind === undefined || !GROUND_KINDS.has(kind)) continue;
+    mentions.push({ kind: kind as GroundSource, ...(m[2] ? { ref: m[2] } : {}) });
+  }
   return {
     intent: verbToIntent(verb, spec),
     scope: { ...scope },
@@ -136,6 +149,7 @@ export function Composer({
   onCancel,
   onInvoke,
   placeholder,
+  mentionOptions,
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState('');
 
@@ -149,12 +163,20 @@ export function Composer({
   const [scopeIdx, setScopeIdx] = useState(0);
   const scope: CommandScope = scopeOptions[scopeIdx]?.scope ?? { kind: 'selection' };
 
-  // The trailing token decides which affordance is open: `/…` → verb palette, `@…` → ground kinds.
+  // The trailing token decides which affordance is open: `/…` → verb palette, `@…` → ground kinds
+  // (or, once a kind + `:` is typed and that kind has options, the REFINEMENT list of concrete picks).
   const trailing = /(^|\s)([/@]\S*)$/.exec(value)?.[2];
   const showVerbs = palette !== undefined && trailing?.startsWith('/') === true;
-  const showMentions = palette !== undefined && trailing?.startsWith('@') === true;
+  const isMentionToken = trailing?.startsWith('@') === true;
+  const mentionBody = isMentionToken ? (trailing as string).slice(1) : '';
+  const colonIdx = mentionBody.indexOf(':');
+  const typedKind = (colonIdx === -1 ? mentionBody : mentionBody.slice(0, colonIdx)).toLowerCase();
+  const refFilter = colonIdx === -1 ? '' : mentionBody.slice(colonIdx + 1).toLowerCase();
+  const refineOptions = colonIdx !== -1 ? mentionOptions?.[typedKind as GroundSource] : undefined;
+  const showRefine = isMentionToken && refineOptions !== undefined;
+  const showMentions = palette !== undefined && isMentionToken && !showRefine;
   const verbFilter = showVerbs ? (trailing as string).slice(1).toLowerCase() : '';
-  const mentionFilter = showMentions ? (trailing as string).slice(1).toLowerCase() : '';
+  const mentionFilter = showMentions ? mentionBody.toLowerCase() : '';
 
   const verbMatches = (palette?.verbs ?? []).filter((v) =>
     v.label.replace(/^\//, '').toLowerCase().startsWith(verbFilter),
@@ -162,28 +184,43 @@ export function Composer({
   const mentionMatches = (palette?.mentionKinds ?? []).filter((k) =>
     k.toLowerCase().startsWith(mentionFilter),
   );
+  const refineMatches = (refineOptions ?? []).filter(
+    (o) => o.label.toLowerCase().includes(refFilter) || o.id.toLowerCase().includes(refFilter),
+  );
 
-  // The open palette and its current options — only one of the two can be open at a time.
+  // The open palette and its current options — only one of the three can be open at a time.
   const paletteOpen =
-    (showVerbs && verbMatches.length > 0) || (showMentions && mentionMatches.length > 0);
-  const optionCount = showVerbs ? verbMatches.length : showMentions ? mentionMatches.length : 0;
+    (showVerbs && verbMatches.length > 0) ||
+    (showMentions && mentionMatches.length > 0) ||
+    (showRefine && refineMatches.length > 0);
+  const optionCount = showVerbs
+    ? verbMatches.length
+    : showRefine
+      ? refineMatches.length
+      : showMentions
+        ? mentionMatches.length
+        : 0;
 
   // Roving focus for the open palette listbox. Resets to the first option whenever the open
   // palette's option set changes (open/filter), and is clamped so it never points past the list.
   const [activeIndex, setActiveIndex] = useState(0);
   useEffect(() => {
     setActiveIndex(0);
-  }, [showVerbs, showMentions, optionCount]);
+  }, [showVerbs, showMentions, showRefine, optionCount]);
   const clampedActive = optionCount > 0 ? Math.min(activeIndex, optionCount - 1) : 0;
 
   /** The stable id of the option at `i` in the currently-open palette (for aria-activedescendant). */
-  const optionId = (i: number): string => `comp-opt-${showVerbs ? 'verb' : 'mention'}-${i}`;
+  const optionId = (i: number): string =>
+    `comp-opt-${showVerbs ? 'verb' : showRefine ? 'refine' : 'mention'}-${i}`;
 
   /** Apply the option at `i` of the open palette — the same effect as clicking it. */
   const selectActiveOption = (i: number): void => {
     if (showVerbs) {
       const v = verbMatches[i];
       if (v) complete(v.label);
+    } else if (showRefine) {
+      const o = refineMatches[i];
+      if (o) complete(`@${typedKind}:${o.id}`);
     } else if (showMentions) {
       const k = mentionMatches[i];
       if (k) complete(`@${k}`);
@@ -288,6 +325,29 @@ export function Composer({
                 onClick={() => complete(`@${k}`)}
               >
                 <span className="palette-label">@{k}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {showRefine && refineMatches.length > 0 && (
+        <ul
+          className="palette palette-mention-refine"
+          role="listbox"
+          aria-label={`Pick a ${typedKind}`}
+          aria-activedescendant={optionId(clampedActive)}
+        >
+          {refineMatches.map((o, i) => (
+            <li key={o.id} id={optionId(i)} role="option" aria-selected={i === clampedActive}>
+              <button
+                type="button"
+                className="palette-item"
+                data-mention-ref={o.id}
+                disabled={busy || disabled}
+                onMouseEnter={() => setActiveIndex(i)}
+                onClick={() => complete(`@${typedKind}:${o.id}`)}
+              >
+                <span className="palette-label">{o.label}</span>
               </button>
             </li>
           ))}

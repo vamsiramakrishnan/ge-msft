@@ -943,6 +943,7 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       parseCommandLine('outline'),
       parseCommandLine('read A1'),
       parseCommandLine('search foo'),
+      parseCommandLine('ls /doc'),
       parseCommandLine('list range'),
       parseCommandLine('inspect xl:Sales!A1:C9'),
       parseCommandLine('properties xl:Sales!A1:C9'),
@@ -969,6 +970,12 @@ describe('command-grammar — ParsedCommandSchema validates parser output', () =
       expect(isCommandParseError(cmd)).toBe(false);
       expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
     }
+  });
+
+  it('accepts the ls verb', () => {
+    const cmd = parseCommandLine('ls /doc');
+    expect(() => ParsedCommandSchema.parse(cmd)).not.toThrow();
+    expect(ParsedCommandSchema.parse(cmd)).toEqual({ verb: 'ls', path: '/doc' });
   });
 });
 

@@ -208,6 +208,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('outline') }),
   z.object({ verb: z.literal('read'), selector: z.string() }),
   z.object({ verb: z.literal('search'), text: z.string() }),
+  z.object({ verb: z.literal('ls'), path: z.string() }),
   z.object({ verb: z.literal('list'), kind: ContextKindSchema.optional() }),
   z.object({ verb: z.literal('inspect'), selector: z.string() }),
   z.object({ verb: z.literal('properties'), selector: z.string() }),

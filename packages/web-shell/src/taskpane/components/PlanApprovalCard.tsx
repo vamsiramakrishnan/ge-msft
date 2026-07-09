@@ -5,6 +5,7 @@ import { renderCommandLine } from '../../render-command.js';
 
 export interface PlanApprovalCardProps {
   plan: PendingPlan | undefined;
+  onRevealTarget?: (target: string) => void;
   onApprove: () => void;
   onReject: () => void;
 }
@@ -39,7 +40,15 @@ function effectTarget(effect: PlanEffect): string | undefined {
  * the effect will produce and/or a before→after preview. The command line is the SAME
  * `ActuationRequest` that executes on approval, so what is reviewed is exactly what runs.
  */
-function EffectRow({ effect, index }: { effect: PlanEffect; index: number }): JSX.Element {
+function EffectRow({
+  effect,
+  index,
+  onRevealTarget,
+}: {
+  effect: PlanEffect;
+  index: number;
+  onRevealTarget?: (target: string) => void;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const command = renderCommandLine(effect.request);
   const target = effectTarget(effect);
@@ -67,7 +76,18 @@ function EffectRow({ effect, index }: { effect: PlanEffect; index: number }): JS
           {target && (
             <div className="plan-effect-row">
               <span className="k">Target</span>
-              <span className="v mono">{target}</span>
+              {onRevealTarget ? (
+                <button
+                  type="button"
+                  className="v mono host-target-link"
+                  onClick={() => onRevealTarget(target)}
+                  title="Open this target in the host"
+                >
+                  {target}
+                </button>
+              ) : (
+                <span className="v mono">{target}</span>
+              )}
             </div>
           )}
           {dry?.resolved !== undefined && (
@@ -115,6 +135,7 @@ function EffectRow({ effect, index }: { effect: PlanEffect; index: number }): JS
  */
 export function PlanApprovalCard({
   plan,
+  onRevealTarget,
   onApprove,
   onReject,
 }: PlanApprovalCardProps): JSX.Element | null {
@@ -135,7 +156,12 @@ export function PlanApprovalCard({
         </div>
         <ol className="plan-effects" aria-label={`Effects in this plan: ${plan.summary}`}>
           {plan.effects.map((effect, i) => (
-            <EffectRow key={effect.request.changeId} effect={effect} index={i + 1} />
+            <EffectRow
+              key={effect.request.changeId}
+              effect={effect}
+              index={i + 1}
+              onRevealTarget={onRevealTarget}
+            />
           ))}
         </ol>
         <div className="w">

@@ -24,6 +24,7 @@ import { contentHash } from './hash.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { WifTokenClient } from './wif.js';
 import { StreamAssistClient, buildStreamAssistRequest } from './stream-assist.js';
+import { ConversationClient } from './sessions.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 
 const ASSISTANT = {
@@ -196,6 +197,76 @@ describe('ContextFileClient', () => {
     expect(bytesToBase64(new Uint8Array([0, 1, 2, 253, 254, 255]))).toBe('AAEC/f7/');
     expect(supportedContextFileFormats().map((f) => f.extension)).toContain('.xlsx');
     expect(supportedContextFileFormats().map((f) => f.extension)).not.toContain('.xlsm');
+  });
+});
+
+describe('ConversationClient', () => {
+  const tokens = { getAccessToken: () => Promise.resolve('goog-token'), invalidate: vi.fn() };
+
+  it('lists engine sessions as the signed-in Discovery Engine user', async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        sessions: [
+          {
+            name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1',
+            displayName: 'Schedule planning',
+            startTime: '2026-07-07T01:00:00Z',
+            turns: [{ query: { text: 'Plan my week', createTime: '2026-07-07T01:00:00Z' } }],
+            isPinned: true,
+          },
+        ],
+        nextPageToken: 'next',
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+
+    const out = await client.listConversations({ pageSize: 10 });
+
+    expect(out.conversations).toEqual([
+      {
+        name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-1',
+        id: 'sess-1',
+        title: 'Schedule planning',
+        turnCount: 1,
+        isPinned: true,
+        startedAt: '2026-07-07T01:00:00Z',
+        updatedAt: '2026-07-07T01:00:00Z',
+      },
+    ]);
+    expect(out.nextPageToken).toBe('next');
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${sessionsUrl(cfg())}?pageSize=10`);
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer goog-token');
+  });
+
+  it('gets one session with answer details when requested', async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-2',
+        displayName: 'Chart investigation',
+        turns: [
+          {
+            query: { parts: [{ text: '/visualize this' }], createTime: '2026-07-07T02:00:00Z' },
+            detailedAssistAnswer: { state: 'SUCCEEDED' },
+          },
+        ],
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+
+    const out = await client.getConversation('sess-2', { includeAnswerDetails: true });
+
+    expect(out.id).toBe('sess-2');
+    expect(out.turns).toEqual([
+      {
+        queryText: '/visualize this',
+        createTime: '2026-07-07T02:00:00Z',
+        answerState: 'SUCCEEDED',
+      },
+    ]);
+    expect((f.mock.calls[0] as unknown as [string, RequestInit])[0]).toBe(
+      `${sessionUrl(cfg(), 'sess-2')}?includeAnswerDetails=true`,
+    );
   });
 });
 
@@ -543,6 +614,51 @@ describe('StreamAssistClient', () => {
     if (prov?.type === 'provenance') {
       expect(prov.payload.sources[0]?.title).toBe('Vendor Risk Policy v4');
       expect(prov.payload.agentId).toContain('eng1');
+    }
+  });
+
+  it('carries the grounding chunk text onto the citation as a whitespace-collapsed excerpt', async () => {
+    const chunk = {
+      sessionInfo: { session: 'sess_x' },
+      answer: {
+        state: 'SUCCEEDED',
+        replies: [
+          {
+            groundedContent: {
+              content: { text: 'below policy.' },
+              textGroundingMetadata: {
+                references: [
+                  {
+                    content:
+                      '  Systems handling customer data\n  must sustain 99.9% availability.  ',
+                    documentMetadata: { title: 'Vendor Risk Policy v4', pageIdentifier: '§3.2' },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const f = vi.fn(async () => new Response(streamOf([JSON.stringify([chunk])]), { status: 200 }));
+    const client = new StreamAssistClient(tokens, cfg(), f as never);
+    const events = await collect(client.stream(assistReq()));
+    const citation = events.find((e) => e.type === 'citation');
+    expect(citation).toMatchObject({
+      type: 'citation',
+      source: {
+        title: 'Vendor Risk Policy v4',
+        locator: '§3.2',
+        excerpt: 'Systems handling customer data must sustain 99.9% availability.',
+      },
+    });
+
+    // The excerpt is display-only: it must NOT be persisted into the durable provenance record,
+    // which travels inside redistributable host files (security review, Finding 1).
+    const prov = events.find((e) => e.type === 'provenance');
+    if (prov?.type === 'provenance') {
+      expect(prov.payload.sources[0]).toMatchObject({ title: 'Vendor Risk Policy v4' });
+      expect(prov.payload.sources[0]).not.toHaveProperty('excerpt');
     }
   });
 

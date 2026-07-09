@@ -12,7 +12,7 @@ import {
   type WordSimulator,
   type MountedStack,
 } from '../test-harness/index.js';
-import { inferImplicitIntent } from './components/App.js';
+import { inferImplicitIntent, shouldUsePlannerForFreeText } from './components/App.js';
 
 /**
  * FULL-STACK interplay for the command surface. Each test installs an in-memory Word host, then
@@ -140,39 +140,38 @@ describe('command surface — composer / and @ (full-stack)', () => {
     expect(ui.controller.getState().pendingPlan).toBeUndefined();
   });
 
-  it('a /review verb routes through runCommands and stages the plan gate', async () => {
+  it('a typed /review verb enters the planner before the executor', async () => {
     sim = installFakeWord();
     ui = mountStack({
       surface: 'word',
       client: scriptedClient([
-        '```cmd\nsuggest "The SLA is 99.5%." => "The SLA is 99.5% (source needed)."\n```',
-        '```cmd\ndone\n```',
+        '```plan\nintent review\nsurface word\nscope selection\nstep check the SLA claim for source support\nconfidence high\n```',
       ]),
     });
     await ui.flush();
 
     await typeAndSubmit('/review check the SLA claim');
-    await ui.waitFor((s) => s.pendingPlan !== undefined);
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
 
-    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    expect(ui.controller.getState().pendingCommandPlan?.plan.intent).toBe('review');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
   });
 
-  it('an imperative Excel chart request is promoted to the gated visualize command path', async () => {
+  it('an imperative Excel chart request enters the planner before chart execution', async () => {
     sim = installFakeExcel();
     ui = mountStack({
       surface: 'excel',
       client: scriptedClient([
-        '```cmd\nchart pie Sales!A1:C7 title="Sales mix"\n```',
-        '```cmd\ndone\n```',
+        '```plan\nintent visualize\nsurface excel\nscope selection\nstep create a pie chart from Sales!A1:C7\nconfidence high\n```',
       ]),
     });
     await ui.flush();
 
     await typeAndSubmit('create a pie chart from Sales!A1:C7');
-    await ui.waitFor((s) => s.pendingPlan !== undefined);
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
 
-    expect(ui.controller.getState().pendingPlan?.effects[0]?.request.kind).toBe('insert-chart');
-    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    expect(ui.controller.getState().pendingCommandPlan?.plan.intent).toBe('visualize');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
   });
 
   it('a pasted Excel CLI program routes directly to the gate and writes after approval without a model echo', async () => {
@@ -263,6 +262,60 @@ describe('command surface — implicit intent inference', () => {
     ).toBeUndefined();
   });
 
+  it('routes arbitrary action-like Excel text to the planner instead of classifying exact intent', () => {
+    expect(
+      inferImplicitIntent('excel', ['rewrite', 'visualize'], {
+        ...base,
+        raw: 'Help me update the morning schedule please where I have assigned timings for meditation',
+        instruction:
+          'Help me update the morning schedule please where I have assigned timings for meditation',
+      }),
+    ).toBeUndefined();
+    expect(
+      shouldUsePlannerForFreeText(['rewrite', 'visualize'], {
+        ...base,
+        raw: 'Help me update the morning schedule please where I have assigned timings for meditation',
+        instruction:
+          'Help me update the morning schedule please where I have assigned timings for meditation',
+      }),
+    ).toBe(true);
+    expect(
+      inferImplicitIntent('excel', ['rewrite'], {
+        ...base,
+        raw: 'populate this sheet with a sample weekly schedule',
+        instruction: 'populate this sheet with a sample weekly schedule',
+      }),
+    ).toBeUndefined();
+    expect(
+      shouldUsePlannerForFreeText(['rewrite'], {
+        ...base,
+        raw: 'populate this sheet with a sample weekly schedule',
+        instruction: 'populate this sheet with a sample weekly schedule',
+      }),
+    ).toBe(true);
+    expect(
+      shouldUsePlannerForFreeText(['ask'], {
+        ...base,
+        raw: 'populate this sheet with a sample weekly schedule',
+        instruction: 'populate this sheet with a sample weekly schedule',
+      }),
+    ).toBe(false);
+    expect(
+      shouldUsePlannerForFreeText(['rewrite'], {
+        ...base,
+        raw: 'why did my schedule update fail?',
+        instruction: 'why did my schedule update fail?',
+      }),
+    ).toBe(false);
+    expect(
+      shouldUsePlannerForFreeText(['rewrite'], {
+        ...base,
+        raw: 'Okay add this to my schedule',
+        instruction: 'Okay add this to my schedule',
+      }),
+    ).toBe(true);
+  });
+
   it('promotes only clear imperative write requests on Word, PowerPoint, and Outlook', () => {
     expect(
       inferImplicitIntent('word', ['rewrite', 'review'], {
@@ -310,6 +363,69 @@ describe('command surface — implicit intent inference', () => {
 });
 
 describe('command surface — planner-confirm for complex free-text (full-stack, §F)', () => {
+  it('action-like Excel free text explicitly enters the command planner before execution', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Daily schedule',
+            origin: 'A1',
+            values: Array.from({ length: 20 }, () => Array.from({ length: 9 }, () => '')),
+          },
+        ],
+        activeSheet: 'Daily schedule',
+        selection: 'B2:I20',
+      }),
+    );
+    const sc = scriptedClient([
+      '```plan\nintent rewrite\nsurface excel\nscope selection\nstep update the morning schedule with meditation timing blocks\nconfidence high\n```',
+    ]);
+    ui = mountStack({ surface: 'excel', client: sc });
+    await ui.flush();
+
+    await typeAndSubmit(
+      'Help me update the morning schedule please where I have assigned timings for meditation',
+    );
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
+
+    expect(sc.queries[0]).toContain('Emit one ```plan block.');
+    expect(sc.queries[0]).toContain('REQUEST:');
+    expect(sc.queries[0]).toContain('morning schedule');
+    expect(sc.queries[0]).not.toContain('COMMANDS — one per line');
+    expect(ui.controller.getState().pendingCommandPlan?.plan.intent).toBe('rewrite');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
+  });
+
+  it('follow-up phrasing like "Okay add this" also enters the planner', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Daily schedule',
+            origin: 'A1',
+            values: Array.from({ length: 20 }, () => Array.from({ length: 9 }, () => '')),
+          },
+        ],
+        activeSheet: 'Daily schedule',
+        selection: 'B2:I20',
+      }),
+    );
+    const sc = scriptedClient([
+      '```plan\nintent rewrite\nsurface excel\nscope selection\nstep add the proposed morning routine to the schedule\nconfidence high\n```',
+    ]);
+    ui = mountStack({ surface: 'excel', client: sc });
+    await ui.flush();
+
+    await typeAndSubmit('Okay add this to my schedule');
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
+
+    expect(sc.queries[0]).toContain('Emit one ```plan block.');
+    expect(sc.queries[0]).toContain('Okay add this to my schedule');
+    expect(sc.queries[0]).not.toContain('COMMANDS — one per line');
+    expect(ui.controller.getState().pendingCommandPlan?.plan.intent).toBe('rewrite');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
+  });
+
   it('a complex /rewrite proposes a plan, then runs the executor on confirm', async () => {
     sim = installFakeWord();
     ui = mountStack({
@@ -346,26 +462,28 @@ describe('command surface — planner-confirm for complex free-text (full-stack,
     await ui.waitFor((s) => s.pendingPlan !== undefined);
     expect(ui.controller.getState().pendingCommandPlan).toBeUndefined();
     expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    const threadText = ui.container.querySelector('.thread')?.textContent ?? '';
+    expect(threadText).toContain('/execute approved rewrite plan');
+    expect(threadText).not.toContain('<confirmed_plan>');
+    expect(threadText).not.toContain('Treat the plan as approved intent');
     expect((sim as WordSimulator).snapshot().inserts.length).toBe(0); // still nothing applied — gated
   });
 
-  it('a SIMPLE /rewrite skips the planner and goes straight to the executor gate', async () => {
+  it('a simple typed /rewrite still enters the planner first', async () => {
     sim = installFakeWord();
     ui = mountStack({
       surface: 'word',
       client: scriptedClient([
-        '```cmd\nsuggest "The SLA is 99.5%." => "The SLA is 99.9%."\n```',
-        '```cmd\ndone\n```',
+        '```plan\nintent rewrite\nsurface word\nscope selection\nstep make the selected text formal\nconfidence high\n```',
       ]),
     });
     await ui.flush();
 
     await typeAndSubmit('/rewrite make it formal');
-    await ui.waitFor((s) => s.pendingPlan !== undefined);
+    await ui.waitFor((s) => s.pendingCommandPlan !== undefined);
 
-    // No planner card — the short instruction went straight to the executor's effect gate.
-    expect(ui.container.querySelector('.command-plan')).toBeNull();
-    expect(ui.controller.getState().pendingCommandPlan).toBeUndefined();
-    expect(ui.container.querySelector('.plan-approval')).not.toBeNull();
+    expect(ui.container.querySelector('.command-plan')).not.toBeNull();
+    expect(ui.controller.getState().pendingCommandPlan?.plan.intent).toBe('rewrite');
+    expect(ui.controller.getState().pendingPlan).toBeUndefined();
   });
 });

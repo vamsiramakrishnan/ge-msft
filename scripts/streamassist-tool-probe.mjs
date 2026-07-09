@@ -10,12 +10,12 @@
  *
  * Zero dependencies. Node 18+ (uses global fetch). Three modes:
  *
- *   node scripts/streamassist-tool-probe.mjs                 # PRINT: emit the full battery as
+ *   bun scripts/streamassist-tool-probe.mjs                 # PRINT: emit the full battery as
  *                                                            #   copy-paste turns for the GE UI
- *   node scripts/streamassist-tool-probe.mjs --interactive   # script drives the loop; you paste
+ *   bun scripts/streamassist-tool-probe.mjs --interactive   # script drives the loop; you paste
  *                                                            #   the model's reply (end with a
  *                                                            #   line "END"); it scores
- *   node scripts/streamassist-tool-probe.mjs --http          # fully automated vs the live API
+ *   bun scripts/streamassist-tool-probe.mjs --http          # fully automated vs the live API
  *
  * HTTP mode env:
  *   GE_TOKEN      a Google access token (e.g. the WIF-exchanged token from packages/gemini-client,

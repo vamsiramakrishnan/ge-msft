@@ -18,12 +18,10 @@ import {
   type GroundingResolveContext,
   type ResolvedGrounding,
 } from '@ge/gemini-client';
-import type { PanelController } from '../../controller.js';
+import type { ContextChip, PanelController } from '../../controller.js';
 import { usePanelState } from '../usePanelState.js';
-import { ContextTray } from './ContextTray.js';
 import { MessageThread } from './MessageThread.js';
 import { Composer, type ComposerInvocation, type ComposerMention } from './Composer.js';
-import { QuickActionBar } from './QuickActionBar.js';
 import { invocationToSeed, quickActionToInvocation } from './quick-action-seed.js';
 import { QuickActionParamForm } from './QuickActionParamForm.js';
 import { ProposalCard } from './ProposalCard.js';
@@ -31,10 +29,12 @@ import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
 import { CommandPlanCard } from './CommandPlanCard.js';
-import { SkillsPanel } from './SkillsPanel.js';
+import { PlanClarificationCard } from './PlanClarificationCard.js';
 import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
-import { SurfaceCommandCenter, surfacePrimaryActions } from './SurfaceCommandCenter.js';
+import { surfacePrimaryActions } from './SurfaceCommandCenter.js';
+import { Toolbar } from './Toolbar.js';
 import { extractDirectCommandProgram } from '../direct-command.js';
+import { buildInsertArtifactProgram, type InsertableArtifact } from '../insert-artifact.js';
 
 export interface AppProps {
   controller: PanelController;
@@ -93,6 +93,8 @@ const EXCEL_CHART_CREATE_RE =
   /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|make|insert|add|build|generate|plot|visuali[sz]e)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
 const EXCEL_CHART_CONVERT_RE =
   /^\s*(?:please\s+)?(?:turn|convert)\b[\s\S]*\b(?:into|to)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
+const OFFICE_ACTION_REQUEST_RE =
+  /^\s*(?:(?:ok(?:ay)?|yes|yeah|yep|sure|alright|great|cool)[\s,!.]+)*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:help\s+me\s+)?(?:update|fill|populate|insert|add|apply|place|write|create|make|build|generate|draft|rewrite|revise|edit|review|comment|flag|mark|turn|convert|visuali[sz]e)\b/i;
 const WORD_REWRITE_RE =
   /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:rewrite|revise|tighten|edit|replace|improve)\b[\s\S]*\b(?:selection|selected text|paragraph|text|wording|clause|sentence)\b/i;
 const WORD_REVIEW_RE =
@@ -127,10 +129,13 @@ export function inferImplicitIntent(
   if (!raw || raw.startsWith('/')) return undefined;
   switch (surface) {
     case 'excel':
-      return intentAllowed('visualize', allowedIntents) &&
+      if (
+        intentAllowed('visualize', allowedIntents) &&
         (EXCEL_CHART_CREATE_RE.test(raw) || EXCEL_CHART_CONVERT_RE.test(raw))
-        ? 'visualize'
-        : undefined;
+      ) {
+        return 'visualize';
+      }
+      return undefined;
     case 'word':
       if (intentAllowed('rewrite', allowedIntents) && WORD_REWRITE_RE.test(raw)) return 'rewrite';
       if (intentAllowed('review', allowedIntents) && WORD_REVIEW_RE.test(raw)) return 'review';
@@ -147,6 +152,30 @@ export function inferImplicitIntent(
     case 'teams':
       return undefined;
   }
+}
+
+function hasActuatingIntent(allowedIntents: Iterable<Intent> | undefined): boolean {
+  if (allowedIntents === undefined) return true;
+  for (const intent of allowedIntents) {
+    if (isActuating(intent)) return true;
+  }
+  return false;
+}
+
+/**
+ * Thin router predicate, not an intent classifier. It only decides whether arbitrary free text looks
+ * action-like enough to ask the command planner. The planner owns intent selection, exclusions, and
+ * clarification; the client keeps only obvious one-shot fast paths such as "create a chart".
+ */
+export function shouldUsePlannerForFreeText(
+  allowedIntents: Iterable<Intent> | undefined,
+  inv: ComposerInvocation,
+): boolean {
+  if (inv.intent !== undefined) return false;
+  const raw = inv.raw.trim();
+  if (!raw || raw.startsWith('/')) return false;
+  if (!hasActuatingIntent(allowedIntents)) return false;
+  return OFFICE_ACTION_REQUEST_RE.test(raw);
 }
 
 /**
@@ -191,6 +220,14 @@ export function invocationToGrounding(
   return resolveGrounding(selections, ctx);
 }
 
+function excelSelectionRange(chips: ContextChip[]): string | undefined {
+  const selection = chips.find(
+    (chip) =>
+      chip.kind === 'range' && chip.id.startsWith('xl:') && !chip.id.startsWith('xl:named:'),
+  );
+  return selection?.title;
+}
+
 /**
  * The task pane. A thin React view over `PanelController` state: header (agent identity), context
  * tray (attach/detach chips), streamed grounded thread with citations, proposal-review cards, and
@@ -226,6 +263,12 @@ export function App({
   const attachedCount = state.chips.filter((chip) => chip.attached).length;
   const availableCount = Math.max(0, state.chips.length - attachedCount);
   const proposalCount = state.proposals.filter((proposal) => proposal.status === 'pending').length;
+  const insertExcelRange = surface === 'excel' ? excelSelectionRange(state.chips) : undefined;
+  const insertArtifactDisabledReason = actionBlocked
+    ? 'Finish the current turn or approval first.'
+    : surface === 'excel' && !insertExcelRange
+      ? 'Select a destination range first.'
+      : undefined;
 
   // Load the attachable-context chips once on mount.
   useEffect(() => {
@@ -270,11 +313,17 @@ export function App({
     // first, so this guard only fires on a defective seed; drop it rather than actuate on raw braces.
     if (hasUnfilledPlaceholder(seed)) return;
     const grounding = invocationToGrounding(inv);
-    // EXPERIENCE.md §F — the planner-confirm front door, enforced ONLY for complex free-text: a
-    // composer-typed (raw ≠ '') actuating instruction with constraints first proposes a confirmable
-    // CommandPlan. A chip/preset (raw === '') or a simple instruction routes straight to the executor.
+    // EXPERIENCE.md §F — the planner-confirm front door. Composer-origin natural-language actions
+    // always go to the command planner first, whether the user typed `/rewrite ...`, "create a
+    // chart", or "okay add this". The planner, not this router, chooses rewrite/review/etc. and can
+    // ask clarifying questions before the executor sees anything. Explicit pasted CLI is handled
+    // above by runDirectCommands because it is already a concrete command program.
     const composerOrigin = inv.raw.trim() !== '';
-    if (composerOrigin && isActuating(effectiveIntent) && isComplexInstruction(inv.instruction)) {
+    const shouldPlanFirst =
+      composerOrigin &&
+      (isActuating(effectiveIntent) ||
+        (effectiveIntent === undefined && shouldUsePlannerForFreeText(allowedIntents, inv)));
+    if (shouldPlanFirst) {
       void controller.proposePlan(seed, grounding);
     } else if (isActuating(effectiveIntent)) {
       void controller.runCommands(seed, grounding);
@@ -303,29 +352,38 @@ export function App({
   // A structured composer submit (`/verb` intent + scope + `@`-mentions + instruction) → the same path.
   const onInvoke = (inv: ComposerInvocation): void => dispatch(inv);
 
+  const onInsertArtifact = (artifact: InsertableArtifact): void => {
+    const built = buildInsertArtifactProgram(surface, artifact, { excelRange: insertExcelRange });
+    if (!built.ok) return;
+    void controller.runDirectCommands(built.program);
+  };
+
   return (
     <div className="panel" data-surface={surface} aria-busy={state.busy}>
-      <header className="ph">
-        <div className="pht">
-          <div className="av" aria-hidden="true" />
-          <div className="ph-id">
-            <div className="pn">Gemini Enterprise</div>
-            <div className="pss">{agentLabel ?? 'Grounded on your research unit'}</div>
-          </div>
-          {catalogClient && (
-            <button
-              type="button"
-              className={`ph-settings${settingsOpen ? ' on' : ''}`}
-              aria-label={settingsOpen ? 'Close catalog settings' : 'Open catalog settings'}
-              aria-expanded={settingsOpen}
-              aria-controls="ge-catalog-settings"
-              onClick={() => setSettingsOpen((v) => !v)}
-            >
-              <span aria-hidden="true">⚙</span>
-            </button>
-          )}
-        </div>
-      </header>
+      <Toolbar
+        surface={surface}
+        allowedIntents={allowedIntents}
+        agentLabel={agentLabel}
+        busy={actionBlocked}
+        hasGate={hasBlockingGate}
+        chips={state.chips}
+        attachedCount={attachedCount}
+        availableCount={availableCount}
+        messageCount={state.messages.length}
+        proposalCount={proposalCount}
+        skills={state.skills ?? []}
+        conversations={state.conversations}
+        primaryActionIds={primaryActionIds}
+        hasSettings={Boolean(catalogClient)}
+        onOpenSettings={() => setSettingsOpen((v) => !v)}
+        onToggleChip={onToggle}
+        onRevealChip={(id) => void controller.reveal(id)}
+        onRefreshContext={() => void controller.refreshContext()}
+        onRefreshConversations={() => void controller.refreshConversations()}
+        onResumeConversation={(name) => controller.resumeConversation(name)}
+        onInvokeSkill={(name, args) => void controller.invokeSkill(name, args)}
+        onQuickAction={onQuickAction}
+      />
 
       <GeminiCatalogPanel
         catalogClient={catalogClient}
@@ -334,25 +392,6 @@ export function App({
         onApply={(selection: GeminiCatalogSelection) => {
           onCatalogRouting?.(applyCatalogSelection(selection));
         }}
-      />
-
-      <SurfaceCommandCenter
-        surface={surface}
-        allowedIntents={allowedIntents}
-        busy={state.busy}
-        hasGate={hasBlockingGate}
-        attachedCount={attachedCount}
-        availableCount={availableCount}
-        messageCount={state.messages.length}
-        proposalCount={proposalCount}
-        onAction={onQuickAction}
-      />
-
-      <ContextTray
-        chips={state.chips}
-        onToggle={onToggle}
-        onReveal={(id) => void controller.reveal(id)}
-        onRefresh={() => void controller.refreshContext()}
       />
 
       {state.suggestions.length > 0 && (
@@ -376,7 +415,19 @@ export function App({
       )}
 
       <main className="thread-region" aria-label="Conversation and activity">
-        <MessageThread messages={state.messages} surface={surface} />
+        <MessageThread
+          messages={state.messages}
+          surface={surface}
+          onInsertArtifact={onInsertArtifact}
+          onRevealLocation={(target) => void controller.revealLocation(surface, target)}
+          insertArtifactDisabledReason={insertArtifactDisabledReason}
+        />
+
+        <PlanClarificationCard
+          pending={state.pendingPlanClarification}
+          disabled={state.busy}
+          onAnswer={(answer) => controller.answerPlanClarification(answer)}
+        />
 
         <RunSteps steps={state.steps} />
 
@@ -402,6 +453,7 @@ export function App({
 
           <PlanApprovalCard
             plan={state.pendingPlan}
+            onRevealTarget={(target) => void controller.revealLocation(surface, target)}
             onApprove={() => controller.approvePlan()}
             onReject={() => controller.rejectPlan()}
           />
@@ -413,21 +465,6 @@ export function App({
           />
         </section>
       )}
-
-      <QuickActionBar
-        surface={surface}
-        allowedIntents={allowedIntents}
-        busy={actionBlocked}
-        excludeIds={primaryActionIds}
-        onAction={onQuickAction}
-      />
-
-      <SkillsPanel
-        skills={state.skills ?? []}
-        disabled={actionBlocked}
-        onInvoke={(name, args) => void controller.invokeSkill(name, args)}
-        placement="above"
-      />
 
       <QuickActionParamForm
         key={paramFill?.id}

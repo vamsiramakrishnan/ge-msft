@@ -115,6 +115,34 @@ export function collectionResourceName(p: AssistantPath): string {
   return `projects/${p.project}/locations/${p.location}/collections/${collection}`;
 }
 
+/** Data store resource name for a given store id (what `dataStoreSpecs[].dataStore` expects). */
+export function dataStoreResourceName(p: AssistantPath, dataStoreId: string): string {
+  return `${collectionResourceName(p)}/dataStores/${dataStoreId}`;
+}
+
+/** Absolute URL to GET the engine (`engines.get`) — reveals `dataStoreIds`. */
+export function engineUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/engine`;
+  return `${discoveryEngineHost(cfg.assistant.location)}/v1alpha/${engineResourceName(cfg.assistant)}`;
+}
+
+/**
+ * Absolute URL for the public `assistants:listAvailableAgentViews` custom verb — the WIF-authenticated
+ * way to list agents *available to the caller* (owned skills + enabled managed agents). Unlike
+ * `agents.list` (app-gated "list all created by caller" → 403), this works with `roles/discoveryengine.user`.
+ */
+export function listAvailableAgentViewsUrl(cfg: GeminiClientConfig): string {
+  if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/listAvailableAgentViews`;
+  return `${discoveryEngineHost(cfg.assistant.location)}/v1alpha/${assistantResourceName(cfg.assistant)}:listAvailableAgentViews`;
+}
+
+/** Absolute URL to GET one data store (`dataStores.get`). */
+export function dataStoreUrl(cfg: GeminiClientConfig, dataStoreId: string): string {
+  if (cfg.proxyUrl)
+    return `${proxyBase(cfg.proxyUrl)}/dataStores/${encodeURIComponent(dataStoreId)}`;
+  return `${discoveryEngineHost(cfg.assistant.location)}/v1alpha/${dataStoreResourceName(cfg.assistant, dataStoreId)}`;
+}
+
 /** Absolute URL for the `:streamAssist` call (or the proxy, if configured). */
 export function streamAssistUrl(cfg: GeminiClientConfig): string {
   if (cfg.proxyUrl) return `${proxyBase(cfg.proxyUrl)}/streamAssist`;

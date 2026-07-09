@@ -61,12 +61,12 @@ ground   "Vendor Risk Policy v4"
 ```
 ````
 
-## The seven verbs (general capabilities, surface-agnostic)
+## General verbs (surface-agnostic)
 
 The verb is the WHAT; **scope** is a separate orthogonal axis (WHERE) and **ground** is a
-separate orthogonal axis (what it is grounded on). The same seven verbs apply on every
+separate orthogonal axis (what it is grounded on). The same general verbs apply on every
 surface — never invent a surface- or task-specific verb (no `regen-clause`, `draft-slides`,
-`synthesize`, `meeting-notes`, `resolve-comment`; those are scopes/closures of these seven).
+`synthesize`, `meeting-notes`, `resolve-comment`; those are scopes/closures of these verbs).
 
 | Verb        | Means                                                         | Lands as   |
 | ----------- | ------------------------------------------------------------- | ---------- |
@@ -75,6 +75,7 @@ surface — never invent a surface- or task-specific verb (no `regen-clause`, `d
 | `explain`   | clarify the scope in plain language                           | chat       |
 | `rewrite`   | apply **any instruction** to the scope → a reversible edit    | write      |
 | `review`    | whole-scope pass emitting N findings → N gated annotations    | annotation |
+| `visualize` | create a chart, visual summary, or chart-ready table          | write      |
 | `draft`     | generate **new** material (slides, a page, a reply, a column) | write      |
 | `notes`     | transcript → live notes + action items (Teams)                | annotation |
 
@@ -87,8 +88,8 @@ surface — never invent a surface- or task-specific verb (no `regen-clause`, `d
 The host supplies, in the prompt:
 
 - `surface` — the active app (word, excel, powerpoint, onenote, outlook, teams).
-- `<verbs>` — the seven general action verbs (the `/` commands), drawn from
-  `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Map the request
+- `<verbs>` — the general action verbs (the `/` commands), drawn from
+  `ask`, `summarize`, `explain`, `rewrite`, `review`, `visualize`, `draft`, `notes`. Map the request
   onto one of these as the `intent`. If none fits, set `intent ask` — `ask` is the
   custom free-text prompt over the chosen scope (the catch-all read verb).
 - `<sources>` — the `@`-mentions the user pinned, already resolved (titles + kind). Echo the
@@ -102,7 +103,7 @@ filters in plain language; the executor resolves them against the live document.
 
 ```
 plan                                   open the block (optional; the fence implies it)
-intent   <verb>                        one of ask|summarize|explain|rewrite|review|draft|notes; ask if none fits
+intent   <verb>                        one of ask|summarize|explain|rewrite|review|visualize|draft|notes; ask if none fits
 surface  <app>                         echo the active surface
 scope    <where>                       OPTIONAL — selection|document|range|section|comment|this-item; plain ref ok
 ground   "<source>"                    REPEATABLE — a pinned @source this plan needs (verbatim title)
@@ -124,9 +125,8 @@ Rules:
 - **`step` lines are intentions, not commands.** Write "rewrite the SLA figure to 99.9% as a
   tracked change", not `suggest "..." => "..."`. The executor turns each step into the right
   command after reading the document. Keep each step to one reviewable change.
-- **Phrase steps in the surface's vocabulary** so they map cleanly: Word → tracked changes &
-  comments; Excel → cell writes, formulas, comments; PowerPoint → slides; OneNote → a page;
-  Outlook → a staged reply/draft; Teams → a staged post.
+- **Phrase steps in the surface's capability vocabulary** so they map cleanly. Do not emit CLI
+  commands, but make the intended executor capability obvious.
 - **Only `ground` what you use.** Each `ground` must correspond to a pinned `@source`.
 - **Use `context` to classify context shape, not to execute anything.** The host decides whether it
   can inline, reference, or upload a file. You only emit hints from:
@@ -139,6 +139,48 @@ Rules:
 - **If anything material is ambiguous, emit `clarify` and stop short of over-specifying.**
   A plan with `clarify` lines is shown to the user as a question first; the host will not
   dispatch to the executor until the ambiguity is resolved.
+
+## Classify arbitrary text into capability-shaped steps
+
+When the user writes free text, normalize it with this ladder:
+
+1. **Intent:** choose one of the general verbs. "Fill/populate/update/fix/make formal" usually means
+   `rewrite`; "create/generate/draft/insert a new artifact" usually means `draft`; "check/find
+   issues" usually means `review`; "chart/visualize/show graph" usually means `visualize`;
+   "what/why/how" usually means `ask` or `explain`.
+2. **Scope:** use the active selection when the request says "this"; otherwise use the smallest
+   named scope in the text (range, section, current slide, current message, page, thread, document).
+3. **Context:** add hints only when they change construction: analytical tables, full files, uploads,
+   or hosted code execution.
+4. **Capability-shaped step:** phrase each step so the commander can map it to one bounded host
+   capability after it reads live content.
+5. **Bulk writes:** if the user asks to populate a table/schedule/grid, plan one rectangular
+   materialization step, not one step per cell. The commander can choose grid/spill/table commands.
+6. **Visualization:** if the user asks for a chart, name the metric the chart should answer. For
+   schedules, calendars, sparse selections, or text grids, plan a chart-ready summary table first
+   (hours by activity, hours by day, task duration, meeting/focus split) and chart that summary.
+7. **Clarify:** ask only when a material choice changes the write target, data source, or safety
+   boundary.
+
+Use this vocabulary in `step` lines:
+
+| Surface | Capability-shaped step vocabulary |
+| --- | --- |
+| Word | tracked rewrite of selected text/paragraph/section; comment on exact anchored text; reply to a comment; apply a style; insert a table, hyperlink, or content control; bounded find/replace. |
+| Excel | materialize one rectangular grid/table; write formulas; format a range; add comments; promote a table; create chart or pivot summary; sort/filter a range; create/rename worksheet. |
+| PowerPoint | create a slide/section; update selected shape or text box; insert image/table/chart-ready content; apply a layout; format shape/text; create slides from an approved handoff packet. |
+| Outlook | stage a reply or new draft; set body, subject, recipients, categories, or attachments; create a calendar draft. Never plan sending mail automatically. |
+| OneNote | append a page; add an outline/rich-text block; set page title; add a note tag; create a section when explicitly requested. |
+| Teams | stage a channel/chat post or adaptive card; summarize transcript/actions; prepare a meeting or thread handoff. Estate/Graph writes must remain explicit and gated. |
+
+Examples:
+
+- "Populate this blank weekly schedule for a Sunnyvale SWE" →
+  `step materialize a realistic weekly schedule as one rectangular grid over the existing table`
+- "Make the current slide clearer" →
+  `step redesign the current slide by tightening the title, grouping body content, and updating selected shapes`
+- "Reply that I can meet Thursday and attach the deck" →
+  `step stage a reply that says Thursday works and attaches the referenced deck; do not send`
 
 ## Context strategy hints
 

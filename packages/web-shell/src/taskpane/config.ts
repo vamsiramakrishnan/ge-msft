@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   assistantResourceName,
   type AssistantPath,
+  type EnsureSkillInput,
   type GeminiSkillMention,
   type WifConfig,
 } from '@ge/gemini-client';
@@ -22,7 +23,15 @@ export interface RawEnv {
   readonly VITE_GE_MODEL_ID?: string;
   readonly VITE_GE_SKILL_IDS?: string;
   readonly VITE_GE_COMMAND_PLANNER_SKILL?: string;
+  readonly VITE_GE_COMMAND_PLANNER_SKILL_VERSION?: string;
+  readonly VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256?: string;
+  readonly VITE_GE_COMMAND_PLANNER_SKILL_SHA256?: string;
   readonly VITE_GE_SURFACE_COMMANDER_SKILL?: string;
+  readonly VITE_GE_SURFACE_COMMANDER_SKILL_VERSION?: string;
+  readonly VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256?: string;
+  readonly VITE_GE_SURFACE_COMMANDER_SKILL_SHA256?: string;
+  readonly VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256?: string;
+  readonly VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256?: string;
   readonly VITE_WIF_POOL_ID?: string;
   readonly VITE_WIF_PROVIDER_ID?: string;
   readonly VITE_WIF_SCOPE?: string;
@@ -50,6 +59,8 @@ const SKILL_REF = /^[a-zA-Z0-9][a-zA-Z0-9._:/=-]{0,511}$/;
 const SKILL_LABEL = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const PROJECT = /^([a-z][a-z0-9-]{4,28}[a-z0-9]|\d{6,20})$/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SEMVERISH = /^[0-9]+(?:\.[0-9]+){0,2}(?:[-+][a-zA-Z0-9.-]+)?$/;
+const SHA256 = /^[a-f0-9]{64}$/i;
 
 const WIDGET_TOKEN = /^[a-zA-Z0-9._~+/-]{1,256}$/;
 
@@ -122,7 +133,15 @@ const RawEnvShape = z.object({
   VITE_GE_MODEL_ID: SafeId.optional(),
   VITE_GE_SKILL_IDS: SkillRefs.optional(),
   VITE_GE_COMMAND_PLANNER_SKILL: z.string().regex(SKILL_REF).optional(),
+  VITE_GE_COMMAND_PLANNER_SKILL_VERSION: z.string().regex(SEMVERISH).optional(),
+  VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256: z.string().regex(SHA256).optional(),
+  VITE_GE_COMMAND_PLANNER_SKILL_SHA256: z.string().regex(SHA256).optional(),
   VITE_GE_SURFACE_COMMANDER_SKILL: z.string().regex(SKILL_REF).optional(),
+  VITE_GE_SURFACE_COMMANDER_SKILL_VERSION: z.string().regex(SEMVERISH).optional(),
+  VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256: z.string().regex(SHA256).optional(),
+  VITE_GE_SURFACE_COMMANDER_SKILL_SHA256: z.string().regex(SHA256).optional(),
+  VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256: z.string().regex(SHA256).optional(),
+  VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256: z.string().regex(SHA256).optional(),
   VITE_WIF_POOL_ID: SafeId,
   VITE_WIF_PROVIDER_ID: SafeId,
   VITE_WIF_SCOPE: z.string().url().optional(),
@@ -157,8 +176,47 @@ function parseEnv(env: RawEnv): z.infer<typeof RawEnvShape> {
     ...(env.VITE_GE_COMMAND_PLANNER_SKILL
       ? { VITE_GE_COMMAND_PLANNER_SKILL: env.VITE_GE_COMMAND_PLANNER_SKILL.trim() }
       : {}),
+    ...(env.VITE_GE_COMMAND_PLANNER_SKILL_VERSION
+      ? { VITE_GE_COMMAND_PLANNER_SKILL_VERSION: env.VITE_GE_COMMAND_PLANNER_SKILL_VERSION.trim() }
+      : {}),
+    ...(env.VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256
+      ? {
+          VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256:
+            env.VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256.trim(),
+        }
+      : {}),
+    ...(env.VITE_GE_COMMAND_PLANNER_SKILL_SHA256
+      ? { VITE_GE_COMMAND_PLANNER_SKILL_SHA256: env.VITE_GE_COMMAND_PLANNER_SKILL_SHA256.trim() }
+      : {}),
     ...(env.VITE_GE_SURFACE_COMMANDER_SKILL
       ? { VITE_GE_SURFACE_COMMANDER_SKILL: env.VITE_GE_SURFACE_COMMANDER_SKILL.trim() }
+      : {}),
+    ...(env.VITE_GE_SURFACE_COMMANDER_SKILL_VERSION
+      ? {
+          VITE_GE_SURFACE_COMMANDER_SKILL_VERSION:
+            env.VITE_GE_SURFACE_COMMANDER_SKILL_VERSION.trim(),
+        }
+      : {}),
+    ...(env.VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256
+      ? {
+          VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256:
+            env.VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256.trim(),
+        }
+      : {}),
+    ...(env.VITE_GE_SURFACE_COMMANDER_SKILL_SHA256
+      ? {
+          VITE_GE_SURFACE_COMMANDER_SKILL_SHA256: env.VITE_GE_SURFACE_COMMANDER_SKILL_SHA256.trim(),
+        }
+      : {}),
+    ...(env.VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256
+      ? {
+          VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256: env.VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256.trim(),
+        }
+      : {}),
+    ...(env.VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256
+      ? {
+          VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256: env.VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256.trim(),
+        }
       : {}),
     VITE_WIF_POOL_ID: required(env, 'VITE_WIF_POOL_ID'),
     VITE_WIF_PROVIDER_ID: required(env, 'VITE_WIF_PROVIDER_ID'),
@@ -375,6 +433,45 @@ function parseSkillEntry(
   }
   const uri = agentIdFromResource(resource);
   return { resource, mention: { label, uri } };
+}
+
+/**
+ * Boot-time warm-up inputs for the add-in's own skills (planner + commander), built from env.
+ * The env carries ids + the deployer's upload SHA-256, but NOT the SKILL.md body or the zip — so
+ * these run in **detect-only** mode (report `missing`/`stale`/`unchanged` by comparing the
+ * `[rev:<sha>]` marker), never writing. To upgrade to self-provisioning, a caller can attach
+ * `instruction`/`bundleZip` (e.g. bundles shipped as web assets) to each entry before passing them
+ * to `composeSession({ warmUpSkills })`. Pass `warmUpQuotaProject: VITE_WIF_USER_PROJECT` alongside.
+ */
+export function warmUpSkillsFromEnv(env: RawEnv): EnsureSkillInput[] {
+  const parsed = parseEnv(env);
+  const assistant = assistantResourceName(assistantFromEnv(env));
+  const out: EnsureSkillInput[] = [];
+  const add = (
+    entry: string | undefined,
+    defaultLabel: string,
+    revision: string | undefined,
+  ): void => {
+    if (!entry) return;
+    const { resource, mention } = parseSkillEntry(entry, assistant, defaultLabel);
+    out.push({
+      agentId: agentIdFromResource(resource),
+      displayName: mention?.label ?? defaultLabel,
+      description: `${defaultLabel} — Gemini Enterprise skill for the M365 add-in`,
+      ...(revision ? { revision } : {}),
+    });
+  };
+  add(
+    parsed.VITE_GE_COMMAND_PLANNER_SKILL,
+    'm365-command-planner',
+    parsed.VITE_GE_COMMAND_PLANNER_SKILL_SHA256,
+  );
+  add(
+    parsed.VITE_GE_SURFACE_COMMANDER_SKILL,
+    'm365-surface-commander',
+    parsed.VITE_GE_SURFACE_COMMANDER_SKILL_SHA256,
+  );
+  return out;
 }
 
 function agentIdFromResource(resource: string): string {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import type { DocBridge } from '@ge/runtime';
 import { POWERPOINT_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, PowerPointBridge } from './powerpoint-bridge.js';
@@ -12,6 +13,11 @@ describe('PowerPoint capability closure', () => {
   it('advertised actuation kinds === handled actuation kinds', () => {
     const advertised = new Set(POWERPOINT_CAPABILITIES.actuations.map((a) => a.kind));
     expect(advertised).toEqual(new Set(HANDLED_ACTUATIONS));
+  });
+
+  it('advertised actuation kinds === registry implemented PowerPoint capabilities', () => {
+    const advertised = new Set(POWERPOINT_CAPABILITIES.actuations.map((a) => a.kind));
+    expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('powerpoint')));
   });
 
   it('does NOT advertise the previously-phantom set-speaker-notes', () => {

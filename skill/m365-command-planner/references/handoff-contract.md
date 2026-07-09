@@ -32,7 +32,9 @@ roles.
 - Use `context` only when bounded host reads are insufficient and the planner supplied hints such as
   `full-scope`, `upload-preferred`, `analytical`, or `code-execution-preferred`.
 - Convert each approved `step` into the smallest host command set that is available on the active
-  surface.
+  surface. Use the live capability manifest and registry-backed targeted help before inventing a
+  sequence; a planner step like "materialize one rectangular grid" should compile to the bulk grid
+  path when available, not many per-cell approvals.
 - Respect every `exclude` line as a hard boundary.
 - For cross-surface plans, execute only the phase whose surface matches the active host. The output
   of a source phase is a handoff packet, not a write into another Office app.

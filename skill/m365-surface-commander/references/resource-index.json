@@ -144,6 +144,24 @@
     "load_when": "The active surface is Excel or a plan mentions ranges, formulas, tables, charts, or workbook analysis."
   },
   {
+    "path": "references/generated-capability-catalog.md",
+    "title": "Generated Capability Catalog",
+    "kind": "generated-reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[generated, capabilities, registry, office-js]",
+    "load_when": "Checking generated capability metadata, registry status, requirement sets, or capability-specific playbooks."
+  },
+  {
+    "path": "references/generated-command-catalog.md",
+    "title": "Generated Command Catalog",
+    "kind": "generated-reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[generated, commands, cli, help]",
+    "load_when": "Checking generated command syntax, command playbooks, or the CLI help surface."
+  },
+  {
     "path": "references/onenote-semantics.md",
     "title": "OneNote Semantics",
     "kind": "reference",

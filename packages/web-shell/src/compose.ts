@@ -6,7 +6,19 @@ import type {
   GeminiWidgetConfig,
   WifConfig,
 } from '@ge/gemini-client';
-import { StreamAssistClient, WifTokenClient } from '@ge/gemini-client';
+import {
+  StreamAssistClient,
+  WifTokenClient,
+  ensureSkillAgent,
+  listAvailableAgentViews,
+  listEngineDataStores,
+} from '@ge/gemini-client';
+import type {
+  AgentView,
+  EngineDataStore,
+  EnsureSkillInput,
+  EnsureSkillResult,
+} from '@ge/gemini-client';
 import { AssistSession } from '@ge/runtime';
 import type { AuthClient, DocBridge } from '@ge/runtime';
 import type { TriggerRegistry } from '@ge/triggers';
@@ -46,12 +58,34 @@ export interface ComposeOptions {
   /** Resume a prior session (persisted in host metadata) so constructed context survives. */
   resumeSessionId?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Boot-time skill provisioning ("warm-up"): the add-in ensures its own skill agents exist and
+   * match, using the signed-in user's WIF token — no out-of-band admin/widget step (ADR-0001).
+   * Idempotent and best-effort: a cheap GetAgent per skill, writing only on drift; a failure is
+   * captured in `ComposedSession.warmUp`, never thrown, so provisioning can't block chat.
+   */
+  warmUpSkills?: EnsureSkillInput[];
+  /** Billing/quota project for warm-up calls when the WIF token doesn't carry one. */
+  warmUpQuotaProject?: string;
+  /**
+   * Discover, at boot, the agents/skills available to the user (`:listAvailableAgentViews`) and the
+   * federated data stores attached to the engine (`engines.get` → `dataStoreIds`), for the skill/
+   * data-store pickers. WIF-authenticated, no widget, no admin grant. Best-effort — failures are
+   * swallowed and the corresponding list is empty; never blocks the session.
+   */
+  discoverCatalog?: boolean;
 }
 
 export interface ComposedSession {
   session: AssistSession;
   tokens: WifTokenClient;
   client: StreamAssistClient;
+  /** Result of boot-time skill provisioning, one entry per `warmUpSkills` input (empty if none). */
+  warmUp: Array<EnsureSkillResult | { action: 'error'; agentId: string; error: string }>;
+  /** Agents/skills available to the user (empty unless `discoverCatalog`). Source for the skill picker. */
+  availableAgents: AgentView[];
+  /** Federated data stores on the engine (empty unless `discoverCatalog`). Source for the data-store picker. */
+  availableDataStores: EngineDataStore[];
 }
 
 /**
@@ -86,6 +120,44 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     opts.fetchImpl,
   );
 
+  // Warm-up: self-provision skill agents as the signed-in user (best-effort, idempotent).
+  const warmUp: ComposedSession['warmUp'] = [];
+  for (const skill of opts.warmUpSkills ?? []) {
+    try {
+      warmUp.push(
+        await ensureSkillAgent({ assistant: config.assistant }, skill, {
+          tokens,
+          ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+          ...(opts.warmUpQuotaProject ? { quotaProject: opts.warmUpQuotaProject } : {}),
+        }),
+      );
+    } catch (err) {
+      warmUp.push({
+        action: 'error',
+        agentId: skill.agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Catalog discovery (best-effort): what the user can mount (skills) and ground on (data stores).
+  let availableAgents: AgentView[] = [];
+  let availableDataStores: EngineDataStore[] = [];
+  if (opts.discoverCatalog) {
+    const dsOpts = {
+      tokens,
+      ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+      ...(opts.warmUpQuotaProject ? { quotaProject: opts.warmUpQuotaProject } : {}),
+    };
+    const cfg = { assistant: config.assistant };
+    const [agentsRes, storesRes] = await Promise.allSettled([
+      listAvailableAgentViews(cfg, dsOpts),
+      listEngineDataStores(cfg, { ...dsOpts, enrich: false }),
+    ]);
+    if (agentsRes.status === 'fulfilled') availableAgents = agentsRes.value;
+    if (storesRes.status === 'fulfilled') availableDataStores = storesRes.value;
+  }
+
   const session = new AssistSession(bridge, client, {
     unit,
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
@@ -99,5 +171,5 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
       : {}),
   });
 
-  return { session, tokens, client };
+  return { session, tokens, client, warmUp, availableAgents, availableDataStores };
 }

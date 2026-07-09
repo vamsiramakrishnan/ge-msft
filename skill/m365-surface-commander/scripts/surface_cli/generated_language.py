@@ -13,6 +13,7 @@ from parse_commands import (  # noqa: E402
     EFFECT_VERBS,
     ACTUATION_KINDS,
     COMMAND_HELP,
+    CAPABILITY_REGISTRY,
     LANGUAGE_VERSION,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "EFFECT_VERBS",
     "ACTUATION_KINDS",
     "COMMAND_HELP",
+    "CAPABILITY_REGISTRY",
     "LANGUAGE_VERSION",
 ]

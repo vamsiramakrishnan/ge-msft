@@ -25,9 +25,9 @@
  *   GE_TIME_ZONE=Australia/Melbourne
  *
  * Usage:
- *   node scripts/streamassist-code-exec-probe.mjs
- *   node scripts/streamassist-code-exec-probe.mjs --widget --require-code table followup
- *   node scripts/streamassist-code-exec-probe.mjs --dry-run
+ *   bun scripts/streamassist-code-exec-probe.mjs
+ *   bun scripts/streamassist-code-exec-probe.mjs --widget --require-code table followup
+ *   bun scripts/streamassist-code-exec-probe.mjs --dry-run
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';

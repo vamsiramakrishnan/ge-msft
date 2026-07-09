@@ -17,11 +17,45 @@ origin listed in the manifest.
 Use port `13000` for the remote workstation flow:
 
 ```bash
-GE_DEV_PORT=13000 npm run dev -w packages/web-shell -- --host 0.0.0.0 --port 13000
+GE_DEV_PORT=13000 bun run --filter @ge/web-shell dev -- --host 0.0.0.0 --port 13000
 ```
 
 For local desktop-only testing you can use localhost HTTPS, but a remote browser or Office on the web
 needs a public HTTPS origin.
+
+## One-command Dev Restart
+
+Use the `mise` task when the tunnel hostname changes. It restarts Vite, starts a fresh Cloudflare
+quick tunnel, writes the new `GE_DEV_WEB_ORIGIN` and `GE_DEV_WEB_DOMAIN` into
+`packages/web-shell/.env`, regenerates the development manifests, packages the XML files, and patches
+the Entra app registration SPA redirect URI:
+
+```bash
+mise run ge:dev:tunnel
+```
+
+Developer sideload and dev bootstrap use the same flow by default:
+
+```bash
+bun run sideload
+bun run bootstrap:dev
+```
+
+Those commands refresh the tunnel before packaging so the installed manifest points at the live
+Cloudflare origin. Use `bun run sideload -- --skip-tunnel` only when you intentionally want to reuse
+the existing manifest origin.
+
+Useful variants:
+
+```bash
+scripts/dev-tunnel-entra.sh --skip-entra
+scripts/dev-tunnel-entra.sh --port 13001
+scripts/dev-tunnel-entra.sh --keep-stale-redirects
+```
+
+If Azure CLI is not signed in, the script prints the exact `az login` command to run. By default it
+removes stale `https://*.trycloudflare.com/auth-redirect.html` entries and preserves non-Cloudflare
+redirect URIs.
 
 ## Cloudflare Quick Tunnel
 

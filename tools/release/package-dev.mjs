@@ -52,7 +52,7 @@ for (const { surface, path } of officeXmlManifests) {
   }
 }
 if (!existsSync(web)) {
-  console.error(`Built web shell missing: ${web}. Run npm run build first.`);
+  console.error(`Built web shell missing: ${web}. Run bun run build first.`);
   process.exit(1);
 }
 for (const icon of requiredIcons) {
@@ -89,7 +89,7 @@ const releaseNotes = [
   'Companion package: OneNote legacy XML manifest',
   '',
   'This package is for local/end-to-end development and is not a production alpha artifact.',
-  'Run the web shell with `npm run dev -w packages/web-shell` while sideloading this package.',
+  'Run the web shell with `bun run --filter @ge/web-shell dev` while sideloading this package.',
   '',
 ].join('\n');
 writeFileSync(join(outDir, 'README.md'), releaseNotes);

@@ -16,6 +16,70 @@ content hash. A surface-agnostic core is written once and reused across thin per
 
 ---
 
+## Start Here
+
+Use Bun for repo operations. The short version:
+
+```bash
+bun install
+bun run setup:doctor
+bun run --filter @ge/web-shell preview
+```
+
+Pick the lane you need:
+
+| Goal | Command | Deeper doc |
+| --- | --- | --- |
+| See the sidepane without Office | `bun run --filter @ge/web-shell preview` | [Web-shell UI notes](packages/web-shell/UI.md) |
+| Check workstation readiness | `bun run setup:doctor` | [Readiness guide](setup/00-readiness.md) |
+| Guided setup/login/package flow | `bun run setup:guide` | [Setup guide](setup/README.md) |
+| Start dev tunnel and sync Entra redirect | `bun run ge:dev:tunnel` | [Dev server and tunnel](setup/02-dev-server-and-tunnel.md) |
+| Build/package only | `bun run setup:package` | [Manifests and packages](setup/03-manifests-and-packages.md) |
+| Automated developer sideload of unified package | `bun run sideload` | [Sideloading](setup/04-sideloading.md) |
+| Safe dev bootstrap, no tenant/catalog mutation | `bun run bootstrap:dev` | [Readiness bootstrap](setup/00-readiness.md#one-shot-bootstrap) |
+| Release dry-run with stable profile validation | `bun run bootstrap:release:dry-run` | [Deployment matrix](setup/07-deployment-methods-matrix.md#one-shot-bootstrap) |
+| Release/catalog upsert | `bun run bootstrap:release` | [Tenant deployment](setup/06-tenant-deployment.md) |
+| Sync Entra SPA redirect only | `bun run entra:sync:release` | [Entra SPA redirect sync](setup/06-tenant-deployment.md#entra-spa-redirect-sync) |
+| Manage Gemini Enterprise skills | `bun run ge:skills` | [Skill tooling](skill/README.md) |
+
+Current release naming:
+
+- `bootstrap:dev` uses the `development` profile and does **not** upload to tenant/catalog.
+- `bootstrap:dev:sideload` builds the development unified package and installs it for the current
+  developer with Agents Toolkit.
+- `bootstrap:release` / `bootstrap:prod` use the current production-like profile:
+  `internal-alpha-word-excel`.
+- Release profile generation requires stable `GE_ALPHA_*` values. It intentionally rejects
+  placeholder IDs, localhost, and example domains.
+
+The hosted origin is just where Office downloads the web app from. It is not a new backend unless we
+choose to add server endpoints:
+
+```text
+Office manifest/package
+  -> loads https://<host>/taskpane.html inside Office WebView
+  -> taskpane calls Office.js for document actions
+  -> taskpane calls Gemini Enterprise StreamAssist over HTTPS
+```
+
+For the hosting decision, read [Hosting origin and release flow](setup/08-hosting-origin-and-release.md).
+
+---
+
+## Sidepane demos
+
+These GIFs are generated from the real taskpane preview harness, not separate marketing mocks. Run
+`bun run docs:gifs` after UI changes to refresh every surface. On a fresh Linux workstation, run
+`bun run docs:gifs:install` once if Playwright reports missing browser dependencies.
+
+| Word | Excel | PowerPoint |
+| --- | --- | --- |
+| ![Word Gemini Enterprise sidepane](docs/assets/readme/sidepanes/word.gif) | ![Excel Gemini Enterprise sidepane](docs/assets/readme/sidepanes/excel.gif) | ![PowerPoint Gemini Enterprise sidepane](docs/assets/readme/sidepanes/powerpoint.gif) |
+| Outlook | OneNote | Teams |
+| ![Outlook Gemini Enterprise sidepane](docs/assets/readme/sidepanes/outlook.gif) | ![OneNote Gemini Enterprise sidepane](docs/assets/readme/sidepanes/onenote.gif) | ![Teams Gemini Enterprise sidepane](docs/assets/readme/sidepanes/teams.gif) |
+
+---
+
 ## Architecture
 
 ### The layered stack
@@ -210,68 +274,67 @@ contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*`
 ## Commands
 
 ```bash
-npm install                              # install all workspaces
-npm run dev -w packages/web-shell        # run the task-pane dev server (HTTPS; needs a host to sideload)
-npm run preview -w packages/web-shell    # see the panel in a plain browser, NO Office host (scripted fixtures)
-npm run build                            # build all workspaces
-npm run typecheck                        # tsc -b across workspaces
-npm run test                             # vitest across workspaces
-npm run lint                             # eslint + prettier check
+bun install                              # install all workspaces
+bun run --filter @ge/web-shell dev       # run the task-pane dev server (HTTPS; needs a host to sideload)
+bun run --filter @ge/web-shell preview   # see the panel in a plain browser, NO Office host (scripted fixtures)
+bun run docs:gifs:install                # first-time browser/dependency install for README GIF capture
+bun run docs:gifs                        # render README GIFs for Word/Excel/PPT/Outlook/OneNote/Teams
+bun run build                            # build all workspaces
+bun run typecheck                        # tsc -b across workspaces
+bun run test                             # vitest across workspaces
+bun run lint                             # eslint + prettier check
 ```
 
-`npm run preview` is the fastest way to *see* the product: it mounts the real `<App/>` over a fake
+`bun run preview` is the fastest way to *see* the product: it mounts the real `<App/>` over a fake
 `PanelController` driven by scripted fixtures, with a toolbar to switch surface and toggle every
 state (streamed message, citations, context chips, suggestions, run-steps, pending plan, pending
 write, proposals, error, busy) — no network, no host, fully clickable.
 
-Copy `.env.example` to `.env` for the engine/tenant config (project, location, engine id, optional
-`proxyUrl`) before running against a live engine.
+Copy `.env.example` to `.env` for the engine/tenant config before running against a live engine.
+For tenant setup, manifest generation, packaging, Cloudflare dev tunnels, stable hosting origins,
+and sideloading choices across web/desktop hosts, use the [setup guide](setup/README.md).
 
-For tenant setup, manifest generation, packaging, Cloudflare dev tunnels, and sideloading choices
-across web/desktop hosts, use the [setup guide](setup/README.md).
+### Dev, Sideload, Release
 
-### Development sideload loop
-
-For the remote-workstation flow we use a Vite server plus a public HTTPS tunnel, because Office
-loads the add-in from a web origin even though the add-in remains client-direct for auth and Gemini
-Enterprise calls.
+Development tunnel and Entra redirect sync:
 
 ```bash
-npm run dev -w packages/web-shell -- --host 0.0.0.0 --port 13000
-cloudflared tunnel --url http://localhost:13000
+bun run ge:dev:tunnel
 ```
 
-Set the generated tunnel as the development origin in `packages/web-shell/.env`:
+Safe dev bootstrap:
 
 ```bash
-GE_DEV_PORT=13000
-GE_DEV_WEB_ORIGIN=https://<name>.trycloudflare.com
+bun run bootstrap:dev
 ```
 
-Then regenerate the development manifests and package:
+Automated developer sideload of the unified package:
 
 ```bash
-npm run manifests:generate -- --profile development
-npm run manifests:validate -- --profile development
-npm run package:dev
+bun run sideload
+bun run sideload:status
+bun run sideload:uninstall
 ```
 
-To cross-check current Gemini Enterprise skill wiring against the live StreamAssist widget API,
-refresh `/tmp/ge-widget.env` from a browser-authenticated GE session and run:
+Release dry-run and release/catalog upsert:
 
 ```bash
-npm run test:streamassist:live
+bun run bootstrap:release:dry-run
+bun run bootstrap:release
 ```
 
-Or let the test preflight guide the browser login/request-capture refresh first:
+Release wiring is profile-aware:
 
-```bash
-npm run test:streamassist:live:login
+```text
+GE_ALPHA_* release config
+  -> build web shell
+  -> generate + validate release manifest
+  -> package dist/release/internal-alpha-word-excel-v<version>.zip
+  -> sync https://GE_ALPHA_WEB_DOMAIN/auth-redirect.html into Entra SPA redirects
+  -> upsert the profile-specific zip through the Microsoft 365 catalog lane
 ```
 
-See [live StreamAssist integration tests](docs/api/discoveryengine/live-streamassist-tests.md).
-
-Office "Upload Add-in" dialogs expect host-specific XML manifests:
+Manual artifact paths, when needed:
 
 ```text
 dist/package/development/xml/word.manifest.xml
@@ -279,33 +342,29 @@ dist/package/development/xml/excel.manifest.xml
 dist/package/development/xml/powerpoint.manifest.xml
 dist/package/development/xml/outlook.manifest.xml
 dist/package/development/onenote/onenote.manifest.xml
-```
-
-The unified Microsoft 365 / Teams package is:
-
-```text
 dist/release/development-m365-v<version>.zip
+dist/release/internal-alpha-word-excel-v<version>.zip
 ```
 
-Whenever the tunnel hostname changes, add the exact SPA callback to the Entra app registration:
+Read [Sideloading](setup/04-sideloading.md), [Tenant deployment automation](setup/06-tenant-deployment.md),
+and [Deployment methods matrix](setup/07-deployment-methods-matrix.md) before changing rollout lanes.
 
-```text
-https://<name>.trycloudflare.com/auth-redirect.html
-```
+### Live StreamAssist Tests
 
-This repo includes a small persistent Azure CLI wrapper for that maintenance path:
+To cross-check current Gemini Enterprise skill wiring against the live StreamAssist widget API,
+refresh `/tmp/ge-widget.env` from a browser-authenticated GE session and run:
 
 ```bash
-./bin/az account show
-./bin/az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications(appId='<client-id>')"
+bun run test:streamassist:live
 ```
 
-`./bin/az` uses the repo-local `.venv-az` install and `.azure` cache directory. Both are ignored;
-the wrapper is the only part intended for source control. If the cache expires, reauthenticate with:
+Or let the test preflight guide the browser login/request-capture refresh first:
 
 ```bash
-./bin/az login --tenant <tenant-id-or-domain> --use-device-code
+bun run test:streamassist:live:login
 ```
+
+See [live StreamAssist integration tests](docs/api/discoveryengine/live-streamassist-tests.md).
 
 ### Task pane UX direction
 
@@ -325,8 +384,8 @@ AI-chat dashboard. The important changes are:
 
 ## Status — what's built
 
-Verification baseline: `npm run typecheck` clean · **1538 tests across 128 files green** (Vitest) ·
-`npm run lint` clean.
+Verification baseline: `bun run typecheck` clean · **1538 tests across 128 files green** (Vitest) ·
+`bun run lint` clean.
 
 - **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —
   each with an advertised-equals-handled capability set, conformance-enforced per ADR-0006.
@@ -381,8 +440,23 @@ The ADRs are the current architecture, in order - each builds on the last.
 ## Docs index
 
 - **Architecture (current):** the ADRs above - start there.
-- `setup/` — tenant prerequisites, Entra/WIF configuration, dev tunnel setup, manifest/package
-  generation, sideloading paths, and debugging.
+- **Operator setup and release:**
+  - [Setup guide](setup/README.md) — the top-level runbook.
+  - [Readiness and guided setup](setup/00-readiness.md) — doctor, prereqs, login, bootstrap lanes.
+  - [Prerequisites and config](setup/01-prerequisites-and-config.md) — Entra, WIF, environment keys.
+  - [Development server and Cloudflare tunnel](setup/02-dev-server-and-tunnel.md) — local Vite,
+    tunnel, manifest regeneration, Entra redirect sync.
+  - [Manifest generation and packages](setup/03-manifests-and-packages.md) — development and release
+    artifacts.
+  - [Sideloading](setup/04-sideloading.md) — XML sideload, unified package sideload, Agents Toolkit
+    install/uninstall.
+  - [Debugging](setup/05-debugging.md) — auth, host, tunnel, and Office cache issues.
+  - [Tenant deployment automation](setup/06-tenant-deployment.md) — Centralized Deployment,
+    catalog upload, Entra SPA redirect sync.
+  - [Deployment methods matrix](setup/07-deployment-methods-matrix.md) — XML vs unified package vs
+    catalog vs sideload.
+  - [Hosting origin and release flow](setup/08-hosting-origin-and-release.md) — Cloudflare, GCS/CDN,
+    App Engine, Cloud Run, and why Office needs a stable HTTPS origin.
 - `docs/bootstrap-live-validation.md` — first live slice for SharePoint-backed tenant config.
 - `docs/wif-iam-scoping.md` — WIF provider and Google IAM scoping guardrails for tenant config.
 - `docs/STATUS.md` — the honest "what's built / what's deferred" inventory.

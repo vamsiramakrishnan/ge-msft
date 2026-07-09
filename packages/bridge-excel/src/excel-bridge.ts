@@ -89,16 +89,14 @@ export class ExcelBridge implements DocBridge {
 
       const refs: ContextRef[] = [];
       const selValues = sel.values as string[][];
-      if (hasContent(selValues)) {
-        refs.push({
-          id: `xl:${sel.address}`,
-          kind: 'range',
-          surface: 'excel',
-          title: sel.address,
-          preview: previewOf(selValues),
-          live: true,
-        });
-      }
+      refs.push({
+        id: `xl:${sel.address}`,
+        kind: 'range',
+        surface: 'excel',
+        title: sel.address,
+        preview: hasContent(selValues) ? previewOf(selValues) : 'Blank selection',
+        live: true,
+      });
       for (const { name, range } of tableRanges) {
         refs.push({
           id: `xl:table:${name}`,

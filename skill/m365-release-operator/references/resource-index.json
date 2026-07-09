@@ -1,0 +1,29 @@
+[
+  {
+    "path": "references/command-runbook.md",
+    "title": "Command Runbook",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[bun, bootstrap, sideload, release, skills, entra, catalog]",
+    "load_when": "Exact local commands are needed for setup, dev tunnels, sideloading, release, Entra sync, catalog upload, or skill provisioning."
+  },
+  {
+    "path": "references/interactive-copy-paste.md",
+    "title": "Interactive Copy-Paste",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[copy-paste, curl, har, widget-token, auth, secrets]",
+    "load_when": "The task needs a browser-authenticated widget request, pasted cURL/HAR, device-code login, or another interactive user handoff."
+  },
+  {
+    "path": "references/release-safety.md",
+    "title": "Release Safety",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[safety, approval, tenant, entra, catalog, skills, secrets]",
+    "load_when": "A live command may mutate Entra, Microsoft 365 tenant/catalog state, Gemini Enterprise skills, deployment state, or local credentials."
+  }
+]

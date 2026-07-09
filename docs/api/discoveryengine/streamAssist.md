@@ -1,7 +1,7 @@
 
 # StreamAssist — the streaming grounded assistant
 
-The primary chat/grounding entry point. The assistant (agents, Model Armor, grounding data stores) is configured **in the Gemini Enterprise engine** — the client only sends a query + optional session + tool/grounding scope. Note: in `v1alpha` there is **no** `agentsSpec` field on the request (the known agent-id bug is avoided by configuring routing on the assistant). The response streams as chunked JSON objects; accumulate `answer.replies[].groundedContent.content.text` for tokens and read `...textGroundingMetadata.references[]` for citations.
+The primary chat/grounding entry point. The assistant (agents, Model Armor, grounding data stores) is configured **in the Gemini Enterprise engine** — the client sends a query + optional session + tool/grounding scope. The current public RPC reference includes `agentsSpec`, but this add-in's verified private-skill routing uses `skillsSpec.skills[].name` plus a `mention://` marker as described in `skills-and-agents.md` and `widget-service-skills.md`. The response streams as chunked JSON objects; accumulate `answer.replies[].groundedContent.content.text` for tokens and read `...textGroundingMetadata.references[]` for citations.
 
 ## streamAssist
 
@@ -134,4 +134,3 @@ Assist a query in streaming fashion.
         - **bannedPhrases** `array<string>` — The banned phrases that were found in the query or the answer.
   - **state** `enum` — enum: STATE_UNSPECIFIED, IN_PROGRESS, FAILED, SUCCEEDED, SKIPPED, CANCELLED — State of the answer generation.
 - **assistToken** `string` — A global unique ID that identifies the current pair of request and stream of responses. Used for feedback and support.
-

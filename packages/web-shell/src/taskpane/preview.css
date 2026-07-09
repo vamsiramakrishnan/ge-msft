@@ -133,3 +133,18 @@ body {
 .preview-frame .panel {
   height: 100%;
 }
+
+.preview-capture {
+  min-height: 0;
+  width: 392px;
+  padding: 16px;
+  overflow: hidden;
+}
+.preview-capture .preview-stage {
+  flex: none;
+  width: 360px;
+}
+.preview-capture .preview-frame {
+  max-height: none;
+  box-shadow: 0 18px 52px rgba(27, 28, 28, 0.18);
+}

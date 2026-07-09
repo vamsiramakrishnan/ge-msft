@@ -24,6 +24,7 @@ import json
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -43,12 +44,13 @@ def _load(module_name: str, filename: str):
 create_skill = _load("create_skill", "create_skill.py")
 update_skills = _load("update_skills", "update_skills.py")
 extract_widget_credentials = _load("extract_widget_credentials", "extract_widget_credentials.py")
+acquire_widget_token = _load("acquire_widget_token", "acquire_widget_token.py")
 
 
 def _fake_jwt(payload):
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return f"header.{encoded}.signature"
+    return f"eyJhbGciOiJIUzI1NiJ9.{encoded}.signaturetoken"
 
 
 class _FakeResponse:
@@ -243,6 +245,176 @@ class TestBatchSkillUpdater(unittest.TestCase):
                 update_skills.main(["--live"])
             self.assertIn("--upload-existing", str(cm.exception))
 
+    def test_batch_widget_list_live_uses_widget_catalog(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with mock.patch.object(create_skill, "session") as sess_factory:
+                rec = _RecordingSession(
+                    {
+                        "listAvailableAgentViewsResponse": {
+                            "agentViews": [{"name": "175", "displayName": "Planner"}]
+                        }
+                    }
+                )
+                sess_factory.return_value = rec
+                code = update_skills.main(["--live", "--list"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(rec.calls), 1)
+        self.assertIn("widgetListAvailableAgentViews", rec.calls[0][1])
+
+    def test_widget_target_matching_uses_stable_skill_names_not_stale_ids(self):
+        bundle = update_skills.SkillBundle(
+            agent_id="8870098647237058037",
+            zip_path=HERE / "m365-surface-commander.zip",
+            display_name="M365 Surface Commander",
+            description="",
+            env_key="VITE_GE_SURFACE_COMMANDER_SKILL",
+            label="m365-surface-commander",
+        )
+        views = [
+            {
+                "name": "17740242319846146292",
+                "displayName": "m365-surface-commander",
+            },
+            {
+                "name": "1029402962772330411",
+                "displayName": "M365 Surface Commander",
+            },
+            {
+                "name": "1755850963897266507",
+                "displayName": "m365-command-planner",
+            },
+        ]
+
+        matches = update_skills._matching_widget_views(bundle, views)
+
+        self.assertEqual(
+            [view["name"] for view in matches],
+            ["17740242319846146292", "1029402962772330411"],
+        )
+
+    def test_batch_only_accepts_stable_bundle_label(self):
+        selected = update_skills._select(["m365-surface-commander"])
+        self.assertEqual([bundle.label for bundle in selected], ["m365-surface-commander"])
+
+    def test_write_env_assignments_replaces_only_target_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(
+                "\n".join(
+                    [
+                        "VITE_GCP_PROJECT=saib-ai-playground",
+                        "VITE_GE_COMMAND_PLANNER_SKILL=old-planner",
+                        "SOME_SECRET=keep-me",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            update_skills._write_env_assignments(
+                path,
+                {
+                    "VITE_GE_COMMAND_PLANNER_SKILL": "m365-command-planner=projects/123/agents/new",
+                    "VITE_GE_SURFACE_COMMANDER_SKILL": "m365-surface-commander=projects/123/agents/new2",
+                },
+            )
+
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("VITE_GCP_PROJECT=saib-ai-playground", text)
+        self.assertIn("SOME_SECRET=keep-me", text)
+        self.assertIn(
+            "VITE_GE_COMMAND_PLANNER_SKILL=m365-command-planner=projects/123/agents/new",
+            text,
+        )
+        self.assertIn(
+            "VITE_GE_SURFACE_COMMANDER_SKILL=m365-surface-commander=projects/123/agents/new2",
+            text,
+        )
+
+    def test_updated_env_assignments_include_widget_config_but_not_bearer(self):
+        cfg = create_skill.LiveConfig(
+            project="p",
+            project_number="123",
+            engine="e",
+            location="global",
+        )
+        widget = create_skill.WidgetConfig(
+            config_id="33333333-3333-4333-8333-333333333333",
+            server_token="CAMSAh0H",
+        )
+        bundle = update_skills.SkillBundle(
+            agent_id="m365-command-planner",
+            zip_path=HERE / "m365-command-planner.zip",
+            display_name="M365 Command Planner",
+            description="",
+            env_key="VITE_GE_COMMAND_PLANNER_SKILL",
+            label="m365-command-planner",
+        )
+
+        assignments = update_skills._updated_env_assignments(
+            cfg,
+            widget,
+            [update_skills.UpdatedSkill(bundle, "176", bundle.zip_path)],
+        )
+
+        self.assertEqual(
+            assignments["VITE_GE_COMMAND_PLANNER_SKILL"],
+            "m365-command-planner=projects/123/locations/global/collections/default_collection/engines/e/assistants/default_assistant/agents/176",
+        )
+        self.assertEqual(assignments["VITE_GE_COMMAND_PLANNER_SKILL_VERSION"], "1.1")
+        self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256"], r"^[a-f0-9]{64}$")
+        self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SHA256"], r"^[a-f0-9]{64}$")
+        self.assertRegex(assignments["VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256"], r"^[a-f0-9]{64}$")
+        self.assertRegex(assignments["VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256"], r"^[a-f0-9]{64}$")
+        self.assertEqual(
+            assignments["VITE_GE_WIDGET_CONFIG_ID"],
+            "33333333-3333-4333-8333-333333333333",
+        )
+        self.assertEqual(assignments["VITE_GE_WIDGET_SERVER_TOKEN"], "CAMSAh0H")
+        self.assertNotIn("GE_WIDGET_BEARER_TOKEN", assignments)
+        self.assertNotIn("GE_WIDGET_BEARER_TOKEN_FILE", assignments)
+
+    def test_batch_widget_list_can_sync_current_env_without_replace(self):
+        env = {
+            **self.ENV,
+            "GE_WIDGET_SERVER_TOKEN": "CAMSAh0H",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with mock.patch.dict("os.environ", env, clear=True):
+                with mock.patch.object(create_skill, "session") as sess_factory:
+                    rec = _RecordingSession(
+                        {
+                            "listAvailableAgentViewsResponse": {
+                                "agentViews": [
+                                    {
+                                        "name": "15135346478580045234",
+                                        "displayName": "m365-surface-commander",
+                                    },
+                                    {
+                                        "name": "17644156643933695033",
+                                        "displayName": "m365-command-planner",
+                                    },
+                                ]
+                            }
+                        }
+                    )
+                    sess_factory.return_value = rec
+                    code = update_skills.main(["--live", "--list", "--write-env", str(env_path)])
+            text = env_path.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "VITE_GE_SURFACE_COMMANDER_SKILL=m365-surface-commander=projects/123/locations/global/collections/default_collection/engines/e/assistants/default_assistant/agents/15135346478580045234",
+            text,
+        )
+        self.assertIn(
+            "VITE_GE_COMMAND_PLANNER_SKILL=m365-command-planner=projects/123/locations/global/collections/default_collection/engines/e/assistants/default_assistant/agents/17644156643933695033",
+            text,
+        )
+        self.assertIn("VITE_GE_WIDGET_SERVER_TOKEN=CAMSAh0H", text)
+        self.assertNotIn("VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256", text)
+        self.assertNotIn("VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256", text)
+
 
 # ---------------------------------------------------------------------------
 # 3) Requests carry timeouts + raise_for_status; retry wrapper is bounded.
@@ -347,26 +519,161 @@ class TestRequestHardening(unittest.TestCase):
         with mock.patch.dict("os.environ", env, clear=True):
             cfg = create_skill.resolve_live_config()
             widget = create_skill.resolve_widget_config()
-            rec = _SequenceSession(
-                [
-                    _FakeResponse(
-                        status_code=400,
-                        content=(
-                            b'{"error":{"message":"Invalid JSON payload received. Unknown name '
-                            b'\\"deleteAgentRequest\\": Cannot find field."}}'
-                        ),
-                    ),
-                    _FakeResponse(payload={}),
-                ]
-            )
+            rec = _RecordingSession({})
             resp = create_skill.delete_widget_agent(rec, cfg, widget, "8870098647237058037")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(rec.calls), 2)
-        verb, url, kw = rec.calls[1]
+        self.assertEqual(len(rec.calls), 1)
+        verb, url, kw = rec.calls[0]
         self.assertEqual(verb, "POST")
         self.assertIn("content-discoveryengine.googleapis.com", url)
         self.assertIn("widgetDeleteAgent", url)
         self.assertEqual(kw["json"]["name"], "8870098647237058037")
+
+    def test_widget_list_available_agent_views_uses_skill_filter(self):
+        env = {
+            **self.ENV,
+            "GE_WIDGET_CONFIG_ID": "33333333-3333-4333-8333-333333333333",
+        }
+        with mock.patch.dict("os.environ", env, clear=True):
+            cfg = create_skill.resolve_live_config()
+            widget = create_skill.resolve_widget_config()
+            rec = _RecordingSession(
+                {
+                    "listAvailableAgentViewsResponse": {
+                        "agentViews": [
+                            {
+                                "name": "17573173582293271726",
+                                "displayName": "m365-command-planner",
+                            }
+                        ]
+                    }
+                }
+            )
+            views = create_skill.list_widget_agent_views(rec, cfg, widget, agent_origin="USER")
+        self.assertEqual(views[0]["name"], "17573173582293271726")
+        verb, url, kw = rec.calls[0]
+        self.assertEqual(verb, "POST")
+        self.assertIn("widgetListAvailableAgentViews", url)
+        req = kw["json"]["listAvailableAgentViewsRequest"]
+        self.assertEqual(req["filter"], "agent_type = SKILL_AGENT")
+        self.assertEqual(req["agentOrigin"], "USER")
+
+    def test_widget_skill_reference_helpers_match_send_time_contract(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            cfg = create_skill.resolve_live_config()
+        resource = create_skill.widget_skill_resource_name(cfg, "17573173582293271726")
+        self.assertEqual(resource, f"{cfg.assistant}/agents/17573173582293271726")
+        self.assertEqual(
+            create_skill.widget_skill_env_value("m365-command-planner", cfg, "17573173582293271726"),
+            f"m365-command-planner={cfg.assistant}/agents/17573173582293271726",
+        )
+        self.assertEqual(
+            create_skill.widget_skill_mention("m365-command-planner", "17573173582293271726"),
+            "[m365-command-planner](mention://?uri=17573173582293271726)",
+        )
+
+    def test_stamped_skill_zip_records_upload_provenance_without_mutating_source(self):
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            cfg = create_skill.resolve_live_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "m365-surface-commander.zip"
+            original_skill = (
+                "---\n"
+                "name: m365-surface-commander\n"
+                "metadata:\n"
+                "  version: '1.1'\n"
+                "---\n"
+                "# Skill\n"
+            )
+            with zipfile.ZipFile(source, "w") as zf:
+                zf.writestr("SKILL.md", original_skill)
+                zf.writestr("references/help.md", "help")
+
+            stamped = create_skill.stamped_skill_zip(
+                source,
+                cfg,
+                "15135346478580045234",
+                label="m365-surface-commander",
+            )
+
+            with zipfile.ZipFile(source) as zf:
+                self.assertEqual(zf.read("SKILL.md").decode("utf-8"), original_skill)
+            with zipfile.ZipFile(stamped) as zf:
+                stamped_skill = zf.read("SKILL.md").decode("utf-8")
+                self.assertEqual(zf.read("references/help.md").decode("utf-8"), "help")
+
+        self.assertIn("x-ge-msft-upload:", stamped_skill)
+        self.assertIn("buildId: 'm365-surface-commander@15135346478580045234+", stamped_skill)
+        self.assertIn("agentId: '15135346478580045234'", stamped_skill)
+        self.assertIn(f"resource: '{cfg.assistant}/agents/15135346478580045234'", stamped_skill)
+        self.assertRegex(stamped_skill, r"sourceZipSha256: '[a-f0-9]{64}'")
+        self.assertIn("sourceVersion: '1.1'", stamped_skill)
+
+    def test_widget_acquire_access_token_payload_is_documented_shape(self):
+        cfg = acquire_widget_token.AcquireProbeConfig(
+            location="global",
+            config_id="33333333-3333-4333-8333-333333333333",
+            connector_name=(
+                "projects/123/locations/global/collections/"
+                "msft-onedrive-fed_1779469629030/dataConnector"
+            ),
+            scope="User.Read",
+            action="search",
+        )
+        payload = acquire_widget_token.widget_acquire_access_token_payload(cfg)
+        self.assertEqual(payload["location"], "locations/global")
+        self.assertEqual(payload["configId"], cfg.config_id)
+        self.assertEqual(payload["additionalParams"]["token"], "-")
+        self.assertEqual(payload["additionalParams"]["origin"], "ORIGIN_UNSPECIFIED")
+        self.assertEqual(payload["acquireAccessTokenRequest"]["name"], cfg.connector_name)
+        self.assertEqual(payload["acquireAccessTokenRequest"]["scope"], "User.Read")
+        self.assertEqual(payload["acquireAccessTokenRequest"]["action"], "search")
+
+    def test_widget_acquire_access_token_probe_redacts_and_classifies_utoken(self):
+        widget_token = _fake_jwt(
+            {
+                "iss": "https://vertexaisearch.cloud.google",
+                "aud": "https://content-discoveryengine.googleapis.com",
+                "sub": "csesidx/123",
+                "exp": 4102444800,
+            }
+        )
+        cfg = acquire_widget_token.AcquireProbeConfig(
+            location="global",
+            config_id="33333333-3333-4333-8333-333333333333",
+            connector_name="projects/123/locations/global/collections/c/dataConnector",
+            server_token="CAMSAh0H",
+        )
+        rec = _RecordingSession(
+            {
+                "uToken": widget_token,
+                "acquireAccessTokenResponse": {"accessToken": "ya29.connector-token"},
+            }
+        )
+        resp = acquire_widget_token.widget_acquire_access_token(
+            rec,
+            cfg,
+            google_oauth_token="ya29.oauth",
+            host="content",
+            quota_project="saib-ai-playground",
+        )
+        self.assertEqual(resp.status_code, 200)
+        verb, url, kw = rec.calls[0]
+        self.assertEqual(verb, "POST")
+        self.assertIn("content-discoveryengine.googleapis.com", url)
+        self.assertIn("widgetAcquireAccessToken", url)
+        self.assertEqual(kw["headers"]["Authorization"], "Bearer ya29.oauth")
+        self.assertEqual(kw["headers"]["x-server-token"], "CAMSAh0H")
+        self.assertEqual(kw["headers"]["x-goog-user-project"], "saib-ai-playground")
+        self.assertEqual(kw["json"]["configId"], cfg.config_id)
+        diagnostics = acquire_widget_token.response_diagnostics(resp)
+        self.assertTrue(diagnostics["uToken"]["isWidgetBearer"])
+        self.assertEqual(diagnostics["connectorAccessToken"]["kind"], "opaque")
+        self.assertNotIn(widget_token, json.dumps(diagnostics))
+        self.assertIn(
+            "<redacted-token>",
+            acquire_widget_token.redact_secrets(f"Authorization: Bearer {widget_token}"),
+        )
 
     def test_widget_zip_upload_uses_resumable_protocol(self):
         with mock.patch.dict("os.environ", self.ENV, clear=True):

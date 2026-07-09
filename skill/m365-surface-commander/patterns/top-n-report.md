@@ -19,6 +19,8 @@ turn's actual algebra — never treat the pattern name as a verb.
 - the source supports `read`;
 - the target supports `spill`;
 - optionally `table` / `chart` are in this turn's signature.
+- if the workbook is too large or the measure/grouping is ambiguous, request
+  `context analytical full-scope upload-preferred code-execution-preferred` before deriving rows.
 
 **Pure core (OBSERVE → DERIVE)**
 
@@ -55,6 +57,12 @@ done
 
 **Failure rule:** `table`/`chart` depend on `spill`. If the `spill` is rejected at approval, the
 dependent effects are skipped — they have nothing to bind to.
+
+**Advanced Excel variants:** `/sort-range` and `/filter-range` mutate the source range; they are not
+the right tool for a top-N report unless the user explicitly asked to sort/filter the worksheet in
+place and those slash capabilities are advertised this turn. `/insert-pivot` may be the right native
+artifact for a pivot-table request, but only after the source table/range and measures are confirmed;
+otherwise keep the pure `read | filter | sort | head | spill` flow.
 
 **Anti-patterns**
 

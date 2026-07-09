@@ -27,6 +27,11 @@ import {
   type UploadedContextFile,
   type ContextFileMetadata,
 } from './context-files.js';
+import {
+  ConversationClient,
+  type ConversationListResult,
+  type ConversationSession,
+} from './sessions.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
 export interface TokenSource {
@@ -100,6 +105,22 @@ export class StreamAssistClient {
   ): Promise<{ files: ContextFileMetadata[] }> {
     return new ContextFileClient(this.tokens, this.config, this.fetchImpl).listContextFiles(
       session,
+      opts,
+    );
+  }
+
+  async listConversations(
+    opts: { pageSize?: number; pageToken?: string; signal?: AbortSignal } = {},
+  ): Promise<ConversationListResult> {
+    return new ConversationClient(this.tokens, this.config, this.fetchImpl).listConversations(opts);
+  }
+
+  async getConversation(
+    sessionIdOrName: string,
+    opts: { includeAnswerDetails?: boolean; signal?: AbortSignal } = {},
+  ): Promise<ConversationSession> {
+    return new ConversationClient(this.tokens, this.config, this.fetchImpl).getConversation(
+      sessionIdOrName,
       opts,
     );
   }
@@ -187,10 +208,12 @@ export class StreamAssistClient {
         for (const ref of references) {
           const dm = ref.documentMetadata;
           if (!dm) continue;
+          const excerpt = ref.content ? truncateExcerpt(ref.content) : undefined;
           const source: SourceRef = {
             title: dm.title ?? dm.uri ?? dm.domain ?? 'Source',
             ...(dm.uri ? { uri: dm.uri } : {}),
             ...(dm.pageIdentifier ? { locator: dm.pageIdentifier } : {}),
+            ...(excerpt ? { excerpt } : {}),
           };
           const key = source.uri ?? `${source.title}#${source.locator ?? ''}`;
           if (!citations.has(key)) {
@@ -238,7 +261,7 @@ export class StreamAssistClient {
       agentId: agentId(this.config, invokedSkills),
       identity: this.config.identity ?? 'unknown',
       timestamp: new Date().toISOString(),
-      sources: [...citations.values()],
+      sources: [...citations.values()].map(provenanceSource),
       contentHash: await contentHash(accumulated),
       ...(session ? { sessionId: asSessionId(session) } : {}),
     };
@@ -313,11 +336,46 @@ function citationSourceToRef(
   const title = source.title ?? dm?.title ?? source.uri ?? dm?.uri ?? dm?.domain;
   const uri = source.uri ?? dm?.uri;
   const locator = dm?.pageIdentifier;
+  const excerpt = byIndex?.content ? truncateExcerpt(byIndex.content) : undefined;
   if (!title && !uri) return undefined;
   return {
     title: title ?? uri ?? 'Source',
     ...(uri ? { uri } : {}),
     ...(locator ? { locator } : {}),
+    ...(excerpt ? { excerpt } : {}),
+  };
+}
+
+/**
+ * Grounding chunk text is untrusted source content. Collapse whitespace to one line, strip
+ * non-printing control/format characters — bidi overrides + zero-width joiners that could visually
+ * reorder or spoof the quote ("Trojan Source" style; security review, Finding 2) — and cap the length
+ * so a citation peek stays bounded. Returns undefined for empty/whitespace input. The client renders
+ * it as inert text — this is data, never instructions.
+ */
+const MAX_EXCERPT_CHARS = 300;
+export function truncateExcerpt(raw: string): string | undefined {
+  const text = raw
+    .replace(/\s+/g, ' ') // collapse all whitespace (incl. newlines/tabs) to single spaces first
+    .replace(/[\p{Cc}\p{Cf}]/gu, '') // then drop remaining control/format chars (bidi, zero-width)
+    .trim();
+  if (!text) return undefined;
+  return text.length > MAX_EXCERPT_CHARS
+    ? `${text.slice(0, MAX_EXCERPT_CHARS - 1).trimEnd()}…`
+    : text;
+}
+
+/**
+ * The provenance record is durable and travels inside the redistributable host file, so it carries
+ * only source *identity* (title/uri/locator) — never the verbatim `excerpt`, which is display-only
+ * and may quote a source the file's later recipients aren't authorized to read (security review,
+ * Finding 1). This explicit whitelist mirrors the bridges' custom-XML serializer.
+ */
+function provenanceSource(s: SourceRef): SourceRef {
+  return {
+    title: s.title,
+    ...(s.uri ? { uri: s.uri } : {}),
+    ...(s.locator ? { locator: s.locator } : {}),
   };
 }
 

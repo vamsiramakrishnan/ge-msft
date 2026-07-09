@@ -906,15 +906,19 @@ describe('ExcelBridge.listContext (host wiring)', () => {
     expect(table?.anchor?.locator).toBe('range:Sales!A1:C4');
   });
 
-  it('omits the selection chip when the selection has no content', async () => {
+  it('includes a blank selection chip so generated artifacts have an insertion anchor', async () => {
     const seed = salesSeed();
     seed.selection = 'Empty!A1';
     seed.activeSheet = 'Empty';
     active = installExcel(seed);
     const refs = await new ExcelBridge().listContext();
-    // No live selection chip; workbook-level named ranges still remain available.
-    expect(refs.some((r) => r.live)).toBe(false);
-    expect(refs.map((r) => r.kind)).toEqual(['range', 'sheet']);
+    expect(refs[0]).toMatchObject({
+      id: 'xl:Empty!A1',
+      kind: 'range',
+      live: true,
+      preview: 'Blank selection',
+    });
+    expect(refs.map((r) => r.kind)).toEqual(['range', 'range', 'sheet']);
   });
 });
 

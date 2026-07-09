@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import type { DocBridge } from '@ge/runtime';
 import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, OutlookBridge } from './outlook-bridge.js';
@@ -14,6 +15,11 @@ describe('Outlook capability closure', () => {
   it('advertised actuation kinds === handled actuation kinds', () => {
     const advertised = new Set(OUTLOOK_CAPABILITIES.actuations.map((a) => a.kind));
     expect(advertised).toEqual(new Set(HANDLED_ACTUATIONS));
+  });
+
+  it('advertised actuation kinds === registry implemented Outlook capabilities', () => {
+    const advertised = new Set(OUTLOOK_CAPABILITIES.actuations.map((a) => a.kind));
+    expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('outlook')));
   });
 
   it('advertises both reply-mail and create-mail (each backed by a real actuate case)', () => {

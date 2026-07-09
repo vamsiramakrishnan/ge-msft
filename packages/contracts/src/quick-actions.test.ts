@@ -89,6 +89,8 @@ describe('re-tagged actions (the audit fixes)', () => {
   it('create-chart is visualize (write), not chat', () => {
     expect(byId('create-chart').intent).toBe('visualize');
     expect(byId('create-chart').output).toBe('write');
+    expect(byId('create-chart').prompt).toContain('derive a small chart-ready summary table first');
+    expect(byId('create-chart').prompt).toContain('Ask what metric to chart');
   });
 
   it('surface write affordances expose existing bridge-backed actions', () => {

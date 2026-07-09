@@ -20,7 +20,7 @@ manifests
 # Vendored API schema slices (generated from Google's discovery doc)
 packages/*/vendor
 
-# Generated language manifest (emitted by `npm run emit:language` — the emitter owns its format)
+# Generated language manifest (emitted by `bun run emit:language` — the emitter owns its format)
 skill/m365-surface-commander/scripts/m365-cli-1.0.json
 
 # Exploratory probe harnesses (authored artifacts — kept verbatim, not reformatted)

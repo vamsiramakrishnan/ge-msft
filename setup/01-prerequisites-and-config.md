@@ -5,7 +5,7 @@
 - A Microsoft 365 tenant with access to Microsoft Entra app registrations.
 - A Google Cloud / Gemini Enterprise app that the signed-in Microsoft user can access through
   Workforce Identity Federation.
-- Node 20 or newer and npm.
+- Bun 1.3 or newer. Node 20 or newer is still required by some workspace tooling.
 - Optional: Azure CLI (`az`) or Microsoft 365 Agents Toolkit CLI for app registration and package
   upload helpers. An Azure subscription is not required just to create an Entra app registration in
   a Microsoft 365 tenant, but your account must have permission to create or edit app registrations.

@@ -13,7 +13,7 @@
 - **TypeScript** (strict) for clients and gateway; **Python 3.12** for `services/agents` (ADK).
 - **React 18** + Office.js / TeamsJS for clients; **Vite** for bundling; HTTPS in dev (Office requires it).
 - **Fastify** on **Node 20+** for the gateway; **Cloud Run** for deploy.
-- **npm workspaces** monorepo; **Zod** for runtime validation (shared in `packages/contracts`); **Vitest** (TS) and **pytest** (agents).
+- **Bun workspaces** monorepo; **Zod** for runtime validation (shared in `packages/contracts`); **Vitest** (TS) and **pytest** (agents).
 
 ## Code style
 - Prettier + ESLint (typescript-eslint, react-hooks). Format on save; lint clean before done.

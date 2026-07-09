@@ -19,7 +19,7 @@ const hostFromUrl = (value: string | undefined): string[] => {
  *   • auth-redirect.html — the minimal MSAL redirect bridge for popup/iframe token flows.
  *
  * Office requires the dev server to be HTTPS (the add-in is iframed by the host over TLS), so
- * `@vitejs/plugin-basic-ssl` mints a local certificate for `npm run dev`.
+ * `@vitejs/plugin-basic-ssl` mints a local certificate for `bun run dev`.
  */
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, __dirname, ''), ...process.env };

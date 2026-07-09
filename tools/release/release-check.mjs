@@ -7,8 +7,8 @@ import {
   generatedManifestPath,
   gitDirty,
   gitSha,
+  bunVersion,
   nodeVersion,
-  npmVersion,
   packageDir,
   packageJson,
   packageZip,
@@ -58,11 +58,11 @@ function tail(text) {
 
 function runQualityChecks() {
   return [
-    fromCommand('typecheck', command('npm', ['run', 'typecheck'])),
-    fromCommand('lint', command('npm', ['run', 'lint'])),
-    fromCommand('test', command('npm', ['run', 'test'])),
-    fromCommand('coverage', command('npm', ['run', 'coverage'])),
-    fromCommand('build', command('npm', ['run', 'build'])),
+    fromCommand('typecheck', command('bun', ['run', 'typecheck'])),
+    fromCommand('lint', command('bun', ['run', 'lint'])),
+    fromCommand('test', command('bun', ['run', 'test'])),
+    fromCommand('coverage', command('bun', ['run', 'coverage'])),
+    fromCommand('build', command('bun', ['run', 'build'])),
   ];
 }
 
@@ -98,7 +98,7 @@ function runPythonChecks() {
 function manifestOutcome() {
   const manifestPath = generatedManifestPath(profile);
   if (!existsSync(manifestPath)) {
-    const generated = command('npm', ['run', 'manifests:generate', '--', '--profile', profile]);
+    const generated = command('bun', ['run', 'manifests:generate', '--', '--profile', profile]);
     if (!generated.ok) {
       const isExternal =
         generated.status === 2 ||
@@ -108,7 +108,7 @@ function manifestOutcome() {
           ? blocked(
               'manifest generation',
               tail(generated.stderr || generated.stdout),
-              'Set GE_ALPHA_APP_ID, GE_ALPHA_ENTRA_CLIENT_ID, GE_ALPHA_WEB_DOMAIN, GE_ALPHA_DEVELOPER_NAME, GE_ALPHA_WEBSITE_URL, GE_ALPHA_PRIVACY_URL, GE_ALPHA_TERMS_URL, and GE_ALPHA_SUPPORT_URL, then rerun npm run manifests:generate -- --profile internal-alpha-word-excel.',
+              'Set GE_ALPHA_APP_ID, GE_ALPHA_ENTRA_CLIENT_ID, GE_ALPHA_WEB_DOMAIN, GE_ALPHA_DEVELOPER_NAME, GE_ALPHA_WEBSITE_URL, GE_ALPHA_PRIVACY_URL, GE_ALPHA_TERMS_URL, and GE_ALPHA_SUPPORT_URL, then rerun bun run manifests:generate -- --profile internal-alpha-word-excel.',
             )
           : fail('manifest generation', tail(generated.stderr || generated.stdout)),
       ];
@@ -126,14 +126,15 @@ function manifestOutcome() {
 function packageOutcome() {
   const zip = packageZip(profile);
   if (!existsSync(zip)) {
-    const packaged = command('npm', ['run', 'package:alpha']);
-    if (!packaged.ok) return [fail('alpha package', tail(packaged.stderr || packaged.stdout))];
+    const script = profile === 'development' ? 'package:dev' : 'package:alpha';
+    const packaged = command('bun', ['run', script]);
+    if (!packaged.ok) return [fail(`${profile} package`, tail(packaged.stderr || packaged.stdout))];
   }
   const checksumFailures = verifyChecksums(join(outDir, 'SHA256SUMS'));
   return [
     existsSync(zip)
-      ? ok('alpha package', `${relative(repoRoot, zip)} ${sha256File(zip)}`)
-      : fail('alpha package', 'package zip missing'),
+      ? ok(`${profile} package`, `${relative(repoRoot, zip)} ${sha256File(zip)}`)
+      : fail(`${profile} package`, 'package zip missing'),
     checksumFailures.length
       ? fail('artifact checksum verification', JSON.stringify(checksumFailures))
       : ok('artifact checksum verification', 'SHA256SUMS verified'),
@@ -161,30 +162,28 @@ function scanOutcomes() {
 }
 
 function dependencyOutcomes() {
-  const audit = command('npm', ['audit', '--audit-level=high', '--json']);
-  const networkBlocked = /ENOTFOUND|ECONN|EAI_AGAIN|network|fetch failed/i.test(
-    audit.stderr + audit.stdout,
-  );
+  const audit = command('bun', ['audit', '--audit-level=high', '--json']);
+  const networkBlocked =
+    /ENOTFOUND|ECONN|EAI_AGAIN|network|fetch failed/i.test(audit.stderr + audit.stdout) ||
+    /ConnectionRefused|Connection refused|audit request failed/i.test(audit.stderr + audit.stdout);
   const outcomes = [
     networkBlocked
       ? blocked(
           'dependency/security scan',
           tail(audit.stderr || audit.stdout),
-          'Run npm audit --audit-level=high --json from a network-enabled CI runner.',
+          'Run bun audit --audit-level=high --json from a network-enabled CI runner.',
         )
       : audit.ok
-        ? ok('dependency/security scan', 'npm audit found no high+ vulnerabilities')
+        ? ok('dependency/security scan', 'bun audit found no high+ vulnerabilities')
         : fail('dependency/security scan', tail(audit.stdout || audit.stderr)),
   ];
-  const lock = JSON.parse(readFileSync(join(repoRoot, 'package-lock.json'), 'utf8'));
-  const packages = Object.entries(lock.packages ?? {})
-    .filter(([path]) => path.startsWith('node_modules/'))
-    .map(([path, meta]) => ({
-      name: path.replace(/^node_modules\//, ''),
-      version: meta.version ?? '',
-      license: meta.license ?? 'UNKNOWN',
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const lockPath = join(repoRoot, 'bun.lock');
+  if (!existsSync(lockPath)) {
+    outcomes.push(fail('bun lockfile', 'bun.lock missing; run bun install'));
+    return outcomes;
+  }
+  const lockText = readFileSync(lockPath, 'utf8');
+  const packages = parseBunLockPackages(lockText);
   writeJson(join(outDir, 'license-inventory.json'), packages);
   writeJson(join(outDir, 'sbom.cdx.json'), {
     bomFormat: 'CycloneDX',
@@ -198,6 +197,17 @@ function dependencyOutcomes() {
   outcomes.push(ok('license inventory', 'dist/release/license-inventory.json'));
   outcomes.push(ok('SBOM', 'dist/release/sbom.cdx.json'));
   return outcomes;
+}
+
+function parseBunLockPackages(lockText) {
+  const packages = new Map();
+  const packageEntry = /^\s+"([^"]+)":\s+\["([^"]+)"/gm;
+  for (const match of lockText.matchAll(packageEntry)) {
+    const name = match[1];
+    const version = match[2];
+    packages.set(name, { name, version, license: 'UNKNOWN' });
+  }
+  return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function authConfigOutcome() {
@@ -351,7 +361,7 @@ const report = {
   packageVersion: rootVersion(),
   manifestVersion,
   nodeVersion: nodeVersion(),
-  npmVersion: npmVersion(),
+  bunVersion: bunVersion(),
   enabledSurfaces:
     profile === 'internal-alpha-word-excel'
       ? ['word', 'excel']

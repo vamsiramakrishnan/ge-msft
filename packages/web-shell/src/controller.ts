@@ -1370,6 +1370,12 @@ function workspaceStepText(result: unknown): string {
       return `grep ${result.artifact.name} · ${result.matches.length} match${
         result.matches.length === 1 ? '' : 'es'
       }`;
+    case 'cp':
+      return `copied to ${result.artifact.name}`;
+    case 'mv':
+      return `renamed to ${result.artifact.name}`;
+    case 'rm':
+      return `deleted ${result.name}`;
     case 'error':
       return `workspace error: ${result.error}`;
   }
@@ -1399,6 +1405,14 @@ function workspaceStepArtifact(result: unknown): RunStepArtifact | undefined {
         meta: [...artifactMeta(result.artifact), `pattern: ${result.pattern}`],
         matches: result.matches,
       };
+    case 'cp':
+    case 'mv':
+      return {
+        title: `${result.artifact.id} · ${result.artifact.name}`,
+        meta: artifactMeta(result.artifact),
+      };
+    case 'rm':
+      return { title: `deleted ${result.name}`, meta: [] };
     case 'error':
       return { title: 'Workspace error', meta: [result.error] };
   }

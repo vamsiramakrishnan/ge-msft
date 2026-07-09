@@ -8,7 +8,7 @@ each component renders, and the design-token system. All paths are under `packag
 ## Running the preview
 
 ```bash
-npm run preview -w packages/web-shell
+bun run --filter @ge/web-shell preview
 ```
 
 This starts a plain-HTTP Vite dev server on **http://localhost:3100** and opens `preview.html` —

@@ -237,7 +237,16 @@ done
     if not any("unknown context hint" in e for e in rctx_bad["errors"]):
         failures.append("unknown context hint not rejected")
 
-    # 12. Generated targeted help is available through the CLI front door.
+    # 12. Workspace artifacts are local observe/workbench steps, not host effects.
+    rws = analyze(
+        "```cmd\nsave schedule.tsv = read 'Daily schedule'!B3:I53\ngrep schedule.tsv \"Deep Work\" context=1\ndone\n```"
+    )
+    if rws["errors"]:
+        failures.append(f"workspace program had errors: {rws['errors']}")
+    if len(rws["reads"]) != 2 or rws["effects"]:
+        failures.append(f"workspace commands were misclassified: reads={rws['reads']} effects={rws['effects']}")
+
+    # 13. Generated targeted help is available through the CLI front door.
     help_text = render_command_help("shape")
     if "Command: shape" not in help_text or "pp:shape:slideId:shapeId" not in help_text:
         failures.append(f"targeted shape help did not render from generated manifest: {help_text}")

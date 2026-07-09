@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-SKILLS = ("m365-command-planner", "m365-surface-commander")
+SKILLS = ("m365-command-planner", "m365-surface-commander", "m365-release-operator")
 SKIP_NAMES = {"SKILL.md", "resource-index.md"}
 
 
@@ -61,14 +63,24 @@ def resources(skill_dir: Path) -> list[dict[str, str]]:
     return out
 
 
-def write_index(skill_name: str) -> None:
+def _write_or_check(path: Path, text: str, check: bool, changed: list[Path]) -> None:
+    if check:
+        current = path.read_text(encoding="utf-8") if path.exists() else None
+        if current != text:
+            changed.append(path)
+        return
+    path.write_text(text, encoding="utf-8")
+
+
+def write_index(skill_name: str, *, check: bool = False) -> list[Path]:
     skill_dir = ROOT / skill_name
     refs = skill_dir / "references"
     refs.mkdir(exist_ok=True)
     items = resources(skill_dir)
+    changed: list[Path] = []
 
     json_path = refs / "resource-index.json"
-    json_path.write_text(json.dumps(items, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _write_or_check(json_path, json.dumps(items, indent=2, ensure_ascii=False) + "\n", check, changed)
 
     lines = [
         "---",
@@ -101,14 +113,33 @@ def write_index(skill_name: str) -> None:
             + " |"
         )
     lines.append("")
-    (refs / "resource-index.md").write_text("\n".join(lines), encoding="utf-8")
-    print(f"wrote {refs.relative_to(ROOT)}/resource-index.md")
-    print(f"wrote {json_path.relative_to(ROOT)}")
+    md_path = refs / "resource-index.md"
+    _write_or_check(md_path, "\n".join(lines), check, changed)
+    if not check:
+        print(f"wrote {md_path.relative_to(ROOT)}")
+        print(f"wrote {json_path.relative_to(ROOT)}")
+    return changed
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if generated resource indexes are out of date instead of writing them",
+    )
+    args = parser.parse_args(argv)
+
+    changed: list[Path] = []
     for skill in SKILLS:
-        write_index(skill)
+        changed.extend(write_index(skill, check=args.check))
+    if args.check and changed:
+        print("resource indexes are out of date:", file=sys.stderr)
+        for path in changed:
+            print(f"  {path.relative_to(ROOT)}", file=sys.stderr)
+        return 1
+    if args.check:
+        print("resource indexes are current")
     return 0
 
 

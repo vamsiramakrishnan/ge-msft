@@ -1,31 +1,41 @@
 # Invoking agents from the add-in (via StreamAssist)
 
-> **Updated by `skills-and-agents.md`.** This note is correct about `agentsSpec` (it does not
-> exist). But the live `v1alpha` endpoint **does** accept a separate **`skillsSpec`** that mounts a
-> skill-`agent` per turn — deterministic, just absent from the published schema. So "you can't name
-> anything in the request, routing is the assistant's job" holds for *agents* but **not for
-> skills**. Read `skills-and-agents.md` for the verified mechanism.
+> **VERIFIED LIVE (saib tenant, 2026-07 — supersedes earlier caveats).** The invocation lever that
+> actually routes a skill on the **public** `discoveryengine.googleapis.com:streamAssist` is the
+> **`mention://?uri=<agentId>` marker in `query.text`** — confirmed to emit the skill's real output
+> (e.g. `invokedSkills=[m365-surface-commander]` + a ` ```cmd ` block). This is exactly what
+> `stream-assist.ts` already does. The other selectors do **not** work here: `skillsSpec` is
+> accepted-but-ignored, `agentsConfig.agent`/`inlineAgent` are silently ignored (answer comes from
+> the default assistant), and `agentsSpec.agentSpecs[].agentId` returns **500**. Those `agentsConfig`/
+> `agentsSpec` fields exist only in the GE reference / internal `v1main` serving path, not the public
+> endpoint we reach. **Reference a skill by its `mention://?uri=<numericId>` marker; the numeric id
+> is the canonical agent resource id (getCard confirms it; displayName is not an id).**
 
-How the client-direct add-in targets a specific Gemini Enterprise agent. The short version:
-**`v1alpha` `streamAssist` has no `agentsSpec`**, so you don't name an agent in the request body —
-you point at the **assistant/engine** configured to route to it, or let the default assistant route.
+How the client-direct add-in targets a specific Gemini Enterprise agent. For our uploaded GE skills,
+mount the skill with `skillsSpec` and prefix the query with the corresponding `mention://` marker.
+For ordinary assistant-level routing, point at the **assistant/engine** configured to route to it, or
+let the default assistant route.
 
 ## What the request can and can't do
 
-- `StreamAssistRequest` fields: `query`, `session`, `userMetadata`, `toolsSpec`, `generationSpec`,
-  `actionSpec`. **No `agentsSpec`** — the early-2026 agent-id bug is avoided structurally because the
-  field doesn't exist here (it lived in other versions/paths). Routing is the assistant's job.
+- `StreamAssistRequest` fields now include public `agentsSpec`, but this is not the same contract as
+  the observed widget private-skill `skillsSpec`.
+- Uploaded command-planner/surface-commander skills use `skillsSpec.skills[].name` plus the visible
+  `mention://?uri=<agent-id>` marker.
 - `actionSpec.actionDisabled` — toggle whether the assistant may take actions this turn.
 
 ## Routes to "invoke agent X"
 
-1. **Assistant/engine targeting (recommended, deterministic).** Agents are registered on an
+1. **Skill mount for this add-in's planner/executor (recommended for GE skills).** Use
+   `skillsSpec.skills[].name` with the full `{assistant}/agents/{agent}` resource and prepend the
+   matching mention marker. This is what the web shell tests pin.
+2. **Assistant/engine targeting.** Agents are registered on an
    assistant (`engines.assistants.agents.{create,list,get}`). To invoke a specific agent reliably,
    point `cfg.assistant` at the assistant/engine configured for it; an "agent picker" in the UI is
    really an `AssistantPath` selector. Swapping the target is the whole mechanism — no server state.
-2. **Default assistant auto-routing.** The default assistant routes by query (and its configured
+3. **Default assistant auto-routing.** The default assistant routes by query (and its configured
    agents/tools). Good for the "just ask" path where the user doesn't pick an agent.
-3. **A2A direct (special cases only).** You can call an agent's A2A endpoint directly, but that
+4. **A2A direct (special cases only).** You can call an agent's A2A endpoint directly, but that
    **bypasses GE grounding + Model Armor + audit**, so reserve it for non-grounded tools. Prefer
    routing through `streamAssist` so guardrails stay engine-enforced (a hard precondition in
    client-direct — see ADR-0001).

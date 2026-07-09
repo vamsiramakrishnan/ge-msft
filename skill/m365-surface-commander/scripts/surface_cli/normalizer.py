@@ -6,6 +6,7 @@ from .parser import _is_expr_line, parse_line, extract_command_block_meta
 _READ_PHASE_VERBS = {
     "outline", "read", "search", "list", "inspect", "properties", "comments", "attachments",
     "tables", "slides", "neighbors", "context", "open",
+    "workspace", "save", "cat", "grep",
 }
 
 

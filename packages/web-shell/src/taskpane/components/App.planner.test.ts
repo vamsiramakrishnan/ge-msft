@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { isComplexInstruction, isActuating } from './App.js';
 
 /**
- * The §F routing heuristic: a complex free-text instruction earns the planner-confirm front door; a
- * short single-shot one (or a chat verb) does not. `isActuating` decides chat-vs-gate; together they
- * gate whether dispatch routes through `proposePlan`.
+ * Complexity remains a useful helper for describing/reviewing instructions, but routing now sends
+ * all composer-origin natural-language actions through the command planner. Direct CLI is the
+ * separate escape hatch.
  */
 describe('isComplexInstruction (planner-confirm front door, EXPERIENCE.md §F)', () => {
   it('treats a short single-shot instruction as simple', () => {

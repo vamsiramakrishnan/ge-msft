@@ -22,7 +22,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`npm run typecheck` clean · **1538 tests across 128 files green** (Vitest) · `npm run lint` clean.
+`bun run typecheck` clean · **1538 tests across 128 files green** (Vitest) · `bun run lint` clean.
 
 ## Packages — built vs planned
 
@@ -112,7 +112,7 @@ The defining work since the last status: the document became a programmable envi
 - **The React/Vite task pane.** The panel renders the real components (`App`, `ContextTray`,
   `MessageThread`, `Composer`, `PlanApprovalCard`, `WriteApprovalCard`, `ProposalCard`,
   `ProvenanceDetail`, `RunSteps`, `SkillsPanel`) over `PanelController`; MSAL bootstrap +
-  bridge-selection wiring; **`npm run preview -w packages/web-shell`** mounts `<App/>` over scripted
+  bridge-selection wiring; **`bun run --filter @ge/web-shell preview`** mounts `<App/>` over scripted
   fixtures with no Office host.
 
 ## The command surface (`/` + `@`) and GE skills

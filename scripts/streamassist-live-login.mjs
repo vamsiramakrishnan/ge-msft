@@ -79,10 +79,10 @@ function usage() {
 Refresh a short-lived Gemini Enterprise widget token, then run the live StreamAssist tests.
 
 Usage:
-  npm run test:streamassist:live:login
-  node scripts/streamassist-live-login.mjs --refresh
-  node scripts/streamassist-live-login.mjs --curl-file /tmp/widget-request.curl
-  node scripts/streamassist-live-login.mjs --scenarios smoke-basic,commander-excel-visualize
+  bun run test:streamassist:live:login
+  bun scripts/streamassist-live-login.mjs --refresh
+  bun scripts/streamassist-live-login.mjs --curl-file /tmp/widget-request.curl
+  bun scripts/streamassist-live-login.mjs --scenarios smoke-basic,commander-excel-visualize
 
 Options:
   --refresh              Force credential refresh even if the token file looks fresh.
@@ -236,8 +236,9 @@ async function runLiveTests() {
     ...(args.scenarioCsv ? { GE_LIVE_STREAMASSIST_SCENARIOS: args.scenarioCsv } : {}),
   };
   const child = spawn(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    process.platform === 'win32' ? 'bun.exe' : 'bun',
     [
+      'run',
       'vitest',
       'run',
       'packages/gemini-client/src/stream-assist.live.test.ts',

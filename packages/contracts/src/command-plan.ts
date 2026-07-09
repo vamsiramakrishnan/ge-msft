@@ -409,6 +409,14 @@ export function renderPlanPrompt(surface: Surface, verbs?: readonly Intent[]): s
     'clarify  <a question>      # repeatable; emit when something material is ambiguous, and STOP short of guessing',
     'confidence <high|medium|low>   # optional',
     '```',
+    'Classify arbitrary text into capability-shaped steps. Infer intent, scope, context hints, then ' +
+      'phrase each step in the active surface vocabulary without emitting commands.',
+    'Surface vocabulary: Word tracked rewrite/comment/style/table/hyperlink/content-control; ' +
+      'Excel rectangular grid/table/formula/format/comment/chart/pivot/sort/filter/worksheet; ' +
+      'PowerPoint slide/shape/text/image/table/layout/format; Outlook staged reply/draft/body/subject/recipients/attachment/calendar; ' +
+      'OneNote page/outline/rich-text/tag/section; Teams staged post/card/transcript/thread handoff.',
+    'For bulk data entry such as schedules or generated tables, plan one rectangular grid/table ' +
+      'materialization step, not dozens of per-cell steps.',
     'Rules: one ```plan block only; phrase steps as intentions (not ```cmd commands); context is ' +
       'only a context-construction hint and never grants upload/code/write authority; if anything ' +
       'material is ambiguous, emit clarify line(s) instead of over-specifying.',

@@ -2,10 +2,15 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ChatMessage } from '../../controller.js';
 import type { SourceRef, Surface } from '@ge/contracts';
+import type { InsertableArtifact } from '../insert-artifact.js';
+import { canRenderHostLocation } from '../../host-location.js';
 
 export interface MessageThreadProps {
   messages: ChatMessage[];
   surface?: Surface;
+  onInsertArtifact?: (artifact: InsertableArtifact) => void;
+  onRevealLocation?: (location: string) => void;
+  insertArtifactDisabledReason?: string;
 }
 
 /**
@@ -21,6 +26,13 @@ function safeHttpUri(uri: string | undefined): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function citationLocation(uri: string | undefined): string | undefined {
+  let target = uri?.trim();
+  if (!target) return undefined;
+  if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1).trim();
+  return target.toLowerCase().startsWith('citation:') ? target : undefined;
 }
 
 function splitTableRow(line: string): string[] {
@@ -59,7 +71,12 @@ function findNextInlineMarker(text: string, start: number): number {
   return indexes.length ? Math.min(...indexes) : text.length;
 }
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
+function renderInline(
+  text: string,
+  keyPrefix: string,
+  surface: Surface,
+  onRevealLocation?: (location: string) => void,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -73,7 +90,12 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       if (end > i + 2) {
         nodes.push(
           <strong key={`${keyPrefix}-b-${key++}`}>
-            {renderInline(text.slice(i + 2, end), `${keyPrefix}-b-${key}`)}
+            {renderInline(
+              text.slice(i + 2, end),
+              `${keyPrefix}-b-${key}`,
+              surface,
+              onRevealLocation,
+            )}
           </strong>,
         );
         i = end + 2;
@@ -84,7 +106,22 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     if (text[i] === '`') {
       const end = text.indexOf('`', i + 1);
       if (end > i + 1) {
-        nodes.push(<code key={`${keyPrefix}-c-${key++}`}>{text.slice(i + 1, end)}</code>);
+        const codeText = text.slice(i + 1, end);
+        nodes.push(
+          onRevealLocation && canRenderHostLocation(surface, codeText) ? (
+            <button
+              key={`${keyPrefix}-loc-${key++}`}
+              type="button"
+              className="md-host-location"
+              onClick={() => onRevealLocation(codeText)}
+              title="Open this location in the host"
+            >
+              {codeText}
+            </button>
+          ) : (
+            <code key={`${keyPrefix}-c-${key++}`}>{codeText}</code>
+          ),
+        );
         i = end + 1;
         continue;
       }
@@ -96,9 +133,21 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       const urlEnd = urlStart >= 0 ? text.indexOf(')', urlStart) : -1;
       if (labelEnd > i + 1 && urlStart >= 0 && urlEnd > urlStart) {
         const label = text.slice(i + 1, labelEnd);
-        const href = safeHttpUri(text.slice(urlStart, urlEnd).trim());
+        const rawTarget = text.slice(urlStart, urlEnd).trim();
+        const hostLocation = citationLocation(rawTarget);
+        const href = safeHttpUri(rawTarget);
         nodes.push(
-          href ? (
+          hostLocation && onRevealLocation && canRenderHostLocation(surface, hostLocation) ? (
+            <button
+              key={`${keyPrefix}-host-a-${key++}`}
+              type="button"
+              className="md-host-location"
+              onClick={() => onRevealLocation(hostLocation)}
+              title="Open this location in the host"
+            >
+              {renderInline(label, `${keyPrefix}-host-a-${key}`, surface, onRevealLocation)}
+            </button>
+          ) : href ? (
             <a
               key={`${keyPrefix}-a-${key++}`}
               className="md-link"
@@ -106,11 +155,11 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
               target="_blank"
               rel="noreferrer noopener"
             >
-              {renderInline(label, `${keyPrefix}-a-${key}`)}
+              {renderInline(label, `${keyPrefix}-a-${key}`, surface, onRevealLocation)}
             </a>
           ) : (
             <span key={`${keyPrefix}-bad-a-${key++}`}>
-              {label} ({text.slice(urlStart, urlEnd).trim()})
+              {label} ({rawTarget})
             </span>
           ),
         );
@@ -124,7 +173,12 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       if (end > i + 1) {
         nodes.push(
           <em key={`${keyPrefix}-i-${key++}`}>
-            {renderInline(text.slice(i + 1, end), `${keyPrefix}-i-${key}`)}
+            {renderInline(
+              text.slice(i + 1, end),
+              `${keyPrefix}-i-${key}`,
+              surface,
+              onRevealLocation,
+            )}
           </em>,
         );
         i = end + 1;
@@ -155,7 +209,34 @@ function userTokenLabel(token: string): string {
   return `Scope ${token.replace(/^scope:/, '')}`;
 }
 
-function UserMessageContent({ text }: { text: string }): JSX.Element {
+interface UserTextSegment {
+  kind: 'text';
+  text: string;
+}
+
+interface UserCommandSegment {
+  kind: 'command';
+  verb: string;
+  target?: string;
+  summary: string;
+  preview?: string[][];
+  hiddenDetail?: string;
+}
+
+interface InternalPlanSegment {
+  kind: 'internal-plan';
+  intent?: string;
+  surface?: string;
+  scope?: string;
+  steps: string[];
+}
+
+type UserSegment = UserTextSegment | UserCommandSegment | InternalPlanSegment;
+
+const COMMAND_LINE_RE =
+  /^(outline|read|search|context|list|inspect|properties|comments|attachments|tables|slides|neighbors|open|set|grid|suggest|comment|format|reply|slide|page|mail|post|compose|table|chart|cf|spill|done)\b/i;
+
+function UserText({ text }: { text: string }): JSX.Element {
   const nodes: ReactNode[] = [];
   let last = 0;
   let key = 0;
@@ -181,7 +262,287 @@ function UserMessageContent({ text }: { text: string }): JSX.Element {
   return <>{nodes}</>;
 }
 
-function MarkdownContent({ text }: { text: string }): JSX.Element {
+function unescapedQuoteCount(text: string): number {
+  let count = 0;
+  let escaped = false;
+  for (const ch of text) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') count++;
+  }
+  return count;
+}
+
+function decodeCommandString(value: string): string {
+  return value
+    .replace(/\\t/g, '\t')
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function extractQuotedBody(text: string): { body: string; rest: string } | undefined {
+  const start = text.indexOf('"');
+  if (start < 0) return undefined;
+  let escaped = false;
+  let body = '';
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i] ?? '';
+    if (escaped) {
+      body += `\\${ch}`;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') return { body: decodeCommandString(body), rest: text.slice(i + 1).trim() };
+    body += ch;
+  }
+  return { body: decodeCommandString(body), rest: '' };
+}
+
+function gridSegment(raw: string): UserCommandSegment | undefined {
+  const match = /^grid\s+(.+?)\s*=\s*([\s\S]+)$/i.exec(raw.trim());
+  if (!match) return undefined;
+  const target = match[1]?.trim();
+  const quoted = extractQuotedBody(match[2] ?? '');
+  const body = quoted?.body ?? '';
+  const rows = body
+    .split('\n')
+    .map((row) => row.split('\t'))
+    .filter((row) => row.some((cell) => cell.trim()));
+  const cols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const hiddenDetail =
+    rows.length > 3 || cols > 4
+      ? `${Math.max(rows.length - 3, 0)} more rows · ${Math.max(cols - 4, 0)} more columns hidden`
+      : undefined;
+  return {
+    kind: 'command',
+    verb: 'grid',
+    ...(target ? { target } : {}),
+    summary: `${rows.length} x ${cols} cells`,
+    preview: rows.slice(0, 3).map((row) => row.slice(0, 4)),
+    ...(hiddenDetail ? { hiddenDetail } : {}),
+  };
+}
+
+function commandSegment(raw: string): UserCommandSegment | undefined {
+  const trimmed = raw.trim();
+  const verb = COMMAND_LINE_RE.exec(trimmed)?.[1]?.toLowerCase();
+  if (!verb) return undefined;
+  if (verb === 'grid') return gridSegment(trimmed);
+  if (verb === 'read') {
+    const target = trimmed.replace(/^read\s+/i, '').trim();
+    return {
+      kind: 'command',
+      verb: 'read',
+      ...(target ? { target } : {}),
+      summary: 'host read',
+    };
+  }
+  if (verb === 'done') {
+    return { kind: 'command', verb, summary: 'finish command loop' };
+  }
+  return {
+    kind: 'command',
+    verb,
+    summary: trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed,
+  };
+}
+
+function internalPlanSegment(text: string): InternalPlanSegment | undefined {
+  if (!text.includes('<confirmed_plan>')) return undefined;
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const value = (key: string): string | undefined => {
+    const prefix = `${key}:`;
+    return lines
+      .find((line) => line.trim().toLowerCase().startsWith(prefix))
+      ?.trim()
+      .slice(prefix.length)
+      .trim();
+  };
+  const steps = lines
+    .map((line) => /^step\s+\d+:\s*(.+)$/i.exec(line.trim())?.[1]?.trim())
+    .filter((line): line is string => Boolean(line));
+  const intent = value('intent');
+  const surface = value('surface');
+  const scope = value('scope');
+  return {
+    kind: 'internal-plan',
+    ...(intent ? { intent } : {}),
+    ...(surface ? { surface } : {}),
+    ...(scope ? { scope } : {}),
+    steps,
+  };
+}
+
+function parseUserSegments(text: string): UserSegment[] {
+  const internal = internalPlanSegment(text);
+  if (internal) return [internal];
+
+  const segments: UserSegment[] = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const textBuffer: string[] = [];
+
+  const flushText = (): void => {
+    const value = textBuffer.join('\n').trim();
+    textBuffer.length = 0;
+    if (value) segments.push({ kind: 'text', text: value });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+    if (!COMMAND_LINE_RE.test(trimmed)) {
+      textBuffer.push(line);
+      continue;
+    }
+
+    flushText();
+    let raw = line;
+    if (/^grid\b/i.test(trimmed) && unescapedQuoteCount(raw) % 2 === 1) {
+      while (i + 1 < lines.length && unescapedQuoteCount(raw) % 2 === 1) {
+        i++;
+        raw += `\n${lines[i] ?? ''}`;
+      }
+    }
+    const command = commandSegment(raw);
+    if (command) segments.push(command);
+    else textBuffer.push(raw);
+  }
+
+  flushText();
+  return segments.length > 0 ? segments : [{ kind: 'text', text }];
+}
+
+function CommandCard({ segment }: { segment: UserCommandSegment }): JSX.Element {
+  return (
+    <div
+      className={`cmd-card cmd-card-${segment.verb}`}
+      role="group"
+      aria-label={`${segment.verb} command`}
+    >
+      <div className="cmd-card-head">
+        <span className="cmd-card-verb">{segment.verb}</span>
+        <span className="cmd-card-summary">{segment.summary}</span>
+      </div>
+      {segment.target && <div className="cmd-card-target">{segment.target}</div>}
+      {segment.preview && segment.preview.length > 0 && (
+        <div className="cmd-card-grid-preview" aria-label="Grid preview">
+          {segment.preview.map((row, rowIdx) => (
+            <div key={rowIdx} className="cmd-card-grid-row">
+              {row.map((cell, cellIdx) => (
+                <span key={cellIdx} className="cmd-card-cell">
+                  {cell || '\u00a0'}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {segment.hiddenDetail && <div className="cmd-card-muted">{segment.hiddenDetail}</div>}
+    </div>
+  );
+}
+
+function InternalPlanCard({ segment }: { segment: InternalPlanSegment }): JSX.Element {
+  const title = [
+    segment.intent ? `${segment.intent} plan` : 'approved plan',
+    segment.surface,
+    segment.scope,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <div className="cmd-card cmd-card-internal" role="group" aria-label="Approved plan execution">
+      <div className="cmd-card-head">
+        <span className="cmd-card-verb">execute</span>
+        <span className="cmd-card-summary">{title}</span>
+      </div>
+      {segment.steps.length > 0 && (
+        <ol className="cmd-card-steps">
+          {segment.steps.slice(0, 3).map((step, idx) => (
+            <li key={idx}>{step}</li>
+          ))}
+        </ol>
+      )}
+      {segment.steps.length > 3 && (
+        <div className="cmd-card-muted">{segment.steps.length - 3} more steps hidden</div>
+      )}
+    </div>
+  );
+}
+
+function UserMessageContent({ text }: { text: string }): JSX.Element {
+  const segments = parseUserSegments(text);
+  return (
+    <>
+      {segments.map((segment, idx) => {
+        if (segment.kind === 'text') {
+          return (
+            <span key={idx} className="user-text-fragment">
+              <UserText text={segment.text} />
+            </span>
+          );
+        }
+        if (segment.kind === 'internal-plan') {
+          return <InternalPlanCard key={idx} segment={segment} />;
+        }
+        return <CommandCard key={idx} segment={segment} />;
+      })}
+    </>
+  );
+}
+
+function ArtifactActions({
+  artifact,
+  onInsertArtifact,
+  disabledReason,
+}: {
+  artifact: InsertableArtifact;
+  onInsertArtifact?: (artifact: InsertableArtifact) => void;
+  disabledReason?: string;
+}): JSX.Element | null {
+  if (!onInsertArtifact) return null;
+  const disabled = Boolean(disabledReason);
+  return (
+    <div className="md-artifact-actions">
+      <button
+        type="button"
+        className="md-artifact-insert"
+        disabled={disabled}
+        title={disabledReason ?? 'Insert into the current Microsoft 365 surface'}
+        onClick={() => {
+          if (!disabled) onInsertArtifact(artifact);
+        }}
+      >
+        Insert
+      </button>
+    </div>
+  );
+}
+
+function MarkdownContent({
+  text,
+  surface,
+  onInsertArtifact,
+  onRevealLocation,
+  insertArtifactDisabledReason,
+}: {
+  text: string;
+  surface: Surface;
+  onInsertArtifact?: (artifact: InsertableArtifact) => void;
+  onRevealLocation?: (location: string) => void;
+  insertArtifactDisabledReason?: string;
+}): JSX.Element {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const blocks: ReactNode[] = [];
   let i = 0;
@@ -203,10 +564,22 @@ function MarkdownContent({ text }: { text: string }): JSX.Element {
         i++;
       }
       if (i < lines.length) i++;
+      const artifact: InsertableArtifact = {
+        kind: 'code-block',
+        title: 'Inserted content',
+        code: code.join('\n'),
+      };
       blocks.push(
-        <pre key={`code-${block++}`} className="md-code">
-          <code>{code.join('\n')}</code>
-        </pre>,
+        <div key={`code-${block++}`} className="md-artifact md-code-artifact">
+          <ArtifactActions
+            artifact={artifact}
+            onInsertArtifact={onInsertArtifact}
+            disabledReason={insertArtifactDisabledReason}
+          />
+          <pre className="md-code">
+            <code>{code.join('\n')}</code>
+          </pre>
+        </div>,
       );
       continue;
     }
@@ -221,26 +594,48 @@ function MarkdownContent({ text }: { text: string }): JSX.Element {
         if (row.length === headers.length) rows.push(row);
         i++;
       }
+      const artifact: InsertableArtifact = {
+        kind: 'markdown-table',
+        title: 'Inserted table',
+        headers,
+        rows,
+      };
       blocks.push(
-        <div key={`table-wrap-${block++}`} className="md-table-wrap">
-          <table className="md-table">
-            <thead>
-              <tr>
-                {headers.map((cell, idx) => (
-                  <th key={idx}>{renderInline(cell, `th-${block}-${idx}`)}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIdx) => (
-                <tr key={rowIdx}>
-                  {row.map((cell, cellIdx) => (
-                    <td key={cellIdx}>{renderInline(cell, `td-${block}-${rowIdx}-${cellIdx}`)}</td>
+        <div key={`table-wrap-${block++}`} className="md-artifact md-table-artifact">
+          <ArtifactActions
+            artifact={artifact}
+            onInsertArtifact={onInsertArtifact}
+            disabledReason={insertArtifactDisabledReason}
+          />
+          <div className="md-table-wrap">
+            <table className="md-table">
+              <thead>
+                <tr>
+                  {headers.map((cell, idx) => (
+                    <th key={idx}>
+                      {renderInline(cell, `th-${block}-${idx}`, surface, onRevealLocation)}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {row.map((cell, cellIdx) => (
+                      <td key={cellIdx}>
+                        {renderInline(
+                          cell,
+                          `td-${block}-${rowIdx}-${cellIdx}`,
+                          surface,
+                          onRevealLocation,
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>,
       );
       continue;
@@ -252,7 +647,11 @@ function MarkdownContent({ text }: { text: string }): JSX.Element {
       const content = heading[2] ?? '';
       const level = Math.min(marker.length + 1, 4);
       const Tag = `h${level}` as 'h2' | 'h3' | 'h4';
-      blocks.push(<Tag key={`h-${block++}`}>{renderInline(content, `h-${block}`)}</Tag>);
+      blocks.push(
+        <Tag key={`h-${block++}`}>
+          {renderInline(content, `h-${block}`, surface, onRevealLocation)}
+        </Tag>,
+      );
       i++;
       continue;
     }
@@ -276,7 +675,7 @@ function MarkdownContent({ text }: { text: string }): JSX.Element {
       blocks.push(
         <List key={`list-${block++}`}>
           {items.map((item, idx) => (
-            <li key={idx}>{renderInline(item, `li-${block}-${idx}`)}</li>
+            <li key={idx}>{renderInline(item, `li-${block}-${idx}`, surface, onRevealLocation)}</li>
           ))}
         </List>,
       );
@@ -289,11 +688,19 @@ function MarkdownContent({ text }: { text: string }): JSX.Element {
       i++;
     }
     if (paragraph.length > 0) {
-      blocks.push(<p key={`p-${block++}`}>{renderInline(paragraph.join(' '), `p-${block}`)}</p>);
+      blocks.push(
+        <p key={`p-${block++}`}>
+          {renderInline(paragraph.join(' '), `p-${block}`, surface, onRevealLocation)}
+        </p>,
+      );
       continue;
     }
 
-    blocks.push(<p key={`fallback-${block++}`}>{renderInline(trimmed, `fallback-${block}`)}</p>);
+    blocks.push(
+      <p key={`fallback-${block++}`}>
+        {renderInline(trimmed, `fallback-${block}`, surface, onRevealLocation)}
+      </p>,
+    );
     i++;
   }
 
@@ -328,6 +735,7 @@ function Citation({ source, id }: { source: SourceRef; id: string }): JSX.Elemen
         <div id={detailId} className="cite-detail" role="group" aria-label={`Source: ${label}`}>
           <div className="cite-detail-title">{source.title}</div>
           {source.locator && <div className="cite-detail-loc muted small">{source.locator}</div>}
+          {source.excerpt && <blockquote className="cite-excerpt">{source.excerpt}</blockquote>}
           {href ? (
             <a className="cite-detail-link" href={href} target="_blank" rel="noreferrer noopener">
               {href}
@@ -341,7 +749,19 @@ function Citation({ source, id }: { source: SourceRef; id: string }): JSX.Elemen
   );
 }
 
-function Message({ message }: { message: ChatMessage }): JSX.Element {
+function Message({
+  message,
+  surface,
+  onInsertArtifact,
+  onRevealLocation,
+  insertArtifactDisabledReason,
+}: {
+  message: ChatMessage;
+  surface: Surface;
+  onInsertArtifact?: (artifact: InsertableArtifact) => void;
+  onRevealLocation?: (location: string) => void;
+  insertArtifactDisabledReason?: string;
+}): JSX.Element {
   const isUser = message.role === 'user';
   return (
     <div className={`m ${isUser ? 'u' : 'a'}`}>
@@ -351,7 +771,13 @@ function Message({ message }: { message: ChatMessage }): JSX.Element {
           {isUser ? (
             <UserMessageContent text={message.text} />
           ) : (
-            <MarkdownContent text={message.text} />
+            <MarkdownContent
+              text={message.text}
+              surface={surface}
+              onInsertArtifact={onInsertArtifact}
+              onRevealLocation={onRevealLocation}
+              insertArtifactDisabledReason={insertArtifactDisabledReason}
+            />
           )}
           {message.streaming && <span className="caret" aria-label="streaming" />}
         </div>
@@ -387,19 +813,36 @@ const EMPTY_COPY: Record<Surface, string> = {
 };
 
 /** The grounded conversation: user/assistant bubbles, streamed answer + citation pills. */
-export function MessageThread({ messages, surface = 'word' }: MessageThreadProps): JSX.Element {
+export function MessageThread({
+  messages,
+  surface = 'word',
+  onInsertArtifact,
+  onRevealLocation,
+  insertArtifactDisabledReason,
+}: MessageThreadProps): JSX.Element {
   return (
     <div className="thread" role="log" aria-live="polite" aria-label="Conversation">
       {messages.length === 0 && (
-        <div className="m a">
-          <span className="ic" aria-hidden="true" />
-          <div className="c">
-            <div className="text">{EMPTY_COPY[surface]}</div>
+        <div className="thread-empty">
+          <div className="thread-empty-plate">
+            <span className="thread-empty-mark" aria-hidden="true" />
+            <p className="thread-empty-copy">{EMPTY_COPY[surface]}</p>
+            <p className="thread-empty-next" aria-hidden="true">
+              type <span className="te-key">/</span> for a verb, <span className="te-key">@</span>{' '}
+              to ground — or attach a source above
+            </p>
           </div>
         </div>
       )}
       {messages.map((m) => (
-        <Message key={m.id} message={m} />
+        <Message
+          key={m.id}
+          message={m}
+          surface={surface}
+          onInsertArtifact={onInsertArtifact}
+          onRevealLocation={onRevealLocation}
+          insertArtifactDisabledReason={insertArtifactDisabledReason}
+        />
       ))}
     </div>
   );

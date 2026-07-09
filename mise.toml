@@ -1,0 +1,183 @@
+[tasks."setup:guide"]
+description = "Interactive readiness, login, packaging, tunnel, add-in, and skill guide"
+run = "bun scripts/setup-cli.mjs guide"
+
+[tasks."setup:doctor"]
+description = "Check local readiness for GE/M365 development and deployment"
+run = "bun scripts/setup-cli.mjs doctor"
+
+[tasks."setup:doctor:fix"]
+description = "Run readiness checks and offer guided setup fixes"
+run = "bun scripts/setup-cli.mjs doctor --fix"
+
+[tasks."setup:prereqs"]
+description = "Install or repair local prerequisites through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs"
+
+[tasks."setup:deps"]
+description = "Install Bun workspace dependencies"
+run = "bun scripts/setup-cli.mjs prereqs --target deps"
+
+[tasks."setup:azure"]
+description = "Install repo-local Azure CLI wrapper through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target azure"
+
+[tasks."setup:gcloud"]
+description = "Install Google Cloud CLI through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target gcloud"
+
+[tasks."setup:gcloud:wif"]
+description = "Authenticate Saibalaji/GE WIF into repo-local .gcloud without touching ADC"
+run = "bun scripts/setup-cli.mjs login --target gcloud"
+
+[tasks."setup:gcloud:wif:force"]
+description = "Force a fresh Saibalaji/GE WIF login into repo-local .gcloud without touching ADC"
+run = "bun scripts/setup-cli.mjs login --target gcloud --force"
+
+[tasks."setup:atk"]
+description = "Install Microsoft 365 Agents Toolkit CLI through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target atk"
+
+[tasks."setup:atk:login"]
+description = "Authenticate Microsoft 365 Agents Toolkit for unified package sideloading"
+run = "bun scripts/setup-cli.mjs login --target atk"
+
+[tasks."setup:m365cli"]
+description = "Install CLI for Microsoft 365 through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target m365cli"
+
+[tasks."setup:powershell"]
+description = "Install PowerShell Core and Microsoft 365 add-in deployment modules through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target powershell,exchange"
+
+[tasks."setup:cloudflared"]
+description = "Install cloudflared into /tmp through the Bun setup CLI"
+run = "bun scripts/setup-cli.mjs prereqs --target cloudflared"
+
+[tasks."setup:login"]
+description = "Interactive login helper for Azure, Exchange Online, gcloud WIF, and widget skills"
+run = "bun scripts/setup-cli.mjs login"
+
+[tasks."setup:package"]
+description = "Generate, validate, and package development manifests"
+run = "bun scripts/setup-cli.mjs package"
+
+[tasks."entra:sync:dev"]
+description = "Sync the development Entra SPA redirect URI from the configured dev origin"
+run = "bun tools/release/sync-entra-spa.mjs --profile development"
+
+[tasks."entra:sync:release"]
+description = "Sync the release Entra SPA redirect URI from GE_ALPHA_WEB_DOMAIN"
+run = "bun tools/release/sync-entra-spa.mjs --profile internal-alpha-word-excel"
+
+[tasks."bootstrap:dev"]
+description = "Safe development bootstrap: tunnel, readiness, package, skills, no tenant/catalog deployment"
+run = "bun scripts/setup-cli.mjs bootstrap --profile development --deployment-lane none --dev-tunnel"
+
+[tasks."bootstrap:dev:sideload"]
+description = "Build/package and install the development unified package with Agents Toolkit"
+run = "bun scripts/setup-cli.mjs sideload install"
+
+[tasks."bootstrap:release"]
+description = "Production-like release bootstrap: stable alpha profile package and unified catalog upsert"
+run = "bun scripts/setup-cli.mjs bootstrap --profile internal-alpha-word-excel --deployment-lane catalog"
+
+[tasks."bootstrap:release:dry-run"]
+description = "Dry-run the production-like release bootstrap without live mutations"
+run = "bun scripts/setup-cli.mjs bootstrap --profile internal-alpha-word-excel --deployment-lane catalog --dry-run"
+
+[tasks."bootstrap:prod"]
+description = "Alias for bootstrap:release; current production-like profile is internal-alpha-word-excel"
+run = "bun scripts/setup-cli.mjs bootstrap --profile internal-alpha-word-excel --deployment-lane catalog"
+
+[tasks."m365:sideload"]
+description = "Install the unified Microsoft 365 package for local developer testing with Agents Toolkit"
+run = "bun scripts/setup-cli.mjs sideload install"
+
+[tasks."m365:sideload:guided"]
+description = "Interactive unified Microsoft 365 package sideload install/uninstall/status flow"
+run = "bun scripts/setup-cli.mjs sideload"
+
+[tasks."m365:sideload:uninstall"]
+description = "Uninstall the last unified Microsoft 365 package sideload using the remembered title ID"
+run = "bun scripts/setup-cli.mjs sideload uninstall"
+
+[tasks."m365:sideload:status"]
+description = "Show the remembered unified Microsoft 365 sideload title ID and package"
+run = "bun scripts/setup-cli.mjs sideload status"
+
+[tasks."ge:dev:tunnel:guided"]
+description = "Guided dev server, Cloudflare tunnel, manifest, and Entra redirect flow"
+run = "bun scripts/setup-cli.mjs dev-tunnel"
+
+[tasks."ge:skills:update"]
+description = "Guided dev flow: rebuild, open Gemini Enterprise, extract widget creds, replace skills"
+run = "scripts/update-ge-widget-skills.sh"
+
+[tasks."ge:skills:update:force-token"]
+description = "Guided dev flow: force a fresh widget token, then replace skills"
+run = "scripts/update-ge-widget-skills.sh --force-token-refresh"
+
+[tasks."ge:skills:update:paste"]
+description = "Guided dev flow: paste a full widget cURL/HAR block, then replace skills"
+run = "scripts/update-ge-widget-skills.sh --paste-curl"
+
+[tasks."ge:skills:list"]
+description = "Guided dev flow: rebuild, extract widget creds, list private widget skills only"
+run = "scripts/update-ge-widget-skills.sh --list-only"
+
+[tasks."ge:skills:dry-run"]
+description = "Guided dev flow: rebuild, extract widget creds, print replacement plan without live mutation"
+run = "scripts/update-ge-widget-skills.sh --dry-run"
+
+[tasks."ge:skills:dry-run:paste"]
+description = "Guided dev flow: paste a full widget cURL/HAR block, then print replacement plan"
+run = "scripts/update-ge-widget-skills.sh --paste-curl --dry-run"
+
+[tasks."ge:skills:guided"]
+description = "Interactive Gemini Enterprise skill list/update flow"
+run = "bun scripts/setup-cli.mjs skills"
+
+[tasks."ge:dev:tunnel"]
+description = "Restart web-shell dev server, create Cloudflare tunnel, regenerate manifests, and sync Entra redirect"
+run = "scripts/dev-tunnel-entra.sh"
+
+[tasks."m365:addins:guided"]
+description = "Interactive tenant add-in deployment/list/update/delete flow"
+run = "bun scripts/setup-cli.mjs addins"
+
+[tasks."m365:addins:list"]
+description = "List centrally deployed Office add-ins for the tenant"
+run = "scripts/m365-tenant-addin.sh list"
+
+[tasks."m365:pwsh:setup"]
+description = "Install PowerShell Core on Ubuntu and Microsoft 365 add-in deployment modules"
+run = "bun scripts/setup-cli.mjs prereqs --target powershell,exchange"
+
+[tasks."m365:addins:deploy"]
+description = "Deploy generated XML add-in manifests with Centralized Deployment PowerShell"
+run = "scripts/m365-tenant-addin.sh deploy"
+
+[tasks."m365:addins:update"]
+description = "Update generated XML add-in manifests in Centralized Deployment"
+run = "scripts/m365-tenant-addin.sh update"
+
+[tasks."m365:addins:delete"]
+description = "Delete generated XML add-ins from Centralized Deployment"
+run = "scripts/m365-tenant-addin.sh delete"
+
+[tasks."m365:catalog:guided"]
+description = "Interactive unified Microsoft 365 app catalog flow"
+run = "bun scripts/setup-cli.mjs catalog"
+
+[tasks."m365:catalog:login"]
+description = "Login to CLI for Microsoft 365"
+run = "scripts/m365-app-catalog.sh login"
+
+[tasks."m365:catalog:list"]
+description = "List apps visible through CLI for Microsoft 365"
+run = "scripts/m365-app-catalog.sh list"
+
+[tasks."m365:catalog:upsert"]
+description = "Add or update the unified Microsoft 365 app package"
+run = "scripts/m365-app-catalog.sh upsert"

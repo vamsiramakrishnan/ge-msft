@@ -18,7 +18,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from parse_commands import COMMAND_HELP, READ_VERBS, CONTROL_VERBS, WRITE_VERBS  # noqa: E402
+from parse_commands import (  # noqa: E402
+    CAPABILITY_REGISTRY,
+    COMMAND_HELP,
+    CONTROL_VERBS,
+    READ_VERBS,
+    WORKSPACE_VERBS,
+    WRITE_VERBS,
+)
 
 
 def _topic_key(topic: str | None) -> str | None:
@@ -34,16 +41,48 @@ def _section(title: str, lines):
     return [f"{title}:"] + [f"  {i + 1}. {line}" for i, line in enumerate(lines)]
 
 
+def _registry_help(key: str):
+    for cap in CAPABILITY_REGISTRY:
+        if cap.get("kind") != key:
+            continue
+        command = cap.get("command", f"/{key}")
+        title = cap.get("title")
+        use_when = cap.get("useWhen", "invoke a capability advertised by the live surface")
+        return {
+            "command": command,
+            "useWhen": f"{title}: {use_when}" if title else use_when,
+            "syntax": f"{command} [key=value ...]",
+            "discovery": cap.get("discovery", []),
+            "sequence": cap.get("sequence", []) + [
+                "Stop after one cmd block and wait for the host result/preview before continuing."
+            ],
+            "examples": cap.get("examples", []) or [f"{command} [key=value ...]"],
+            "doNot": [
+                "Do not use this command unless the current turn grammar advertises it.",
+                "Do not infer unseen targets or unsupported fields.",
+            ],
+            "failureModes": cap.get("failureModes", []),
+            "safety": [
+                f"Registry status: {cap.get('status', 'unknown')}; registry metadata is not write authority.",
+                "Preview must show: " + ", ".join(cap.get("preview", [])),
+                "Provenance: " + cap.get("provenance", "record changeId and target metadata"),
+            ],
+        }
+    return None
+
+
 def render(topic: str | None = None) -> str:
     key = _topic_key(topic)
     if not key:
         read = ", ".join(sorted(READ_VERBS))
+        workspace = ", ".join(sorted(WORKSPACE_VERBS))
         write = ", ".join(sorted(WRITE_VERBS))
         control = ", ".join(sorted(CONTROL_VERBS))
         return "\n".join(
             [
                 "m365 CLI help",
                 f"Read verbs: {read}",
+                f"Workspace verbs: {workspace}",
                 f"Write verbs: {write}",
                 f"Control verbs: {control}",
                 "Targeted help: python3 scripts/command_help.py <command>",
@@ -51,7 +90,7 @@ def render(topic: str | None = None) -> str:
             ]
         )
 
-    entry = COMMAND_HELP.get(key)
+    entry = COMMAND_HELP.get(key) or _registry_help(key)
     if not entry:
         return f'No generated help for "{topic}". Run without a topic to list commands.'
 
@@ -77,7 +116,7 @@ def main(argv=None) -> int:
 
     key = _topic_key(args.topic)
     if args.json:
-        payload = COMMAND_HELP if not key else COMMAND_HELP.get(key)
+        payload = COMMAND_HELP if not key else COMMAND_HELP.get(key) or _registry_help(key)
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(render(args.topic))

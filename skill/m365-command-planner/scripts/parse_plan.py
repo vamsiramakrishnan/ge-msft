@@ -36,9 +36,9 @@ LIST_KEYS = {
 BRACKETS = {"plan", "end"}                                   # optional, ignored
 ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 
-# The seven general, Copilot-altitude verbs (see docs/EXPERIENCE.md §1). Scope is a
+# The general, Copilot-altitude verbs (see docs/EXPERIENCE.md §1). Scope is a
 # separate orthogonal axis (the `scope` keyword), never a verb.
-INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft", "notes"}
+INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "visualize", "draft", "notes"}
 SURFACES = {"word", "excel", "powerpoint", "onenote", "outlook", "teams"}
 CONFIDENCE = {"high", "medium", "low"}
 WORKFLOWS = {"single-surface", "cross-surface"}

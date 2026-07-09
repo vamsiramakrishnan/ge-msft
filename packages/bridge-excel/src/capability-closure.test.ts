@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
 import {
   ExcelBridge,
@@ -18,6 +19,11 @@ describe('Excel capability closure', () => {
     const advertised = new Set(EXCEL_CAPABILITIES.actuations.map((a) => a.kind));
     const handled = new Set(HANDLED_ACTUATIONS);
     expect(advertised).toEqual(handled);
+  });
+
+  it('advertised actuation kinds === registry implemented Excel capabilities', () => {
+    const advertised = new Set(EXCEL_CAPABILITIES.actuations.map((a) => a.kind));
+    expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('excel')));
   });
 
   it('advertised reads match the implemented read ports', () => {

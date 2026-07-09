@@ -15,11 +15,18 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_SKILLS = ("m365-command-planner", "m365-surface-commander")
+DEFAULT_SKILLS = (
+    "m365-command-planner",
+    "m365-surface-commander",
+    "m365-release-operator",
+)
 MAX_SKILL_LINES = 500
 
 REQUIRED_SKILL_FRONTMATTER = ("name", "description")
-REQUIRED_RESOURCE_FRONTMATTER = ("title", "kind", "skill", "load_when")
+REQUIRED_RESOURCE_FRONTMATTER = ("title", "kind", "skill", "topics", "load_when")
+ALLOWED_RESOURCE_KINDS = {"example", "generated-reference", "index", "pattern", "reference"}
+ALLOWED_SURFACES = {"excel", "onenote", "outlook", "powerpoint", "teams", "word"}
+ALLOWED_WORKFLOWS = {"cross-surface", "single-surface"}
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 PLAN_BLOCK = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
 CMD_BLOCK = re.compile(r"```cmd[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
@@ -66,6 +73,69 @@ def validate_links(path: Path) -> list[str]:
     return errors
 
 
+def parse_inline_list(value: str) -> list[str]:
+    stripped = value.strip()
+    if not stripped.startswith("[") or not stripped.endswith("]"):
+        return []
+    items = [item.strip().strip("\"'") for item in stripped[1:-1].split(",")]
+    return [item for item in items if item]
+
+
+def validate_resource_frontmatter(
+    skill_dir: Path,
+    path: Path,
+    frontmatter: dict[str, str],
+    body: str,
+) -> list[str]:
+    errors: list[str] = []
+    rel = path.relative_to(ROOT)
+    skill_rel = path.relative_to(skill_dir)
+    folder = skill_rel.parts[0] if len(skill_rel.parts) > 1 else ""
+
+    kind = frontmatter.get("kind", "")
+    if kind not in ALLOWED_RESOURCE_KINDS:
+        errors.append(
+            f"{rel} frontmatter kind must be one of {', '.join(sorted(ALLOWED_RESOURCE_KINDS))}",
+        )
+
+    expected_by_folder = {
+        "assets": {"example"},
+        "patterns": {"pattern"},
+        "references": {"generated-reference", "index", "reference"},
+    }
+    expected_kinds = expected_by_folder.get(folder)
+    if expected_kinds and kind not in expected_kinds:
+        errors.append(
+            f"{rel} frontmatter kind {kind!r} does not match {folder}/; expected "
+            f"{', '.join(sorted(expected_kinds))}",
+        )
+
+    topics = parse_inline_list(frontmatter.get("topics", ""))
+    if not topics:
+        errors.append(f"{rel} frontmatter topics must be a non-empty inline list")
+
+    load_when = frontmatter.get("load_when", "").strip()
+    if len(load_when) < 20:
+        errors.append(f"{rel} frontmatter load_when must be a useful routing sentence")
+
+    surface = frontmatter.get("surface")
+    if surface and surface not in ALLOWED_SURFACES:
+        errors.append(
+            f"{rel} frontmatter surface must be one of {', '.join(sorted(ALLOWED_SURFACES))}",
+        )
+
+    workflow = frontmatter.get("workflow")
+    if workflow and workflow not in ALLOWED_WORKFLOWS:
+        errors.append(
+            f"{rel} frontmatter workflow must be one of {', '.join(sorted(ALLOWED_WORKFLOWS))}",
+        )
+
+    if kind == "generated-reference" and "<!-- GENERATED" not in body:
+        errors.append(f"{rel} generated-reference must contain the generated-file marker")
+
+    return errors
+
+
 def validate_skill(skill_dir: Path) -> list[str]:
     errors: list[str] = []
     skill_md = skill_dir / "SKILL.md"
@@ -94,12 +164,13 @@ def validate_skill(skill_dir: Path) -> list[str]:
         if fm is None:
             errors.append(f"{rel} missing YAML frontmatter")
             continue
-        frontmatter, _ = fm
+        frontmatter, body = fm
         for key in REQUIRED_RESOURCE_FRONTMATTER:
             if not frontmatter.get(key):
                 errors.append(f"{rel} missing frontmatter field {key}")
         if frontmatter.get("skill") != skill_dir.name:
             errors.append(f"{rel} frontmatter skill must be {skill_dir.name}")
+        errors.extend(validate_resource_frontmatter(skill_dir, md, frontmatter, body))
 
     return errors
 

@@ -13,9 +13,17 @@ import {
   plannerSkillsFromEnv,
   skillMentionsFromEnv,
   skillsFromEnv,
+  warmUpSkillsFromEnv,
   widgetFromEnv,
   type RawEnv,
 } from './config.js';
+
+const SHA_A = 'a'.repeat(64);
+const SHA_B = 'b'.repeat(64);
+const SHA_C = 'c'.repeat(64);
+const SHA_D = 'd'.repeat(64);
+const SHA_E = 'e'.repeat(64);
+const SHA_F = 'f'.repeat(64);
 
 const full: RawEnv = {
   MODE: 'production',
@@ -30,8 +38,16 @@ const full: RawEnv = {
   VITE_GE_MODEL_ID: 'gemini-x',
   VITE_GE_COMMAND_PLANNER_SKILL:
     'm365-command-planner=projects/proj-12345/locations/eu/collections/col-1/engines/engine-1/assistants/assist-1/agents/17573173582293271726',
+  VITE_GE_COMMAND_PLANNER_SKILL_VERSION: '1.1',
+  VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256: SHA_A,
+  VITE_GE_COMMAND_PLANNER_SKILL_SHA256: SHA_B,
   VITE_GE_SURFACE_COMMANDER_SKILL:
     'm365-surface-commander=projects/proj-12345/locations/eu/collections/col-1/engines/engine-1/assistants/assist-1/agents/7404511736383961129',
+  VITE_GE_SURFACE_COMMANDER_SKILL_VERSION: '1.1',
+  VITE_GE_SURFACE_COMMANDER_SKILL_SOURCE_SHA256: SHA_C,
+  VITE_GE_SURFACE_COMMANDER_SKILL_SHA256: SHA_D,
+  VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256: SHA_E,
+  VITE_GE_SKILL_UPLOAD_BUNDLE_SET_SHA256: SHA_F,
   VITE_WIF_POOL_ID: 'pool-1',
   VITE_WIF_PROVIDER_ID: 'prov-1',
   VITE_WIF_SCOPE: 'https://www.googleapis.com/auth/cloud-platform',
@@ -45,6 +61,37 @@ const full: RawEnv = {
   VITE_NOTEBOOK_ID: 'nb-1',
   VITE_GE_RELEASE_PROFILE: 'internal-alpha-word-excel',
 };
+
+describe('warmUpSkillsFromEnv', () => {
+  it('builds detect-only warm-up inputs (id + display + revision, no instruction) for both skills', () => {
+    const warmUp = warmUpSkillsFromEnv(full);
+    expect(warmUp).toEqual([
+      {
+        agentId: '17573173582293271726',
+        displayName: 'm365-command-planner',
+        description: 'm365-command-planner — Gemini Enterprise skill for the M365 add-in',
+        revision: SHA_B,
+      },
+      {
+        agentId: '7404511736383961129',
+        displayName: 'm365-surface-commander',
+        description: 'm365-surface-commander — Gemini Enterprise skill for the M365 add-in',
+        revision: SHA_D,
+      },
+    ]);
+    // detect-only: no instruction/bundle shipped from env
+    expect(warmUp.every((s) => s.instruction === undefined && s.bundleZip === undefined)).toBe(
+      true,
+    );
+  });
+
+  it('is empty when no skills are configured', () => {
+    const env: RawEnv = { ...full };
+    delete (env as Record<string, unknown>).VITE_GE_COMMAND_PLANNER_SKILL;
+    delete (env as Record<string, unknown>).VITE_GE_SURFACE_COMMANDER_SKILL;
+    expect(warmUpSkillsFromEnv(env)).toEqual([]);
+  });
+});
 
 describe('config from env', () => {
   it('builds the assistant path with optional fields', () => {
@@ -206,6 +253,9 @@ describe('config from env', () => {
     expect(() => assistantFromEnv({ ...full, VITE_GCP_LOCATION: 'moon-1' })).toThrow();
     expect(() => msalConfigFromEnv({ ...full, VITE_ENTRA_CLIENT_ID: 'not-a-guid' })).toThrow();
     expect(() => shellConfigFromEnv({ ...full, VITE_GE_SKILL_IDS: '../bad' })).toThrow();
+    expect(() =>
+      shellConfigFromEnv({ ...full, VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256: 'not-a-sha' }),
+    ).toThrow();
   });
 
   it('rejects production proxy URLs with unsafe schemes, localhost, or credentials', () => {

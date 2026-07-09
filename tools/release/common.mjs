@@ -109,8 +109,8 @@ export function nodeVersion() {
   return process.version;
 }
 
-export function npmVersion() {
-  const res = command('npm', ['--version']);
+export function bunVersion() {
+  const res = command('bun', ['--version']);
   return res.ok ? res.stdout.trim() : 'unknown';
 }
 
@@ -268,6 +268,9 @@ export function packageDir(profile) {
 }
 
 export function packageZip(profile) {
+  if (profile === devProfile) {
+    return join(repoRoot, 'dist', 'release', `development-m365-v${rootVersion()}.zip`);
+  }
   return join(repoRoot, 'dist', 'release', `${profile}-v${rootVersion()}.zip`);
 }
 
@@ -336,10 +339,6 @@ export function alphaManifest(cfg) {
       {
         requirements: {
           scopes: ['document', 'workbook'],
-          capabilities: [
-            { name: 'WordApi', minVersion: '1.4' },
-            { name: 'ExcelApi', minVersion: '1.10' },
-          ],
         },
         runtimes: [
           {
@@ -470,11 +469,6 @@ export function developmentManifest(cfg) {
       {
         requirements: {
           scopes: ['mail', 'workbook', 'document', 'presentation'],
-          capabilities: [
-            { name: 'Mailbox', minVersion: '1.12' },
-            { name: 'WordApi', minVersion: '1.3' },
-            { name: 'ExcelApi', minVersion: '1.7' },
-          ],
         },
         runtimes: [
           {

@@ -33,7 +33,7 @@ if (!existsSync(manifest)) {
   process.exit(1);
 }
 if (!existsSync(web)) {
-  console.error(`Built web shell missing: ${web}. Run npm run build first.`);
+  console.error(`Built web shell missing: ${web}. Run bun run build first.`);
   process.exit(1);
 }
 

@@ -63,6 +63,44 @@ context analytical full-scope upload-preferred code-execution-preferred
 If the result recommends upload, wait for the host/user to attach the file and provide a structured
 file id. Do not invent file ids or emit upload/code commands.
 
+## Local workspace commands
+
+Workspace commands create and inspect bounded virtual artifacts inside the add-in runtime. They are
+the local workbench for large reads, derived notes, chart data, markdown tables, or cross-step
+handoff packets. They are **not host writes**: they do not mutate Office content, upload files, run
+code, send messages, or approve later effects.
+
+| Command     | Usage                                                                 | Notes |
+| ----------- | --------------------------------------------------------------------- | ----- |
+| `workspace` | `workspace [name\|ws:id]`                                             | List artifacts, or summarize one artifact by name/id. |
+| `save`      | `save <name> = read <selector>`                                       | Save a bounded rendered read/search/outline/pipeline/literal output. |
+| `cat`       | `cat <name\|ws:id> [head=N]`                                          | Preview the first N lines of an artifact. |
+| `grep`      | `grep <name\|ws:id> "pattern" [context=N]`                            | Search an artifact locally and return compact line matches. |
+
+Accepted `save` sources:
+
+```
+save schedule.tsv = read 'Daily schedule'!B3:I53
+save matches.md = search "termination"
+save outline.md = outline
+save note.md = "Data read from the current selection."
+save top-regions.tsv = (read Sales!A1:D5000 | sort Revenue desc | head 10)
+```
+
+Use workspace artifacts when the same read will be inspected repeatedly or when a raw result would
+make the pane noisy:
+
+```
+save schedule.tsv = read 'Daily schedule'!B3:I53
+grep schedule.tsv "Manager Sync" context=1
+cat schedule.tsv head=20
+```
+
+Staleness rule: an artifact is a snapshot of rendered content. If you mutate the host and need fresh
+truth, `read`/`save` again. Current pipelines cannot start from a workspace artifact directly; use
+`cat`/`grep` for inspection, or recompute a table from a live `read` when a later `spill`, `grid`,
+`table`, or `chart` needs a concrete range/value.
+
 ## Write commands
 
 Each write command produces one reviewable change. A command is only available in apps

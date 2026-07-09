@@ -1,6 +1,6 @@
 # Live StreamAssist integration tests
 
-These tests are opt-in. Normal `npm test` does not call Gemini Enterprise.
+These tests are opt-in. Normal `bun run test` does not call Gemini Enterprise.
 
 Run them only when you want to cross-validate the current add-in skill wiring against the real
 Gemini Enterprise `widgetStreamAssist` endpoint.
@@ -37,13 +37,13 @@ live prompts.
 ## Command
 
 ```bash
-npm run test:streamassist:live
+bun run test:streamassist:live
 ```
 
 If the local widget token is missing or expired, use the interactive login preflight:
 
 ```bash
-npm run test:streamassist:live:login
+bun run test:streamassist:live:login
 ```
 
 The preflight opens or prints the Gemini Enterprise URL, asks you to paste one authenticated
@@ -54,13 +54,13 @@ does not automate browser cookies, XSRF state, or Google session secrets.
 Run one or a few scenarios while debugging:
 
 ```bash
-GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-excel-visualize npm run test:streamassist:live
+GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-excel-visualize bun run test:streamassist:live
 ```
 
 The login preflight supports the same scenario filter:
 
 ```bash
-npm run test:streamassist:live:login -- --scenarios smoke-basic,commander-excel-visualize
+bun run test:streamassist:live:login -- --scenarios smoke-basic,commander-excel-visualize
 ```
 
 The suite verifies:

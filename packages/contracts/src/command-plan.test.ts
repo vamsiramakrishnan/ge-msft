@@ -109,6 +109,21 @@ step create a chart-ready risk summary table
     ]);
   });
 
+  it('accepts visualize as a first-class planner intent', () => {
+    const text = `\`\`\`plan
+intent visualize
+surface excel
+scope selection
+step derive a chart-ready summary table before creating a native chart
+\`\`\``;
+    const { plan, errors } = parsePlanBlock(text);
+    expect(errors).toEqual([]);
+    expect(plan?.intent).toBe('visualize');
+    expect(plan?.steps).toEqual([
+      'derive a chart-ready summary table before creating a native chart',
+    ]);
+  });
+
   it('derives one shared progressive-disclosure strategy from context hints', () => {
     const strategy = derivePlanContextStrategy([
       'analytical',
@@ -215,5 +230,7 @@ describe('renderPlanPrompt', () => {
     expect(prompt).toContain('context is only a context-construction hint');
     expect(prompt).toContain('never grants upload/code/write authority');
     expect(prompt).toContain('intent   <ask | draft>');
+    expect(prompt).toContain('capability-shaped steps');
+    expect(prompt).toContain('one rectangular grid/table materialization step');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import { WORD_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, WordBridge } from './word-bridge.js';
 
@@ -14,6 +15,11 @@ describe('Word capability closure', () => {
     const advertised = new Set(WORD_CAPABILITIES.actuations.map((a) => a.kind));
     const handled = new Set(HANDLED_ACTUATIONS);
     expect(advertised).toEqual(handled);
+  });
+
+  it('advertised actuation kinds === registry implemented Word capabilities', () => {
+    const advertised = new Set(WORD_CAPABILITIES.actuations.map((a) => a.kind));
+    expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('word')));
   });
 
   it('advertises the bridge-backed direct Word write kinds', () => {

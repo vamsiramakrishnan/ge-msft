@@ -24,6 +24,7 @@ teaches the _types and laws_, the signature is _authoritative_.
 | `Boolean`  | true/false                                          | a predicate                                   |
 | `Selector` | an address that names where to read (`Sales!A1:G9`) | you write it; never invent one                |
 | `RangeRef` | a concrete written range (`Report!A1:B11`)          | computed from a `spill`'s origin × table size |
+| `ArtifactRef` | a bounded local workspace snapshot (`schedule.tsv`, `ws:1`) | `save`; inspect with `workspace`/`cat`/`grep` |
 
 You **cannot see content until you read it.** A `Selector` is a promise of where data is; a `Table`
 is the data once read. Never fabricate a value, a selector, an object id, or a comment id.
@@ -85,6 +86,10 @@ signature, effects are terminal.)
 
 - A **read** command (`read`/`search`/`outline`) or a `let $v = <pipeline>` binding produces a value.
 - A bound value is reused by name (`$v`) — **bind once, reuse**, never re-read the same source.
+- A **workspace** command (`save`/`workspace`/`cat`/`grep`) stores or inspects a bounded snapshot of a
+  value/result for local workbench use. It is not an effect and does not mutate the host. It is also
+  not a live value source for later pipelines: if a later `spill`, `grid`, `table`, or `chart` needs
+  live document truth, read/compute that value from the host again.
 - An **effect** command consumes concrete values/addresses you have already computed.
 
 For the operational laws (derive-before-mutate, smallest-effect-set, the decision procedure, the

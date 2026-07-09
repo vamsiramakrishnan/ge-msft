@@ -16,11 +16,19 @@ the web) and has **no event API**, so there is no live `watch` — you act on th
 **Reading:** `read`/`outline`/`search` over the page/section. Synthesized content lands as HTML in the
 supported subset; untrusted text is HTML-escaped.
 
+**Progressive disclosure:** build slash commands from the live OneNote capability scan for the active
+web page/selection. Prefer `read` / `list` / `inspect` / `properties` / `open` before writes: read the
+current page, list notebooks/sections/pages when available, inspect selection/paragraph anchors and HTML
+support, fetch page properties, then open the intended page/section. If the active target, insertion
+point, image source, or object capability is missing, fail closed and do not synthesize a write target.
+
 **Core verb:** `page "Title" "body"` appends a synthesized page (with inline citation tags when
 sources are present).
 
-**Specialized (`/`):** `/add-outline` (onto the active page), `/insert-table`, `/insert-image`,
-`/append-rich-text`, `/set-page-title`, `/add-note-tag` (To-Do / Important / Question),
+**Specialized (`/`) when live-capability advertised:** `/set-page-title` changes the active page title;
+`/add-outline` inserts an outline onto the active page; `/insert-table` and `/insert-image` insert only
+after the destination and source are resolved; `/add-note-tag` applies supported built-in tags (To-Do /
+Important / Question) to a resolved paragraph/selection. Also available when gated: `/append-rich-text`,
 `/create-section`, `/insert-link-at-cursor`.
 
 **Gotchas — reversibility is weak here.** Most OneNote objects (`Outline`, `Image`, `Table`, `Page`,

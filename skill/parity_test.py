@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-parity_test.py — pin the GE skills' planner verb set to the authoritative 7-verb model.
+parity_test.py — pin the GE skills' planner verb set to the authoritative intent model.
 
 The TS side (`packages/contracts/src/intent.ts` IntentSchema) is authoritative; the planner
 skill's `INTENTS` set must mirror it exactly. This is the lockstep guard called out in
@@ -17,10 +17,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "m365-command-planner" / "scripts"))
 from parse_plan import CONTEXT_HINTS, INTENTS, parse_plan  # noqa: E402
 
-# The seven general, Copilot-altitude verbs (docs/EXPERIENCE.md §1 / IntentSchema).
+# The general, Copilot-altitude verbs (docs/EXPERIENCE.md §1 / IntentSchema).
 # Scope is an orthogonal axis, never a verb; the deleted task-verbs (regen-clause,
 # resolve-comment, draft-slides, synthesize, meeting-notes) are scopes/closures of these.
-EXPECTED_INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "draft", "notes"}
+EXPECTED_INTENTS = {
+    "ask",
+    "summarize",
+    "explain",
+    "rewrite",
+    "review",
+    "visualize",
+    "draft",
+    "notes",
+}
 
 DELETED_INTENTS = {"assist", "regen-clause", "resolve-comment",
                    "draft-slides", "synthesize", "meeting-notes"}

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Intent, QuickAction, Surface } from '@ge/contracts';
-import type { ContextChip, Skill } from '../../controller.js';
+import type { ContextChip, ConversationsState, Skill } from '../../controller.js';
 import { ContextTray } from './ContextTray.js';
 import { SkillsPanel } from './SkillsPanel.js';
 import { QuickActionBar } from './QuickActionBar.js';
 import { SurfaceCommandCenter } from './SurfaceCommandCenter.js';
+import { ConversationHistoryPanel } from './ConversationHistoryPanel.js';
 
 export interface ToolbarProps {
   surface: Surface;
@@ -19,6 +20,7 @@ export interface ToolbarProps {
   messageCount: number;
   proposalCount: number;
   skills: Skill[];
+  conversations: ConversationsState;
   /** Ids already shown as primary actions, excluded from the quick-action catalog (no dupes). */
   primaryActionIds: string[];
   hasSettings: boolean;
@@ -26,11 +28,13 @@ export interface ToolbarProps {
   onToggleChip: (id: string, attach: boolean) => void;
   onRevealChip: (id: string) => void;
   onRefreshContext: () => void;
+  onRefreshConversations: () => void;
+  onResumeConversation: (name: string) => void;
   onInvokeSkill: (name: string, args: Record<string, string>) => void;
   onQuickAction: (action: QuickAction) => void;
 }
 
-type Panel = 'context' | 'actions' | 'skills';
+type Panel = 'context' | 'actions' | 'skills' | 'sessions';
 
 const HOST_GLYPH: Readonly<Record<Surface, string>> = {
   word: 'W',
@@ -70,12 +74,15 @@ export function Toolbar({
   messageCount,
   proposalCount,
   skills,
+  conversations,
   primaryActionIds,
   hasSettings,
   onOpenSettings,
   onToggleChip,
   onRevealChip,
   onRefreshContext,
+  onRefreshConversations,
+  onResumeConversation,
   onInvokeSkill,
   onQuickAction,
 }: ToolbarProps): JSX.Element {
@@ -100,6 +107,12 @@ export function Toolbar({
       document.removeEventListener('keydown', onKeyDown, true);
     };
   }, [panel]);
+
+  useEffect(() => {
+    if (panel === 'sessions' && !conversations.loaded && !conversations.loading) {
+      onRefreshConversations();
+    }
+  }, [conversations.loaded, conversations.loading, onRefreshConversations, panel]);
 
   const state = hasGate ? 'gate' : busy ? 'busy' : 'ready';
   const status = hasGate ? 'Decision needed' : busy ? 'Working' : 'Ready';
@@ -170,6 +183,23 @@ export function Toolbar({
             <span className="tw-badge">{skills.length}</span>
           </button>
         )}
+
+        <button
+          type="button"
+          className={`tw-icon${panel === 'sessions' ? ' on' : ''}`}
+          aria-expanded={panel === 'sessions'}
+          aria-haspopup="dialog"
+          aria-label={`Conversations — ${conversations.items.length} loaded`}
+          title="Conversations"
+          onClick={() => choose('sessions')}
+        >
+          <span className="tw-glyph" aria-hidden="true">
+            ◷
+          </span>
+          {conversations.items.length > 0 && (
+            <span className="tw-badge">{conversations.items.length}</span>
+          )}
+        </button>
 
         {hasSettings && (
           <button
@@ -254,6 +284,21 @@ export function Toolbar({
             onInvokeSkill(name, args);
             close();
           }}
+        />
+      </div>
+
+      <div
+        className="tw-sheet"
+        role="dialog"
+        aria-label="Conversations"
+        data-active={panel === 'sessions' ? 'true' : 'false'}
+        hidden={panel !== 'sessions'}
+      >
+        <ConversationHistoryPanel
+          conversations={conversations}
+          disabled={busy}
+          onRefresh={onRefreshConversations}
+          onResume={onResumeConversation}
         />
       </div>
     </div>

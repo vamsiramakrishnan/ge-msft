@@ -273,6 +273,12 @@ export class OfficeWordHost implements WordHost {
   async revealContext(ref: ContextRef): Promise<void> {
     if (ref.surface !== 'word') return;
 
+    const paragraphIndex = wordParagraphIndex(ref);
+    if (paragraphIndex !== undefined) {
+      await this.revealParagraph(paragraphIndex);
+      return;
+    }
+
     const contentControlId = wordContentControlId(ref);
     if (contentControlId !== undefined) {
       await this.revealContentControl(contentControlId);
@@ -297,6 +303,19 @@ export class OfficeWordHost implements WordHost {
         await ctx.sync();
       });
     }
+  }
+
+  private async revealParagraph(index: number): Promise<void> {
+    if (!Number.isInteger(index) || index < 1) return;
+    await Word.run(async (ctx) => {
+      const paras = ctx.document.body.paragraphs;
+      paras.load('items');
+      await ctx.sync();
+      const para = paras.items[index - 1];
+      if (!para) return;
+      para.getRange().select();
+      await ctx.sync();
+    });
   }
 
   private async revealTextAnchor(
@@ -621,11 +640,21 @@ export function canRevealWordContext(ref: ContextRef): boolean {
   return (
     ref.surface === 'word' &&
     (ref.kind === 'selection' ||
+      wordParagraphIndex(ref) !== undefined ||
       ref.id === 'word:selection' ||
       Boolean(ref.anchor?.matchText.trim()) ||
       wordContentControlId(ref) !== undefined ||
       wordCommentId(ref) !== undefined)
   );
+}
+
+function wordParagraphIndex(ref: ContextRef): number | undefined {
+  const raw =
+    prefixedValue(ref.id, 'word:paragraph:', 'paragraph:', 'para:') ??
+    prefixedValue(ref.anchor?.locator, 'word:paragraph:', 'paragraph:', 'para:');
+  if (!raw) return undefined;
+  const index = Number(raw);
+  return Number.isInteger(index) && index > 0 ? index : undefined;
 }
 
 function wordContentControlId(ref: ContextRef): string | undefined {

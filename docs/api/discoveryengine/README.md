@@ -35,6 +35,8 @@ stores are configured **in the Gemini Enterprise engine/assistant**, not in our 
   per-turn via `skillsSpec`** (the field is real on the wire though absent from the published
   schema). Where the `/` + `@` command skills (`skill/`) plug in, plus the skill↔workspace parity
   tasks.
+- `widget-service-skills.md` — formal widget-mode create/list/upload/delete and the send-time
+  `skillsSpec` + `mention://` reference contract for private Gemini Enterprise skills.
 - `a2ui.md` — A2UI agent-authored interactive UI and how the add-in maps its actions to host
   actuations.
 - `files-and-limits.md` — inline context vs session context files (`addContextFile`), **code

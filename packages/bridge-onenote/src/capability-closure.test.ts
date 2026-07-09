@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import type { DocBridge } from '@ge/runtime';
 import { ONENOTE_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, OneNoteBridge } from './onenote-bridge.js';
@@ -12,6 +13,11 @@ describe('OneNote capability closure', () => {
   it('advertised actuation kinds === handled actuation kinds', () => {
     const advertised = new Set(ONENOTE_CAPABILITIES.actuations.map((a) => a.kind));
     expect(advertised).toEqual(new Set(HANDLED_ACTUATIONS));
+  });
+
+  it('advertised actuation kinds === registry implemented OneNote capabilities', () => {
+    const advertised = new Set(ONENOTE_CAPABILITIES.actuations.map((a) => a.kind));
+    expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('onenote')));
   });
 
   it('advertised reads match the implemented read ports', () => {

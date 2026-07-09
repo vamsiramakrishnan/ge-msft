@@ -70,17 +70,17 @@ which are the ONLY code that touches Office.js / TeamsJS / Graph.
 - **Language:** TypeScript everywhere (client-direct; no server tier by default).
 - **Client:** React + Office.js (Word/Excel/PPT/OneNote) and TeamsJS (Teams). Build with Vite; scaffold task panes with the M365 Agents Toolkit / Yo Office patterns.
 - **Gemini Enterprise:** Discovery Engine `v1alpha` called directly; SSE for streaming. Agents/Model Armor are engine config.
-- **Monorepo:** npm workspaces + TS project references. **Validation:** Zod (shared in `packages/contracts`). **Tests:** Vitest.
+- **Monorepo:** Bun workspaces + TS project references. **Validation:** Zod (shared in `packages/contracts`). **Tests:** Vitest.
 
 ## Commands
 
 ```bash
-npm install                  # install all workspaces
-npm run dev -w packages/web-shell   # run the web-shell dev server (HTTPS)
-npm run build                # build all workspaces
-npm run typecheck            # tsc --noEmit across workspaces
-npm run test                 # vitest across workspaces
-npm run lint                 # eslint + prettier check
+bun install                  # install all workspaces
+bun run --filter @ge/web-shell dev   # run the web-shell dev server (HTTPS)
+bun run build                # build all workspaces
+bun run typecheck            # tsc --noEmit across workspaces
+bun run test                 # vitest across workspaces
+bun run lint                 # eslint + prettier check
 ```
 Copy `.env.example` to `.env` and fill it before running the gateway.
 
@@ -99,4 +99,4 @@ Phrased as preferences because the agent should internalize them, not just avoid
 
 ## Definition of done (every task)
 
-`npm run typecheck` clean · `npm run test` green · `npm run lint` clean · acceptance criteria in `docs/BUILD-PLAN.md` met · `security-reviewer` run if the task touched auth/credentials/guardrails/provenance · the task checked off in the build plan.
+`bun run typecheck` clean · `bun run test` green · `bun run lint` clean · acceptance criteria in `docs/BUILD-PLAN.md` met · `security-reviewer` run if the task touched auth/credentials/guardrails/provenance · the task checked off in the build plan.

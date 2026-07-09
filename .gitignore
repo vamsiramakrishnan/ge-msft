@@ -7,6 +7,7 @@ build/
 .gcloud/
 .azure/
 .venv-az/
+.ge-dev/
 .codex/
 .github/hooks/
 .impeccable/
@@ -28,3 +29,9 @@ skills-lock.json
 # Python caches
 __pycache__/
 *.pyc
+
+# bootstrap deploy state (content hashes of the last deploy)
+.ge-deploy.json
+
+# local unified package sideload state (Agents Toolkit title IDs)
+.ge-sideload/

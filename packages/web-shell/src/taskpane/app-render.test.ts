@@ -62,6 +62,10 @@ describe('<App/> render smoke', () => {
 
   it('renders the context tray with attached and available chips', () => {
     render();
+    const contextButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label^="Context"]',
+    );
+    act(() => contextButton?.click());
     const tray = container.querySelector('.unit[aria-label="Research unit grounding scope"]');
     expect(tray).not.toBeNull();
     expect(tray?.querySelector('[aria-label="Attached sources"]')).not.toBeNull();
@@ -71,6 +75,10 @@ describe('<App/> render smoke', () => {
 
   it('renders a surface-aware command center above the workstream', () => {
     render();
+    const actionsButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label="Actions"]',
+    );
+    act(() => actionsButton?.click());
     const center = container.querySelector(
       '.surface-center[aria-label="Word workspace command center"]',
     );
@@ -82,6 +90,10 @@ describe('<App/> render smoke', () => {
 
   it('renders surface-specific primary actions and keeps the secondary row deduplicated', () => {
     render('excel');
+    const actionsButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label="Actions"]',
+    );
+    act(() => actionsButton?.click());
     const center = container.querySelector(
       '.surface-center[aria-label="Excel workspace command center"]',
     );
@@ -102,7 +114,15 @@ describe('<App/> render smoke', () => {
     const steps = container.querySelector('.run-steps[aria-label="Command loop steps"]');
     expect(steps).not.toBeNull();
     expect(steps?.getAttribute('aria-live')).toBe('polite');
+    const toggle = steps?.querySelector<HTMLButtonElement>('.run-steps-toggle');
+    const list = steps?.querySelector<HTMLOListElement>('.run-steps-list');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(list?.hidden).toBe(true);
+    expect(toggle?.textContent).toContain(`${FIXTURE_STATE.steps.length} steps`);
     expect(steps?.querySelectorAll('.run-step').length).toBe(FIXTURE_STATE.steps.length);
+    act(() => toggle?.click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(list?.hidden).toBe(false);
   });
 
   it('renders the plan-approval card with the full effect-set and a summary', () => {
@@ -158,6 +178,10 @@ describe('<App/> render smoke', () => {
 
   it('renders the skills surface with each skill signature, def confirmation and an invoke action', () => {
     render();
+    const skillsButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label^="Skills"]',
+    );
+    act(() => skillsButton?.click());
     const skills = container.querySelector('.skills[aria-label="Skills"]');
     expect(skills).not.toBeNull();
     expect(skills?.querySelectorAll('.skill').length).toBe(FIXTURE_STATE.skills?.length);
@@ -169,6 +193,19 @@ describe('<App/> render smoke', () => {
     // Param fields are bindable inputs prefilled from the declared examples.
     const param = skills?.querySelector<HTMLInputElement>('input.skill-param-input');
     expect(param?.value).toBe('Northwind Cloud');
+  });
+
+  it('opens the conversations sheet with the active session and continue controls', () => {
+    render();
+    const sessionsButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label^="Conversations"]',
+    );
+    act(() => sessionsButton?.click());
+    const sessions = container.querySelector('.sessions[aria-label="Conversations"]');
+    expect(sessions).not.toBeNull();
+    expect(sessions?.textContent).toContain('Google SWE mock schedule');
+    expect(sessions?.querySelector('.session-row.active')).not.toBeNull();
+    expect(sessions?.querySelectorAll('.session-resume').length).toBeGreaterThan(0);
   });
 
   it('expands a plan effect to reveal its target and dry-run before→after preview', () => {

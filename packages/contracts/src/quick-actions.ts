@@ -339,7 +339,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     intent: 'visualize',
     scope: { kind: 'range' },
     prompt:
-      'Create an appropriate chart from the selected range. Read the range first, choose a supported chart type, and use the chart command.',
+      'Create an appropriate native Excel chart from the selected range. Read the range first; if it is a schedule, sparse grid, or text-heavy table, derive a small chart-ready summary table first, then chart that summary. Ask what metric to chart if the goal is ambiguous.',
     ground: ['this'],
     contextMenu: false,
   }),

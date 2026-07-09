@@ -17,7 +17,7 @@ to the user for a one-tap confirm before anything runs.
 
 | Keyword      | Repeatable | Required | Meaning                                                                                                                                                                          |
 | ------------ | :--------: | :------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                                           |
+| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `visualize`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                              |
 | `surface`    |     no     |   yes    | The active app where the workflow starts: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                         |
 | `scope`      |     no     |    no    | Where the first phase applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow.                                             |
 | `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                                        |
@@ -37,10 +37,10 @@ starting with `#` are comments. Unknown keywords are reported back as a correcti
 
 ## The verb is general; scope and ground are orthogonal
 
-The seven verbs are **general capabilities**, identical on every surface — the verb says
+The general verbs are **surface-agnostic capabilities** — the verb says
 WHAT, `scope` says WHERE, `ground` says what it is grounded on. Do not smuggle a surface or a
 task into the verb (no `regen-clause`, `draft-slides`, `synthesize`, `meeting-notes`,
-`resolve-comment` — those are scopes/closures of the seven):
+`resolve-comment` — those are scopes/closures of these verbs):
 
 | Verb        | Means                                                    | Route         |
 | ----------- | -------------------------------------------------------- | ------------- |
@@ -49,6 +49,7 @@ task into the verb (no `regen-clause`, `draft-slides`, `synthesize`, `meeting-no
 | `explain`   | clarify the scope in plain language                      | chat (read)   |
 | `rewrite`   | apply any instruction to the scope → a reversible edit   | write (gated) |
 | `review`    | whole-scope pass → N findings → N gated annotations      | annotation    |
+| `visualize` | create a chart, visual summary, or chart-ready table      | write (gated) |
 | `draft`     | generate new material (slides, page, reply, column)      | write (gated) |
 | `notes`     | transcript → live notes + action items (Teams)           | annotation    |
 
@@ -59,21 +60,39 @@ the scope×surface affords (a Word tracked change, an Excel cell, a slide-body r
 
 ## How `step` maps per surface
 
-A step is phrased so the executor can realize it with one command on that surface:
+A step is phrased so the executor can realize it with a bounded capability on that surface. It is
+not a CLI command, but it should be close enough to the capability vocabulary that the commander can
+choose the right command after reading live host content.
 
-| Surface    | A step becomes…                              | Executor verb(s)                    |
-| ---------- | -------------------------------------------- | ----------------------------------- |
-| Word       | a tracked change or a comment                | `suggest`, `comment`, `reply`       |
-| Excel      | a cell value/formula, a format, or a comment | `set`, `format`, `comment`, `reply` |
-| PowerPoint | an inserted slide                            | `slide`                             |
-| OneNote    | an appended page                             | `page`                              |
-| Outlook    | a staged reply or a new draft                | `mail`, `compose`                   |
-| Teams      | a staged channel post                        | `post`                              |
+| Surface | Step should name… |
+| --- | --- |
+| Word | tracked rewrite; anchored comment/reply; style application; inserted table/hyperlink/content control; bounded find/replace. |
+| Excel | one rectangular grid/table materialization; formulas; range format; comment/reply; native table; chart/pivot summary; sort/filter; worksheet operation. |
+| PowerPoint | slide creation; selected shape/text update; image/table/chart-ready insertion; slide layout; shape/text formatting; deck handoff import. |
+| OneNote | page append; page title; outline/rich text block; note tag; explicit section creation. |
+| Outlook | staged reply or new draft; body/subject/recipients; attachment; categories; calendar draft. Never automatic send. |
+| Teams | staged post/card; transcript notes/actions; thread/channel handoff; estate/Graph write only when explicitly requested and gated. |
 
 Write the intention, not the command: _"rewrite the SLA figure to 99.9% as a tracked change"_
 → the executor reads the clause, finds the exact text, and emits
 `suggest "…99.5%…" => "…99.9%…"`. Keep one change per `step` so each maps to one previewed,
 approved, recorded edit.
+
+Bulk data entry is one reviewable change when it is one coherent table/grid. For example, a request
+to fill a blank weekly schedule should plan:
+
+```
+step materialize the requested weekly schedule as one rectangular grid in the existing table
+```
+
+It should not plan dozens of per-cell steps. The commander decides whether to use grid, spill, table,
+or smaller writes based on the live capability manifest and host limits.
+
+For `visualize`, plan the question the chart should answer, not just "make a chart." If the source is
+a schedule/calendar/text matrix, the first step should be to derive a chart-ready summary table
+(for example, hours by activity, hours by day, or task duration), then create a native chart from that
+summary. If the user's intended metric is unclear, emit `clarify` with compact options instead of
+guessing a chart type.
 
 ## Scope, grounding, exclusions
 
@@ -111,6 +130,8 @@ Emit `clarify` (and keep the plan minimal) when a material choice can't be infer
 - the request names a standard/policy ambiguously (which control? which version?),
 - the scope is unclear (which section/range?),
 - the action could mean two different changes,
+- the user asks for a chart/visualization but the data supports multiple valid summaries
+  (for example, hours by activity vs hours by day vs meeting/focus split),
 - an exclusion conflicts with a step.
 
 A plan carrying any `clarify` line is surfaced to the user as a question; the host re-plans

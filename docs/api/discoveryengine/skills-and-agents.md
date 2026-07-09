@@ -1,19 +1,9 @@
 # Skills & agents on Gemini Enterprise — the live surface vs the published one
 
-This note **corrects and extends** `agent-invocation.md`. That doc concluded "there is no
-`agentsSpec`, so you can't name an agent/skill in the `streamAssist` request — routing is the
-assistant's job." That is true of the **published** `discoveryengine.v1alpha` discovery doc and
-proto (verified: `StreamAssistRequest` = `session, actionSpec, query, userMetadata, toolsSpec,
-generationSpec`; no `skills_spec`, no `agentsSpec`; the only skill field is `invokedSkills[]` on
-the **response**).
-
-It is **not** the whole live surface. The `engines.assistants.agents.*` CRUD methods **are**
-published (they appear in `methods-index.md`: `agents.create/get/list/patch/delete` and
-`agents.files.import`). What the published schema **omits** is the skill-specific shape on top of
-them — the `skillAgentDefinition` payload on an Agent, the raw `files:upload` endpoint, and the
-**`skillsSpec`** field on `streamAssist`. Those three were verified end-to-end against a live engine
-(see `skill/` tooling: `create_skill.py`, `test_skill.py`, README "What we learned"). Treat the
-published doc as a **subset** of what the endpoint accepts.
+This note explains the GE skill layer used by the add-in. The public RPC reference now documents
+`StreamAssistRequest.agents_spec`, but the live Gemini Enterprise skill path we have verified is
+still the widget-style **`skillsSpec`** field plus a query mention marker. See
+`widget-service-skills.md` for the formal widget lifecycle and send-time reference contract.
 
 ## The real skill lifecycle
 
@@ -43,10 +33,23 @@ The `agents` CRUD methods are published. The `skillAgentDefinition` payload and 
 a *different*, No-Code-only file route; the bundle path used here is the raw
 `/upload/v1alpha/.../files:upload`.
 
-This mode can fail even when the GE web UI can edit the same skill. A live probe against the dev
-tenant authenticated through ADC but returned `PERMISSION_DENIED` for
-`discoveryengine.agents.list`, which means the user had GE widget permissions but not the Google IAM
-agent permission required by the public API.
+**VERIFIED LIVE (saib tenant, WIF token, 2026-07):** the public-API path **works for the whole skill
+lifecycle** and needs no widget JWT — `CreateAgent`, `GetAgent`, `UpdateAgent`, `DeleteAgent`, and the
+raw `files:upload` bundle route (zip → `SKILL.md` becomes `instruction`, rest become `subfiles`) all
+succeed with the signed-in user's federated token. Requirements/caveats from probing:
+- `SKILL.md` in an uploaded bundle **must have YAML frontmatter** (`--- name/description ---`) or the
+  server returns 400 "Missing YAML frontmatter start delimiter".
+- Skill agents need **no `DeployAgent`** (deploy is only for managed/app agents; `:deploy` is 403 here
+  and irrelevant to skills). Agents are created `state=PRIVATE` and are still fully usable.
+- Only **`ListAgents` (list-all)** and **sharing** (`sharingConfig` PATCH) are denied for this
+  principal — minor: we address skills by their known resource id (from `.env`), and PRIVATE is fine.
+- The earlier `PERMISSION_DENIED` observation was specifically `discoveryengine.agents.list` (list-all)
+  and does **not** apply to create/get/update/delete/upload.
+
+**This makes skill provisioning a boot-time "warm-up" the add-in can do itself** (client-direct, ADR-0001),
+not an out-of-band admin/widget step — see `ensureSkillAgent` in `packages/gemini-client/src/agents.ts`,
+wired into `composeSession` (`warmUpSkills`). It is idempotent: a cheap `GetAgent` per skill, comparing a
+`[rev:<bundle-sha>]` marker in the description, writing only on drift.
 
 ### Widget API mode
 
@@ -59,7 +62,7 @@ etc.) and use a short-lived Vertex AI Search widget JWT.
 Use this mode for developer-owned private skills when public IAM is not available. Keep it out of
 CI and do not automate browser cookies or XSRF state; copy only the short-lived widget Bearer token
 into a local temp file and let the tooling validate issuer/audience/expiry before it sends a
-request.
+request. The exact local contract is in `widget-service-skills.md`.
 
 ## Mounting a skill per turn — `skillsSpec` (the load-bearing correction)
 
@@ -76,7 +79,9 @@ To run a specific skill for a turn, reference its agent **resource name** in `st
 This is **deterministic** — unlike auto-discovery, the client chooses the skill. So our earlier
 "you can only point at an assistant and hope it routes" was too pessimistic: with `skillsSpec`
 we mount exactly the skill we want. (`invokedSkills[]` in the response still reports what
-actually ran — keep using it for provenance.)
+actually ran — keep using it for provenance.) The query text also carries the GE-style mention
+marker, for example `[m365-command-planner](mention://?uri=17573173582293271726)`, because the
+widget UI uses those visible mentions to select a skill in natural-language turns.
 
 ### Reliability notes (from live refinement)
 

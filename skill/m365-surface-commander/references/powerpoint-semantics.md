@@ -16,6 +16,12 @@ Load this when the active surface is PowerPoint. Cross-surface table:
 shape ref. Use `list shape`, `properties <ref>`, `open <ref>`, and `inspect <ref>` to target one
 shape; do not parse a shape id out of slide text.
 
+**Progressive disclosure:** specialized PowerPoint writes are live capability-gated. Use only slash
+commands advertised by the grammar/help for the turn, after `list`/`properties`/`open`/`inspect`
+confirms the slide, shape, layout, or staged asset. Fail closed: if the command, ref, layout, or
+payload is absent, stop at a readable plan/comment instead of fabricating ids or silently degrading
+to an unsupported Office.js path.
+
 **Core verbs:**
 
 - `slide "Title" "bullet" …` inserts a slide (bullets can be a table expression whose rows become
@@ -24,16 +30,27 @@ shape; do not parse a shape id out of slide text.
   the target with `list shape`, `properties <ref>`, `open <ref>`, and `inspect <ref>` first.
 
 **Generated deck artifact path:** for multi-slide generated decks, the host app may compile a
-bounded DeckSpec/HTML-derived preview into one base64 `.pptx` artifact and invoke `insert-slide`
-with `params.deck`. Do **not** emit raw base64 PPTX in a normal command block; use `slide` for
-ordinary one-slide creation unless the runtime has already staged a compiled deck artifact.
+bounded DeckSpec/HTML-derived preview into one base64 `.pptx` artifact and invoke `/insert-slide`
+with a `deckBase64`/staged-deck parameter. Do **not** emit raw base64 PPTX in a normal command block;
+use `slide` for ordinary one-slide creation unless the runtime has already staged a compiled deck
+artifact.
 
-**Specialized (`/`) today:** use only what the live grammar advertises. PowerPoint has the bare
-`slide` and `shape` verbs above; the generated-deck import is an internal client-staged
-`insert-slide` artifact path, not a conversational shortcut. Modeled future kinds such as
-`/add-shape`, `/add-table-slide`, `/format-shape`, `/delete-slide`, `/move-slide`,
-`/duplicate-slide`, `/apply-slide-layout`, `/insert-hyperlink`, and `/insert-image` must not be used
-until they appear in the live grammar/help for the turn.
+**Advanced (`/`) when live-advertised:**
+
+- `/insert-image` places a staged/approved image on a known slide or shape target. Inspect the slide
+  first, supply explicit alt text, and avoid overlapping existing content unless requested.
+- `/add-shape` creates a new shape on a known slide with explicit geometry; inspect existing layout
+  bounds before choosing coordinates.
+- `/format-shape` changes fill, line, text, size, or position on an inspected shape ref. Never infer
+  the shape from visible text alone.
+- `/add-table-slide` creates a slide with structured table rows. Use this for table-native slides
+  instead of bullet text when the live grammar exposes it.
+- `/apply-slide-layout` applies a discovered layout name/id to a known slide. List available layouts
+  first and fail closed if the host does not expose the requested layout.
+- `/insert-slide` with `deckBase64` is only for host-staged compiled deck artifacts; it is not a
+  conversational shortcut for pasting arbitrary base64.
+- Other modeled kinds (`/delete-slide`, `/move-slide`, `/duplicate-slide`, `/insert-hyperlink`) stay
+  unavailable until the live grammar advertises them.
 
 **Reversibility:** inserted slides and exact shape text replacements record bridge-level inverses.
 

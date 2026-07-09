@@ -8,8 +8,8 @@ testing.
 Development profile:
 
 ```bash
-npm run manifests:generate -- --profile development
-npm run manifests:validate -- --profile development
+bun run manifests:generate -- --profile development
+bun run manifests:validate -- --profile development
 ```
 
 Outputs:
@@ -26,8 +26,8 @@ dist/manifests/development.onenote.manifest.xml
 Internal alpha profile:
 
 ```bash
-npm run manifests:generate -- --profile internal-alpha-word-excel
-npm run manifests:validate -- --profile internal-alpha-word-excel
+bun run manifests:generate -- --profile internal-alpha-word-excel
+bun run manifests:validate -- --profile internal-alpha-word-excel
 ```
 
 The alpha profile intentionally advertises Word and Excel only.
@@ -35,8 +35,8 @@ The alpha profile intentionally advertises Word and Excel only.
 ## Build and Package Development
 
 ```bash
-npm run build
-npm run package:dev
+bun run build
+bun run package:dev
 ```
 
 Outputs:
@@ -70,10 +70,10 @@ dist/release/SHA256SUMS
 ## Package Alpha
 
 ```bash
-npm run build
-npm run manifests:generate -- --profile internal-alpha-word-excel
-npm run manifests:validate -- --profile internal-alpha-word-excel
-npm run package:alpha
+bun run build
+bun run manifests:generate -- --profile internal-alpha-word-excel
+bun run manifests:validate -- --profile internal-alpha-word-excel
+bun run package:alpha
 ```
 
 Output:

@@ -48,6 +48,22 @@ describe('TurnQueue', () => {
     expect(h.skill).not.toHaveBeenCalled();
   });
 
+  it('preserves command display text separately from the executor task', () => {
+    const q = new TurnQueue();
+    const h = handlers();
+    q.enqueue({
+      mode: 'commands',
+      task: '<internal executor prompt>',
+      displayText: '/execute plan',
+    });
+    q.drain(h);
+    expect(h.commands).toHaveBeenCalledWith(
+      '<internal executor prompt>',
+      undefined,
+      '/execute plan',
+    );
+  });
+
   it('preserves a direct command program — never downgraded to model commands or ask', () => {
     const q = new TurnQueue();
     const h = handlers();

@@ -42,6 +42,10 @@ you act on the document; a prose answer does nothing and is wrong here.
   already have the data in the snapshot, go straight to the write command.
 - If the task appears to need the whole file or hosted analysis, first ask the host for a context
   strategy with `context ...`; do not invent upload handles or code-execution commands.
+- Hosted Python/code execution is **not** an executor response. In this skill you do not return
+  Python, generated images, matplotlib output, CSV files, or analysis prose as the action. If the
+  task needs hosted analysis, use `context ...` to ask for a strategy, then continue with supported
+  Office commands such as `grid`, `chart`, `spill`, `set`, `slide`, `suggest`, `mail`, or `post`.
 - Never reveal thinking, planning notes, "I am analyzing...", or troubleshooting narration.
 - Never emit any fenced block except ` ```cmd `. ` ```python `, ` ```json `, ` ```bash `,
   and bare markdown fences are invalid output.
@@ -81,6 +85,9 @@ task is done.
 - **Batch reads freely; write one change per line.** For Excel, a rectangular table/schedule belongs
   in one `grid` line, not dozens of `set` lines. All writes in a turn are previewed and approved
   before anything changes; each is then applied and recorded.
+- For large, reused, or cross-step reads, save a bounded local artifact once with `save`, then use
+  `workspace`, `cat`, and `grep` to inspect it. Workspace artifacts are local workbench handles;
+  they never mutate Office content, upload files, run code, or authorize a write.
 
 ## Commands (quick reference)
 
@@ -105,6 +112,12 @@ tables [selector]                    list table/range refs, optionally near a se
 slides [selector]                    list slide refs, optionally near a selector
 neighbors [refId|selector]           show nearby context refs around a target
 open <refId|selector>                navigate/select in the host only; never writes
+
+# local workspace (never host mutations)
+workspace [name|ws:id]               list local virtual artifacts or show one summary
+save <name> = read <selector>        save bounded read/search/outline/pipeline/literal output
+cat <name|ws:id> [head=N]            preview a bounded artifact slice
+grep <name|ws:id> "pattern"          search an artifact locally; optional context=N
 
 # write (one per line; only those available this turn)
 set <A1> <value|=formula>            Excel: write a cell        e.g. set Sales!F2 =C2-D2
@@ -140,22 +153,45 @@ targeted help as progressive disclosure: `help shape`, `shape -h`, `chart -h`, e
 generated from the same `m365-cli-1.0.json` manifest as the runtime grammar, so it is the safe place
 to discover command-specific sequences, selectors, examples, failure modes, and next actions.
 
+### Revealable references
+
+When you need to point the user back to a source location, use compact references the sidepane can
+turn into host navigation buttons. Use `open <refId|selector>` when you need to navigate inside the
+command loop; use an inline location or `citation:` link when you are reporting where something is.
+
+- Excel: `` `K6:L18` `` or `citation:'Daily schedule'!K6:L18`
+- Word: `citation:paragraph:7`, `citation:comment:c1`, or
+  `citation:heading:Service availability`
+- PowerPoint: `citation:slide:s2` or `citation:shape:s2:sh7`
+- Outlook: `citation:outlook:item:AAMk...`
+- OneNote: `citation:page:p1`
+- Teams: `citation:teams:link:https://teams.microsoft.com/l/message/...`
+
+Never paste a full `doc_state`, raw `grid` payload, or internal confirmed-plan prompt as the answer
+when a compact reference or command card is enough.
+
 ### Progressive context strategy
 
 Use the cheapest useful context first. Escalate only when the task genuinely needs it.
 
 1. **Inline/current item**: use the provided snapshot, `outline`, `list`, `inspect`,
    `properties`, `open`, `read`, and `search`.
-2. **Reference grounding**: use existing pinned or federated references when the host provides them.
-3. **Full-file upload candidate**: ask with `context upload-preferred full-scope` when bounded
+2. **Local workspace**: for large or reused reads, `save` an artifact and use `cat`/`grep` to shape
+   the next move without pasting the entire source back into the chat. Refresh the artifact with a
+   new `save` after host writes when staleness matters.
+3. **Reference grounding**: use existing pinned or federated references when the host provides them.
+4. **Full-file upload candidate**: ask with `context upload-preferred full-scope` when bounded
    reads cannot expose enough of the artifact.
-4. **Hosted analysis/code-execution candidate**: ask with `context analytical code-execution-preferred`
+5. **Hosted analysis/code-execution candidate**: ask with `context analytical code-execution-preferred`
    for workbook-scale reconciliation, pivots, chart-data shaping, validation, or file-level analysis.
 
 `context` never uploads a file, runs code, grants capability, or approves a write. It returns a
 strategy, size limits, accepted file formats, and guardrails. If the result says upload is
 recommended, wait for the host/user to attach the file and provide a structured file id; never make
 one up. Once a file id exists, use it only as structured upload grounding supplied by the host.
+If the model or platform can render a chart/image through hosted tools, treat that as analysis only:
+the add-in needs an Office-native command (`chart`, `slide`, `grid`, etc.) so the result can be
+previewed, approved, applied, and provenanced in the open document.
 
 Useful examples:
 
@@ -176,6 +212,18 @@ context analytical full-scope upload-preferred code-execution-preferred
 
 Then wait for the host's structured context/file/code-execution result. Never invent a file id, CSV
 attachment id, or code-execution output.
+
+Use workspace artifacts when the model would otherwise repeatedly paste the same range, document
+slice, or generated intermediate table:
+
+```
+save schedule.tsv = read 'Daily schedule'!B3:I53
+grep schedule.tsv "Deep Work" context=1
+cat schedule.tsv head=20
+```
+
+Use them as a local working bench for deterministic inspection and debugging. Do not claim that a
+workspace artifact is fresh after you mutate the host; read or save again before relying on it.
 
 You can also **compose**: pipe a read through pure transforms to compute a value, and
 reuse it in a write. Pipelines only read and compute — they never write.
@@ -241,6 +289,8 @@ needs them, so you keep context small.
 | [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`         |
 | [references/command-grammar.md](references/command-grammar.md)                   | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                           |
 | [references/capability-map.md](references/capability-map.md)                     | you need the cross-surface table of which read/write commands each app supports and their limits                                                                         |
+| [references/generated-capability-catalog.md](references/generated-capability-catalog.md) | you need generated registry truth — implemented/promotable/catalog-only capability status, requirement sets, command mapping, and capability-specific use cases |
+| [references/generated-command-catalog.md](references/generated-command-catalog.md) | you need generated CLI truth — verb groups, write-verb actuation mapping, or the specialized slash-command surface |
 | [references/progressive-disclosure.md](references/progressive-disclosure.md)     | you're deciding how much host/context/file information to ask for before acting, especially from an approved planner handoff                                            |
 | `references/<surface>-semantics.md`                                              | load the ONE matching the active surface (excel / word / powerpoint / outlook / teams / onenote) for its reading/anchoring model, surface verbs + `/`-kinds, and gotchas |
 

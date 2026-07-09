@@ -32,6 +32,9 @@ If the upload dialog rejects the zip, that is expected. Use XML.
 
 ## Unified Manifest / M365 Package Zip
 
+For the full deployment-method distinction, including app catalog versus Office add-in deployment,
+see [Deployment methods matrix](./07-deployment-methods-matrix.md).
+
 Use the zip for the unified Microsoft 365 app package flow:
 
 ```text
@@ -52,14 +55,71 @@ Possible upload paths:
 - Microsoft 365 / Teams developer app upload, when custom app upload is allowed by the tenant.
 - Microsoft 365 Agents Toolkit / Teams Toolkit CLI.
 
-Example CLI shape:
+### Automated Developer Sideload With Agents Toolkit
+
+Use this when you want a local developer install of the unified package without manually uploading
+the zip in the Teams/M365 UI.
 
 ```bash
-npx @microsoft/teamsapp-cli install --file-path dist/release/development-m365-v<version>.zip
+bun run sideload
+```
+
+That command:
+
+1. ensures `cloudflared` is available,
+2. starts/restarts Vite and a Cloudflare quick tunnel,
+3. writes the new tunnel origin to `packages/web-shell/.env`,
+4. regenerates, validates, and packages the development manifests using that origin,
+5. patches the Entra SPA redirect to include `https://<tunnel>/auth-redirect.html`,
+6. checks Agents Toolkit Microsoft 365 auth and prompts for `atk auth login m365` when needed,
+7. runs `atk install --file-path <zip>`,
+8. records the returned Agents Toolkit title ID in `.ge-sideload/unified-sideload.json` when it can
+   parse it.
+
+Useful variants:
+
+```bash
+bun run sideload                       # preflight ATK auth, then install/update
+bun run sideload -- --login            # force a fresh atk auth login m365 first
+bun run sideload -- --skip-atk-login   # skip ATK auth preflight
+bun run sideload -- --skip-tunnel      # package/install only; use when the tunnel is already correct
+bun run sideload:status                # show remembered title ID/package
+bun run sideload:uninstall             # uninstall remembered title ID
+bun run m365:sideload                  # interactive install/uninstall/status flow
+bun run setup:atk:login                # only run/check atk auth login m365
+```
+
+Equivalent raw CLI shape:
+
+```bash
+atk install --file-path dist/release/development-m365-v<version>.zip
+atk uninstall --mode title-id --title-id U_<title-id-guid> --interactive false
+```
+
+Microsoft's current unified-manifest sideload guidance says the Agents Toolkit CLI returns a title
+ID and that uninstall should use that title ID. If our wrapper cannot parse the title ID from `atk`
+output, copy it from the terminal and run:
+
+```bash
+bun run sideload:uninstall -- --title-id U_<title-id-guid>
 ```
 
 If the CLI opens a browser in a headless workstation and fails with `xdg-open ENOENT`, copy the URL
-into your browser manually or use a device-code/non-browser login flow if available.
+into your browser manually or run the scripted login helper:
+
+```bash
+bun run setup:atk:login
+```
+
+That helper wraps `atk auth login m365` and reuses the existing account when `atk auth list` already
+shows a connected Microsoft 365 account. Then retry `bun run sideload`.
+
+This is still a **developer sideload**. It is not tenant rollout, assignment, pinning, or guaranteed
+availability across every Office client. For tenant catalog upload, use:
+
+```bash
+bun run m365:catalog
+```
 
 ## OneNote
 
@@ -94,3 +154,12 @@ If you do not see the add-in:
 - Re-upload after changing tunnel hostnames.
 - Check that the manifest type matches the upload UI: XML for Office Upload Add-in, zip for unified
   M365 app package upload.
+
+## References
+
+- Microsoft unified manifest sideloading:
+  <https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-add-in-with-unified-manifest>
+- Microsoft Office on the web add-in sideloading:
+  <https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-office-add-ins-for-testing>
+- Microsoft Outlook add-in sideloading:
+  <https://learn.microsoft.com/en-us/office/dev/add-ins/outlook/sideload-outlook-add-ins-for-testing>

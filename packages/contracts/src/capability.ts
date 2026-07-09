@@ -59,6 +59,11 @@ export const ActuationKindSchema = z.enum([
   'create-table', // Excel: promote a range to a native Table (ADR-0007 `table` verb)
   'insert-chart', // Excel: add a chart over a source range (ADR-0007 `chart` verb)
   'format-conditional', // Excel: add a conditional-format rule to a range (ADR-0007 `cf` verb)
+  'insert-pivot', // Excel: add a native PivotTable over a source range
+  'sort-range', // Excel: apply native range/table sort
+  'filter-range', // Excel: apply native AutoFilter/table filter criteria
+  'manage-worksheet', // Excel: create/rename/delete/activate/protect a worksheet
+  'format-chart', // Excel: update chart title/legend/axes/style without recreating it
   'set-entity-card', // Excel: attach a linked-entity card to a cell (typings-limited)
   // ── PowerPoint ────────────────────────────────────────────────────────────
   'insert-slide', // PowerPoint: add a slide
@@ -211,6 +216,58 @@ export const ActuationParamsSchema = z.object({
       ]),
     })
     .optional(),
+  /** insert-pivot (Excel): native PivotTable creation over an explicit source range. */
+  pivot: z
+    .object({
+      sourceRange: z.string(),
+      destinationRange: z.string(),
+      name: z.string().optional(),
+      rowFields: z.array(z.string()).default([]),
+      columnFields: z.array(z.string()).default([]),
+      valueFields: z.array(z.string()).default([]),
+      filterFields: z.array(z.string()).default([]),
+    })
+    .optional(),
+  /** sort-range (Excel): native sort over a range/table. */
+  sortRange: z
+    .object({
+      range: z.string(),
+      key: z.string(),
+      order: z.enum(['ascending', 'descending']).default('ascending'),
+      hasHeaders: z.boolean().default(true),
+    })
+    .optional(),
+  /** filter-range (Excel): native filter over a range/table column. */
+  filterRange: z
+    .object({
+      range: z.string(),
+      column: z.string(),
+      criterion1: z.string(),
+      operator: z.string().optional(),
+      criterion2: z.string().optional(),
+    })
+    .optional(),
+  /** manage-worksheet (Excel): worksheet lifecycle and protection operations. */
+  worksheet: z
+    .object({
+      action: z.enum(['create', 'rename', 'delete', 'activate', 'protect', 'unprotect']),
+      name: z.string(),
+      newName: z.string().optional(),
+      position: z.enum(['before', 'after', 'end']).optional(),
+    })
+    .optional(),
+  /** format-chart (Excel): update an existing chart without recreating its data source. */
+  chartFormat: z
+    .object({
+      chartId: z.string().optional(),
+      chartName: z.string().optional(),
+      title: z.string().optional(),
+      legend: z.enum(['show', 'hide']).optional(),
+      style: z.string().optional(),
+      xAxisTitle: z.string().optional(),
+      yAxisTitle: z.string().optional(),
+    })
+    .optional(),
   slide: z
     .object({ title: z.string(), bullets: z.array(z.string()), notes: z.string().optional() })
     .optional(),
@@ -256,6 +313,10 @@ export const ActuationParamsSchema = z.object({
     .object({
       rows: z.array(z.array(z.string())),
       hasHeaders: z.boolean().default(false),
+      left: z.number().optional(),
+      top: z.number().optional(),
+      width: z.number().optional(),
+      height: z.number().optional(),
     })
     .optional(),
   /** insert-hyperlink (Word/PPT/OneNote). The URL is untrusted — screen the scheme/host. */

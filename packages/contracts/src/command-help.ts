@@ -79,7 +79,128 @@ export const COMMAND_HELP = {
     'open <refId|selector>',
     'you need to navigate the host to a target without mutating content',
   ),
+  workspace: {
+    command: 'workspace',
+    useWhen:
+      'you need to see which local virtual artifacts are available before reading, transforming, or handing data across surfaces',
+    syntax: 'workspace [name|ws:id]',
+    discovery: ['workspace', 'cat <artifact> head=20', 'grep <artifact> "pattern"'],
+    sequence: [
+      'Use workspace to list compact artifact handles.',
+      'Use cat or grep only when you need a bounded preview of one artifact.',
+      'Use the artifact as data for later reasoning; emit a separate write command only after a real target is known.',
+    ],
+    examples: ['workspace', 'workspace schedule.tsv'],
+    doNot: [
+      'Do not treat a workspace artifact as Office content after the host has changed; refresh it with save if staleness matters.',
+      'Do not expose full artifacts in chat unless the user explicitly asks and the preview cap allows it.',
+    ],
+    failureModes: ['Unknown artifact refs return a compact corrective error.'],
+    safety: ['Local workspace only; never reads or writes Office content by itself.'],
+  },
+  save: {
+    command: 'save',
+    useWhen:
+      'a host read or pure pipeline result is large, reused across turns, needs deterministic local search/shaping, or should feed another surface',
+    syntax: 'save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)',
+    discovery: ['outline', 'read <range|selector>', 'context analytical upload-preferred'],
+    sequence: [
+      'Read or identify the exact host source first when the source is not already obvious.',
+      'Save the read/pipeline result to a named artifact instead of repeatedly pasting large data back into chat.',
+      'Use grep/cat or a composed pipeline to derive a small table, summary, chart source, or handoff packet.',
+      'Terminate real Office mutations with grid/spill/chart/slide/suggest/etc. after preview and approval.',
+    ],
+    examples: [
+      "save schedule.tsv = read 'Daily schedule'!B3:I53",
+      'save chart-data.md = (read Sales!A1:D50 | select Region,Revenue | sort Revenue desc | head 10)',
+      'save slide-outline.md = "Title\\n- Point one\\n- Point two"',
+    ],
+    doNot: [
+      'Do not use save as a hidden write; it only creates a local artifact.',
+      'Do not emit many set commands for a rectangular payload; save/shape then use one grid command.',
+      'Do not invent artifact names returned by the host; create them with save first.',
+    ],
+    failureModes: [
+      'Unsupported host reads save a corrective read error as a compact artifact result.',
+      'Malformed names are rejected; names are labels, not filesystem paths.',
+    ],
+    safety: [
+      'Artifacts are bounded, local, and preview-capped; saving does not grant upload, code execution, or mutation authority.',
+    ],
+  },
+  cat: {
+    command: 'cat',
+    useWhen:
+      'you need a bounded preview of a local workspace artifact before deciding the next step',
+    syntax: 'cat <name|ws:id> [head=N]',
+    discovery: ['workspace'],
+    sequence: [
+      'List artifacts with workspace if the handle is unknown.',
+      'Preview only the smallest useful slice.',
+      'Use the preview to decide the next read, transform, or write command.',
+    ],
+    examples: ['cat schedule.tsv head=20', 'cat ws:2 head=12'],
+    doNot: ['Do not dump a full large artifact into the conversation.'],
+    failureModes: ['Unknown artifact refs or invalid head values return corrective errors.'],
+    safety: ['Read-only local preview; never mutates Office content.'],
+  },
+  grep: {
+    command: 'grep',
+    useWhen:
+      'you need deterministic local search over a saved artifact instead of asking the model to scan a large paste',
+    syntax: 'grep <name|ws:id> "pattern" [context=N]',
+    discovery: ['workspace', 'cat <artifact> head=20'],
+    sequence: [
+      'Save the source data first if it is not already in the workspace.',
+      'Search for exact labels, ids, headings, or activity names.',
+      'Use the returned line numbers/snippets to decide the next small read or write.',
+    ],
+    examples: ['grep schedule.tsv "Deep Work"', 'grep requirements.md "shall" context=1'],
+    doNot: [
+      'Do not use grep for semantic retrieval; use search/inspect/context for host or connector retrieval.',
+    ],
+    failureModes: ['No matches is a valid result; stale artifacts must be refreshed with save.'],
+    safety: ['Read-only local search; never mutates Office content.'],
+  },
+  ls: genericRead(
+    'ls',
+    'ls <path>',
+    'you need to see what exists under /doc (the live document) or /work (saved artifacts) before reading one entry',
+  ),
+  find: genericRead(
+    'find',
+    'find <path> [glob]',
+    'you need to locate an artifact or document entry by name pattern instead of listing everything',
+  ),
   set: genericWrite('set', 'set <A1> <value|=formula>', 'you need to write one Excel cell'),
+  grid: {
+    command: 'grid',
+    useWhen:
+      'the user wants to fill or replace a rectangular Excel area with many literal values in one previewable effect',
+    syntax: 'grid <range> = "a\\tb\\nc\\td"',
+    discovery: ['outline', 'read <target-range>', 'properties <target-range>'],
+    sequence: [
+      'Read the target range or table first so the grid shape matches the workbook.',
+      'Build one rectangular TSV payload; every row must have the same number of cells.',
+      'Emit one grid command instead of many set commands so the approval card previews one bulk write.',
+      'Wait for preview, approval, and result before done.',
+    ],
+    examples: [
+      'grid Report!A1:B2 = "Region\\tRevenue\\nEast\\t100"',
+      'grid \'Daily schedule\'!C5:I23 = "Monday\\tTuesday\\nDeep Work\\tMusic Lesson"',
+    ],
+    doNot: [
+      'Do not emit dozens of set commands for a single table-shaped fill.',
+      'Do not use grid for computed tables; use spill when the value comes from a pipeline.',
+      'Do not change cells outside the explicit target rectangle.',
+    ],
+    failureModes: [
+      'Ragged rows are rejected.',
+      'Large grids may hit policy caps.',
+      'Stale ranges fail closed.',
+    ],
+    safety: ['One grid command is one effect, with one preview, one approval, and one changeId.'],
+  },
   suggest: {
     command: 'suggest',
     useWhen: 'the user wants a surgical Word rewrite as a tracked change anchored on exact text',
@@ -236,11 +357,39 @@ export const COMMAND_HELP = {
     'table <range> [headers] [name=NAME]',
     'you need to promote an Excel range to a table',
   ),
-  chart: genericWrite(
-    'chart',
-    'chart <column|bar|line|pie|scatter|area> <range> [title="..."] [series=rows|columns]',
-    'you need to create an Excel chart from a range',
-  ),
+  chart: {
+    command: 'chart',
+    useWhen:
+      'you need to create an Office-native Excel chart from a verified range or derived summary table',
+    syntax: 'chart <column|bar|line|pie|scatter|area> <range> [title="..."] [series=rows|columns]',
+    discovery: [
+      'read <source-range>',
+      'read adjacent label/header columns when the selection is unlabeled',
+      'context analytical full-scope upload-preferred code-execution-preferred when data shaping is workbook-scale',
+    ],
+    sequence: [
+      'Read the live source range before choosing a chart.',
+      'Classify the question: trend, ranking, part-to-whole, correlation, or schedule/text summary.',
+      'For schedules, calendars, sparse ranges, and text grids, first create a small summary table with grid/spill, then chart that summary range.',
+      'Choose the chart type by rubric: bar for ranked categories or long labels; column for short categories; line for ordered dates/times; scatter for numeric X/Y; pie only for <=6 non-negative parts of one meaningful total; area only for cumulative trends.',
+      'Preview chart type, range, title, and series orientation, then wait for approval.',
+    ],
+    examples: [
+      'chart column Report!A1:B11 title="Top regions"',
+      'chart bar \'Daily schedule\'!K6:L18 title="Weekly Hours by Activity" series=columns',
+    ],
+    doNot: [
+      'Do not chart a raw schedule/calendar/text grid; derive a summary table first.',
+      'Do not use pie for many categories, negatives, or values that are not parts of one total.',
+      'Do not return a hosted-code image or matplotlib artifact when the user asked to insert a chart in Excel.',
+      'Do not chart an unlabeled single numeric column unless the user explicitly requested that exact range.',
+    ],
+    failureModes: [
+      'Unsupported chart type or stale range returns a corrective failure.',
+      'Sparse or unlabeled source data requires a summary table or clarification.',
+    ],
+    safety: ['Every chart is dry-run, previewed, approved, gated, actuated, and recorded.'],
+  },
   cf: genericWrite('cf', 'cf <range> <rule>', 'you need conditional formatting on an Excel range'),
   spill: genericWrite(
     'spill',

@@ -98,7 +98,7 @@ def _load_language():
                 "outline", "read", "search", "list", "inspect", "properties", "comments",
                 "attachments", "tables", "slides", "neighbors", "context", "open",
             },
-            {"workspace", "save", "cat", "grep"},
+            {"workspace", "save", "cat", "grep", "cp", "mv", "rm", "share"},
             {"done", "help"},
             set(HANDLED_WRITE_VERBS),
             {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
@@ -480,11 +480,13 @@ def parse_line(line: str):
     if verb == "workspace":
         return {"verb": "workspace", **({"ref": rest.strip('"')} if rest else {})}
 
-    if verb == "save":
+    # `share` has the exact same source grammar as `save` — it only differs in where the runtime
+    # persists the result (the cross-surface `/shared` Graph app-folder store, not local `/work`).
+    if verb in ("save", "share"):
         m = re.match(r"^(\S+)\s*=\s*(.+)$", rest)
         if not m:
             return {
-                "error": 'save needs a name and source — usage: save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)'
+                "error": f'{verb} needs a name and source — usage: {verb} <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)'
             }
         name = m.group(1)
         name_error = _validate_workspace_name(name)
@@ -493,7 +495,7 @@ def parse_line(line: str):
         source = _parse_workspace_source(m.group(2))
         if "error" in source:
             return source
-        return {"verb": "save", "name": name, "source": source}
+        return {"verb": verb, "name": name, "source": source}
 
     if verb == "cat":
         split = _split_first_arg(rest)
@@ -895,6 +897,12 @@ done
         "source": {"src": "read", "selector": "'Daily schedule'!B3:I53"},
     }:
         failures.append(f"save read did not parse: {parse_line('save schedule.tsv = read ' + chr(39) + 'Daily schedule' + chr(39) + '!B3:I53')}")
+    if parse_line('share note.txt = "hello"') != {
+        "verb": "share",
+        "name": "note.txt",
+        "source": {"src": "literal", "text": "hello"},
+    }:
+        failures.append(f"share literal did not parse: {parse_line('share note.txt = ' + chr(34) + 'hello' + chr(34))}")
     if parse_line('cat schedule.tsv head=12') != {"verb": "cat", "ref": "schedule.tsv", "head": 12}:
         failures.append("cat head did not parse")
     if parse_line('grep schedule.tsv "Deep Work" context=1') != {

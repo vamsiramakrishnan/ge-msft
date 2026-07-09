@@ -2,6 +2,7 @@ import type { EstateRef, ResolvedContext } from '@ge/contracts';
 import { toContext } from '@ge/content';
 import { GraphConfig, GRAPH_SCOPES, graphUrl } from './config.js';
 import {
+  GraphChildrenSchema,
   GraphDriveItemSchema,
   GraphEventSchema,
   GraphMessageSchema,
@@ -106,6 +107,56 @@ export class GraphClient {
     }
   }
 
+  // ---- /shared: the cross-surface handoff store (Files.ReadWrite.AppFolder, see config.ts) ----
+  // A per-app OneDrive folder (`/me/drive/special/approot`) invisible to other apps and not shown
+  // in the user's normal OneDrive browsing UI by default — the narrowest available Graph write
+  // surface. This is what the `/shared` DocFs mount is backed by (see docfs/shared-mount.ts).
+
+  /** List files at the top level of the app folder — `{name, size}` per file, newest-Graph-order. */
+  async listSharedFiles(): Promise<{ name: string; size: number }[]> {
+    const res = await this.getJson(
+      '/me/drive/special/approot/children',
+      [...GRAPH_SCOPES.shared],
+      GraphChildrenSchema,
+    );
+    return (res.value ?? [])
+      .filter((item) => item.file !== undefined)
+      .map((item) => ({ name: item.name, size: item.size ?? 0 }));
+  }
+
+  /** Read one app-folder file's text content, or `undefined` if it doesn't exist (404 → undefined,
+   *  not a throw — a missing shared file is an expected, everyday case, not an error). */
+  async getSharedFile(path: string): Promise<string | undefined> {
+    const res = await this.send('GET', `/me/drive/special/approot:/${encPath(path)}:/content`, [
+      ...GRAPH_SCOPES.shared,
+    ]).catch((err: unknown) => {
+      if (err instanceof GraphNotFoundError) return undefined;
+      throw err;
+    });
+    return res ? res.text() : undefined;
+  }
+
+  /** Write (create or overwrite) one app-folder file's text content. */
+  async putSharedFile(path: string, content: string): Promise<void> {
+    await this.send(
+      'PUT',
+      `/me/drive/special/approot:/${encPath(path)}:/content`,
+      [...GRAPH_SCOPES.shared],
+      content,
+      'text/plain',
+    );
+  }
+
+  /** Delete one app-folder file. A missing file is treated as already-deleted (404 is not an error). */
+  async deleteSharedFile(path: string): Promise<void> {
+    await this.send('DELETE', `/me/drive/special/approot:/${encPath(path)}`, [
+      ...GRAPH_SCOPES.shared,
+    ]).catch((err: unknown) => {
+      if (err instanceof GraphNotFoundError) return undefined;
+      throw err;
+    });
+  }
+
   // ---- transport ----
 
   private async getJson<T>(path: string, scopes: string[], schema: z.ZodType<T>): Promise<T> {
@@ -124,16 +175,17 @@ export class GraphClient {
   }
 
   private async send(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     scopes: string[],
     body?: string,
+    contentType: string = 'application/json',
   ): Promise<Response> {
     const url = graphUrl(this.config, path);
     const call = async (): Promise<Response> => {
       const token = await this.tokens.getGraphToken(scopes);
       const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-      if (body) headers['Content-Type'] = 'application/json';
+      if (body) headers['Content-Type'] = contentType;
       return this.fetchImpl(url, { method, headers, ...(body ? { body } : {}) });
     };
     let res = await call();
@@ -141,12 +193,19 @@ export class GraphClient {
       this.tokens.invalidate();
       res = await call();
     }
+    if (res.status === 404) {
+      throw new GraphNotFoundError(`Graph ${method} ${path} — not found`);
+    }
     if (!res.ok) {
       throw new Error(`Graph ${method} ${path} failed (${res.status}): ${await safeText(res)}`);
     }
     return res;
   }
 }
+
+/** Thrown by `send()` on a Graph 404 — callers that treat "missing" as expected (not exceptional)
+ *  catch this specifically rather than string-matching an error message. */
+export class GraphNotFoundError extends Error {}
 
 // ---- mappers (pure-ish; only depend on the parsed Graph shapes) ----
 
@@ -279,6 +338,15 @@ function hitToEstateRef(
 
 function enc(s: string): string {
   return encodeURIComponent(s);
+}
+
+/** Encode a `/`-separated relative path for Graph's `:/path:/content` addressing — each segment is
+ *  percent-encoded individually so a literal `/` stays a path separator, not `%2F`. */
+function encPath(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => enc(segment))
+    .join('/');
 }
 
 async function safeText(res: Response): Promise<string> {

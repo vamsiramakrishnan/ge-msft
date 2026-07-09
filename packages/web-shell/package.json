@@ -22,6 +22,7 @@
     "@ge/contracts": "*",
     "@ge/deck-compiler": "*",
     "@ge/gemini-client": "*",
+    "@ge/graph-client": "*",
     "@ge/runtime": "*",
     "@ge/teams": "*",
     "@ge/triggers": "*",

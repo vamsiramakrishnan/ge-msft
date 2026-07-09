@@ -21,6 +21,7 @@ import type {
 } from '@ge/gemini-client';
 import { AssistSession } from '@ge/runtime';
 import type { AuthClient, DocBridge } from '@ge/runtime';
+import { GraphClient, GraphSharedStore } from '@ge/graph-client';
 import type { TriggerRegistry } from '@ge/triggers';
 
 /**
@@ -172,9 +173,23 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     if (storesRes.status === 'fulfilled') availableDataStores = storesRes.value;
   }
 
+  // `/shared` cross-surface handoff (see docs/ACCESS-MODEL.md Plane B): only wired when this
+  // AuthClient actually carries a Graph token source. Absent that, `share`/`` /shared`` degrade to
+  // the runtime's own "not configured" behavior — never a hard dependency on Graph consent.
+  const sharedStore = auth.getGraphToken
+    ? new GraphSharedStore(
+        new GraphClient(
+          { getGraphToken: (scopes) => auth.getGraphToken!(scopes) },
+          {},
+          opts.fetchImpl,
+        ),
+      )
+    : undefined;
+
   const session = new AssistSession(bridge, client, {
     unit,
     skillFiles: SKILL_FILES,
+    ...(sharedStore ? { sharedStore } : {}),
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),

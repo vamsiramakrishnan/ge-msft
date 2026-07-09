@@ -36,7 +36,8 @@
       "grep",
       "cp",
       "mv",
-      "rm"
+      "rm",
+      "share"
     ],
     "control": [
       "done",
@@ -1156,6 +1157,36 @@
       ],
       "safety": [
         "Requires both slide id and shape id; stale targets fail closed before mutation."
+      ]
+    },
+    "share": {
+      "command": "share",
+      "useWhen": "a value another surface session needs to pick up by name — e.g. a table saved in Excel that a Word or PowerPoint session should read back",
+      "syntax": "share <name> = read <selector> | search <text> | outline | \"literal\" | ($pipeline)",
+      "discovery": [
+        "outline",
+        "read <range|selector>",
+        "workspace"
+      ],
+      "sequence": [
+        "Read or compute the value locally first, exactly as you would for save.",
+        "Share it under a stable, descriptive name once it is ready for another surface to consume.",
+        "The receiving surface reads it back with cat <name> under /shared, not /work."
+      ],
+      "examples": [
+        "share quarterly-summary.md = (read Sales!A1:D50 | select Region,Revenue | sort Revenue desc | head 10)",
+        "share meeting-notes.txt = outline"
+      ],
+      "doNot": [
+        "Do not use share for anything beyond what the signed-in user should hand to their own other sessions — it writes to the user's own Graph app folder, not a public location.",
+        "Do not share the same content repeatedly per turn; share once the value is final."
+      ],
+      "failureModes": [
+        "A session with no shared store configured (e.g. Graph consent not granted) returns a corrective error instead of silently dropping the share.",
+        "Malformed names are rejected with the same rules as save."
+      ],
+      "safety": [
+        "Writes only to a per-app OneDrive folder invisible to other apps; never Office content, never broader OneDrive/SharePoint."
       ]
     },
     "slide": {

@@ -1376,6 +1376,8 @@ function workspaceStepText(result: unknown): string {
       return `renamed to ${result.artifact.name}`;
     case 'rm':
       return `deleted ${result.name}`;
+    case 'share':
+      return `shared ${result.name} · ${formatBytes(result.bytes)}`;
     case 'error':
       return `workspace error: ${result.error}`;
   }
@@ -1413,6 +1415,8 @@ function workspaceStepArtifact(result: unknown): RunStepArtifact | undefined {
       };
     case 'rm':
       return { title: `deleted ${result.name}`, meta: [] };
+    case 'share':
+      return { title: `shared/${result.name}`, meta: [formatBytes(result.bytes)] };
     case 'error':
       return { title: 'Workspace error', meta: [result.error] };
   }

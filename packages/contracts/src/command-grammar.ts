@@ -37,8 +37,8 @@ import { registryEntryForKindAndSurface } from './capability-registry.js';
  * self-corrects on the next turn.
  *
  * SCOPE: `outline · read · search · list · inspect · properties · comments · attachments · tables ·
- * slides · neighbors · context · open · workspace · save · cat · grep · set · grid · suggest ·
- * comment · format · reply · slide · page · mail · post · compose · table · chart · cf · spill ·
+ * slides · neighbors · context · open · workspace · save · cat · grep · cp · mv · rm · share · set ·
+ * grid · suggest · comment · format · reply · slide · page · mail · post · compose · table · chart · cf · spill ·
  * done · help` (ADR-0007 adds the host-native kinds; the workspace verbs are local/non-host
  * artifact operations).
  */
@@ -73,8 +73,24 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
  * Workspace verbs are local, non-host operations over bounded virtual artifacts. They can read from
  * host reads or pure composed values, but they never mutate Office content and never bypass the
  * write approval gate. The runtime stores only bounded data and returns compact artifact handles.
+ *
+ * `share` is the one exception to "local": it has the exact same source grammar as `save`, but
+ * persists to the cross-surface `/shared` handoff store (Microsoft Graph app-folder, see
+ * `@ge/graph-client`'s `GRAPH_SCOPES.shared`) instead of the in-memory `/work` store — so a value
+ * saved from Excel can be read back by name from Word/PowerPoint/Teams. It still never touches
+ * Office content and never bypasses the write approval gate; it is gated by whether the runtime was
+ * given a `sharedStore` for this session at all (Graph consent may not be granted).
  */
-export const WORKSPACE_VERBS = ['workspace', 'save', 'cat', 'grep', 'cp', 'mv', 'rm'] as const;
+export const WORKSPACE_VERBS = [
+  'workspace',
+  'save',
+  'cat',
+  'grep',
+  'cp',
+  'mv',
+  'rm',
+  'share',
+] as const;
 
 /**
  * Write verbs → the `ActuationKind` (ADR-0002) they compile to. A write verb is advertised
@@ -170,6 +186,7 @@ export type ParsedCommand =
   | { verb: 'cp'; src: string; dst: string }
   | { verb: 'mv'; src: string; dst: string }
   | { verb: 'rm'; name: string }
+  | { verb: 'share'; name: string; source: WorkspaceSource }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'grid'; range: string; cells: string[][] }
   | { verb: 'suggest'; oldText: string; newText: string }
@@ -254,6 +271,17 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('cp'), src: z.string(), dst: z.string() }),
   z.object({ verb: z.literal('mv'), src: z.string(), dst: z.string() }),
   z.object({ verb: z.literal('rm'), name: z.string() }),
+  z.object({
+    verb: z.literal('share'),
+    name: z.string(),
+    source: z.union([
+      z.object({ src: z.literal('outline') }),
+      z.object({ src: z.literal('read'), selector: z.string() }),
+      z.object({ src: z.literal('search'), text: z.string() }),
+      z.object({ src: z.literal('literal'), text: z.string() }),
+      z.object({ src: z.literal('expr'), expr: z.lazy(() => ParsedExprSchema) }),
+    ]),
+  }),
   z.object({
     verb: z.literal('set'),
     cell: z.string(),
@@ -533,6 +561,9 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'rm':
       return parseRm(rest);
 
+    case 'share':
+      return parseShare(rest);
+
     case 'set': {
       const split = splitFirstArg(rest);
       if (!split) {
@@ -674,6 +705,48 @@ function parseSave(rest: string): ParsedCommand | CommandParseError {
   if (expr === undefined) return { error: usage };
   if (isExprParseError(expr)) return expr;
   return { verb: 'save', name, source: { src: 'expr', expr } };
+}
+
+/**
+ * `share <name> = read <selector>` — identical source grammar to `save`, but the name resolves in
+ * the cross-surface `/shared` handoff store (Graph app-folder) instead of the local `/work` store,
+ * so another surface's session can `cat`/read it back by the same name later.
+ */
+function parseShare(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'share needs a name and source — usage: share <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)';
+  const split = splitFirstArg(rest);
+  if (!split) return { error: usage };
+  const name = normalizeWorkspaceName(split.arg);
+  if (typeof name !== 'string') return name;
+  let tail = split.tail.trim();
+  if (tail.startsWith('=')) tail = tail.slice(1).trim();
+  if (tail === '') return { error: usage };
+
+  if (tail.toLowerCase() === 'outline') return { verb: 'share', name, source: { src: 'outline' } };
+  if (/^read(?:\s|$)/i.test(tail)) {
+    return {
+      verb: 'share',
+      name,
+      source: { src: 'read', selector: tail.replace(/^read\s*/i, '').trim() },
+    };
+  }
+  if (/^search\s+/i.test(tail)) {
+    return {
+      verb: 'share',
+      name,
+      source: { src: 'search', text: stripWrappingQuotes(tail.replace(/^search\s+/i, '').trim()) },
+    };
+  }
+  if (tail.startsWith('"')) {
+    const quoted = scanQuoted(tail, 0);
+    if (!quoted || tail.slice(quoted.end).trim() !== '') return { error: usage };
+    return { verb: 'share', name, source: { src: 'literal', text: quoted.value } };
+  }
+  const expr = parseEffectArg(tail);
+  if (expr === undefined) return { error: usage };
+  if (isExprParseError(expr)) return expr;
+  return { verb: 'share', name, source: { src: 'expr', expr } };
 }
 
 function parseCat(rest: string): ParsedCommand | CommandParseError {
@@ -1673,6 +1746,12 @@ function workspaceVerbSpec(verb: WorkspaceVerb): VerbSpec {
         verb,
         usage: 'rm <name|ws:id>',
         hint: 'delete a workspace artifact; local /work only',
+      };
+    case 'share':
+      return {
+        verb,
+        usage: 'share <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)',
+        hint: 'publish a bounded artifact to the cross-surface /shared store so another surface can read it back by name; unavailable if this session has no shared store configured',
       };
   }
 }

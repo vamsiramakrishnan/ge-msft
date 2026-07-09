@@ -35,6 +35,7 @@ import {
   renderPlanPrompt,
   derivePlanContextStrategy,
   WRITE_VERB_TO_KIND,
+  WORKSPACE_VERBS,
   type WorkspaceVerb,
   type ParsedExpr,
   type PlanContextHint,
@@ -72,7 +73,14 @@ import { analyseEffectDependencies } from './planning.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
 import { WorkspaceStore, type WorkspaceResult } from './workspace.js';
-import { createDocFs, ls as docFsLs, find as docFsFind, tail as docFsTail } from './docfs/index.js';
+import {
+  createDocFs,
+  ls as docFsLs,
+  find as docFsFind,
+  tail as docFsTail,
+  type SharedStore,
+} from './docfs/index.js';
+import { byteLength } from './docfs/bytes.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -320,6 +328,13 @@ export interface AssistSessionOptions {
    * is present but empty, never a hard dependency.
    */
   skillFiles?: Readonly<Record<string, string>>;
+  /**
+   * The cross-surface handoff store backing `/shared` and the `share` verb — a port the caller
+   * implements (in production, `GraphSharedStore` from `@ge/graph-client` over a per-app OneDrive
+   * folder). Omitted → `/shared` is present but empty, and `share` returns a corrective error
+   * rather than silently dropping the write (e.g. the user hasn't granted the Graph consent yet).
+   */
+  sharedStore?: SharedStore;
 }
 
 /**
@@ -358,15 +373,7 @@ function isReadCommand(command: ParsedCommand): command is ReadCommand {
   return READ_COMMAND_VERBS.has(command.verb as ReadVerb);
 }
 
-const WORKSPACE_COMMAND_VERBS: ReadonlySet<WorkspaceVerb> = new Set([
-  'workspace',
-  'save',
-  'cat',
-  'grep',
-  'cp',
-  'mv',
-  'rm',
-]);
+const WORKSPACE_COMMAND_VERBS: ReadonlySet<WorkspaceVerb> = new Set(WORKSPACE_VERBS);
 
 type WorkspaceCommand = Extract<ParsedCommand, { verb: WorkspaceVerb }>;
 
@@ -419,7 +426,12 @@ export class AssistSession {
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
     this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
-    this.docFs = createDocFs({ bridge, workspace: this.workspace, skillFiles: options.skillFiles });
+    this.docFs = createDocFs({
+      bridge,
+      workspace: this.workspace,
+      skillFiles: options.skillFiles,
+      sharedStore: options.sharedStore,
+    });
   }
 
   /** Pull attachable context from the bridge and add it to the live session set. */
@@ -1519,6 +1531,31 @@ export class AssistSession {
               content: resolved.content,
               kind: intent.name.endsWith('.handoff.json') ? 'handoff' : undefined,
             }),
+          };
+        }
+        case 'share': {
+          if (!this.options.sharedStore) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: 'sharing is not configured for this session — no shared store was provided',
+              },
+            };
+          }
+          const resolved = await this.resolveWorkspaceSource(intent.source);
+          if ('error' in resolved) {
+            return {
+              label: `share ${intent.name}`,
+              result: { workspace: 'error', error: resolved.error },
+            };
+          }
+          const text =
+            typeof resolved.content === 'string' ? resolved.content : renderValue(resolved.content);
+          await this.options.sharedStore.write(intent.name, text);
+          return {
+            label: `share ${intent.name}`,
+            result: { workspace: 'share', name: intent.name, bytes: byteLength(text) },
           };
         }
       }

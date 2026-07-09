@@ -19,6 +19,16 @@ export const GRAPH_SCOPES = {
   files: ['Files.Read.All', 'Sites.Read.All'],
   people: ['User.ReadBasic.All'],
   search: ['Files.Read.All', 'Sites.Read.All', 'Mail.Read'],
+  /**
+   * The cross-surface handoff store (`/shared` DocFs mount). `Files.ReadWrite.AppFolder` is
+   * deliberately the NARROWEST write scope Graph offers — it grants read/write ONLY to a special
+   * per-app folder (`/me/drive/special/approot`) that other apps (and the user's own OneDrive
+   * browsing UI, by default) cannot see, never the broader `files`/`search` read scopes above. This
+   * is a NEW consent prompt beyond what this add-in previously requested — flag it as such
+   * wherever scopes are surfaced to the user/admin, and route any use of it through a security
+   * review (identity/credentials territory) before shipping.
+   */
+  shared: ['Files.ReadWrite.AppFolder'],
 } as const;
 
 export function graphUrl(cfg: GraphConfig, path: string): string {

@@ -55,7 +55,8 @@ export type WorkspaceIntent =
   | { workspace: 'grep'; ref: string; pattern: string; context?: number }
   | { workspace: 'cp'; src: string; dst: string }
   | { workspace: 'mv'; src: string; dst: string }
-  | { workspace: 'rm'; name: string };
+  | { workspace: 'rm'; name: string }
+  | { workspace: 'share'; name: string; source: WorkspaceSource };
 
 /** The result of compiling one command line. */
 export type CompiledCommand =
@@ -191,6 +192,11 @@ export function compileCommand(
       return { kind: 'workspace', intent: { workspace: 'mv', src: cmd.src, dst: cmd.dst } };
     case 'rm':
       return { kind: 'workspace', intent: { workspace: 'rm', name: cmd.name } };
+    case 'share':
+      return {
+        kind: 'workspace',
+        intent: { workspace: 'share', name: cmd.name, source: cmd.source },
+      };
     case 'done':
       return { kind: 'control', verb: 'done' };
     case 'help':

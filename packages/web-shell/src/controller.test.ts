@@ -714,6 +714,25 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     });
   });
 
+  it('renders a share result as a cross-surface publish step', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'share schedule.tsv',
+        result: { workspace: 'share', name: 'schedule.tsv', bytes: 1200 },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('share schedule');
+
+    const step = c.getState().steps.at(-1);
+    expect(step?.text).toBe('shared schedule.tsv · 1.2 KB');
+    expect(step?.artifact).toMatchObject({ title: 'shared/schedule.tsv', meta: ['1.2 KB'] });
+  });
+
   it('stages a write as pending and actuates only after approvePendingWrite() (resolves true)', async () => {
     const assist = new FakeAssist();
     assist.commandScript = [ev({ type: 'turn-start', turn: 1 }), { approve: writeReq('w-1') }];

@@ -43,6 +43,7 @@ export type WorkspaceResult =
   | { workspace: 'cp'; artifact: WorkspaceArtifactSummary }
   | { workspace: 'mv'; artifact: WorkspaceArtifactSummary }
   | { workspace: 'rm'; name: string }
+  | { workspace: 'share'; name: string; bytes: number }
   | { workspace: 'error'; error: string };
 
 export interface SaveWorkspaceInput {

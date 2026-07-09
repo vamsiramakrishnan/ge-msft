@@ -12,15 +12,35 @@ const bridge = {
 } as unknown as DocBridge;
 
 describe('createDocFs', () => {
-  it('mounts /doc (read-only), /work, and /skills', async () => {
+  it('mounts /doc (read-only), /work, /skills, and /shared', async () => {
     const fs = createDocFs({ bridge, workspace: new WorkspaceStore() });
     const roots = await ls(fs, '/');
-    expect(roots).toEqual(['doc/', 'skills/', 'work/']);
+    expect(roots).toEqual(['doc/', 'shared/', 'skills/', 'work/']);
   });
 
   it('mounts /skills empty when no skillFiles are supplied — present, harmless', async () => {
     const fs = createDocFs({ bridge, workspace: new WorkspaceStore() });
     expect(await fs.readdir('/skills')).toEqual([]);
+  });
+
+  it('mounts /shared empty when no sharedStore is supplied — present, harmless', async () => {
+    const fs = createDocFs({ bridge, workspace: new WorkspaceStore() });
+    expect(await fs.readdir('/shared')).toEqual([]);
+  });
+
+  it('reads through the /shared mount to the supplied SharedStore', async () => {
+    const fs = createDocFs({
+      bridge,
+      workspace: new WorkspaceStore(),
+      sharedStore: {
+        list: () => Promise.resolve([{ name: 'notes.txt', size: 5 }]),
+        read: (path) => Promise.resolve(path === 'notes.txt' ? 'hello' : undefined),
+        write: () => Promise.reject(new Error('not used in this test')),
+        remove: () => Promise.reject(new Error('not used in this test')),
+      },
+    });
+    const v = await fs.readFile('/shared/notes.txt');
+    expect(v?.text).toBe('hello');
   });
 
   it('reads through the /skills mount to the supplied skill file map', async () => {

@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ResolvedContextSchema, EstateRefSchema } from '@ge/contracts';
-import { GraphClient, messageToContext, eventToContext } from './graph-client.js';
+import {
+  GraphClient,
+  GraphNotFoundError,
+  messageToContext,
+  eventToContext,
+} from './graph-client.js';
+import { GRAPH_SCOPES } from './config.js';
 
 function jsonResponse(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
@@ -146,5 +152,96 @@ describe('GraphClient auth', () => {
     await expect(client.getMessage('x')).rejects.toThrow(
       /Graph GET \/me\/messages\/x failed \(403\)/,
     );
+  });
+});
+
+describe('GraphClient — /shared app-folder transport', () => {
+  it('listSharedFiles reads the app-folder children with the shared scope, dropping folders', async () => {
+    const f = vi.fn(async (url: string) => {
+      expect(url).toContain('/me/drive/special/approot/children');
+      return jsonResponse({
+        value: [
+          { name: 'notes.txt', size: 42, file: {} },
+          { name: 'subfolder' }, // no `file` facet → a folder, must be dropped
+        ],
+      });
+    });
+    const spy = vi.spyOn(tokens, 'getGraphToken');
+    const client = new GraphClient(tokens, {}, f as never);
+
+    const files = await client.listSharedFiles();
+
+    expect(files).toEqual([{ name: 'notes.txt', size: 42 }]);
+    expect(spy).toHaveBeenCalledWith([...GRAPH_SCOPES.shared]);
+  });
+
+  it('getSharedFile reads the content endpoint and returns the text body', async () => {
+    const f = vi.fn(async (url: string) => {
+      expect(url).toContain('/me/drive/special/approot:/notes.txt:/content');
+      return new Response('hello from excel', { status: 200 });
+    });
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await expect(client.getSharedFile('notes.txt')).resolves.toBe('hello from excel');
+  });
+
+  it('getSharedFile returns undefined (not a throw) when the file is missing', async () => {
+    const f = vi.fn(async () => new Response('not found', { status: 404 }));
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await expect(client.getSharedFile('missing.txt')).resolves.toBeUndefined();
+  });
+
+  it('putSharedFile PUTs the content as text/plain to the content endpoint', async () => {
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toContain('/me/drive/special/approot:/notes.txt:/content');
+      expect(init?.method).toBe('PUT');
+      expect((init?.headers as Record<string, string>)['Content-Type']).toBe('text/plain');
+      expect(init?.body).toBe('updated content');
+      return new Response('', { status: 200 });
+    });
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await client.putSharedFile('notes.txt', 'updated content');
+    expect(f).toHaveBeenCalledOnce();
+  });
+
+  it('putSharedFile percent-encodes each path segment individually, preserving "/" as a separator', async () => {
+    const f = vi.fn(async (url: string) => {
+      expect(url).toContain('/word/a%20b.txt:/content');
+      expect(url).not.toContain('word%2Fa');
+      return new Response('', { status: 200 });
+    });
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await client.putSharedFile('word/a b.txt', 'x');
+  });
+
+  it('deleteSharedFile DELETEs the item path (no :/content suffix)', async () => {
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toContain('/me/drive/special/approot:/notes.txt');
+      expect(url).not.toContain(':/content');
+      expect(init?.method).toBe('DELETE');
+      return new Response(null, { status: 204 });
+    });
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await client.deleteSharedFile('notes.txt');
+    expect(f).toHaveBeenCalledOnce();
+  });
+
+  it('deleteSharedFile treats a 404 as already-deleted, not an error', async () => {
+    const f = vi.fn(async () => new Response('not found', { status: 404 }));
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await expect(client.deleteSharedFile('missing.txt')).resolves.toBeUndefined();
+  });
+
+  it('GraphNotFoundError is exported and distinguishable from other Graph errors', async () => {
+    const f = vi.fn(async () => new Response('nope', { status: 404 }));
+    const client = new GraphClient(tokens, {}, f as never);
+
+    // getMessage does not special-case 404 today — it still surfaces as GraphNotFoundError.
+    await expect(client.getMessage('x')).rejects.toBeInstanceOf(GraphNotFoundError);
   });
 });

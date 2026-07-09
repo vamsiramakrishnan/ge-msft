@@ -277,6 +277,28 @@ describe('command-grammar — workspace artifact verbs', () => {
     expect(parseCommandLine('rm ws:3')).toEqual({ verb: 'rm', name: 'ws:3' });
   });
 
+  it('parses share with the same source grammar as save', () => {
+    expect(parseCommandLine(`share schedule.tsv = read 'Daily schedule'!B3:I53`)).toEqual({
+      verb: 'share',
+      name: 'schedule.tsv',
+      source: { src: 'read', selector: `'Daily schedule'!B3:I53` },
+    });
+    expect(parseCommandLine('share note.txt = "hello"')).toEqual({
+      verb: 'share',
+      name: 'note.txt',
+      source: { src: 'literal', text: 'hello' },
+    });
+  });
+
+  it('rejects a malformed share (same name rules as save)', () => {
+    expect(parseCommandLine('share ../secret = outline')).toMatchObject({
+      error: expect.stringContaining('workspace artifact name'),
+    });
+    expect(parseCommandLine('share note.txt')).toMatchObject({
+      error: expect.stringContaining('share needs a name and source'),
+    });
+  });
+
   it('rejects cp/mv with a missing or extra argument', () => {
     expect(parseCommandLine('cp a.tsv')).toMatchObject({
       error: expect.stringContaining('cp needs a source and destination'),
@@ -886,7 +908,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).not.toContain('suggest');
     expect(verbs).toContain('context');
     expect(verbs).toEqual(expect.arrayContaining(['workspace', 'save', 'cat', 'grep']));
-    expect(verbs).toEqual(expect.arrayContaining(['cp', 'mv', 'rm']));
+    expect(verbs).toEqual(expect.arrayContaining(['cp', 'mv', 'rm', 'share']));
     expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'open']));
     expect(verbs).toContain('tables');
     const read = grammarFor(excelManifest).find((v) => v.verb === 'read');

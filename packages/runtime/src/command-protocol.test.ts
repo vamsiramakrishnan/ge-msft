@@ -260,6 +260,19 @@ describe('compileCommand', () => {
     });
     expect(
       compileCommand(
+        { verb: 'share', name: 'schedule.tsv', source: { src: 'read', selector: 'A1:B9' } },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({
+      kind: 'workspace',
+      intent: {
+        workspace: 'share',
+        name: 'schedule.tsv',
+        source: { src: 'read', selector: 'A1:B9' },
+      },
+    });
+    expect(
+      compileCommand(
         { verb: 'cat', ref: 'schedule.tsv', head: 8 },
         { surface: 'excel', mintChangeId: mint },
       ),
@@ -1322,6 +1335,57 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
         pattern: 'Sales',
         matches: [{ line: 1, text: 'values of Sales!C2:C7' }],
       },
+    });
+  });
+
+  it('workspace share writes a host read to the configured sharedStore', async () => {
+    const bridge = new FakeExcelBridge();
+    const shared = new Map<string, string>();
+    const sharedStore = {
+      list: () =>
+        Promise.resolve([...shared.entries()].map(([name, text]) => ({ name, size: text.length }))),
+      read: (path: string) => Promise.resolve(shared.get(path)),
+      write: (path: string, content: string) => {
+        shared.set(path, content);
+        return Promise.resolve();
+      },
+      remove: (path: string) => {
+        shared.delete(path);
+        return Promise.resolve();
+      },
+    };
+    const { client } = fakeClient([
+      '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit, sharedStore });
+
+    const events = await collect(session.runCommands('Publish data cross-surface'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(bridge.reads).toEqual(['Sales!C2:C7']);
+    expect(read).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'share schedule.txt',
+      result: { workspace: 'share', name: 'schedule.txt' },
+    });
+    expect(shared.get('schedule.txt')).toContain('values of Sales!C2:C7');
+  });
+
+  it('workspace share without a configured sharedStore returns a corrective error', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient([
+      '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('Publish data cross-surface'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      result: { workspace: 'error', error: expect.stringContaining('sharing is not configured') },
     });
   });
 

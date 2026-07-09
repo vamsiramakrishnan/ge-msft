@@ -59,6 +59,24 @@ export const GraphDriveItemSchema = z
   .passthrough();
 export type GraphDriveItem = z.infer<typeof GraphDriveItemSchema>;
 
+/** One `GET .../children` page over the `/shared` app folder — just enough to list files. */
+export const GraphChildrenSchema = z
+  .object({
+    value: z
+      .array(
+        z
+          .object({
+            name: z.string(),
+            size: z.number().optional(),
+            file: z.object({}).passthrough().optional(),
+          })
+          .passthrough(),
+      )
+      .default([]),
+  })
+  .passthrough();
+export type GraphChildren = z.infer<typeof GraphChildrenSchema>;
+
 export const GraphUserSchema = z
   .object({
     id: z.string().optional(),

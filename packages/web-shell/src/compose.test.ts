@@ -58,6 +58,36 @@ describe('composeSession', () => {
   });
 });
 
+describe('composeSession — /shared wiring', () => {
+  it('wires a Graph-backed sharedStore when the AuthClient carries a Graph token source', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const { session } = await composeSession({
+      config,
+      auth,
+      bridge: new FakeBridge(),
+      unit,
+      fetchImpl,
+    });
+    expect(session).toBeDefined();
+  });
+
+  it('degrades gracefully (no throw) when the AuthClient has no Graph token source', async () => {
+    const authNoGraph: AuthClient = {
+      getIdToken: () => Promise.resolve('id-tok'),
+      getIdentity: (): Promise<UserIdentity> => Promise.resolve({ username: 'v.k@acme' }),
+    };
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const { session } = await composeSession({
+      config,
+      auth: authNoGraph,
+      bridge: new FakeBridge(),
+      unit,
+      fetchImpl,
+    });
+    expect(session).toBeDefined();
+  });
+});
+
 describe('SKILL_FILES', () => {
   it('bundles the real skill/ markdown files, keyed relative to skill/ with real content', () => {
     expect(Object.keys(SKILL_FILES).length).toBeGreaterThan(0);

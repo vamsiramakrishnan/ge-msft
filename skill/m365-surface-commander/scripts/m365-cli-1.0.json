@@ -82,6 +82,7 @@
     "head",
     "max",
     "min",
+    "sed",
     "select",
     "sort",
     "sum",

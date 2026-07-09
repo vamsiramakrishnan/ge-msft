@@ -1544,7 +1544,10 @@ function artifactMeta(artifact: WorkspaceArtifactSummary): string[] {
   return [
     `${artifact.kind} · ${artifact.mimeType}`,
     `${artifact.lineCount} line${artifact.lineCount === 1 ? '' : 's'} · ${formatBytes(artifact.bytes)}`,
-    `source: ${artifact.sourceLabel}`,
+    // `sourceLabel` traces back to the same untrusted `resolveWorkspaceSource` origin `share` reads
+    // from (a `search`/`read` selector can echo document/transcript-influenced text) — cap it here
+    // too, not just on the `share` paths, so no workspace verb's transcript can grow unbounded.
+    `source: ${truncateSourceLabel(artifact.sourceLabel)}`,
     ...(artifact.truncated ? ['truncated'] : []),
   ];
 }

@@ -1726,7 +1726,11 @@ export class AssistSession {
                 `${intent.name}${SHARE_PROVENANCE_SUFFIX}`,
                 JSON.stringify(shareCtx.turnProvenance),
               );
-            } catch {
+            } catch (err) {
+              console.warn(
+                `[assist] provenance companion write failed for share "${intent.name}"; the share itself already succeeded`,
+                err,
+              );
               provenanceMissing = true;
             }
           }

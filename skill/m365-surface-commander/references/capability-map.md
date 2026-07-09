@@ -30,6 +30,11 @@ itself. `list`, `inspect`, `properties`, `comments`, `attachments`, `tables`, `s
 `neighbors`, and `open` are also runtime-served. They operate on typed host refs supplied by the
 bridge; `open` only navigates/selects in the host and is never a write or a send action.
 
+`ls` and `find` are also available across surfaces as DocFs read commands. `ls <path>` lists what
+exists under `/doc` (the live document) or `/work` (saved workspace artifacts); `find <path> [glob]`
+locates an entry under the same tree by name pattern. Both are read-only, bounded, and return empty
+on bad input — they never mutate the host or infer content that isn't there.
+
 ## Writes
 
 | Command   | Change             | Word | Excel | PPT | OneNote | Outlook | Teams |

@@ -38,6 +38,11 @@
 {"name": "unknown-verb-didyoumean", "input": "sugest \"old\" => \"new\"", "expect": {"error_substring": "did you mean"}}
 {"name": "set-missing-value", "input": "set Sales!F2", "expect": {"error_substring": "set needs a cell and a value"}}
 {"name": "search-empty", "input": "search", "expect": {"error_substring": "search needs text"}}
+{"name": "ls-path", "input": "ls /doc", "expect": {"verbs": ["ls"]}}
+{"name": "ls-missing-path", "input": "ls", "expect": {"error_substring": "ls needs a path"}}
+{"name": "find-path", "input": "find /work", "expect": {"verbs": ["find"]}}
+{"name": "find-path-glob", "input": "find /work *.tsv", "expect": {"verbs": ["find"]}}
+{"name": "find-missing-path", "input": "find", "expect": {"error_substring": "find needs a path"}}
 {"name": "context-strategy", "input": "context analytical full-scope upload-preferred code-execution-preferred", "expect": {"verbs": ["context"]}}
 {"name": "context-unknown-hint", "input": "context run-python-now", "expect": {"error_substring": "unknown context hint"}}
 {"name": "suggest-one-string", "input": "suggest \"only one\"", "expect": {"error_substring": "two quoted strings"}}

@@ -382,6 +382,18 @@ def parse_line(line: str):
         if not rest:
             return {"error": "search needs text — usage: search <text>"}
         return {"verb": "search", "text": rest.strip('"')}
+    if verb == "ls":
+        if not rest:
+            return {"error": "ls needs a path — usage: ls <path>, e.g. ls /doc"}
+        return {"verb": "ls", "path": rest}
+    if verb == "find":
+        if not rest:
+            return {"error": "find needs a path — usage: find <path> [glob]"}
+        tokens = rest.split()
+        out = {"verb": "find", "path": tokens[0]}
+        if len(tokens) > 1:
+            out["glob"] = tokens[1]
+        return out
     if verb == "list":
         if not rest:
             return {"verb": "list"}
@@ -668,6 +680,16 @@ done
         failures.append("unknown context hint did not error")
     if parse_line("list range") != {"verb": "list", "kind": "range"}:
         failures.append("list range did not parse")
+    if parse_line("ls /doc") != {"verb": "ls", "path": "/doc"}:
+        failures.append("ls /doc did not parse")
+    if "error" not in (parse_line("ls") or {}):
+        failures.append("bare ls did not error")
+    if parse_line("find /work") != {"verb": "find", "path": "/work"}:
+        failures.append("find /work did not parse")
+    if parse_line("find /work *.tsv") != {"verb": "find", "path": "/work", "glob": "*.tsv"}:
+        failures.append("find /work *.tsv did not parse")
+    if "error" not in (parse_line("find") or {}):
+        failures.append("bare find did not error")
     if parse_line('open "Sales!A1:C9"') != {"verb": "open", "selector": "Sales!A1:C9"}:
         failures.append("open selector did not parse")
     if "error" not in (parse_line("list monster") or {}):

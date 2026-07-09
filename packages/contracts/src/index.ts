@@ -17,6 +17,9 @@ export * from './doc-state.js';
 export * from './deck.js';
 export * from './estate.js';
 export * from './capability.js';
+// Kept despite predating this branch's own commits: packages/runtime/src/command-protocol.ts
+// (separate in-flight, uncommitted work) imports registryEntryForKindAndSurface/
+// CapabilityRegistryEntry via this barrel — runtime has no relative path into contracts/src.
 export * from './capability-registry.js';
 export * from './plan-graph.js';
 export * from './capability-closure.js';

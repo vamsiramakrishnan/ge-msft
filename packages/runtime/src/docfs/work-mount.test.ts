@@ -52,6 +52,17 @@ describe('workMount', () => {
     expect(v?.bytes).toBe(4);
   });
 
+  it('truncates by BYTES, not characters, for multi-byte text', async () => {
+    // Each '€' is 3 UTF-8 bytes. A naive text.slice(0, maxBytes) would keep 6 characters (18
+    // bytes) here, silently violating the maxBytes budget the ReadOpts contract promises.
+    const s = new WorkspaceStore();
+    s.save({ name: 'euro.txt', sourceLabel: 'test', content: '€€€€€€', kind: 'text' });
+    const v = await workMount(s).readFile('euro.txt', { maxBytes: 7 });
+    expect(v?.truncated).toBe(true);
+    expect(v?.bytes).toBeLessThanOrEqual(7);
+    expect(new TextEncoder().encode(v!.text).length).toBe(v?.bytes);
+  });
+
   it('stats an existing artifact and returns null for a missing one', async () => {
     const s = seeded();
     const artifact = s.get('q3.tsv')!;

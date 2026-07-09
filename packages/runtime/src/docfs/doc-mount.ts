@@ -8,6 +8,7 @@ import type {
   SearchOpts,
 } from '@ge/contracts';
 import type { DocBridge } from '../bridge.js';
+import { byteLength, truncateToBytes } from './bytes.js';
 import type { Mount } from './mount.js';
 
 const DEFAULT_MAX_BYTES = 64 * 1024;
@@ -76,20 +77,16 @@ export function docMount(bridge: DocBridge): Mount {
 }
 
 function cap(text: string, max: number): FileView {
-  const truncated = text.slice(0, max);
+  const { text: truncated, truncated: wasTruncated } = truncateToBytes(text, max);
   return {
     path: '',
     text: truncated,
     bytes: byteLength(truncated),
-    truncated: truncated.length < text.length,
+    truncated: wasTruncated,
   };
 }
 
 /** Render a ResolvedContext value to a text line for DocFs views (data only, never instructions). */
 function renderResolved(part: ResolvedContext): string {
   return part.value.as === 'text' ? part.value.text : JSON.stringify(part.value).slice(0, 500);
-}
-
-function byteLength(text: string): number {
-  return new TextEncoder().encode(text).length;
 }

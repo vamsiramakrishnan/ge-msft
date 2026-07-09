@@ -38,10 +38,22 @@ export async function wc(fs: DocFs, path: string): Promise<{ lines: number; byte
   };
 }
 
-/** Recursive listing with an optional `*`/`?` glob on the leaf name. */
+/**
+ * Recursive listing with an optional `*`/`?` glob on the leaf name. Every regex-special character
+ * in `glob` other than `*`/`?` is escaped before compiling, so a name containing e.g. `[`, `(`, or
+ * `+` (all valid in a filename) matches literally instead of throwing `SyntaxError` or silently
+ * mismatching — this is called with model-suggested glob arguments, so untrusted-shaped input is
+ * the expected case, not the exception.
+ */
 export async function find(fs: DocFs, path: string, glob?: string): Promise<string[]> {
   const re = glob
-    ? new RegExp('^' + glob.replace(/[.]/g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+    ? new RegExp(
+        '^' +
+          glob.replace(/[.*+?^${}()|[\]\\]/g, (ch) =>
+            ch === '*' ? '.*' : ch === '?' ? '.' : `\\${ch}`,
+          ) +
+          '$',
+      )
     : undefined;
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {

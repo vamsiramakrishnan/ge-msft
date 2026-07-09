@@ -111,4 +111,25 @@ describe('docMount', () => {
     const hits = await docMount(bridgeWithoutCapture()).search('', 'anything');
     expect(hits).toEqual([]);
   });
+
+  it('truncates by BYTES, not characters, for multi-byte outline text', async () => {
+    // Each '€' is 3 UTF-8 bytes; a naive text.slice(0, maxBytes) would keep far more than
+    // maxBytes bytes here, violating the ReadOpts contract.
+    const bridge = {
+      surface: 'excel',
+      async captureDocState() {
+        return {
+          surface: 'excel',
+          version: 1,
+          capturedAt: new Date(0).toISOString(),
+          outline: [{ level: 1, text: '€€€€€€' }],
+          inventory: [],
+        };
+      },
+    } as unknown as DocBridge;
+    const v = await docMount(bridge).readFile('outline.md', { maxBytes: 7 });
+    expect(v?.truncated).toBe(true);
+    expect(v?.bytes).toBeLessThanOrEqual(7);
+    expect(new TextEncoder().encode(v!.text).length).toBe(v?.bytes);
+  });
 });

@@ -39,6 +39,16 @@ describe('coreutils', () => {
     expect(result).toEqual(['/work/a.txt']);
   });
 
+  it('find with a glob containing regex metacharacters does not throw and matches literally', async () => {
+    const s = new WorkspaceStore();
+    s.save({ name: 'data[1].csv', sourceLabel: 't', content: 'x' });
+    s.save({ name: 'data[2].csv', sourceLabel: 't', content: 'x' });
+    const withBrackets = new DocFsRouter([workMount(s)]);
+    await expect(find(withBrackets, '/work', 'data[1].csv')).resolves.toEqual([
+      '/work/data[1].csv',
+    ]);
+  });
+
   it('cat throws on a missing file', async () => {
     await expect(cat(fs(), '/work/missing.txt')).rejects.toThrow();
   });

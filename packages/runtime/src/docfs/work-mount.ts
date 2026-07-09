@@ -1,6 +1,7 @@
 // packages/runtime/src/docfs/work-mount.ts
 import type { DirEntry, FileView, ReadOpts, SearchMatch, SearchOpts } from '@ge/contracts';
 import type { WorkspaceStore } from '../workspace.js';
+import { byteLength, truncateToBytes } from './bytes.js';
 import type { Mount } from './mount.js';
 
 const DEFAULT_MAX_BYTES = 256 * 1024;
@@ -21,12 +22,12 @@ export function workMount(store: WorkspaceStore): Mount {
       const artifact = store.get(rel);
       if (!artifact) return null;
       const max = opts?.maxBytes ?? DEFAULT_MAX_BYTES;
-      const text = artifact.text.slice(0, max);
+      const { text, truncated } = truncateToBytes(artifact.text, max);
       return {
         path: '',
         text,
         bytes: byteLength(text),
-        truncated: text.length < artifact.text.length,
+        truncated,
       };
     },
     async search(rel, pattern, opts?: SearchOpts): Promise<SearchMatch[]> {
@@ -48,8 +49,4 @@ export function workMount(store: WorkspaceStore): Mount {
       return hits.slice(0, max);
     },
   };
-}
-
-function byteLength(text: string): number {
-  return new TextEncoder().encode(text).length;
 }

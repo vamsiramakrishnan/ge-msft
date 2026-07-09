@@ -1036,7 +1036,7 @@ export class PanelController {
               {
                 name: ev.result.name,
                 bytes: ev.result.bytes,
-                sourceLabel: ev.result.sourceLabel,
+                sourceLabel: truncateSourceLabel(ev.result.sourceLabel),
                 truncated: ev.result.truncated,
               },
               this.currentTurnProvenance,
@@ -1526,7 +1526,7 @@ function workspaceStepArtifact(result: unknown): RunStepArtifact | undefined {
         title: `shared/${result.name}`,
         meta: [
           formatBytes(result.bytes),
-          `source: ${result.sourceLabel}`,
+          `source: ${truncateSourceLabel(result.sourceLabel)}`,
           ...(result.truncated ? ['truncated'] : []),
           ...(result.provenanceMissing ? ['⚠ unattributed'] : []),
         ],

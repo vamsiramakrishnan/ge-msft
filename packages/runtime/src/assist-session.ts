@@ -1695,19 +1695,40 @@ export class AssistSession {
               },
             };
           }
+          // Re-check existence right before writing: the FIRST check (above) ran before awaiting
+          // human approval, an arbitrarily long window another share (a different turn, a different
+          // surface's session) could have used to create this same name. This narrows the race to
+          // the two network calls immediately below, not the full approval-latency window.
+          const stillFree = await this.options.sharedStore.list();
+          if (stillFree.some((f) => f.name === intent.name)) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: `"${intent.name}" was created by another share while this one was pending approval — choose a different name`,
+              },
+            };
+          }
           await this.options.sharedStore.write(intent.name, capped.text);
           // Every other write in this repo carries agent id/sources/identity/timestamp/content
           // hash (see docs/CONVENTIONS.md); `/shared` has no per-file metadata channel of its own
           // (it's a flat name→text store), so the turn's provenance is written as a companion
           // `<name>.provenance.json` sitting beside the content. A turn with no provenance still
           // completes the share (never silently drops it) but flags it as unattributed below —
-          // the same "unattributed" signal `bridge.actuate()` writes already surface.
-          const provenanceMissing = !shareCtx?.turnProvenance;
+          // the same "unattributed" signal `bridge.actuate()` writes already surface. The companion
+          // write is isolated in its own try: the CONTENT write above already succeeded, so a
+          // failure here must degrade to "unattributed", never bubble up as a total share failure
+          // that would hide a completed external write from the user and the audit ledger.
+          let provenanceMissing = !shareCtx?.turnProvenance;
           if (shareCtx?.turnProvenance) {
-            await this.options.sharedStore.write(
-              `${intent.name}${SHARE_PROVENANCE_SUFFIX}`,
-              JSON.stringify(shareCtx.turnProvenance),
-            );
+            try {
+              await this.options.sharedStore.write(
+                `${intent.name}${SHARE_PROVENANCE_SUFFIX}`,
+                JSON.stringify(shareCtx.turnProvenance),
+              );
+            } catch {
+              provenanceMissing = true;
+            }
           }
           return {
             label: `share ${intent.name}`,

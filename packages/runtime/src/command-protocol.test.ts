@@ -1583,6 +1583,79 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(shared.get('schedule.tsv')).toBe('original content'); // unchanged
   });
 
+  it('re-checks for a name created by another share WHILE this one awaited approval (TOCTOU)', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
+    const { client } = fakeClient(['```cmd\nshare race.txt = "mine"\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+
+    const events = await collect(
+      session.runCommands('race a share against a concurrent writer', {
+        // Simulate another surface's session creating the SAME name during the human-approval
+        // wait — the first existence check (before approval) sees nothing, but by the time this
+        // resolves, a competing write has already landed.
+        approveShare: async () => {
+          await sharedStore.write('race.txt', 'someone else got there first');
+          return true;
+        },
+      }),
+    );
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      result: { workspace: 'error', error: expect.stringContaining('pending approval') },
+    });
+    expect(shared.get('race.txt')).toBe('someone else got there first'); // not clobbered
+  });
+
+  it('completes the share (unattributed) when the provenance companion write fails, never silently reports total failure', async () => {
+    const bridge = new FakeExcelBridge();
+    const shared = new Map<string, string>();
+    let provenanceWriteAttempted = false;
+    const sharedStore = {
+      list: () =>
+        Promise.resolve([...shared.entries()].map(([name, text]) => ({ name, size: text.length }))),
+      read: (path: string) => Promise.resolve(shared.get(path)),
+      write: (path: string, content: string) => {
+        if (path.endsWith('.provenance.json')) {
+          provenanceWriteAttempted = true;
+          return Promise.reject(new Error('Graph write boom'));
+        }
+        shared.set(path, content);
+        return Promise.resolve();
+      },
+      remove: (path: string) => {
+        shared.delete(path);
+        return Promise.resolve();
+      },
+    };
+    const { client } = fakeClient([
+      '```cmd\nshare note.txt = "important content"\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+
+    const events = await collect(
+      session.runCommands('share despite a flaky provenance write', { approveShare: () => true }),
+    );
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(provenanceWriteAttempted).toBe(true);
+    // The content write already succeeded — this must NOT be reported as a bare workspace error.
+    expect(read).toMatchObject({
+      result: { workspace: 'share', name: 'note.txt', provenanceMissing: true },
+    });
+    expect(shared.get('note.txt')).toBe('important content');
+  });
+
   it('caps content to MAX_SHARE_BYTES and reports truncated on both the approval input and result', async () => {
     const bridge = new FakeExcelBridge();
     const { sharedStore, shared } = fakeSharedStore();

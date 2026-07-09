@@ -893,6 +893,29 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     await run;
   });
 
+  it('caps sourceLabel on the audit ledger AND the transcript step artifact, not just the pending card', async () => {
+    const assist = new FakeAssist();
+    const hostile = `search ${'x'.repeat(500)}`;
+    assist.commandScript = [{ share: { name: 'note.txt', text: 'hi', sourceLabel: hostile } }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share with a hostile source label');
+    await tick();
+    c.approvePendingShare();
+    await run;
+
+    const share = c.getState().shares.at(-1);
+    expect(share?.sourceLabel.length).toBeLessThan(hostile.length);
+    expect(share?.sourceLabel.endsWith('…')).toBe(true);
+
+    const step = c
+      .getState()
+      .steps.filter((s) => s.kind === 'read-result')
+      .at(-1);
+    const meta = step?.artifact?.meta.find((m) => m.startsWith('source: '));
+    expect(meta?.length).toBeLessThan(hostile.length);
+  });
+
   it('rejectPendingShare() resolves false: nothing is written and the card clears', async () => {
     const assist = new FakeAssist();
     assist.commandScript = [

@@ -11,7 +11,12 @@ import type {
 } from '@ge/contracts';
 import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type { CommandLoopEvent } from '@ge/runtime';
-import type { ResolvedGrounding } from '@ge/gemini-client';
+import type {
+  AgentView,
+  ConversationSummary,
+  EngineDataStore,
+  ResolvedGrounding,
+} from '@ge/gemini-client';
 import type { HostEvent } from '@ge/triggers';
 import {
   PanelController,
@@ -186,6 +191,8 @@ class FakeAssist implements AssistLike {
    */
   commandScript: CommandAction[] = [];
   runTasks: string[] = [];
+  conversations: ConversationSummary[] = [];
+  resumedSession: string | undefined;
   approveCalls: ActuationRequest[] = [];
   approveResults: boolean[] = [];
   /** The plan effect-sets passed to `approvePlan` and the decisions returned, for assertions. */
@@ -287,6 +294,12 @@ class FakeAssist implements AssistLike {
     this.ingested.push(event);
     return Promise.resolve();
   }
+  listConversations(): Promise<{ conversations: ConversationSummary[] }> {
+    return Promise.resolve({ conversations: this.conversations });
+  }
+  resumeSession(sessionIdOrName: string): void {
+    this.resumedSession = sessionIdOrName;
+  }
 }
 
 function lister(refs: ContextRef[]): ContextLister {
@@ -332,6 +345,25 @@ describe('PanelController — context tray', () => {
     expect(revealContext).toHaveBeenCalledWith(selection);
   });
 
+  it('reveals an Excel target surfaced outside the context tray by synthesizing a range ref', async () => {
+    const assist = new FakeAssist();
+    const revealContext = vi.fn(async (_ref: ContextRef): Promise<void> => {});
+    const c = new PanelController(assist, {
+      listContext: () => Promise.resolve([]),
+      canRevealContext: (contextRef) => contextRef.surface === 'excel',
+      revealContext,
+    });
+
+    await c.revealLocation('excel', "'Daily schedule'!K6:L18");
+    expect(revealContext).toHaveBeenCalledWith({
+      id: "xl:'Daily schedule'!K6:L18",
+      kind: 'range',
+      surface: 'excel',
+      title: "'Daily schedule'!K6:L18",
+      hostRef: { type: 'excel.range', address: "'Daily schedule'!K6:L18" },
+    });
+  });
+
   it('does not mark chips revealable when the bridge rejects that specific ref', async () => {
     const assist = new FakeAssist();
     const document = ref('word:document', 'Whole document');
@@ -344,6 +376,38 @@ describe('PanelController — context tray', () => {
     await c.refreshContext();
     expect(c.getState().chips[0]).toMatchObject({ id: 'word:document' });
     expect(c.getState().chips[0]?.revealable).toBeUndefined();
+  });
+});
+
+describe('PanelController — conversation history', () => {
+  it('lists Discovery Engine sessions and can mark one as active', async () => {
+    const assist = new FakeAssist();
+    assist.conversations = [
+      {
+        name: 'projects/proj/locations/global/collections/default_collection/engines/e/sessions/sess-1',
+        id: 'sess-1',
+        title: 'Schedule planning',
+        turnCount: 3,
+        isPinned: true,
+        updatedAt: '2026-07-07T02:54:23.000Z',
+      },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.refreshConversations();
+
+    expect(c.getState().conversations.loaded).toBe(true);
+    expect(c.getState().conversations.items[0]).toMatchObject({
+      id: 'sess-1',
+      title: 'Schedule planning',
+      turnCount: 3,
+      isPinned: true,
+      active: false,
+    });
+
+    c.resumeConversation(assist.conversations[0]!.name);
+    expect(assist.resumedSession).toBe(assist.conversations[0]!.name);
+    expect(c.getState().conversations.items[0]?.active).toBe(true);
   });
 });
 
@@ -548,6 +612,28 @@ describe('PanelController — event-driven inputs', () => {
     expect(c.getState().busy).toBe(false);
     expect(c.getState().messages.map((m) => m.text)).toEqual(['a', 'a-reply', 'b', 'b-reply']);
   });
+
+  it('reroutes a cmd block returned from normal chat into the Office command route', async () => {
+    const assist = new FakeAssist();
+    assist.script = [
+      { type: 'token', text: "```cmd\nread 'Daily schedule'!B2:I10\n" },
+      { type: 'done' },
+    ];
+    assist.commandScript = [
+      ev({ type: 'turn-start', turn: 1 }),
+      ev({ type: 'done', turn: 1, answer: '' }),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.send('Okay add this to my schedule');
+
+    expect(assist.asked).toEqual(['Okay add this to my schedule']);
+    expect(assist.runTasks).toEqual(['Okay add this to my schedule']);
+    expect(c.getState().messages[1]?.text).toContain('Detected Office command output');
+    expect(c.getState().messages[1]?.text).not.toContain('```cmd');
+    expect(c.getState().messages.map((m) => m.text)).toContain('Continue in Office command route');
+    expect(c.getState().busy).toBe(false);
+  });
 });
 
 describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => {
@@ -589,6 +675,43 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     ]);
     expect(c.getState().steps.map((s) => s.text)).toContain('Python code execution completed');
     expect(c.getState().pendingWrite).toBeUndefined();
+  });
+
+  it('preserves compact workspace artifacts on read-result steps', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'save schedule.tsv',
+        result: {
+          workspace: 'save',
+          artifact: {
+            id: 'ws:1',
+            name: 'schedule.tsv',
+            kind: 'tsv',
+            mimeType: 'text/tab-separated-values',
+            sourceLabel: "read 'Daily schedule'!B3:I53",
+            createdAt: '2026-07-07T00:00:00.000Z',
+            bytes: 1200,
+            lineCount: 20,
+            truncated: false,
+          },
+          preview: 'Time\tMonday\n08:00\tDeep Work',
+        },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('save schedule');
+
+    const step = c.getState().steps.at(-1);
+    expect(step?.text).toBe('saved schedule.tsv · 1.2 KB');
+    expect(step?.artifact).toMatchObject({
+      title: 'ws:1 · schedule.tsv',
+      preview: 'Time\tMonday\n08:00\tDeep Work',
+      meta: expect.arrayContaining(["source: read 'Daily schedule'!B3:I53"]),
+    });
   });
 
   it('stages a write as pending and actuates only after approvePendingWrite() (resolves true)', async () => {
@@ -938,6 +1061,27 @@ function tick(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+describe('PanelController — discovered catalog (Task 6: skills/data stores reach panel state)', () => {
+  it('setDiscoveredCatalog stores available agents and data stores in state', () => {
+    const assist = new FakeAssist();
+    const controller = new PanelController(assist, lister([]));
+    const agents: AgentView[] = [{ id: 'a1', displayName: 'Test Skill' }];
+    const dataStores: EngineDataStore[] = [
+      { id: 'ds1', resourceName: 'r1', displayName: 'SP Files', connector: 'SharePoint' },
+    ];
+    controller.setDiscoveredCatalog(agents, dataStores);
+    expect(controller.getState().availableAgents).toEqual(agents);
+    expect(controller.getState().availableDataStores).toEqual(dataStores);
+  });
+
+  it('availableAgents/availableDataStores default to empty arrays', () => {
+    const assist = new FakeAssist();
+    const controller = new PanelController(assist, lister([]));
+    expect(controller.getState().availableAgents).toEqual([]);
+    expect(controller.getState().availableDataStores).toEqual([]);
+  });
+});
+
 describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
   const wordPlan: CommandPlan = {
     intent: 'rewrite',
@@ -1002,7 +1146,7 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     expect(c.getState().pendingCommandPlan).toBeUndefined();
     const last = c.getState().messages.at(-1);
     expect(last?.role).toBe('assistant');
-    expect(last?.text).toContain('which section');
+    expect(last?.text).toBe('Before I plan this, I need one detail.');
     expect(c.getState().pendingPlan).toBeUndefined();
     expect(c.getState().pendingPlanClarification?.questions).toEqual(['which section — §4 or §5?']);
   });

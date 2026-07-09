@@ -71,6 +71,7 @@ export const FIXTURE_MESSAGES: ChatMessage[] = [
         title: 'Vendor Risk (Notebook)',
         uri: 'https://example.com/nb/vendor-risk',
         locator: '§3.2',
+        excerpt: 'Systems handling customer data must sustain 99.9% monthly availability.',
       },
       {
         title: 'MSA — Northwind Cloud',
@@ -249,6 +250,31 @@ export const FIXTURE_SKILLS: Skill[] = [
   },
 ];
 
+export const FIXTURE_CONVERSATIONS = {
+  loaded: true,
+  loading: false,
+  items: [
+    {
+      name: 'projects/proj/locations/global/collections/default_collection/engines/eng/sessions/7071648217932584245',
+      id: '7071648217932584245',
+      title: 'Google SWE mock schedule',
+      turnCount: 10,
+      isPinned: true,
+      active: true,
+      updatedAt: '2026-07-07T02:54:23.000Z',
+    },
+    {
+      name: 'projects/proj/locations/global/collections/default_collection/engines/eng/sessions/11553926318396598036',
+      id: '11553926318396598036',
+      title: 'Project schedule Gantt chart',
+      turnCount: 6,
+      isPinned: false,
+      active: false,
+      updatedAt: '2026-06-26T10:01:42.000Z',
+    },
+  ],
+};
+
 export const FIXTURE_ERROR = 'Could not reach the grounding endpoint — retry in a moment.';
 
 /** A full, everything-on snapshot used as the preview's default and by the smoke test. */
@@ -259,6 +285,9 @@ export const FIXTURE_STATE: PanelState = {
   proposals: FIXTURE_PROPOSALS,
   changes: [],
   steps: FIXTURE_STEPS,
+  availableAgents: [],
+  availableDataStores: [],
+  conversations: FIXTURE_CONVERSATIONS,
   pendingWrite: FIXTURE_PENDING_WRITE,
   pendingPlan: FIXTURE_PLAN,
   skills: FIXTURE_SKILLS,
@@ -266,4 +295,11 @@ export const FIXTURE_STATE: PanelState = {
   error: FIXTURE_ERROR,
 };
 
-export const PREVIEW_SURFACES: Surface[] = ['word', 'excel', 'powerpoint', 'outlook', 'teams'];
+export const PREVIEW_SURFACES: Surface[] = [
+  'word',
+  'excel',
+  'powerpoint',
+  'outlook',
+  'onenote',
+  'teams',
+];

@@ -12,6 +12,7 @@ import {
   FIXTURE_PENDING_WRITE,
   FIXTURE_PROPOSALS,
   FIXTURE_SKILLS,
+  FIXTURE_CONVERSATIONS,
   FIXTURE_ERROR,
   PREVIEW_SURFACES,
 } from './preview-fixtures.js';
@@ -54,6 +55,30 @@ const ALL_ON: Toggles = {
   busy: true,
 };
 
+const README_CAPTURE: Toggles = {
+  chips: true,
+  messages: true,
+  suggestions: true,
+  skills: true,
+  steps: true,
+  plan: true,
+  write: false,
+  proposals: true,
+  error: false,
+  busy: false,
+};
+
+function previewParams(): URLSearchParams {
+  return typeof window === 'undefined'
+    ? new URLSearchParams()
+    : new URLSearchParams(window.location.search);
+}
+
+function surfaceFromParams(params: URLSearchParams): Surface {
+  const requested = params.get('surface') as Surface | null;
+  return requested && PREVIEW_SURFACES.includes(requested) ? requested : 'word';
+}
+
 function buildState(t: Toggles): PanelState {
   return {
     messages: t.messages ? FIXTURE_MESSAGES : [],
@@ -62,6 +87,9 @@ function buildState(t: Toggles): PanelState {
     proposals: t.proposals ? FIXTURE_PROPOSALS : [],
     changes: [],
     steps: t.steps ? FIXTURE_STEPS : [],
+    availableAgents: [],
+    availableDataStores: [],
+    conversations: FIXTURE_CONVERSATIONS,
     ...(t.skills ? { skills: FIXTURE_SKILLS } : {}),
     ...(t.write ? { pendingWrite: FIXTURE_PENDING_WRITE } : {}),
     ...(t.plan ? { pendingPlan: FIXTURE_PLAN } : {}),
@@ -102,6 +130,8 @@ export function makeMockController(state: PanelState): PanelController {
     listSkills: () => state.skills ?? [],
     invokeSkill: async (name: string, args: Record<string, string>) =>
       log('invokeSkill')(name, args),
+    refreshConversations: async () => log('refreshConversations')(),
+    resumeConversation: (name: string) => log('resumeConversation')(name),
     onContext: () => undefined,
     onSuggest: () => undefined,
   };
@@ -122,15 +152,33 @@ const TOGGLE_LABELS: ReadonlyArray<[keyof Toggles, string]> = [
 ];
 
 function Preview(): JSX.Element {
-  const [surface, setSurface] = useState<Surface>('word');
-  const [toggles, setToggles] = useState<Toggles>(ALL_ON);
+  const params = useMemo(() => previewParams(), []);
+  const captureMode = params.get('capture') === '1';
+  const [surface, setSurface] = useState<Surface>(() => surfaceFromParams(params));
+  const [toggles, setToggles] = useState<Toggles>(() => (captureMode ? README_CAPTURE : ALL_ON));
 
   // A fresh mock per (surface, toggles) so `getState` reflects the toolbar. `App` re-renders on its
   // own prop change; the mock's `subscribe` is a no-op because the harness is the source of truth.
   const controller = useMemo(() => makeMockController(buildState(toggles)), [toggles]);
 
+  const panel = (
+    <div className="preview-stage">
+      <div className="preview-frame" data-surface={surface}>
+        <App controller={controller} surface={surface} />
+      </div>
+    </div>
+  );
+
+  if (captureMode) {
+    return (
+      <div className="preview preview-capture" data-capture="true">
+        {panel}
+      </div>
+    );
+  }
+
   return (
-    <div className="preview">
+    <div className="preview" data-capture="false">
       <aside className="preview-toolbar" aria-label="Preview controls">
         <h1 className="preview-title">Task-pane preview</h1>
         <div className="preview-group">
@@ -193,11 +241,7 @@ function Preview(): JSX.Element {
           A fake controller renders the real panel with no Office host. Buttons log to the console.
         </p>
       </aside>
-      <div className="preview-stage">
-        <div className="preview-frame">
-          <App controller={controller} surface={surface} />
-        </div>
-      </div>
+      {panel}
     </div>
   );
 }

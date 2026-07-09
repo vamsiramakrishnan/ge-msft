@@ -8,14 +8,22 @@ import type {
   ContextRef,
   ProvenancePayload,
   SourceRef,
+  Surface,
   SseEvent,
 } from '@ge/contracts';
-import { asChangeId } from '@ge/contracts';
-import type { ResolvedGrounding } from '@ge/gemini-client';
+import { asChangeId, deriveOutput, extractCommandBlock } from '@ge/contracts';
+import type {
+  AgentView,
+  ConversationSummary,
+  EngineDataStore,
+  ResolvedGrounding,
+} from '@ge/gemini-client';
 import {
   type CommandLoopEvent,
   type PlanEffect as RuntimePlanEffect,
   type RunCommandsOptions,
+  type WorkspaceArtifactSummary,
+  type WorkspaceResult,
 } from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
 import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
@@ -23,6 +31,7 @@ import { renderCommandLine } from './render-command.js';
 import { assertNever } from './assert-never.js';
 import { TurnQueue } from './turn-queue.js';
 import { ApprovalCoordinator } from './approval-coordinator.js';
+import { findContextRefForLocation, synthesizeLocationRef } from './host-location.js';
 
 /**
  * One actuation in a composed plan (ADR-0005 §3 Planner/Executor) — the CANONICAL runtime
@@ -116,6 +125,12 @@ export interface AssistLike {
     program: string,
     opts?: RunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  listConversations?(opts?: {
+    pageSize?: number;
+    pageToken?: string;
+    signal?: AbortSignal;
+  }): Promise<{ conversations: ConversationSummary[]; nextPageToken?: string }>;
+  resumeSession?(sessionIdOrName: string): void;
   /**
    * The planner pre-stage (EXPERIENCE.md §F): stream one turn that proposes a confirmable
    * {@link CommandPlan} for a complex free-text request, WITHOUT reading or writing the document.
@@ -220,6 +235,27 @@ export interface SkillParam {
   example?: string;
 }
 
+export interface ConversationItem {
+  name: string;
+  id: string;
+  title: string;
+  turnCount: number;
+  isPinned: boolean;
+  active: boolean;
+  state?: string;
+  startedAt?: string;
+  endedAt?: string;
+  updatedAt?: string;
+}
+
+export interface ConversationsState {
+  items: ConversationItem[];
+  loading: boolean;
+  loaded: boolean;
+  error?: string;
+  nextPageToken?: string;
+}
+
 /**
  * A pending write awaiting the user's per-write decision — the fail-closed human-in-the-loop of
  * ADR-0004's command loop. `command` is the verbatim CLI line (`set Sales!F2 =C2-D2`) the approval
@@ -295,6 +331,17 @@ function renderConfirmedPlanTask(pending: PendingCommandPlan): string {
   return lines.join('\n');
 }
 
+function renderConfirmedPlanDisplayText(pending: PendingCommandPlan): string {
+  const { plan } = pending;
+  const scope = plan.scope
+    ? plan.scope.ref
+      ? `${plan.scope.kind} ${plan.scope.ref}`
+      : plan.scope.kind
+    : 'current context';
+  const stepCount = plan.steps.length === 1 ? '1 step' : `${plan.steps.length} steps`;
+  return `/execute approved ${plan.intent} plan · ${plan.surface} · ${scope} · ${stepCount}`;
+}
+
 /** One narrated step of the command loop, surfaced so the user can see the loop's progress. */
 export interface RunStep {
   id: string;
@@ -313,6 +360,14 @@ export interface RunStep {
     | 'activity'
     | 'error';
   text: string;
+  artifact?: RunStepArtifact;
+}
+
+export interface RunStepArtifact {
+  title: string;
+  meta: string[];
+  preview?: string;
+  matches?: Array<{ line: number; text: string }>;
 }
 
 export interface PanelState {
@@ -340,6 +395,19 @@ export interface PanelState {
    * registered". READ-ONLY in the controller — populated by `registerSkills`, never gated here.
    */
   skills?: Skill[];
+  /**
+   * Skills (agents) discovered via `:listAvailableAgentViews` at boot (Task 6). Populated once by
+   * `setDiscoveredCatalog`; a future `@`-picker UI reads this to offer agent mentions. Empty until
+   * discovery completes or when discovery is disabled/unavailable.
+   */
+  availableAgents: AgentView[];
+  /**
+   * Federated data stores discovered from the engine's config at boot (Task 6). Populated once by
+   * `setDiscoveredCatalog`; a future `@`-picker UI reads this to offer data-store mentions. Empty
+   * until discovery completes or when discovery is disabled/unavailable.
+   */
+  availableDataStores: EngineDataStore[];
+  conversations: ConversationsState;
   busy: boolean;
   error?: string;
 }
@@ -351,6 +419,9 @@ const EMPTY_STATE: PanelState = {
   proposals: [],
   changes: [],
   steps: [],
+  availableAgents: [],
+  availableDataStores: [],
+  conversations: { items: [], loading: false, loaded: false },
   busy: false,
 };
 
@@ -458,6 +529,25 @@ export class PanelController {
     }
   }
 
+  /**
+   * Navigation-only reveal for locations surfaced outside the context tray, such as a plan-preview
+   * target or an assistant answer that names a cell/range. It reuses the same host bridge as context
+   * chips. If the location cannot be represented as a surface-native ref, this fails closed.
+   */
+  async revealLocation(surface: Surface, location: string): Promise<void> {
+    if (!this.lister.revealContext) return;
+    const ref =
+      findContextRefForLocation(this.refs.values(), surface, location) ??
+      synthesizeLocationRef(surface, location);
+    if (!ref) return;
+    if (this.lister.canRevealContext && !this.lister.canRevealContext(ref)) return;
+    try {
+      await this.lister.revealContext(ref);
+    } catch (err) {
+      this.set({ error: errorText(err) });
+    }
+  }
+
   // ---- ask / stream -------------------------------------------------------
 
   /**
@@ -483,6 +573,8 @@ export class PanelController {
     const controller = new AbortController();
     this.inflight = controller;
     const sources: SourceRef[] = [];
+    let replyText = '';
+    let recoverAsCommandTask: string | undefined;
     try {
       for await (const ev of this.session.ask(q, {
         signal: controller.signal,
@@ -490,6 +582,7 @@ export class PanelController {
       })) {
         switch (ev.type) {
           case 'token':
+            replyText += ev.text;
             this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
             break;
           case 'activity':
@@ -511,6 +604,12 @@ export class PanelController {
             break;
         }
       }
+      if (!controller.signal.aborted && extractCommandBlock(replyText) !== null) {
+        recoverAsCommandTask = q;
+        this.patchMessage(reply.id, () => ({
+          text: 'Detected Office command output in a chat turn. Continuing through the Office command route so the add-in can read/apply changes safely.',
+        }));
+      }
     } catch (err) {
       // A user cancellation surfaces as an AbortError (or the signal flips aborted); mark it as a
       // cancelled turn rather than a red error — the partial answer stays, just no longer streaming.
@@ -528,7 +627,11 @@ export class PanelController {
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
       this.set({ busy: false });
-      this.drainPendingTurn();
+      if (recoverAsCommandTask) {
+        await this.runCommands(recoverAsCommandTask, grounding, 'Continue in Office command route');
+      } else {
+        this.drainPendingTurn();
+      }
     }
   }
 
@@ -572,11 +675,14 @@ export class PanelController {
         return;
       }
       if (needsClarification) {
-        const qs = plan.clarify.map((c) => `• ${c}`).join('\n');
         this.set({
           messages: [
             ...this.state.messages,
-            { id: this.id('a'), role: 'assistant', text: `Before I plan this — ${qs}` },
+            {
+              id: this.id('a'),
+              role: 'assistant',
+              text: 'Before I plan this, I need one detail.',
+            },
           ],
           pendingPlanClarification: {
             task: t,
@@ -585,6 +691,14 @@ export class PanelController {
           },
           busy: false,
         });
+        return;
+      }
+      if (deriveOutput(plan.intent) === 'chat') {
+        this.set({
+          messages: this.state.messages.filter((message) => message.id !== userMsg.id),
+          busy: false,
+        });
+        void this.send(t, grounding);
         return;
       }
       this.set({
@@ -625,7 +739,11 @@ export class PanelController {
     const p = this.state.pendingCommandPlan;
     if (!p) return;
     this.set({ pendingCommandPlan: undefined });
-    void this.runCommands(renderConfirmedPlanTask(p), p.grounding);
+    void this.runCommands(
+      renderConfirmedPlanTask(p),
+      p.grounding,
+      renderConfirmedPlanDisplayText(p),
+    );
   }
 
   /** Discard the staged planner plan without running anything (fail-closed: nothing executes). */
@@ -657,17 +775,26 @@ export class PanelController {
    * `pendingWrite` and actuates only after the user calls `approvePendingWrite()` — the fail-closed
    * human-in-the-loop. `send()`/`ask()` stay intact and untouched.
    */
-  async runCommands(task: string, grounding?: ResolvedGrounding): Promise<void> {
+  async runCommands(
+    task: string,
+    grounding?: ResolvedGrounding,
+    displayText?: string,
+  ): Promise<void> {
     const t = task.trim();
     if (!t) return;
     // Queued AS A COMMANDS turn (Finding #3): it drains back through runCommands — the fail-closed
     // plan/approval loop — NEVER through send(). A queued write turn is never downgraded to chat.
     if (this.state.busy) {
-      this.turnQueue.enqueue({ mode: 'commands', task: t, ...(grounding ? { grounding } : {}) });
+      this.turnQueue.enqueue({
+        mode: 'commands',
+        task: t,
+        ...(grounding ? { grounding } : {}),
+        ...(displayText ? { displayText } : {}),
+      });
       return;
     }
 
-    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: t };
+    const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: displayText ?? t };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
     this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
 
@@ -835,7 +962,14 @@ export class PanelController {
         this.addStep('command', `${ev.name} → ${ev.lines.length} line(s)`);
         return;
       case 'read-result':
-        this.addStep('read-result', `read ${ev.intentLabel}`);
+        {
+          const artifact = workspaceStepArtifact(ev.result);
+          this.addStep(
+            'read-result',
+            artifact ? workspaceStepText(ev.result) : `read ${ev.intentLabel}`,
+            artifact,
+          );
+        }
         return;
       case 'plan-preview':
         this.addStep('plan-preview', summarizeEffects(ev.effects));
@@ -897,8 +1031,13 @@ export class PanelController {
     this.approvals.rejectPlan();
   }
 
-  private addStep(kind: RunStep['kind'], text: string): void {
-    this.set({ steps: [...this.state.steps, { id: this.id('step'), kind, text }] });
+  private addStep(kind: RunStep['kind'], text: string, artifact?: RunStepArtifact): void {
+    this.set({
+      steps: [
+        ...this.state.steps,
+        { id: this.id('step'), kind, text, ...(artifact ? { artifact } : {}) },
+      ],
+    });
   }
 
   // ---- actuation review ---------------------------------------------------
@@ -983,6 +1122,62 @@ export class PanelController {
     this.set({ suggestions: this.state.suggestions.filter((s) => s.id !== id) });
   }
 
+  async refreshConversations(): Promise<void> {
+    if (!this.session.listConversations) {
+      this.set({
+        conversations: {
+          items: [],
+          loading: false,
+          loaded: true,
+          error: 'Conversation history is unavailable in this build.',
+        },
+      });
+      return;
+    }
+    const loadingState = { ...this.state.conversations };
+    delete loadingState.error;
+    this.set({
+      conversations: {
+        ...loadingState,
+        loading: true,
+      },
+    });
+    try {
+      const result = await this.session.listConversations({ pageSize: 20 });
+      this.set({
+        conversations: {
+          items: result.conversations.map((item) => this.toConversationItem(item)),
+          loading: false,
+          loaded: true,
+          ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
+        },
+      });
+    } catch (err) {
+      this.set({
+        conversations: {
+          ...this.state.conversations,
+          loading: false,
+          loaded: true,
+          error: errorText(err),
+        },
+      });
+    }
+  }
+
+  resumeConversation(name: string): void {
+    if (!this.session.resumeSession) return;
+    this.session.resumeSession(name);
+    this.set({
+      conversations: {
+        ...this.state.conversations,
+        items: this.state.conversations.items.map((item) => ({
+          ...item,
+          active: item.name === name || item.id === name,
+        })),
+      },
+    });
+  }
+
   // ---- skills (ADR-0005 `def`) — READ-ONLY presenters ---------------------
 
   /**
@@ -994,6 +1189,16 @@ export class PanelController {
    */
   registerSkills(skills: Skill[]): void {
     this.set({ skills });
+  }
+
+  /**
+   * Record the skills (agents) and federated data stores discovered at boot via
+   * `:listAvailableAgentViews` + the engine's data-store config (Task 6). Purely a view presenter —
+   * it stores what was discovered so a future `@`-picker UI can read it from `getState()`; it adds
+   * no execution or gate logic of its own.
+   */
+  setDiscoveredCatalog(agents: AgentView[], dataStores: EngineDataStore[]): void {
+    this.set({ availableAgents: agents, availableDataStores: dataStores });
   }
 
   /** The currently-registered skills (read-only snapshot). */
@@ -1041,7 +1246,8 @@ export class PanelController {
   private drainPendingTurn(): void {
     this.turnQueue.drain({
       ask: (query, grounding) => void this.send(query, grounding),
-      commands: (task, grounding) => void this.runCommands(task, grounding),
+      commands: (task, grounding, displayText) =>
+        void this.runCommands(task, grounding, displayText),
       directCommands: (program) => void this.runDirectCommands(program),
       skill: (name, args) => void this.invokeSkill(name, args),
     });
@@ -1072,6 +1278,23 @@ export class PanelController {
 
   private id(prefix: string): string {
     return `${prefix}-${++this.seq}`;
+  }
+
+  private toConversationItem(item: ConversationSummary): ConversationItem {
+    const current = this.session.sessionId;
+    const active = current === item.name || current === item.id;
+    return {
+      name: item.name,
+      id: item.id,
+      title: item.title,
+      turnCount: item.turnCount,
+      isPinned: item.isPinned,
+      active,
+      ...(item.state ? { state: item.state } : {}),
+      ...(item.startedAt ? { startedAt: item.startedAt } : {}),
+      ...(item.endedAt ? { endedAt: item.endedAt } : {}),
+      ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+    };
   }
 }
 
@@ -1128,6 +1351,76 @@ function effectNoun(kind: ActuationRequest['kind']): string {
     default:
       return kind;
   }
+}
+
+function workspaceStepText(result: unknown): string {
+  if (!isWorkspaceResult(result)) return 'workspace';
+  switch (result.workspace) {
+    case 'list':
+      return `workspace · ${result.artifacts.length} artifact${
+        result.artifacts.length === 1 ? '' : 's'
+      }`;
+    case 'summary':
+      return `workspace · ${result.artifact.name}`;
+    case 'save':
+      return `saved ${result.artifact.name} · ${formatBytes(result.artifact.bytes)}`;
+    case 'cat':
+      return `preview ${result.artifact.name}`;
+    case 'grep':
+      return `grep ${result.artifact.name} · ${result.matches.length} match${
+        result.matches.length === 1 ? '' : 'es'
+      }`;
+    case 'error':
+      return `workspace error: ${result.error}`;
+  }
+}
+
+function workspaceStepArtifact(result: unknown): RunStepArtifact | undefined {
+  if (!isWorkspaceResult(result)) return undefined;
+  switch (result.workspace) {
+    case 'list':
+      return {
+        title: 'Workspace artifacts',
+        meta: result.artifacts.map(
+          (a) => `${a.id} · ${a.name} · ${a.kind} · ${formatBytes(a.bytes)}`,
+        ),
+      };
+    case 'summary':
+    case 'save':
+    case 'cat':
+      return {
+        title: `${result.artifact.id} · ${result.artifact.name}`,
+        meta: artifactMeta(result.artifact),
+        preview: result.preview,
+      };
+    case 'grep':
+      return {
+        title: `${result.artifact.id} · ${result.artifact.name}`,
+        meta: [...artifactMeta(result.artifact), `pattern: ${result.pattern}`],
+        matches: result.matches,
+      };
+    case 'error':
+      return { title: 'Workspace error', meta: [result.error] };
+  }
+}
+
+function isWorkspaceResult(result: unknown): result is WorkspaceResult {
+  return !!result && typeof result === 'object' && 'workspace' in result;
+}
+
+function artifactMeta(artifact: WorkspaceArtifactSummary): string[] {
+  return [
+    `${artifact.kind} · ${artifact.mimeType}`,
+    `${artifact.lineCount} line${artifact.lineCount === 1 ? '' : 's'} · ${formatBytes(artifact.bytes)}`,
+    `source: ${artifact.sourceLabel}`,
+    ...(artifact.truncated ? ['truncated'] : []),
+  ];
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** A one-line label for a `command` loop step: the parsed verb (or the corrective parse error). */

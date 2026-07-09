@@ -7,7 +7,13 @@ import {
   releaseProfile,
   type Surface,
 } from '@ge/contracts';
-import { DiscoveryCatalogClient } from '@ge/gemini-client';
+import {
+  applyCatalogSelection,
+  defaultCatalogSelection,
+  DiscoveryCatalogClient,
+  type GeminiCatalog,
+  type StreamAssistClient,
+} from '@ge/gemini-client';
 import { detectSurface, surfaceFromHost } from '../host.js';
 import { NaaAuthClient } from '../auth-client.js';
 import { composeSession } from '../compose.js';
@@ -30,6 +36,7 @@ import {
   msalConfigFromEnv,
   notebookIdFromEnv,
   releaseProfileFromEnv,
+  warmUpSkillsFromEnv,
   type RawEnv,
 } from './config.js';
 import './styles.css';
@@ -406,14 +413,32 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
     });
 
     recordAuthDebug('compose.start');
-    const { session, tokens, client } = await composeSession({
-      config,
-      auth,
-      bridge: prepared.bridge,
-      unit,
-    });
+    const { session, tokens, client, warmUp, availableAgents, availableDataStores } =
+      await composeSession({
+        config,
+        auth,
+        bridge: prepared.bridge,
+        unit,
+        // Self-provision our skills as the signed-in user (client-direct, ADR-0001). Detect-only
+        // from env alone (compares the [rev:<sha>] marker); best-effort — never blocks the session.
+        warmUpSkills: warmUpSkillsFromEnv(env),
+        ...(config.wif.userProject ? { warmUpQuotaProject: config.wif.userProject } : {}),
+        // Discover skills (:listAvailableAgentViews) + federated data stores (engines.get) with the
+        // WIF token — the sources for the skill / data-store pickers.
+        discoverCatalog: true,
+      });
     recordAuthDebug('compose.success');
+    if (warmUp.length)
+      recordAuthDebug('warmup.skills', { results: warmUp.map((w) => w.action).join(',') });
+    recordAuthDebug('catalog.discovered', {
+      agents: availableAgents.length,
+      dataStores: availableDataStores.length,
+      connectors: [...new Set(availableDataStores.map((d) => d.connector))].join(','),
+    });
+    const catalogClient = new DiscoveryCatalogClient(tokens, config);
+    await applyBootCatalogRouting(client, catalogClient);
     const controller = new PanelController(session, prepared.bridge);
+    controller.setDiscoveredCatalog(availableAgents, availableDataStores);
 
     // Narrow the quick-action bar + `/` palette to what THIS surface can actually run (ADR-0006).
     const rawCapabilities = await prepared.bridge.getCapabilities();
@@ -427,7 +452,7 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
         controller={controller}
         surface={prepared.surface}
         allowedIntents={allowedIntents}
-        catalogClient={new DiscoveryCatalogClient(tokens, config)}
+        catalogClient={catalogClient}
         onCatalogRouting={(routing) => client.configureRouting(routing)}
       />,
     );
@@ -448,6 +473,37 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
       fatal('Could not start Gemini Enterprise', detail);
     }
   }
+}
+
+async function applyBootCatalogRouting(
+  client: StreamAssistClient,
+  catalogClient: DiscoveryCatalogClient,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3500);
+  try {
+    const catalog = await catalogClient.listCatalog(controller.signal);
+    client.configureRouting(applyCatalogSelection(defaultCatalogSelection(catalog)));
+    recordAuthDebug('catalog.routing.discovered', summarizeCatalog(catalog));
+  } catch (err) {
+    recordAuthDebug('catalog.routing.fallback', {
+      error: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240),
+    });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function summarizeCatalog(catalog: GeminiCatalog): Record<string, string | number | boolean> {
+  const defaults = defaultCatalogSelection(catalog);
+  return {
+    skills: catalog.skills.length,
+    dataStores: catalog.dataStores.length,
+    connectors: catalog.connectors.length,
+    warnings: catalog.warnings?.length ?? 0,
+    planner: defaults.plannerSkill?.label ?? '',
+    commander: defaults.commandSkill?.label ?? '',
+  };
 }
 
 function instrumentMsal(msal: PreparedBoot['msal']): PreparedBoot['msal'] {

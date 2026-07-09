@@ -30,6 +30,36 @@ describe('excel capture (pure)', () => {
     expect(splitHeaderRows([])).toEqual({ columns: [], rows: [] });
   });
 
+  it('skips a leading blank formatting row and uses the first non-blank row as the header', () => {
+    const { columns, rows } = splitHeaderRows([
+      ['', ''],
+      ['Region', 'Revenue'],
+      ['EMEA', '120'],
+    ]);
+    expect(columns).toEqual(['Region', 'Revenue']);
+    expect(rows).toEqual([['EMEA', '120']]);
+  });
+
+  it('skips multiple leading blank rows, including whitespace-only cells', () => {
+    const { columns, rows } = splitHeaderRows([
+      ['', ''],
+      ['  ', ''],
+      ['Region', 'Revenue'],
+      ['EMEA', '120'],
+    ]);
+    expect(columns).toEqual(['Region', 'Revenue']);
+    expect(rows).toEqual([['EMEA', '120']]);
+  });
+
+  it('returns empty columns/rows when the grid is entirely blank', () => {
+    expect(
+      splitHeaderRows([
+        ['', ''],
+        ['', ''],
+      ]),
+    ).toEqual({ columns: [], rows: [] });
+  });
+
   it('produces valid, anchored context as a GFM table from a range', () => {
     const ctx = rangeToContext('Sheet1!A1:B3', [
       ['Region', 'Revenue'],

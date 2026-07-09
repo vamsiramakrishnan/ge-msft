@@ -69,7 +69,9 @@ export class ExcelBridge implements DocBridge {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       const sel = ctx.workbook.getSelectedRange();
       sel.load('address,values');
-      const used = sheet.getUsedRange();
+      // valuesOnly: true — exclude cells that only ever had formatting applied (a common cause of
+      // spurious blank rows/columns bloating the used range beyond the real data).
+      const used = sheet.getUsedRange(true);
       used.load('address,values');
       const tables = ctx.workbook.tables;
       if (isSet('ExcelApi', '1.1')) tables.load('items/name');
@@ -161,7 +163,7 @@ export class ExcelBridge implements DocBridge {
     }
     // Sheet / table → the used range as a native table → chunks.
     return Excel.run(async (ctx) => {
-      const used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange();
+      const used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange(true);
       used.load('address,values');
       await ctx.sync();
       return rangeToContext(used.address, used.values as string[][]);
@@ -214,7 +216,8 @@ export class ExcelBridge implements DocBridge {
     const captured = await Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       sheet.load('name');
-      const used = hasNullObj ? sheet.getUsedRangeOrNullObject() : sheet.getUsedRange();
+      // valuesOnly: true — see listContext's used-range read for why.
+      const used = hasNullObj ? sheet.getUsedRangeOrNullObject(true) : sheet.getUsedRange(true);
       used.load('address,values,isNullObject');
 
       const sel = ctx.workbook.getSelectedRange();
@@ -280,9 +283,10 @@ export class ExcelBridge implements DocBridge {
     if (!q) return [];
     return Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      // valuesOnly: true — see listContext's used-range read for why.
       const used = isSet('ExcelApi', '1.4')
-        ? sheet.getUsedRangeOrNullObject()
-        : sheet.getUsedRange();
+        ? sheet.getUsedRangeOrNullObject(true)
+        : sheet.getUsedRange(true);
       used.load('address,values,isNullObject');
       await ctx.sync();
       if ((used as { isNullObject?: boolean }).isNullObject === true) return [];

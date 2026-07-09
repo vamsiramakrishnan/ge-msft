@@ -15,11 +15,17 @@ import {
  * `range:<address>` write-back locator.
  */
 
-/** Split a 2D grid into a header row (row 0) and the remaining data rows. */
+/**
+ * Split a 2D grid into a header row and the remaining data rows. Skips any leading rows that are
+ * entirely blank (every cell empty/whitespace) before treating a row as the header — a blank
+ * formatting row above the real header (common when `getUsedRange` picks up formatted-but-empty
+ * rows, or a sheet has a visual gap row) would otherwise be captured as an all-empty header,
+ * silently corrupting every downstream column name.
+ */
 export function splitHeaderRows(values: string[][]): { columns: string[]; rows: string[][] } {
-  const header = values[0];
-  if (!header) return { columns: [], rows: [] };
-  return { columns: header, rows: values.slice(1) };
+  const headerIdx = values.findIndex((row) => row.some((cell) => cell.trim() !== ''));
+  if (headerIdx === -1) return { columns: [], rows: [] };
+  return { columns: values[headerIdx]!, rows: values.slice(headerIdx + 1) };
 }
 
 /**

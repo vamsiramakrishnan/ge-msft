@@ -662,6 +662,7 @@ export const ReadVerbSchema = z.enum([
   'outline',
   'read',
   'search',
+  'ls',
   'list',
   'inspect',
   'properties',

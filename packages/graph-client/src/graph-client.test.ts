@@ -217,6 +217,33 @@ describe('GraphClient — /shared app-folder transport', () => {
     await client.putSharedFile('word/a b.txt', 'x');
   });
 
+  it('rejects a ".." path segment before ever building the Graph URL (defense-in-depth)', async () => {
+    const f = vi.fn(async () => new Response('', { status: 200 }));
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await expect(client.putSharedFile('../secret.txt', 'x')).rejects.toThrow(
+      /invalid \/shared path/,
+    );
+    await expect(client.getSharedFile('word/../../etc/passwd')).rejects.toThrow(
+      /invalid \/shared path/,
+    );
+    await expect(client.deleteSharedFile('..')).rejects.toThrow(/invalid \/shared path/);
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty or "." path segment (leading/trailing/doubled slash)', async () => {
+    const f = vi.fn(async () => new Response('', { status: 200 }));
+    const client = new GraphClient(tokens, {}, f as never);
+
+    await expect(client.putSharedFile('/notes.txt', 'x')).rejects.toThrow(/invalid \/shared path/);
+    await expect(client.putSharedFile('notes.txt/', 'x')).rejects.toThrow(/invalid \/shared path/);
+    await expect(client.putSharedFile('word//notes.txt', 'x')).rejects.toThrow(
+      /invalid \/shared path/,
+    );
+    await expect(client.putSharedFile('./notes.txt', 'x')).rejects.toThrow(/invalid \/shared path/);
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it('deleteSharedFile DELETEs the item path (no :/content suffix)', async () => {
     const f = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toContain('/me/drive/special/approot:/notes.txt');

@@ -1338,29 +1338,104 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     });
   });
 
-  it('workspace share writes a host read to the configured sharedStore', async () => {
-    const bridge = new FakeExcelBridge();
+  function fakeSharedStore() {
     const shared = new Map<string, string>();
-    const sharedStore = {
-      list: () =>
-        Promise.resolve([...shared.entries()].map(([name, text]) => ({ name, size: text.length }))),
-      read: (path: string) => Promise.resolve(shared.get(path)),
-      write: (path: string, content: string) => {
-        shared.set(path, content);
-        return Promise.resolve();
-      },
-      remove: (path: string) => {
-        shared.delete(path);
-        return Promise.resolve();
+    return {
+      shared,
+      sharedStore: {
+        list: () =>
+          Promise.resolve(
+            [...shared.entries()].map(([name, text]) => ({ name, size: text.length })),
+          ),
+        read: (path: string) => Promise.resolve(shared.get(path)),
+        write: (path: string, content: string) => {
+          shared.set(path, content);
+          return Promise.resolve();
+        },
+        remove: (path: string) => {
+          shared.delete(path);
+          return Promise.resolve();
+        },
       },
     };
+  }
+
+  it('workspace share is blocked by default — estate writes are disabled fail-closed', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore } = fakeSharedStore();
     const { client } = fakeClient([
       '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
       '```cmd\ndone\n```',
     ]);
+    // No `estateWritesEnabled` — even with a configured sharedStore, share must stay inert.
     const session = new AssistSession(bridge, client, { unit, sharedStore });
 
     const events = await collect(session.runCommands('Publish data cross-surface'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      result: { workspace: 'error', error: expect.stringContaining('estate writes are disabled') },
+    });
+  });
+
+  it('workspace share with estate writes enabled but no sharedStore returns a corrective error', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient([
+      '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit, estateWritesEnabled: true });
+
+    const events = await collect(session.runCommands('Publish data cross-surface'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      result: { workspace: 'error', error: expect.stringContaining('sharing is not configured') },
+    });
+  });
+
+  it('workspace share with no approveShare supplied is blocked fail-closed (no silent write)', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
+    const { client } = fakeClient([
+      '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+
+    // runCommands() called WITHOUT approveShare in opts.
+    const events = await collect(session.runCommands('Publish data cross-surface'));
+    const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+    expect(read).toMatchObject({
+      type: 'read-result',
+      result: { workspace: 'error', error: expect.stringContaining('requires user approval') },
+    });
+    expect(shared.size).toBe(0);
+  });
+
+  it('workspace share writes to the sharedStore only after estateWritesEnabled + approveShare both grant it, and stamps a provenance companion file', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
+    const { client } = fakeClient([
+      '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+
+    const events = await collect(
+      session.runCommands('Publish data cross-surface', { approveShare: () => true }),
+    );
     const read = loopEvents(events).find((e) => e.type === 'read-result');
 
     expect(bridge.reads).toEqual(['Sales!C2:C7']);
@@ -1370,23 +1445,33 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
       result: { workspace: 'share', name: 'schedule.txt' },
     });
     expect(shared.get('schedule.txt')).toContain('values of Sales!C2:C7');
+    const provenance = JSON.parse(shared.get('schedule.txt.provenance.json') ?? '{}');
+    expect(provenance).toMatchObject({ agentId: 'gemini-enterprise:e', identity: 'v.k@acme' });
   });
 
-  it('workspace share without a configured sharedStore returns a corrective error', async () => {
+  it('workspace share is blocked when approveShare explicitly denies it', async () => {
     const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
     const { client } = fakeClient([
       '```cmd\nshare schedule.txt = read Sales!C2:C7\n```',
       '```cmd\ndone\n```',
     ]);
-    const session = new AssistSession(bridge, client, { unit });
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
 
-    const events = await collect(session.runCommands('Publish data cross-surface'));
+    const events = await collect(
+      session.runCommands('Publish data cross-surface', { approveShare: () => false }),
+    );
     const read = loopEvents(events).find((e) => e.type === 'read-result');
 
     expect(read).toMatchObject({
       type: 'read-result',
-      result: { workspace: 'error', error: expect.stringContaining('sharing is not configured') },
+      result: { workspace: 'error', error: expect.stringContaining('requires user approval') },
     });
+    expect(shared.size).toBe(0);
   });
 
   it('lists and inspects addressable context without creating a write plan', async () => {

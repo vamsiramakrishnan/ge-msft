@@ -340,13 +340,27 @@ function enc(s: string): string {
   return encodeURIComponent(s);
 }
 
-/** Encode a `/`-separated relative path for Graph's `:/path:/content` addressing — each segment is
- *  percent-encoded individually so a literal `/` stays a path separator, not `%2F`. */
+/**
+ * Encode a `/`-separated relative path for Graph's `:/path:/content` addressing — each segment is
+ * percent-encoded individually so a literal `/` stays a path separator, not `%2F`.
+ *
+ * Defense-in-depth: `packages/contracts`'s `normalizeWorkspaceName` already rejects `..`/leading-
+ * or-trailing-`/`/empty names before a `share` command ever compiles, but that check lives one
+ * layer up (the command grammar), not here. Re-validating at the point of the actual Graph call
+ * means every current AND future caller of `getSharedFile`/`putSharedFile`/`deleteSharedFile` is
+ * protected from addressing outside the app folder (`/me/drive/special/approot:/../x` etc.),
+ * not just the one path the grammar happens to gate today.
+ */
 function encPath(path: string): string {
-  return path
-    .split('/')
-    .map((segment) => enc(segment))
-    .join('/');
+  const segments = path.split('/');
+  for (const segment of segments) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      throw new Error(
+        `invalid /shared path "${path}" — must not contain empty, ".", or ".." segments`,
+      );
+    }
+  }
+  return segments.map((segment) => enc(segment)).join('/');
 }
 
 async function safeText(res: Response): Promise<string> {

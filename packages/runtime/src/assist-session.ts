@@ -269,6 +269,21 @@ export interface RunCommandsOptions {
    * Back-compat (ADR-0004 Track A): used only when {@link approvePlan} is ABSENT.
    */
   approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>;
+  /**
+   * Per-share human-in-the-loop approval — `share` is a Plane-B **estate** write (ADR-0008
+   * `approvalClass: 'estate'`): it leaves the currently open document and persists to the user's
+   * Microsoft Graph app folder, readable back by every other surface's session. It is gated
+   * separately from {@link approveWrite}/{@link approvePlan} (which only ever actuate Office
+   * content via the active `DocBridge`) because it never reaches `bridge.actuate()` at all — it is
+   * dispatched directly to the runtime's `SharedStore` port. **Fail-closed:** with no approver (or
+   * with {@link AssistSessionOptions.estateWritesEnabled} unset/false), every `share` is blocked and
+   * the model gets a corrective error; the write is never silently attempted.
+   */
+  approveShare?: (input: {
+    name: string;
+    text: string;
+    sourceLabel: string;
+  }) => boolean | Promise<boolean>;
   /** Max commands run per model turn (default 32); the rest of the block is refused. */
   maxCommandsPerTurn?: number;
   /** Max writes actuated per model turn (default 8); extra writes are blocked. */
@@ -335,6 +350,15 @@ export interface AssistSessionOptions {
    * rather than silently dropping the write (e.g. the user hasn't granted the Graph consent yet).
    */
   sharedStore?: SharedStore;
+  /**
+   * Whether this session may execute `share` at all — mirrors `ReleaseProfile.estateWrites`
+   * (`@ge/contracts`), which is `false` in every release profile defined today. **Defaults to
+   * `false` (fail-closed):** `share` is scaffolded end-to-end (grammar, `/shared` mount, Graph
+   * plumbing) but stays inert — every attempt returns a corrective error — until a caller
+   * deliberately opts in here, matching the release profile's own policy rather than silently
+   * allowing a model turn to push host document/transcript content to external storage.
+   */
+  estateWritesEnabled?: boolean;
 }
 
 /**
@@ -883,7 +907,8 @@ export class AssistSession {
     }
     for (const entry of entries) {
       if (plan.budget <= 0) break;
-      for await (const ev of this.processEntry(entry, plan, capabilities, 0)) yield ev;
+      for await (const ev of this.processEntry(entry, plan, capabilities, 0, opts, turnProvenance))
+        yield ev;
       if (plan.done) break;
     }
 
@@ -933,6 +958,8 @@ export class AssistSession {
     plan: PlanState,
     capabilities: CapabilityManifest,
     depth: number,
+    opts: RunCommandsOptions,
+    turnProvenance: ProvenancePayload | undefined,
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const { turn } = plan;
 
@@ -985,7 +1012,15 @@ export class AssistSession {
         // A `def`/`call` inside an expansion would be a structural surprise; the parser already
         // rejects a nested `def`, and a nested call re-parses as a call here (depth-bounded above).
         // Each expanded entry flows through the SAME plan logic — effects still gate.
-        for await (const ev of this.processEntry(sub, plan, capabilities, depth + 1)) yield ev;
+        for await (const ev of this.processEntry(
+          sub,
+          plan,
+          capabilities,
+          depth + 1,
+          opts,
+          turnProvenance,
+        ))
+          yield ev;
         if (plan.done) return;
       }
       return;
@@ -1049,7 +1084,10 @@ export class AssistSession {
         });
         return;
       }
-      const { label, result } = await this.runWorkspaceIntent(compiled.intent);
+      const { label, result } = await this.runWorkspaceIntent(compiled.intent, {
+        approveShare: opts.approveShare,
+        turnProvenance,
+      });
       plan.results.push(result);
       yield { type: 'read-result', turn, intentLabel: label, result };
       return;
@@ -1483,6 +1521,10 @@ export class AssistSession {
    */
   private async runWorkspaceIntent(
     intent: WorkspaceIntent,
+    shareCtx?: {
+      approveShare?: RunCommandsOptions['approveShare'];
+      turnProvenance?: ProvenancePayload;
+    },
   ): Promise<{ label: string; result: WorkspaceResult }> {
     try {
       switch (intent.workspace) {
@@ -1534,6 +1576,18 @@ export class AssistSession {
           };
         }
         case 'share': {
+          // Fail-closed gate #1: `share` is an ADR-0008 `estate`-class write (leaves the open
+          // document, persists externally) — it stays inert unless a caller has deliberately
+          // opted in, mirroring `ReleaseProfile.estateWrites` (false in every profile today).
+          if (!this.options.estateWritesEnabled) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: 'estate writes are disabled for this session — share is unavailable',
+              },
+            };
+          }
           if (!this.options.sharedStore) {
             return {
               label: `share ${intent.name}`,
@@ -1552,7 +1606,34 @@ export class AssistSession {
           }
           const text =
             typeof resolved.content === 'string' ? resolved.content : renderValue(resolved.content);
+          // Fail-closed gate #2: per-share human-in-the-loop approval, exactly like every other
+          // write's `approveWrite`/`approvePlan` — no approver (or a `false` decision) blocks the
+          // write. The content being shared is untrusted (it may be shaped by host document/
+          // transcript text), so it is shown to the user before it ever leaves the device.
+          const approveShare = shareCtx?.approveShare;
+          const approved = approveShare
+            ? await approveShare({ name: intent.name, text, sourceLabel: resolved.sourceLabel })
+            : false;
+          if (!approved) {
+            return {
+              label: `share ${intent.name}`,
+              result: {
+                workspace: 'error',
+                error: 'share requires user approval (none granted)',
+              },
+            };
+          }
           await this.options.sharedStore.write(intent.name, text);
+          // Every other write in this repo carries agent id/sources/identity/timestamp/content
+          // hash (see docs/CONVENTIONS.md); `/shared` has no per-file metadata channel of its own
+          // (it's a flat name→text store), so the turn's provenance is written as a companion
+          // `<name>.provenance.json` sitting beside the content.
+          if (shareCtx?.turnProvenance) {
+            await this.options.sharedStore.write(
+              `${intent.name}.provenance.json`,
+              JSON.stringify(shareCtx.turnProvenance),
+            );
+          }
           return {
             label: `share ${intent.name}`,
             result: { workspace: 'share', name: intent.name, bytes: byteLength(text) },

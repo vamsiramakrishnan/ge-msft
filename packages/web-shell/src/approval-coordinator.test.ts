@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { asChangeId } from '@ge/contracts';
 import { ApprovalCoordinator } from './approval-coordinator.js';
-import type { PendingWrite, PendingPlan } from './controller.js';
+import type { PendingWrite, PendingPlan, PendingShare } from './controller.js';
 
 const write = (id: string): PendingWrite => ({
   changeId: asChangeId(id),
@@ -11,12 +11,20 @@ const write = (id: string): PendingWrite => ({
 
 const plan = (summary: string): PendingPlan => ({ effects: [], summary });
 
+const share = (name: string): PendingShare => ({
+  name,
+  sourceLabel: 'read Sales!A1:B9',
+  preview: 'a\tb\n1\t2',
+  truncated: false,
+});
+
 /** A coordinator wired to spy callbacks so we can assert the card view-state pushes. */
 const make = () => {
   const showWrite = vi.fn<[PendingWrite | undefined], void>();
   const showPlan = vi.fn<[PendingPlan | undefined], void>();
-  const coord = new ApprovalCoordinator(showWrite, showPlan);
-  return { coord, showWrite, showPlan };
+  const showShare = vi.fn<[PendingShare | undefined], void>();
+  const coord = new ApprovalCoordinator(showWrite, showPlan, showShare);
+  return { coord, showWrite, showPlan, showShare };
 };
 
 describe('ApprovalCoordinator — write gate', () => {
@@ -121,6 +129,43 @@ describe('ApprovalCoordinator — plan gate', () => {
   });
 });
 
+describe('ApprovalCoordinator — share gate (estate write)', () => {
+  it('approves on an explicit share approval and drops the card immediately', async () => {
+    const { coord, showShare } = make();
+    const decision = coord.awaitShare(share('schedule.tsv'));
+    expect(showShare).toHaveBeenCalledWith(share('schedule.tsv'));
+    coord.approveShare();
+    await expect(decision).resolves.toBe(true);
+    // Unlike a write, there's no separate write-result to keep the card alive for — either
+    // decision drops it right away, same as the plan card.
+    expect(showShare).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('rejects the share and drops the card', async () => {
+    const { coord, showShare } = make();
+    const decision = coord.awaitShare(share('schedule.tsv'));
+    coord.rejectShare();
+    await expect(decision).resolves.toBe(false);
+    expect(showShare).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('releaseAwaiting settles a pending share fail-closed', async () => {
+    const { coord } = make();
+    const decision = coord.awaitShare(share('schedule.tsv'));
+    coord.releaseAwaiting();
+    await expect(decision).resolves.toBe(false);
+  });
+
+  it('a fresh awaitShare releases the prior still-open decision fail-closed', async () => {
+    const { coord } = make();
+    const first = coord.awaitShare(share('a.tsv'));
+    const second = coord.awaitShare(share('b.tsv'));
+    await expect(first).resolves.toBe(false);
+    coord.approveShare();
+    await expect(second).resolves.toBe(true);
+  });
+});
+
 describe('ApprovalCoordinator — releaseAll', () => {
   it('settles an awaiting write fail-closed and drops a lingering approved card', async () => {
     const { coord, showWrite } = make();
@@ -132,19 +177,22 @@ describe('ApprovalCoordinator — releaseAll', () => {
     expect(showWrite).toHaveBeenLastCalledWith(undefined);
   });
 
-  it('settles BOTH gates fail-closed when called while awaiting', async () => {
+  it('settles ALL THREE gates fail-closed when called while awaiting', async () => {
     const { coord } = make();
     const w = coord.awaitWrite(write('c-1'), asChangeId('c-1'));
     const p = coord.awaitPlan(plan('1 write'));
+    const s = coord.awaitShare(share('schedule.tsv'));
     coord.releaseAll();
     await expect(w).resolves.toBe(false);
     await expect(p).resolves.toBe(false);
+    await expect(s).resolves.toBe(false);
   });
 
   it('is a safe no-op when nothing is staged', () => {
-    const { coord, showWrite, showPlan } = make();
+    const { coord, showWrite, showPlan, showShare } = make();
     coord.releaseAll();
     expect(showWrite).not.toHaveBeenCalled();
     expect(showPlan).not.toHaveBeenCalled();
+    expect(showShare).not.toHaveBeenCalled();
   });
 });

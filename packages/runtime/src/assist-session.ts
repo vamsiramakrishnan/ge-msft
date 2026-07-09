@@ -236,6 +236,12 @@ interface PlanState {
   /** Per-turn command budget (ADR-0004): decremented for EVERY processed entry, including those a
    * skill call expands into — so expansion can't exceed the cap (security finding). */
   budget: number;
+  /**
+   * Per-turn `share` attempt count. `share` never reaches `plan.planSlots` (it isn't a `PlanEffect` —
+   * see `runWorkspaceIntent`'s own fail-closed gates), so it needs its own counter to stay bounded by
+   * the same `maxWrites` cap — without this a single turn could stage unbounded approval prompts.
+   */
+  shareCount: number;
   done: boolean;
 }
 
@@ -893,6 +899,7 @@ export class AssistSession {
       planSlots: [],
       maxWrites,
       budget: maxCommands,
+      shareCount: 0,
       done: false,
     };
     if (entries.length > maxCommands) {
@@ -1083,6 +1090,21 @@ export class AssistSession {
           error: isCompileError(compiled) ? compiled.error : 'expected a workspace command',
         });
         return;
+      }
+      // `share` never reaches `plan.planSlots` (it isn't a `PlanEffect`), so it needs its own cap
+      // check here — the same per-turn ceiling as real writes, so a turn can't stage unbounded
+      // approval prompts (a residual gap flagged in security review, closed before enabling live use).
+      if (compiled.intent.workspace === 'share') {
+        if (plan.shareCount >= plan.maxWrites) {
+          const result: WorkspaceResult = {
+            workspace: 'error',
+            error: `share cap (${plan.maxWrites}/turn) reached`,
+          };
+          plan.results.push(result);
+          yield { type: 'capped', turn, reason: `share cap ${plan.maxWrites}/turn` };
+          return;
+        }
+        plan.shareCount += 1;
       }
       const { label, result } = await this.runWorkspaceIntent(compiled.intent, {
         approveShare: opts.approveShare,

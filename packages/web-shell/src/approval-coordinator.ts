@@ -1,5 +1,5 @@
 import type { ChangeId } from '@ge/contracts';
-import type { PendingWrite, PendingPlan } from './controller.js';
+import type { PendingWrite, PendingPlan, PendingShare } from './controller.js';
 
 /**
  * The fail-closed approval state machine, extracted from `PanelController` (E-full) as the single
@@ -19,12 +19,15 @@ export class ApprovalCoordinator {
   private writeId: ChangeId | undefined;
   private resolveWrite: ((approved: boolean) => void) | undefined;
   private resolvePlan: ((approved: boolean) => void) | undefined;
+  private resolveShare: ((approved: boolean) => void) | undefined;
   private writeShown = false;
   private planShown = false;
+  private shareShown = false;
 
   constructor(
     private readonly showWrite: (write: PendingWrite | undefined) => void,
     private readonly showPlan: (plan: PendingPlan | undefined) => void,
+    private readonly showShare: (share: PendingShare | undefined) => void,
   ) {}
 
   // ---- loop side ----------------------------------------------------------
@@ -47,6 +50,22 @@ export class ApprovalCoordinator {
       this.resolvePlan = resolve;
       this.planShown = true;
       this.showPlan(view);
+    });
+  }
+
+  /**
+   * Stage the `share` decision (the `/shared` cross-surface handoff store is an estate-class write —
+   * see `AssistSessionOptions.estateWritesEnabled`/`RunCommandsOptions.approveShare`) and await it.
+   * Unlike a per-write decision, the actual Graph write happens synchronously right after this
+   * resolves (there is no separate later `write-result`-style event to keep the card alive for), so
+   * — like `awaitPlan` — either decision drops the card immediately.
+   */
+  awaitShare(view: PendingShare): Promise<boolean> {
+    this.settleShare(false);
+    return new Promise<boolean>((resolve) => {
+      this.resolveShare = resolve;
+      this.shareShown = true;
+      this.showShare(view);
     });
   }
 
@@ -74,6 +93,12 @@ export class ApprovalCoordinator {
   rejectPlan(): void {
     this.settlePlan(false);
   }
+  approveShare(): void {
+    this.settleShare(true);
+  }
+  rejectShare(): void {
+    this.settleShare(false);
+  }
 
   // ---- terminal paths -----------------------------------------------------
 
@@ -81,6 +106,7 @@ export class ApprovalCoordinator {
   releaseAwaiting(): void {
     this.settleWrite(false);
     this.settlePlan(false);
+    this.settleShare(false);
   }
 
   /**
@@ -91,8 +117,10 @@ export class ApprovalCoordinator {
   releaseAll(): void {
     this.settleWrite(false);
     this.settlePlan(false);
+    this.settleShare(false);
     this.clearWrite();
     this.clearPlan();
+    this.clearShare();
   }
 
   // ---- internals ----------------------------------------------------------
@@ -129,6 +157,21 @@ export class ApprovalCoordinator {
     if (this.planShown) {
       this.planShown = false;
       this.showPlan(undefined);
+    }
+  }
+
+  private settleShare(approved: boolean): void {
+    const resolve = this.resolveShare;
+    if (!resolve) return;
+    this.resolveShare = undefined;
+    this.clearShare(); // either decision drops the card — the write (if any) narrates as a step
+    resolve(approved);
+  }
+
+  private clearShare(): void {
+    if (this.shareShown) {
+      this.shareShown = false;
+      this.showShare(undefined);
     }
   }
 }

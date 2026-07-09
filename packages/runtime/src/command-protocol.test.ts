@@ -1474,6 +1474,37 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(shared.size).toBe(0);
   });
 
+  it('caps share attempts per turn at maxWritesPerTurn, same as real writes', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
+    const { client } = fakeClient([
+      '```cmd\nshare a.txt = read Sales!C2:C7\nshare b.txt = read Sales!C2:C7\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+
+    const events = await collect(
+      session.runCommands('Publish data cross-surface', {
+        approveShare: () => true,
+        maxWritesPerTurn: 1,
+      }),
+    );
+    const reads = loopEvents(events).filter((e) => e.type === 'read-result');
+    const capped = loopEvents(events).find((e) => e.type === 'capped');
+
+    // Only the first share actually runs; the second is capped BEFORE any approval/write is
+    // attempted — no second read-result, matching how the effect write-cap behaves (a `capped`
+    // event only, the slot's corrective result feeds back into the next turn, not a loop event).
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({ result: { workspace: 'share', name: 'a.txt' } });
+    expect(capped).toMatchObject({ reason: expect.stringContaining('share cap') });
+    expect([...shared.keys()]).toEqual(['a.txt', 'a.txt.provenance.json']);
+  });
+
   it('lists and inspects addressable context without creating a write plan', async () => {
     const bridge = new FakeExcelBridge();
     const { client, queries } = fakeClient([

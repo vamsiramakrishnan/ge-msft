@@ -62,7 +62,13 @@ type CommandAction =
    * card + the staged id), then stage write `second` and BLOCK awaiting its decision — so a test can
    * fire a LATE decision carrying `first`'s id at a card now showing `second` (Finding #6: ignored).
    */
-  | { supersede: { first: ActuationRequest; second: ActuationRequest } };
+  | { supersede: { first: ActuationRequest; second: ActuationRequest } }
+  /**
+   * Stage a `share` (estate write), await its own `approveShare` decision, and narrate the outcome
+   * as a `read-result` — mirroring how `runWorkspaceIntent`'s `share` case actually behaves (no
+   * separate later `write-result`-style event; the write happens synchronously right after approval).
+   */
+  | { share: { name: string; text: string; sourceLabel: string } };
 
 const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
 
@@ -198,6 +204,9 @@ class FakeAssist implements AssistLike {
   /** The plan effect-sets passed to `approvePlan` and the decisions returned, for assertions. */
   planCalls: PlanEffect[][] = [];
   planResults: boolean[] = [];
+  /** The share inputs passed to `approveShare` and the decisions returned, for assertions. */
+  shareCalls: Array<{ name: string; text: string; sourceLabel: string }> = [];
+  shareResults: boolean[] = [];
   async *runCommands(
     task: string,
     opts?: PlanRunCommandsOptions,
@@ -285,6 +294,20 @@ class FakeAssist implements AssistLike {
             };
           }
         }
+      } else if ('share' in action) {
+        const input = action.share;
+        this.shareCalls.push(input);
+        const approved = opts?.approveShare ? await opts.approveShare(input) : false;
+        this.shareResults.push(approved);
+        const result = approved
+          ? { workspace: 'share', name: input.name, bytes: input.text.length }
+          : { workspace: 'error', error: 'share requires user approval (none granted)' };
+        yield {
+          type: 'read-result',
+          turn: 1,
+          intentLabel: `share ${input.name}`,
+          result,
+        } as unknown as CommandLoopEvent;
       } else {
         yield action.event;
       }
@@ -731,6 +754,75 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
     const step = c.getState().steps.at(-1);
     expect(step?.text).toBe('shared schedule.tsv · 1.2 KB');
     expect(step?.artifact).toMatchObject({ title: 'shared/schedule.tsv', meta: ['1.2 KB'] });
+  });
+
+  it('stages a share as pending and writes only after approvePendingShare() (resolves true)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    // Don't await: the loop blocks on the pending-share decision.
+    const run = c.runCommands('share the schedule');
+    await tick();
+
+    const pending = c.getState().pendingShare;
+    expect(pending).toMatchObject({
+      name: 'schedule.tsv',
+      sourceLabel: 'read Sales!A1:B2',
+      preview: 'a\tb\n1\t2',
+      truncated: false,
+    });
+    expect(assist.shareResults).toEqual([]); // decision not made yet
+    expect(c.getState().busy).toBe(true);
+
+    c.approvePendingShare();
+    await run;
+
+    expect(assist.shareResults).toEqual([true]);
+    expect(c.getState().pendingShare).toBeUndefined();
+    const shareStep = c.getState().steps.find((s) => s.text.startsWith('shared '));
+    expect(shareStep?.text).toBe('shared schedule.tsv · 7 B');
+    expect(c.getState().busy).toBe(false);
+  });
+
+  it('rejectPendingShare() resolves false: nothing is written and the card clears', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share the schedule');
+    await tick();
+    expect(c.getState().pendingShare?.name).toBe('schedule.tsv');
+
+    c.rejectPendingShare();
+    await run;
+
+    expect(assist.shareResults).toEqual([false]);
+    expect(c.getState().pendingShare).toBeUndefined();
+    const errorStep = c.getState().steps.find((s) => s.text.includes('workspace error'));
+    expect(errorStep?.text).toContain('requires user approval');
+  });
+
+  it('cancel() while gated on a share releases fail-closed (rejects the pending share)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share the schedule');
+    await tick();
+    expect(c.getState().pendingShare).toBeDefined();
+
+    c.cancel();
+    await run;
+
+    expect(assist.shareResults).toEqual([false]);
+    expect(c.getState().pendingShare).toBeUndefined();
   });
 
   it('stages a write as pending and actuates only after approvePendingWrite() (resolves true)', async () => {

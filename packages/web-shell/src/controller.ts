@@ -65,6 +65,8 @@ export interface EffectDryRun {
 export type ApprovePlan = NonNullable<RunCommandsOptions['approvePlan']>;
 /** The per-write approver type — the CANONICAL runtime option (Finding #6: not redeclared here). */
 type ApproveWrite = NonNullable<RunCommandsOptions['approveWrite']>;
+/** The per-share (estate write) approver type — the CANONICAL runtime option. */
+type ApproveShare = NonNullable<RunCommandsOptions['approveShare']>;
 
 /** Direct pasted CLI is user-authored and fully previewed, so it can stage larger exact programs. */
 const DIRECT_COMMAND_LIMIT = 128;
@@ -268,6 +270,27 @@ export interface PendingWrite {
   command: string;
 }
 
+/** Preview lines shown on the share approval card before the content is truncated (`…`). */
+const SHARE_PREVIEW_LINES = 24;
+
+/**
+ * A pending `share` awaiting the user's decision — the estate-write fail-closed gate
+ * (`AssistSessionOptions.estateWritesEnabled` + `RunCommandsOptions.approveShare`, see
+ * `@ge/runtime`). Unlike `PendingWrite`, this never actuates Office content: approving it persists
+ * `preview` (the FULL text is sent to `sharedStore.write`, only the card's own display is capped)
+ * to the user's own Microsoft Graph app folder, readable back by every other surface's session.
+ */
+export interface PendingShare {
+  /** The artifact name the content will be written under in `/shared`. */
+  name: string;
+  /** What produced the content (`read Sales!A1:D50`, `outline`, `"literal"`, …). */
+  sourceLabel: string;
+  /** Capped preview of the content shown on the card — the full text is still what gets written. */
+  preview: string;
+  /** Whether `preview` was truncated from the full content. */
+  truncated: boolean;
+}
+
 /**
  * A composed plan awaiting the user's ONE plan-level decision (ADR-0005 §3). The runtime has
  * type-checked the plan and dry-run it (reads + pure transforms, no writes) and emitted the full
@@ -382,6 +405,8 @@ export interface PanelState {
   pendingWrite?: PendingWrite;
   /** The composed plan awaiting ONE plan-level approval, if the loop is gated on it (ADR-0005). */
   pendingPlan?: PendingPlan;
+  /** The `share` (estate write) awaiting approval, if the loop is currently gated on it. */
+  pendingShare?: PendingShare;
   /**
    * The planner's high-level {@link CommandPlan} awaiting the user's confirm before the executor runs
    * (EXPERIENCE.md §F — the complex-free-text front door). Distinct from `pendingPlan`.
@@ -452,13 +477,14 @@ export class PanelController {
    */
   private readonly turnQueue = new TurnQueue();
   /**
-   * The fail-closed approval state machine (E-full): owns the per-write changeId + the two resolver
-   * promises the loop awaits (Finding #6). The `pendingWrite`/`pendingPlan` VIEW slice stays in
-   * `PanelState`, pushed here via the `set` callbacks below.
+   * The fail-closed approval state machine (E-full): owns the per-write changeId + the resolver
+   * promises the loop awaits (Finding #6). The `pendingWrite`/`pendingPlan`/`pendingShare` VIEW slice
+   * stays in `PanelState`, pushed here via the `set` callbacks below.
    */
   private readonly approvals = new ApprovalCoordinator(
     (write) => this.set({ pendingWrite: write }),
     (plan) => this.set({ pendingPlan: plan }),
+    (share) => this.set({ pendingShare: share }),
   );
 
   constructor(
@@ -813,10 +839,17 @@ export class PanelController {
     const approvePlan: ApprovePlan = (effects) =>
       this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
 
+    // The `share` (estate write) approver — a separate gate from `approveWrite`/`approvePlan`
+    // since it never actuates Office content via `bridge.actuate()` (ADR-0008 distinct-approval-
+    // authorities: the `/shared` write is a different authority than an in-document change).
+    const approveShare: ApproveShare = ({ name, text, sourceLabel }) =>
+      this.approvals.awaitShare({ name, sourceLabel, ...sharePreview(text) });
+
     const opts: RunCommandsOptions = {
       signal: controller.signal,
       approveWrite,
       approvePlan,
+      approveShare,
       ...(grounding ? { grounding } : {}),
     };
 
@@ -872,10 +905,13 @@ export class PanelController {
       );
     const approvePlan: ApprovePlan = (effects) =>
       this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
+    const approveShare: ApproveShare = ({ name, text, sourceLabel }) =>
+      this.approvals.awaitShare({ name, sourceLabel, ...sharePreview(text) });
     const opts: RunCommandsOptions = {
       signal: controller.signal,
       approveWrite,
       approvePlan,
+      approveShare,
       maxCommandsPerTurn: DIRECT_COMMAND_LIMIT,
       maxWritesPerTurn: DIRECT_COMMAND_LIMIT,
     };
@@ -1029,6 +1065,19 @@ export class PanelController {
   /** Reject the staged plan — resolves `approvePlan` with `false`; the WHOLE plan is blocked. */
   rejectPlan(): void {
     this.approvals.rejectPlan();
+  }
+
+  /**
+   * Approve the staged `share` (estate write) — resolves the loop's `approveShare` with `true`, so
+   * the runtime persists the content to `/shared` and stamps its provenance companion file.
+   */
+  approvePendingShare(): void {
+    this.approvals.approveShare();
+  }
+
+  /** Reject the staged share — resolves `approveShare` with `false`; nothing is written. */
+  rejectPendingShare(): void {
+    this.approvals.rejectShare();
   }
 
   private addStep(kind: RunStep['kind'], text: string, artifact?: RunStepArtifact): void {
@@ -1320,6 +1369,13 @@ function renderSkillCall(skill: Skill, args: Record<string, string>): string {
  * comments". Groups by a human label for each `ActuationRequest.kind` and pluralizes. Pure/total —
  * an empty set degrades to "no effects" rather than rendering an empty header.
  */
+/** Cap the full share content down to a card-sized preview; the FULL text still gets written. */
+function sharePreview(text: string): { preview: string; truncated: boolean } {
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= SHARE_PREVIEW_LINES) return { preview: text, truncated: false };
+  return { preview: lines.slice(0, SHARE_PREVIEW_LINES).join('\n'), truncated: true };
+}
+
 function summarizeEffects(effects: readonly PlanEffect[]): string {
   if (effects.length === 0) return 'no effects';
   const counts = new Map<string, number>();

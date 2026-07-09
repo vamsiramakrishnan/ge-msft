@@ -174,8 +174,11 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
   }
 
   // `/shared` cross-surface handoff (see docs/ACCESS-MODEL.md Plane B): only wired when this
-  // AuthClient actually carries a Graph token source. Absent that, `share`/`` /shared`` degrade to
+  // AuthClient actually carries a Graph token source. Absent that, `share`/`/shared` degrade to
   // the runtime's own "not configured" behavior — never a hard dependency on Graph consent.
+  // `estateWritesEnabled` mirrors that same condition: `share` is live whenever there's a real
+  // store to write to, gated per-use by the UI's `ShareApprovalCard` (approveShare) — the same
+  // fail-closed human-in-the-loop every other write in this app already requires.
   const sharedStore = auth.getGraphToken
     ? new GraphSharedStore(
         new GraphClient(
@@ -189,7 +192,7 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
   const session = new AssistSession(bridge, client, {
     unit,
     skillFiles: SKILL_FILES,
-    ...(sharedStore ? { sharedStore } : {}),
+    ...(sharedStore ? { sharedStore, estateWritesEnabled: true } : {}),
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),

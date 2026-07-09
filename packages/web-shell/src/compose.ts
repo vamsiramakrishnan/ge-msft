@@ -48,6 +48,20 @@ export interface ShellConfig {
   releaseProfile?: ReleaseProfileName;
 }
 
+/**
+ * Skill bundle reference files, bundled at build time (not fetched — there is no server to fetch
+ * them from in this client-direct architecture) and exposed read-only at `/skills` in DocFs, so
+ * the client-side command loop can `ls`/`cat`/`find`/`grep` a specific reference file the same way
+ * it does `/doc`/`/work`, instead of relying solely on whatever `skillsSpec`'s opaque server-side
+ * name reference (see `stream-assist.ts`) causes the engine to inject. Keys are paths relative to
+ * `skill/`, e.g. `"m365-surface-commander/references/excel-semantics.md"`.
+ */
+export const SKILL_FILES: Record<string, string> = Object.fromEntries(
+  Object.entries(
+    import.meta.glob('../../../skill/**/*.md', { query: '?raw', import: 'default', eager: true }),
+  ).map(([path, content]) => [path.replace(/^.*\/skill\//, ''), content as string]),
+);
+
 export interface ComposeOptions {
   config: ShellConfig;
   auth: AuthClient;
@@ -160,6 +174,7 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
 
   const session = new AssistSession(bridge, client, {
     unit,
+    skillFiles: SKILL_FILES,
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),

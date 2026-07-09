@@ -8,7 +8,7 @@ import type {
   UnitDescriptor,
 } from '@ge/contracts';
 import type { AuthClient, DocBridge, UserIdentity } from '@ge/runtime';
-import { composeSession, type ShellConfig } from './compose.js';
+import { composeSession, SKILL_FILES, type ShellConfig } from './compose.js';
 
 const config: ShellConfig = {
   assistant: { project: 'p', location: 'eu', engine: 'e' },
@@ -55,5 +55,17 @@ describe('composeSession', () => {
     expect(session.sessionId).toBe('sess_prior'); // resumed
     expect(tokens).toBeDefined();
     expect(client).toBeDefined();
+  });
+});
+
+describe('SKILL_FILES', () => {
+  it('bundles the real skill/ markdown files, keyed relative to skill/ with real content', () => {
+    expect(Object.keys(SKILL_FILES).length).toBeGreaterThan(0);
+    expect(SKILL_FILES['m365-surface-commander/SKILL.md']).toContain('# ');
+    // Keys are clean relative paths — no leading "../" or absolute-path leakage from the glob.
+    for (const key of Object.keys(SKILL_FILES)) {
+      expect(key.startsWith('.')).toBe(false);
+      expect(key.startsWith('/')).toBe(false);
+    }
   });
 });

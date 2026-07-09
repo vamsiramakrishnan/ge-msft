@@ -312,6 +312,14 @@ export interface AssistSessionOptions {
   capabilityFilter?: (
     manifest: CapabilityManifest,
   ) => CapabilityManifest | Promise<CapabilityManifest>;
+  /**
+   * The mounted skill bundles' own reference files (SKILL.md, references/*.md), as a
+   * `{relativePath: content}` map — exposed read-only at `/skills` in DocFs. Bundled client-side
+   * (the caller reads these at build time, e.g. via a Vite raw-import glob) since there is no
+   * server to fetch them from at runtime in this client-direct architecture. Omitted → `/skills`
+   * is present but empty, never a hard dependency.
+   */
+  skillFiles?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -411,7 +419,7 @@ export class AssistSession {
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
     this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
-    this.docFs = createDocFs({ bridge, workspace: this.workspace });
+    this.docFs = createDocFs({ bridge, workspace: this.workspace, skillFiles: options.skillFiles });
   }
 
   /** Pull attachable context from the bridge and add it to the live session set. */

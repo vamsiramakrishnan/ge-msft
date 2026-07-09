@@ -310,6 +310,17 @@ describe('AssistSession — the reusable loop', () => {
   });
 });
 
+describe('AssistSession — runReadIntent (DocFs verbs)', () => {
+  it('runs the ls read intent against DocFs (/work)', async () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+    const { result } = await (session as any).runReadIntent({ read: 'ls', path: '/work' });
+    // /work is empty (no artifacts saved yet in this session) — ls returns an empty listing, not an error.
+    expect(result).not.toHaveProperty('error');
+  });
+});
+
 /** A text context part with an id and a body sized to roughly `tokens` estimate (4 chars/token). */
 function textCtx(id: string, tokens = 50): ResolvedContext {
   return {

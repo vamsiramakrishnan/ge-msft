@@ -3,15 +3,18 @@ import {
   COMMAND_HELP,
   WRITE_VERB_TO_KIND,
   grammarFor,
+  registryEntryForKindAndSurface,
   type ActuationKind,
   type ActuationRequest,
   type CapabilityManifest,
+  type CapabilityRegistryEntry,
   type ChangeId,
   type ContextKind,
   type CommandHelpEntry,
   type ParsedCommand,
   type PlanContextHint,
   type Surface,
+  type WorkspaceSource,
 } from '@ge/contracts';
 import { TRANSFORM_USAGE } from './compose.js';
 
@@ -32,6 +35,7 @@ export type ReadIntent =
   | { read: 'outline' } // → bridge.captureDocState()
   | { read: 'range'; selector: string } // → bridge.readRange() (Excel) — empty ⇒ whole doc
   | { read: 'search'; text: string } // → bridge.searchDocument()
+  | { read: 'ls'; path: string } // → DocFs.readdir() via ls() coreutil
   | { read: 'list-context'; kind?: ContextKind } // → bridge.listContext(), metadata only
   | { read: 'inspect-context'; selector: string } // → resolve one ref/selector to content
   | { read: 'properties'; selector: string } // → metadata/hostRef/revealability only
@@ -40,9 +44,18 @@ export type ReadIntent =
   | { read: 'context-strategy'; hints: PlanContextHint[] } // → runtime context/upload strategy
   | { read: 'open-context'; selector: string }; // → bridge.revealContext(), navigation only
 
+/** Local virtual-workspace operation. Never mutates Office content. */
+export type WorkspaceIntent =
+  | { workspace: 'list' }
+  | { workspace: 'summary'; ref: string }
+  | { workspace: 'save'; name: string; source: WorkspaceSource }
+  | { workspace: 'cat'; ref: string; head?: number }
+  | { workspace: 'grep'; ref: string; pattern: string; context?: number };
+
 /** The result of compiling one command line. */
 export type CompiledCommand =
   | { kind: 'read'; intent: ReadIntent }
+  | { kind: 'workspace'; intent: WorkspaceIntent }
   | { kind: 'write'; request: ActuationRequest }
   | { kind: 'control'; verb: 'done' | 'help'; topic?: string }
   | { error: string };
@@ -77,6 +90,8 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'range', selector: cmd.selector } };
     case 'search':
       return { kind: 'read', intent: { read: 'search', text: cmd.text } };
+    case 'ls':
+      return { kind: 'read', intent: { read: 'ls', path: cmd.path } };
     case 'list':
       return {
         kind: 'read',
@@ -131,6 +146,30 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'context-strategy', hints: cmd.hints } };
     case 'open':
       return { kind: 'read', intent: { read: 'open-context', selector: cmd.selector } };
+    case 'workspace':
+      return cmd.ref
+        ? { kind: 'workspace', intent: { workspace: 'summary', ref: cmd.ref } }
+        : { kind: 'workspace', intent: { workspace: 'list' } };
+    case 'save':
+      return {
+        kind: 'workspace',
+        intent: { workspace: 'save', name: cmd.name, source: cmd.source },
+      };
+    case 'cat':
+      return {
+        kind: 'workspace',
+        intent: { workspace: 'cat', ref: cmd.ref, ...(cmd.head ? { head: cmd.head } : {}) },
+      };
+    case 'grep':
+      return {
+        kind: 'workspace',
+        intent: {
+          workspace: 'grep',
+          ref: cmd.ref,
+          pattern: cmd.pattern,
+          ...(cmd.context !== undefined ? { context: cmd.context } : {}),
+        },
+      };
     case 'done':
       return { kind: 'control', verb: 'done' };
     case 'help':
@@ -306,15 +345,115 @@ function paramsFromInvoke(
       break;
     }
     case 'insert-image':
-      p.image = { base64: props.base64 ?? '', ...(props.alt ? { altText: props.alt } : {}) };
+      p.image = {
+        base64: props.base64 ?? '',
+        ...(props.alt ? { altText: props.alt } : {}),
+        ...(props.altText ? { altText: props.altText } : {}),
+        ...numberProp(props, 'width'),
+        ...numberProp(props, 'height'),
+        ...numberProp(props, 'left'),
+        ...numberProp(props, 'top'),
+      };
       break;
-    case 'fill-content-control':
-      p.target = { ...(genericTarget ?? {}), contentControlId: props.id ?? props.cc ?? '' };
+    case 'insert-table':
+      p.tableGrid = {
+        rows: rowsFromProp(props.rows ?? props.tsv ?? ''),
+        hasHeaders: boolFromProp(props.headers, false),
+        ...numberProp(props, 'left'),
+        ...numberProp(props, 'top'),
+        ...numberProp(props, 'width'),
+        ...numberProp(props, 'height'),
+      };
       break;
     case 'insert-hyperlink':
       p.hyperlink = {
         url: props.url ?? args[0] ?? '',
         ...(props.text ? { displayText: props.text } : {}),
+        ...(props.displayText ? { displayText: props.displayText } : {}),
+        ...(props.screenTip ? { screenTip: props.screenTip } : {}),
+      };
+      break;
+    case 'apply-style':
+      p.style = {
+        name: props.style ?? props.name ?? args[0] ?? '',
+        ...(props.builtIn !== undefined ? { builtIn: boolFromProp(props.builtIn, false) } : {}),
+      };
+      break;
+    case 'insert-pivot':
+      p.pivot = {
+        sourceRange: props.sourceRange ?? props.source ?? args[0] ?? '',
+        destinationRange:
+          props.destinationRange ?? props.destination ?? props.dest ?? args[1] ?? '',
+        ...(props.name ? { name: props.name } : {}),
+        rowFields: csvList(props.rowFields ?? props.rows),
+        columnFields: csvList(props.columnFields ?? props.columns),
+        valueFields: csvList(props.valueFields ?? props.values),
+        filterFields: csvList(props.filterFields ?? props.filters),
+      };
+      break;
+    case 'sort-range':
+      p.sortRange = {
+        range: props.range ?? args[0] ?? '',
+        key: props.key ?? props.by ?? args[1] ?? '',
+        order:
+          props.order === 'descending' || props.direction === 'descending'
+            ? 'descending'
+            : 'ascending',
+        hasHeaders: boolFromProp(props.headers, true),
+      };
+      break;
+    case 'filter-range':
+      p.filterRange = {
+        range: props.range ?? args[0] ?? '',
+        column: props.column ?? props.key ?? args[1] ?? '',
+        criterion1: props.criterion1 ?? props.value ?? args[2] ?? '',
+        ...(props.operator ? { operator: props.operator } : {}),
+        ...(props.criterion2 ? { criterion2: props.criterion2 } : {}),
+      };
+      break;
+    case 'manage-worksheet':
+      p.worksheet = {
+        action: (props.action ?? args[0] ?? 'activate') as NonNullable<
+          ActuationRequest['params']['worksheet']
+        >['action'],
+        name: props.name ?? args[1] ?? '',
+        ...(props.newName ? { newName: props.newName } : {}),
+        ...(props.position === 'before' || props.position === 'after' || props.position === 'end'
+          ? { position: props.position }
+          : {}),
+      };
+      break;
+    case 'format-chart':
+      p.chartFormat = {
+        ...(props.chartId ? { chartId: props.chartId } : {}),
+        ...((props.chartName ?? props.name) ? { chartName: props.chartName ?? props.name } : {}),
+        ...(props.title ? { title: props.title } : {}),
+        ...(props.legend === 'show' || props.legend === 'hide' ? { legend: props.legend } : {}),
+        ...(props.style ? { style: props.style } : {}),
+        ...(props.xAxisTitle ? { xAxisTitle: props.xAxisTitle } : {}),
+        ...(props.yAxisTitle ? { yAxisTitle: props.yAxisTitle } : {}),
+      };
+      break;
+    case 'fill-content-control':
+      p.target = { ...(genericTarget ?? {}), contentControlId: props.id ?? props.cc ?? '' };
+      break;
+    case 'insert-content-control':
+      p.contentControl = {
+        type: props.type ?? args[0] ?? 'richText',
+        ...(props.tag ? { tag: props.tag } : {}),
+        ...(props.title ? { title: props.title } : {}),
+      };
+      break;
+    case 'find-replace':
+      p.findReplace = {
+        find: props.find ?? args[0] ?? '',
+        replace: props.replace ?? args[1] ?? '',
+        ...(props.matchCase !== undefined
+          ? { matchCase: boolFromProp(props.matchCase, false) }
+          : {}),
+        ...(props.matchWholeWord !== undefined
+          ? { matchWholeWord: boolFromProp(props.matchWholeWord, false) }
+          : {}),
       };
       break;
     case 'add-attachment':
@@ -324,8 +463,78 @@ function paramsFromInvoke(
         ...(props.uri ? { uri: props.uri } : {}),
       };
       break;
+    case 'set-recipients':
+      p.mail = {
+        to: addressList(props.to),
+        cc: addressList(props.cc),
+        bcc: addressList(props.bcc),
+        recipientMode: props.recipientMode === 'add' ? 'add' : 'set',
+      };
+      break;
+    case 'set-subject':
+      p.mail = { subject: props.subject ?? args.join(' ') };
+      break;
+    case 'set-body':
+      p.mail = {
+        body: props.html ?? props.text ?? args.join(' '),
+        coercion: props.html !== undefined ? 'html' : 'text',
+      };
+      break;
+    case 'add-categories':
+      p.categories = {
+        add: csvList(props.add),
+        remove: csvList(props.remove),
+      };
+      break;
+    case 'compose-appointment':
+      p.appointment = {
+        ...(props.subject ? { subject: props.subject } : {}),
+        ...(props.start ? { start: props.start } : {}),
+        ...(props.end ? { end: props.end } : {}),
+        ...(props.location ? { location: props.location } : {}),
+        requiredAttendees: addressList(props.requiredAttendees ?? props.required),
+        optionalAttendees: addressList(props.optionalAttendees ?? props.optional),
+        ...(props.body ? { body: props.body } : {}),
+        ...(props.isOnlineMeeting !== undefined
+          ? { isOnlineMeeting: boolFromProp(props.isOnlineMeeting, false) }
+          : {}),
+      };
+      break;
     case 'set-page-title':
       p.pageTitle = props.title ?? args[0] ?? '';
+      break;
+    case 'add-shape':
+      p.shape = {
+        shapeType: shapeTypeFromProp(props.shapeType ?? props.type),
+        ...(props.geometryType ? { geometryType: props.geometryType } : {}),
+        ...(props.connectorType === 'straight' ||
+        props.connectorType === 'elbow' ||
+        props.connectorType === 'curve'
+          ? { connectorType: props.connectorType }
+          : {}),
+        ...(props.text ? { text: props.text } : {}),
+        ...(props.fill ? { fill: props.fill } : {}),
+        ...numberProp(props, 'left'),
+        ...numberProp(props, 'top'),
+        ...numberProp(props, 'width'),
+        ...numberProp(props, 'height'),
+      };
+      break;
+    case 'add-table-slide':
+      p.tableGrid = {
+        rows: rowsFromProp(props.rows ?? props.tsv ?? ''),
+        hasHeaders: boolFromProp(props.headers, true),
+        ...numberProp(props, 'left'),
+        ...numberProp(props, 'top'),
+        ...numberProp(props, 'width'),
+        ...numberProp(props, 'height'),
+      };
+      break;
+    case 'apply-slide-layout':
+      p.layout = {
+        ...(props.layoutId ? { layoutId: props.layoutId } : {}),
+        ...(props.layoutName ? { layoutName: props.layoutName } : {}),
+      };
       break;
     case 'set-shape-text': {
       const selector =
@@ -338,8 +547,93 @@ function paramsFromInvoke(
       if (props.text !== undefined) p.text = props.text;
       break;
     }
+    case 'format-shape': {
+      const selector =
+        props.ref ??
+        props.selector ??
+        (props.slide && props.shape ? `pp:shape:${props.slide}:${props.shape}` : undefined) ??
+        args[0];
+      const target = selector ? powerpointShapeTargetFromSelector(selector) : undefined;
+      if (target && !('error' in target)) p.target = target;
+      p.shapeFormat = {
+        ...(props.fill ? { fill: props.fill } : {}),
+        ...(props.line ? { line: props.line } : {}),
+        ...(props.zOrder === 'front' ||
+        props.zOrder === 'back' ||
+        props.zOrder === 'forward' ||
+        props.zOrder === 'backward'
+          ? { zOrder: props.zOrder }
+          : {}),
+        ...(shapeFontFromProps(props) ? { font: shapeFontFromProps(props) } : {}),
+      };
+      break;
+    }
+    case 'post-card':
+      {
+        const fallbackText = props.fallbackText ?? (args.join(' ') || 'Card preview');
+        const adaptiveCard = safeJson(props.cardJson) ?? {
+          type: 'AdaptiveCard',
+          version: '1.5',
+          body: [{ type: 'TextBlock', text: fallbackText }],
+        };
+        p.card = {
+          adaptiveCard,
+          ...(fallbackText ? { fallbackText } : {}),
+        };
+      }
+      p.graphTarget = graphTargetFromProps(props);
+      break;
+    case 'post-channel-message':
+      p.graphTarget = graphTargetFromProps(props);
+      p.text = props.text ?? args.join(' ');
+      break;
+    case 'update-message':
+      p.graphTarget = graphTargetFromProps(props);
+      if (props.text !== undefined || args.length > 0) p.text = props.text ?? args.join(' ');
+      if (props.cardJson !== undefined || props.fallbackText !== undefined) {
+        const fallbackText = props.fallbackText ?? props.text ?? (args.join(' ') || 'Card preview');
+        p.card = {
+          adaptiveCard: safeJson(props.cardJson) ?? {
+            type: 'AdaptiveCard',
+            version: '1.5',
+            body: [{ type: 'TextBlock', text: fallbackText }],
+          },
+          fallbackText,
+        };
+      }
+      break;
+    case 'create-online-meeting':
+      p.onlineMeeting = {
+        ...(props.subject ? { subject: props.subject } : {}),
+        ...((props.startDateTime ?? props.start)
+          ? { startDateTime: props.startDateTime ?? props.start }
+          : {}),
+        ...((props.endDateTime ?? props.end)
+          ? { endDateTime: props.endDateTime ?? props.end }
+          : {}),
+        participants: addressList(props.participants),
+      };
+      break;
     case 'add-note-tag':
       p.noteTag = { type: props.type ?? args[0] ?? 'toDo', status: props.status ?? 'unknown' };
+      break;
+    case 'add-outline':
+      if (props.text !== undefined || args.length > 0) p.text = props.text ?? args.join(' ');
+      if (props.html !== undefined) p.html = props.html;
+      break;
+    case 'append-rich-text':
+      p.text = props.text ?? args.join(' ');
+      break;
+    case 'create-section':
+      p.section = {
+        name: props.name ?? args.join(' '),
+        ...(props.parent === 'notebook' || props.parent === 'group'
+          ? { parent: props.parent }
+          : {}),
+        ...(props.insertLocation === 'before' || props.insertLocation === 'after'
+          ? { insertLocation: props.insertLocation }
+          : {}),
+      };
       break;
     default:
       break;
@@ -350,6 +644,91 @@ function paramsFromInvoke(
 function positiveIntFromProp(value: string | undefined): number | undefined {
   if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
   return Number.parseInt(value, 10);
+}
+
+function numberFromProp(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function numberProp(props: Record<string, string>, key: string): Record<string, number> {
+  const value = numberFromProp(props[key]);
+  return value === undefined ? {} : { [key]: value };
+}
+
+function boolFromProp(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  if (value === 'true' || value === '1' || value === 'yes') return true;
+  if (value === 'false' || value === '0' || value === 'no') return false;
+  return defaultValue;
+}
+
+function csvList(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function addressList(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return value
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+type ShapeType = NonNullable<ActuationRequest['params']['shape']>['shapeType'];
+
+function shapeTypeFromProp(value: string | undefined): ShapeType {
+  if (value === 'geometric' || value === 'line') return value;
+  return 'textBox';
+}
+
+function rowsFromProp(value: string): string[][] {
+  const normalized = value.replaceAll('\\n', '\n').replaceAll('\\t', '\t').trim();
+  if (!normalized) return [];
+  return normalized
+    .split(/\r?\n/)
+    .map((row) => row.split('\t').map((cell) => cell.trim()))
+    .filter((row) => row.some((cell) => cell.length > 0));
+}
+
+type ShapeFont = NonNullable<NonNullable<ActuationRequest['params']['shapeFormat']>['font']>;
+
+function shapeFontFromProps(props: Record<string, string>): ShapeFont | undefined {
+  const font: ShapeFont = {};
+  if (props.fontBold !== undefined) font.bold = boolFromProp(props.fontBold, false);
+  if (props.fontItalic !== undefined) font.italic = boolFromProp(props.fontItalic, false);
+  if (props.fontUnderline !== undefined) font.underline = boolFromProp(props.fontUnderline, false);
+  if (props.fontColor !== undefined) font.color = props.fontColor;
+  if (props.fontName !== undefined) font.name = props.fontName;
+  const size = numberFromProp(props.fontSize);
+  if (size !== undefined) font.size = size;
+  return Object.keys(font).length > 0 ? font : undefined;
+}
+
+function graphTargetFromProps(
+  props: Record<string, string>,
+): ActuationRequest['params']['graphTarget'] | undefined {
+  const target: NonNullable<ActuationRequest['params']['graphTarget']> = {};
+  if (props.chatId !== undefined) target.chatId = props.chatId;
+  if (props.teamId !== undefined) target.teamId = props.teamId;
+  if (props.channelId !== undefined) target.channelId = props.channelId;
+  if (props.messageId !== undefined) target.messageId = props.messageId;
+  if (props.userId !== undefined) target.userId = props.userId;
+  return Object.keys(target).length > 0 ? target : undefined;
+}
+
+function safeJson(value: string | undefined): unknown | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function targetFromInvokeProps(
@@ -570,7 +949,11 @@ export function renderCommandHelp(manifest: CapabilityManifest, topic?: string):
   const match = specs.find((spec) => spec.verb === withoutSlash);
   if (match) {
     const entry = (COMMAND_HELP as Record<string, CommandHelpEntry>)[match.verb];
-    return renderCommandHelpEntry(entry ?? fallbackHelp(match.verb, match.usage, match.hint));
+    const registry = registryEntryForKindAndSurface(match.verb as ActuationKind, manifest.surface);
+    return renderCommandHelpEntry(
+      entry ??
+        (registry ? registryHelp(registry) : fallbackHelp(match.verb, match.usage, match.hint)),
+    );
   }
 
   if (withoutSlash === 'shape' || withoutSlash === 'set-shape-text') {
@@ -623,6 +1006,30 @@ function fallbackHelp(verb: string, usage: string, hint: string): CommandHelpEnt
     doNot: ['Do not infer unseen content.'],
     failureModes: ['Unsupported capability returns a corrective error.'],
     safety: ['Follow the current turn capability set.'],
+  };
+}
+
+function registryHelp(entry: CapabilityRegistryEntry): CommandHelpEntry {
+  return {
+    command: entry.command,
+    useWhen: `${entry.title}: ${entry.useWhen}`,
+    syntax: `${entry.command} [key=value ...]`,
+    discovery: entry.discovery,
+    sequence: [
+      ...entry.sequence,
+      'Stop after one cmd block and wait for the host result/preview before continuing.',
+    ],
+    examples: entry.examples.length > 0 ? entry.examples : [`${entry.command} [key=value ...]`],
+    doNot: [
+      'Do not use this command unless the current turn grammar advertises it.',
+      'Do not infer unseen targets or unsupported fields.',
+    ],
+    failureModes: entry.failureModes,
+    safety: [
+      `Registry status: ${entry.status}; registry metadata is not write authority.`,
+      `Preview must show: ${entry.preview.join(', ')}.`,
+      `Provenance: ${entry.provenance}.`,
+    ],
   };
 }
 

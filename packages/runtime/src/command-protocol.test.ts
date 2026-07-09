@@ -206,6 +206,51 @@ describe('compileCommand', () => {
     ).toEqual({ kind: 'read', intent: { read: 'open-context', selector: 'xl:Sales!A1:C9' } });
   });
 
+  it('compiles ls to a read intent', () => {
+    const compiled = compileCommand(
+      { verb: 'ls', path: '/doc' },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(compiled).toEqual({ kind: 'read', intent: { read: 'ls', path: '/doc' } });
+  });
+
+  it('compiles workspace verbs to local workspace intents', () => {
+    expect(compileCommand({ verb: 'workspace' }, { surface: 'excel', mintChangeId: mint })).toEqual(
+      {
+        kind: 'workspace',
+        intent: { workspace: 'list' },
+      },
+    );
+    expect(
+      compileCommand(
+        { verb: 'save', name: 'schedule.tsv', source: { src: 'read', selector: 'A1:B9' } },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({
+      kind: 'workspace',
+      intent: {
+        workspace: 'save',
+        name: 'schedule.tsv',
+        source: { src: 'read', selector: 'A1:B9' },
+      },
+    });
+    expect(
+      compileCommand(
+        { verb: 'cat', ref: 'schedule.tsv', head: 8 },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({ kind: 'workspace', intent: { workspace: 'cat', ref: 'schedule.tsv', head: 8 } });
+    expect(
+      compileCommand(
+        { verb: 'grep', ref: 'schedule.tsv', pattern: 'Deep Work', context: 1 },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toEqual({
+      kind: 'workspace',
+      intent: { workspace: 'grep', ref: 'schedule.tsv', pattern: 'Deep Work', context: 1 },
+    });
+  });
+
   it('compiles control verbs', () => {
     expect(compileCommand({ verb: 'done' }, { surface: 'excel', mintChangeId: mint })).toEqual({
       kind: 'control',
@@ -569,6 +614,180 @@ describe('compileCommand', () => {
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
+
+  it('compiles specialized /insert-pivot into typed Excel PivotTable params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'insert-pivot',
+        props: {
+          sourceRange: 'Sales!A1:G500',
+          destinationRange: 'Pivot!A3',
+          rowFields: 'Region,Segment',
+          valueFields: 'Revenue',
+          name: 'RevenuePivot',
+        },
+        args: [],
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-pivot',
+        surface: 'excel',
+        params: {
+          pivot: {
+            sourceRange: 'Sales!A1:G500',
+            destinationRange: 'Pivot!A3',
+            rowFields: ['Region', 'Segment'],
+            valueFields: ['Revenue'],
+            name: 'RevenuePivot',
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles specialized /format-shape into typed PowerPoint shape formatting params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'format-shape',
+        props: {
+          ref: 'pp:shape:s2:shape7',
+          fill: '#0F6CBD',
+          fontBold: 'true',
+          fontSize: '18',
+        },
+        args: [],
+      },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'format-shape',
+        surface: 'powerpoint',
+        params: {
+          target: { slideId: 's2', shapeId: 'shape7' },
+          shapeFormat: { fill: '#0F6CBD', font: { bold: true, size: 18 } },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles specialized /insert-content-control into typed Word params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'insert-content-control',
+        props: {
+          match: 'Customer:',
+          type: 'richText',
+          tag: 'CustomerName',
+          title: 'Customer name',
+        },
+        args: [],
+      },
+      { surface: 'word', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'insert-content-control',
+        surface: 'word',
+        params: {
+          target: { matchText: 'Customer:' },
+          contentControl: { type: 'richText', tag: 'CustomerName', title: 'Customer name' },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles specialized /set-recipients into typed Outlook draft recipient params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'set-recipients',
+        props: {
+          to: 'a@example.com;b@example.com',
+          cc: 'reviewer@example.com',
+          recipientMode: 'add',
+        },
+        args: [],
+      },
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'set-recipients',
+        surface: 'outlook',
+        params: {
+          mail: {
+            to: ['a@example.com', 'b@example.com'],
+            cc: ['reviewer@example.com'],
+            bcc: [],
+            recipientMode: 'add',
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles specialized /add-outline into typed OneNote content params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'add-outline',
+        props: { html: '<p>Action items</p>' },
+        args: [],
+      },
+      { surface: 'onenote', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'add-outline',
+        surface: 'onenote',
+        params: { html: '<p>Action items</p>' },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles estate-gated /post-channel-message into typed Teams Graph target params', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'post-channel-message',
+        props: {
+          teamId: 'team-1',
+          channelId: 'channel-1',
+          text: 'Standup notes ready',
+        },
+        args: [],
+      },
+      { surface: 'teams', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'post-channel-message',
+        surface: 'teams',
+        params: {
+          graphTarget: { teamId: 'team-1', channelId: 'channel-1' },
+          text: 'Standup notes ready',
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
 });
 
 describe('renderGrammarPrompt', () => {
@@ -620,8 +839,25 @@ describe('renderGrammarPrompt', () => {
         },
       ],
     });
-    expect(prompt).toContain('/insert-text text="..."');
-    expect(prompt).toContain('/fill-content-control id=<contentControlId> text="..."');
+    expect(prompt).toContain('/insert-text [key=value ...]');
+    expect(prompt).toContain('/fill-content-control [key=value ...]');
+  });
+
+  it('uses registry metadata for advanced slash operations once advertised', () => {
+    const prompt = renderGrammarPrompt({
+      ...excelManifest,
+      actuations: [
+        ...excelManifest.actuations,
+        {
+          kind: 'insert-pivot',
+          surface: 'excel',
+          title: 'Insert PivotTable',
+          reversible: true,
+        },
+      ],
+    });
+    expect(prompt).toContain('/insert-pivot [key=value ...]');
+    expect(prompt).toContain('summarize a table/range');
   });
 
   it('explicitly rejects non-cmd fences and thinking prose', () => {
@@ -682,6 +918,28 @@ describe('renderCommandHelp', () => {
     expect(prompt).toContain('Command: /fill-content-control');
     expect(prompt).toContain('Discovery sequence');
     expect(prompt).toContain('id=<contentControlId>');
+  });
+
+  it('renders registry-backed targeted help for an available advanced slash operation', () => {
+    const prompt = renderCommandHelp(
+      {
+        ...excelManifest,
+        actuations: [
+          ...excelManifest.actuations,
+          {
+            kind: 'insert-pivot',
+            surface: 'excel',
+            title: 'Insert PivotTable',
+            reversible: true,
+          },
+        ],
+      },
+      '/insert-pivot',
+    );
+    expect(prompt).toContain('Command: /insert-pivot');
+    expect(prompt).toContain('Excel native PivotTable');
+    expect(prompt).toContain('Registry status: promotable');
+    expect(prompt).toContain('Preview must show: source range');
   });
 });
 
@@ -822,9 +1080,10 @@ class FakeWordBridge implements DocBridge {
 
 /**
  * A fake StreamAssistClient that replays a scripted transcript: one string of answer text per
- * model turn (wrapped in token + provenance + done SSE events). Records the queries it received.
+ * model turn (wrapped in token + provenance + done SSE events), or a prebuilt SSE event list for
+ * lower-level protocol branches. Records the queries it received.
  */
-function fakeClient(turns: string[]): {
+function fakeClient(turns: Array<string | SseEvent[]>): {
   client: StreamAssistClient;
   queries: string[];
 } {
@@ -835,8 +1094,12 @@ function fakeClient(turns: string[]): {
     _opts: StreamOptions,
   ): AsyncGenerator<SseEvent> {
     queries.push(req.query ?? '');
-    const text = turns[i++] ?? '```cmd\ndone\n```';
-    yield { type: 'token', text };
+    const scripted = turns[i++] ?? '```cmd\ndone\n```';
+    if (typeof scripted === 'string') {
+      yield { type: 'token', text: scripted };
+    } else {
+      for (const event of scripted) yield event;
+    }
     yield {
       type: 'provenance',
       payload: {
@@ -940,6 +1203,35 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(bridge.applied).toEqual([]);
     expect(queries[1]).toContain('"upload"');
     expect(queries[1]).toContain('fileId');
+  });
+
+  it('workspace save stores a host read once and grep searches the artifact locally', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient([
+      '```cmd\nsave schedule.txt = read Sales!C2:C7\ngrep schedule.txt "Sales" context=0\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(session.runCommands('Stage data locally'));
+    const reads = loopEvents(events).filter((e) => e.type === 'read-result');
+
+    expect(bridge.reads).toEqual(['Sales!C2:C7']);
+    expect(reads[0]).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'save schedule.txt',
+      result: { workspace: 'save', artifact: { name: 'schedule.txt', id: 'ws:1' } },
+    });
+    expect(reads[1]).toMatchObject({
+      type: 'read-result',
+      intentLabel: 'grep schedule.txt',
+      result: {
+        workspace: 'grep',
+        artifact: { name: 'schedule.txt' },
+        pattern: 'Sales',
+        matches: [{ line: 1, text: 'values of Sales!C2:C7' }],
+      },
+    });
   });
 
   it('lists and inspects addressable context without creating a write plan', async () => {
@@ -1114,6 +1406,34 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(queries[1]).toContain('```python');
     expect(bridge.applied).toHaveLength(1); // still completed the write
     expect(loop.at(-1)).toMatchObject({ type: 'done' });
+  });
+
+  it('reprompts hosted code-execution output back into the Office CLI route', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      [
+        { type: 'activity', text: 'Building chart data' },
+        { type: 'code-execution', language: 'python', code: 'import matplotlib.pyplot as plt' },
+        { type: 'code-execution-result', outcome: 'OUTCOME_OK', output: 'image/png;base64,...' },
+      ],
+      '```cmd\nset Sales!Z1 "chart command required, not hosted code"\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    const events = await collect(
+      session.runCommands('visualize the sales table', { approveWrite: () => true }),
+    );
+    const loop = loopEvents(events);
+
+    expect(loop.some((e) => e.type === 'no-fence')).toBe(true);
+    expect(queries[1]).toContain('Hosted Python/code execution is not a valid executor response');
+    expect(queries[1]).toContain('emit the Office chart command');
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Sales!Z1' } },
+    });
   });
 
   it('stops at maxTurns without done (exhausted)', async () => {

@@ -10,6 +10,7 @@ import type {
   ChangeId,
   ContextKind,
   ContextRef,
+  DocFs,
   ParsedCommand,
   ProvenancePayload,
   ReadVerb,
@@ -23,6 +24,7 @@ import type {
 } from '@ge/contracts';
 import {
   asChangeId,
+  asSessionId,
   CapabilityManifestSchema,
   isCommandParseError,
   isProgramExpr,
@@ -33,6 +35,7 @@ import {
   renderPlanPrompt,
   derivePlanContextStrategy,
   WRITE_VERB_TO_KIND,
+  type WorkspaceVerb,
   type ParsedExpr,
   type PlanContextHint,
   type PipeSource,
@@ -48,6 +51,8 @@ import {
   supportedContextFileFormats,
   type ContextFileInput,
   type ContextFileUploadOptions,
+  type ConversationListResult,
+  type ConversationSession,
   type ResolvedGrounding,
   type UploadedContextFile,
 } from '@ge/gemini-client';
@@ -60,11 +65,14 @@ import {
   renderGrammarPrompt,
   type CompiledCommand,
   type ReadIntent,
+  type WorkspaceIntent,
 } from './command-protocol.js';
 import { evalExpr, renderValue, type RunRead, type Value } from './compose.js';
 import { analyseEffectDependencies } from './planning.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
+import { WorkspaceStore, type WorkspaceResult } from './workspace.js';
+import { createDocFs, ls as docFsLs, find as docFsFind } from './docfs/index.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -338,8 +346,23 @@ function isReadCommand(command: ParsedCommand): command is ReadCommand {
   return READ_COMMAND_VERBS.has(command.verb as ReadVerb);
 }
 
+const WORKSPACE_COMMAND_VERBS: ReadonlySet<WorkspaceVerb> = new Set([
+  'workspace',
+  'save',
+  'cat',
+  'grep',
+]);
+
+type WorkspaceCommand = Extract<ParsedCommand, { verb: WorkspaceVerb }>;
+
+function isWorkspaceCommand(command: ParsedCommand): command is WorkspaceCommand {
+  return WORKSPACE_COMMAND_VERBS.has(command.verb as WorkspaceVerb);
+}
+
 export class AssistSession {
   readonly context = new SessionContext();
+  private readonly workspace = new WorkspaceStore();
+  private readonly docFs: DocFs;
   /** The event-fed constructor of the working-context brief (see context-model.ts). */
   readonly model: ContextModel;
   private session: SessionId | undefined;
@@ -381,6 +404,7 @@ export class AssistSession {
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
     this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
+    this.docFs = createDocFs({ bridge, workspace: this.workspace });
   }
 
   /** Pull attachable context from the bridge and add it to the live session set. */
@@ -719,9 +743,13 @@ export class AssistSession {
       // with no `provenance` event leaves both the local and the instance fallback `undefined`.
       this.currentTurnProvenance = undefined;
       let turnText = '';
+      let turnHadCodeExecution = false;
       let turnProvenance: ProvenancePayload | undefined;
       for await (const event of this.streamTurn(query, opts.signal, opts.grounding, 'command')) {
         if (event.type === 'token') turnText += event.text;
+        if (event.type === 'code-execution' || event.type === 'code-execution-result') {
+          turnHadCodeExecution = true;
+        }
         if (event.type === 'provenance') {
           turnProvenance = event.payload;
           this.currentTurnProvenance = event.payload;
@@ -739,16 +767,7 @@ export class AssistSession {
         yield { type: 'no-fence', turn };
         if (pendingNoFenceReprompt) break;
         pendingNoFenceReprompt = true;
-        query = [
-          'No executable ```cmd block found.',
-          'Your reply must contain EXACTLY one fenced ```cmd block and nothing else.',
-          'Do not emit prose, thinking, troubleshooting notes, or ```python/```json/```bash fences.',
-          'If you need data, start with read/outline/search/context in the cmd block.',
-          'If finished, reply with only:',
-          '```cmd',
-          'done',
-          '```',
-        ].join('\n');
+        query = noFenceReprompt(turnHadCodeExecution);
         continue;
       }
       pendingNoFenceReprompt = false;
@@ -985,6 +1004,23 @@ export class AssistSession {
         return;
       }
       const { label, result } = await this.runReadIntent(compiled.intent);
+      plan.results.push(result);
+      yield { type: 'read-result', turn, intentLabel: label, result };
+      return;
+    }
+    if (isWorkspaceCommand(command)) {
+      const compiled = compileCommand(command, {
+        surface: this.bridge.surface,
+        mintChangeId: () => asChangeId(crypto.randomUUID()),
+      });
+      yield { type: 'command', turn, command, compiled };
+      if (isCompileError(compiled) || compiled.kind !== 'workspace') {
+        plan.results.push({
+          error: isCompileError(compiled) ? compiled.error : 'expected a workspace command',
+        });
+        return;
+      }
+      const { label, result } = await this.runWorkspaceIntent(compiled.intent);
       plan.results.push(result);
       yield { type: 'read-result', turn, intentLabel: label, result };
       return;
@@ -1411,6 +1447,90 @@ export class AssistSession {
   }
 
   /**
+   * Execute a local workspace operation. Workspace commands are deliberately separate from host
+   * reads and writes: they may consume read results or pure composed values, but they only create or
+   * inspect bounded in-memory artifacts. They never actuate Office content and never imply upload or
+   * code-execution authority.
+   */
+  private async runWorkspaceIntent(
+    intent: WorkspaceIntent,
+  ): Promise<{ label: string; result: WorkspaceResult }> {
+    try {
+      switch (intent.workspace) {
+        case 'list':
+          return {
+            label: 'workspace',
+            result: { workspace: 'list', artifacts: this.workspace.list() },
+          };
+        case 'summary':
+          return { label: `workspace ${intent.ref}`, result: this.workspace.summary(intent.ref) };
+        case 'cat':
+          return {
+            label: `cat ${intent.ref}`,
+            result: this.workspace.cat(intent.ref, intent.head),
+          };
+        case 'grep':
+          return {
+            label: `grep ${intent.ref}`,
+            result: this.workspace.grep(intent.ref, intent.pattern, intent.context ?? 0),
+          };
+        case 'save': {
+          const resolved = await this.resolveWorkspaceSource(intent.source);
+          if ('error' in resolved) {
+            return {
+              label: `save ${intent.name}`,
+              result: { workspace: 'error', error: resolved.error },
+            };
+          }
+          return {
+            label: `save ${intent.name}`,
+            result: this.workspace.save({
+              name: intent.name,
+              sourceLabel: resolved.sourceLabel,
+              content: resolved.content,
+              kind: intent.name.endsWith('.handoff.json') ? 'handoff' : undefined,
+            }),
+          };
+        }
+      }
+    } catch (err) {
+      return {
+        label: 'workspace',
+        result: { workspace: 'error', error: `workspace failed: ${errMsg(err)}` },
+      };
+    }
+  }
+
+  private async resolveWorkspaceSource(
+    source: Extract<WorkspaceIntent, { workspace: 'save' }>['source'],
+  ): Promise<{ content: string | Value; sourceLabel: string } | { error: string }> {
+    switch (source.src) {
+      case 'literal':
+        return { content: source.text, sourceLabel: 'literal' };
+      case 'expr': {
+        const value = await this.evalExpression(source.expr);
+        if ('error' in value) return value;
+        return { content: value, sourceLabel: renderExprSourceLabel(source.expr) };
+      }
+      case 'outline': {
+        const { result } = await this.runReadIntent({ read: 'outline' });
+        if (isReadErrorResult(result)) return result;
+        return { content: readResultToText(result), sourceLabel: 'outline' };
+      }
+      case 'read': {
+        const { result } = await this.runReadIntent({ read: 'range', selector: source.selector });
+        if (isReadErrorResult(result)) return result;
+        return { content: readResultToText(result), sourceLabel: `read ${source.selector}` };
+      }
+      case 'search': {
+        const { result } = await this.runReadIntent({ read: 'search', text: source.text });
+        if (isReadErrorResult(result)) return result;
+        return { content: readResultToText(result), sourceLabel: `search ${source.text}` };
+      }
+    }
+  }
+
+  /**
    * Dispatch a compiled `ReadIntent` to the bridge (ADR-0003 Layer-B). Defensive: a missing
    * capability or a thrown read becomes a corrective `{ error }` result, never a thrown loop.
    */
@@ -1455,6 +1575,14 @@ export class AssistSession {
             };
           const reads = await this.bridge.searchDocument(intent.text);
           return { label: `search ${intent.text}`, result: readsToData(reads) };
+        }
+        case 'ls': {
+          try {
+            const lines = await docFsLs(this.docFs, intent.path);
+            return { label: `ls ${intent.path}`, result: lines.map((text) => ({ text })) };
+          } catch (err) {
+            return { label: `ls ${intent.path}`, result: { error: errMsg(err) } };
+          }
         }
         case 'list-context': {
           const refs = await this.contextRefs(intent.kind);
@@ -1642,6 +1770,23 @@ export class AssistSession {
 
   get sessionId(): SessionId | undefined {
     return this.session;
+  }
+
+  resumeSession(sessionIdOrName: string): void {
+    this.session = asSessionId(sessionIdOrName);
+  }
+
+  listConversations(
+    opts: { pageSize?: number; pageToken?: string; signal?: AbortSignal } = {},
+  ): Promise<ConversationListResult> {
+    return this.client.listConversations(opts);
+  }
+
+  getConversation(
+    sessionIdOrName: string,
+    opts: { includeAnswerDetails?: boolean; signal?: AbortSignal } = {},
+  ): Promise<ConversationSession> {
+    return this.client.getConversation(sessionIdOrName, opts);
   }
 
   get sources(): SourceRef[] {
@@ -2177,6 +2322,42 @@ function readResultToText(result: unknown): string {
     return `read error: ${String((result as { error: unknown }).error)}`;
   }
   return '';
+}
+
+function isReadErrorResult(result: unknown): result is { error: string } {
+  return (
+    !!result &&
+    typeof result === 'object' &&
+    'error' in result &&
+    typeof (result as { error?: unknown }).error === 'string'
+  );
+}
+
+function renderExprSourceLabel(expr: ParsedExpr): string {
+  return renderExprArg(expr);
+}
+
+function noFenceReprompt(turnHadCodeExecution: boolean): string {
+  const lines = [
+    'No executable ```cmd block found.',
+    'Your reply must contain EXACTLY one fenced ```cmd block and nothing else.',
+    'Do not emit prose, thinking, troubleshooting notes, or ```python/```json/```bash fences.',
+  ];
+  if (turnHadCodeExecution) {
+    lines.push(
+      'Hosted Python/code execution is not a valid executor response in this Office command route.',
+      'Use the supported Microsoft 365 CLI only: read/outline/search/context/grid/chart/set/open/done, according to the current capabilities.',
+      'For charts, do not return generated images or matplotlib output; emit the Office chart command over a verified host range.',
+    );
+  }
+  lines.push(
+    'If you need data, start with read/outline/search/context in the cmd block.',
+    'If finished, reply with only:',
+    '```cmd',
+    'done',
+    '```',
+  );
+  return lines.join('\n');
 }
 
 /**

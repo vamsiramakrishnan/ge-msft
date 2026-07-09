@@ -18,7 +18,8 @@ import {
   type ParsedSkillDef,
 } from './skill-grammar.js';
 import { PlanContextHintSchema, type PlanContextHint } from './command-plan.js';
-import { ContextKindSchema, type ContextKind } from './context.js';
+import { ContextKindSchema, type ContextKind, type Surface } from './context.js';
+import { registryEntryForKindAndSurface } from './capability-registry.js';
 
 /**
  * ADR-0004 — the command-line protocol grammar (the single source of truth).
@@ -36,9 +37,10 @@ import { ContextKindSchema, type ContextKind } from './context.js';
  * self-corrects on the next turn.
  *
  * SCOPE: `outline · read · search · list · inspect · properties · comments · attachments · tables ·
- * slides · neighbors · context · open · set · grid · suggest · comment · format · reply · slide · page ·
- * mail · post · compose · table · chart · cf · spill · done · help` (ADR-0007 adds the host-native
- * kinds).
+ * slides · neighbors · context · open · workspace · save · cat · grep · set · grid · suggest ·
+ * comment · format · reply · slide · page · mail · post · compose · table · chart · cf · spill ·
+ * done · help` (ADR-0007 adds the host-native kinds; the workspace verbs are local/non-host
+ * artifact operations).
  */
 
 /**
@@ -49,6 +51,7 @@ export const READ_VERBS = [
   'outline',
   'read',
   'search',
+  'ls',
   'list',
   'inspect',
   'properties',
@@ -63,6 +66,13 @@ export const READ_VERBS = [
 
 /** Control verbs. Always advertised; not actuations. */
 export const CONTROL_VERBS = ['done', 'help'] as const;
+
+/**
+ * Workspace verbs are local, non-host operations over bounded virtual artifacts. They can read from
+ * host reads or pure composed values, but they never mutate Office content and never bypass the
+ * write approval gate. The runtime stores only bounded data and returns compact artifact handles.
+ */
+export const WORKSPACE_VERBS = ['workspace', 'save', 'cat', 'grep'] as const;
 
 /**
  * Write verbs → the `ActuationKind` (ADR-0002) they compile to. A write verb is advertised
@@ -108,10 +118,12 @@ export const WRITE_VERB_TO_KIND = {
 export type WriteVerb = keyof typeof WRITE_VERB_TO_KIND;
 export type ReadVerb = (typeof READ_VERBS)[number];
 export type ControlVerb = (typeof CONTROL_VERBS)[number];
+export type WorkspaceVerb = (typeof WORKSPACE_VERBS)[number];
 
 /** Every verb this slice understands (for did-you-mean + advertisement). */
 export const ALL_VERBS = [
   ...READ_VERBS,
+  ...WORKSPACE_VERBS,
   ...CONTROL_VERBS,
   ...(Object.keys(WRITE_VERB_TO_KIND) as WriteVerb[]),
 ] as const;
@@ -136,6 +148,7 @@ export type ParsedCommand =
   | { verb: 'outline' }
   | { verb: 'read'; selector: string }
   | { verb: 'search'; text: string }
+  | { verb: 'ls'; path: string }
   | { verb: 'list'; kind?: ContextKind }
   | { verb: 'inspect'; selector: string }
   | { verb: 'properties'; selector: string }
@@ -146,6 +159,10 @@ export type ParsedCommand =
   | { verb: 'neighbors'; selector?: string }
   | { verb: 'context'; hints: PlanContextHint[] }
   | { verb: 'open'; selector: string }
+  | { verb: 'workspace'; ref?: string }
+  | { verb: 'save'; name: string; source: WorkspaceSource }
+  | { verb: 'cat'; ref: string; head?: number }
+  | { verb: 'grep'; ref: string; pattern: string; context?: number }
   | { verb: 'set'; cell: string; value: string; valueExpr?: ParsedExpr }
   | { verb: 'grid'; range: string; cells: string[][] }
   | { verb: 'suggest'; oldText: string; newText: string }
@@ -180,6 +197,13 @@ export type ParsedCommand =
   | { verb: 'done' }
   | { verb: 'help'; topic?: string };
 
+export type WorkspaceSource =
+  | { src: 'outline' }
+  | { src: 'read'; selector: string }
+  | { src: 'search'; text: string }
+  | { src: 'literal'; text: string }
+  | { src: 'expr'; expr: ParsedExpr };
+
 export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnion('verb', [
   z.object({ verb: z.literal('outline') }),
   z.object({ verb: z.literal('read'), selector: z.string() }),
@@ -194,6 +218,29 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('neighbors'), selector: z.string().optional() }),
   z.object({ verb: z.literal('context'), hints: z.array(PlanContextHintSchema) }),
   z.object({ verb: z.literal('open'), selector: z.string() }),
+  z.object({ verb: z.literal('workspace'), ref: z.string().optional() }),
+  z.object({
+    verb: z.literal('save'),
+    name: z.string(),
+    source: z.union([
+      z.object({ src: z.literal('outline') }),
+      z.object({ src: z.literal('read'), selector: z.string() }),
+      z.object({ src: z.literal('search'), text: z.string() }),
+      z.object({ src: z.literal('literal'), text: z.string() }),
+      z.object({ src: z.literal('expr'), expr: z.lazy(() => ParsedExprSchema) }),
+    ]),
+  }),
+  z.object({
+    verb: z.literal('cat'),
+    ref: z.string(),
+    head: z.number().int().positive().optional(),
+  }),
+  z.object({
+    verb: z.literal('grep'),
+    ref: z.string(),
+    pattern: z.string(),
+    context: z.number().int().min(0).optional(),
+  }),
   z.object({
     verb: z.literal('set'),
     cell: z.string(),
@@ -366,6 +413,11 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return { verb: 'read', selector: rest };
     }
 
+    case 'ls': {
+      if (rest === '') return { error: 'ls needs a path — usage: ls <path>, e.g. ls /doc' };
+      return { verb: 'ls', path: rest };
+    }
+
     case 'search': {
       if (rest === '') return { error: 'search needs text — usage: search <text>' };
       // Tolerate the model wrapping the query in quotes.
@@ -430,6 +482,18 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
         return { error: 'open needs a ref id or selector — usage: open <refId|selector>' };
       return { verb: 'open', selector: stripWrappingQuotes(rest) };
     }
+
+    case 'workspace':
+      return { verb: 'workspace', ...(rest ? { ref: stripWrappingQuotes(rest) } : {}) };
+
+    case 'save':
+      return parseSave(rest);
+
+    case 'cat':
+      return parseCat(rest);
+
+    case 'grep':
+      return parseGrep(rest);
 
     case 'set': {
       const split = splitFirstArg(rest);
@@ -531,6 +595,130 @@ function parseGridBody(body: string): string[][] {
     .split(/\r?\n/)
     .map((row) => row.split('\t').map((cell) => cell.trim()))
     .filter((row) => row.some((cell) => cell !== ''));
+}
+
+/**
+ * `save <name> = read <selector>` stores a bounded local artifact without writing Office content.
+ * Sources may be `outline`, `read`, `search`, a quoted literal, or a pure composition expression.
+ */
+function parseSave(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'save needs a name and source — usage: save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)';
+  const split = splitFirstArg(rest);
+  if (!split) return { error: usage };
+  const name = normalizeWorkspaceName(split.arg);
+  if (typeof name !== 'string') return name;
+  let tail = split.tail.trim();
+  if (tail.startsWith('=')) tail = tail.slice(1).trim();
+  if (tail === '') return { error: usage };
+
+  if (tail.toLowerCase() === 'outline') return { verb: 'save', name, source: { src: 'outline' } };
+  if (/^read(?:\s|$)/i.test(tail)) {
+    return {
+      verb: 'save',
+      name,
+      source: { src: 'read', selector: tail.replace(/^read\s*/i, '').trim() },
+    };
+  }
+  if (/^search\s+/i.test(tail)) {
+    return {
+      verb: 'save',
+      name,
+      source: { src: 'search', text: stripWrappingQuotes(tail.replace(/^search\s+/i, '').trim()) },
+    };
+  }
+  if (tail.startsWith('"')) {
+    const quoted = scanQuoted(tail, 0);
+    if (!quoted || tail.slice(quoted.end).trim() !== '') return { error: usage };
+    return { verb: 'save', name, source: { src: 'literal', text: quoted.value } };
+  }
+  const expr = parseEffectArg(tail);
+  if (expr === undefined) return { error: usage };
+  if (isExprParseError(expr)) return expr;
+  return { verb: 'save', name, source: { src: 'expr', expr } };
+}
+
+function parseCat(rest: string): ParsedCommand | CommandParseError {
+  const usage = 'cat needs a workspace artifact ref — usage: cat <name|ws:id> [head=N]';
+  const { positional, props } = tokenizeArgs(rest);
+  const ref = positional[0];
+  if (!ref || positional.length > 1) return { error: usage };
+  const parsedHead = parsePositiveIntProp(props.head, 'head');
+  if ('error' in parsedHead) return parsedHead;
+  return {
+    verb: 'cat',
+    ref,
+    ...(parsedHead.value !== undefined ? { head: parsedHead.value } : {}),
+  };
+}
+
+function parseGrep(rest: string): ParsedCommand | CommandParseError {
+  const usage =
+    'grep needs an artifact ref and pattern — usage: grep <name|ws:id> "pattern" [context=N]';
+  const split = splitFirstArg(rest);
+  if (!split) return { error: usage };
+  const ref = stripWrappingQuotes(split.arg);
+  const tail = split.tail.trim();
+  if (!ref || !tail) return { error: usage };
+
+  let pattern: string;
+  let propsText = '';
+  if (tail.startsWith('"')) {
+    const quoted = scanQuoted(tail, 0);
+    if (!quoted) return { error: usage };
+    pattern = quoted.value;
+    propsText = tail.slice(quoted.end).trim();
+  } else {
+    const pieces = tail.split(/\s+/);
+    pattern = pieces.shift() ?? '';
+    propsText = pieces.join(' ');
+  }
+  if (!pattern) return { error: 'grep pattern cannot be empty' };
+  const { positional, props } = tokenizeArgs(propsText);
+  if (positional.length > 0) return { error: usage };
+  const parsedContext = parseNonNegativeIntProp(props.context, 'context');
+  if ('error' in parsedContext) return parsedContext;
+  return {
+    verb: 'grep',
+    ref,
+    pattern,
+    ...(parsedContext.value !== undefined ? { context: parsedContext.value } : {}),
+  };
+}
+
+function normalizeWorkspaceName(name: string): string | CommandParseError {
+  const unquoted = stripWrappingQuotes(name).trim();
+  if (unquoted === '') return { error: 'workspace artifact name cannot be empty' };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,95}$/.test(unquoted)) {
+    return {
+      error:
+        'workspace artifact name must start with a letter/number and contain only letters, numbers, ., _, -, or /',
+    };
+  }
+  if (unquoted.includes('..') || unquoted.startsWith('/') || unquoted.endsWith('/')) {
+    return { error: 'workspace artifact name must be relative and cannot contain ".."' };
+  }
+  return unquoted;
+}
+
+function parsePositiveIntProp(
+  value: string | undefined,
+  name: string,
+): { value?: number } | CommandParseError {
+  if (value === undefined) return {};
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) return { error: `${name} must be a positive integer` };
+  return { value: n };
+}
+
+function parseNonNegativeIntProp(
+  value: string | undefined,
+  name: string,
+): { value?: number } | CommandParseError {
+  if (value === undefined) return {};
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) return { error: `${name} must be a non-negative integer` };
+  return { value: n };
 }
 
 /**
@@ -1250,6 +1438,11 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
     outline: { verb: 'outline', usage: 'outline', hint: 'show the document/workbook structure' },
     read: readSelector,
     search: { verb: 'search', usage: 'search <text>', hint: 'find content containing the text' },
+    ls: {
+      verb: 'ls',
+      usage: 'ls <path>',
+      hint: 'list DocFs directory entries under /doc or /work',
+    },
     list: {
       verb: 'list',
       usage: 'list [kind]',
@@ -1309,6 +1502,8 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
       specs.push(readSpecByVerb[verb]);
   }
 
+  for (const verb of WORKSPACE_VERBS) specs.push(workspaceVerbSpec(verb));
+
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a
   // new (deferred) write verb only needs an entry there + its kind in the manifest.
   const kinds = new Set(manifest.actuations.map((a) => a.kind));
@@ -1324,7 +1519,7 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   const coreKinds = new Set<ActuationKind>(Object.values(WRITE_VERB_TO_KIND));
   for (const kind of [...kinds].sort()) {
     if (coreKinds.has(kind)) continue;
-    specs.push(specializedVerbSpec(kind));
+    specs.push(specializedVerbSpec(kind, manifest.surface));
   }
 
   specs.push(
@@ -1348,6 +1543,35 @@ function isRuntimeServedRead(verb: ReadVerb, manifest: CapabilityManifest): bool
       return kinds.has('slide');
     default:
       return false;
+  }
+}
+
+function workspaceVerbSpec(verb: WorkspaceVerb): VerbSpec {
+  switch (verb) {
+    case 'workspace':
+      return {
+        verb,
+        usage: 'workspace [name|ws:id]',
+        hint: 'list local virtual artifacts or show one artifact summary; never reads or writes Office content',
+      };
+    case 'save':
+      return {
+        verb,
+        usage: 'save <name> = read <selector> | search <text> | outline | "literal" | ($pipeline)',
+        hint: 'store a bounded local artifact from a host read or pure computation; returns a compact handle',
+      };
+    case 'cat':
+      return {
+        verb,
+        usage: 'cat <name|ws:id> [head=N]',
+        hint: 'preview a bounded slice of a workspace artifact by handle',
+      };
+    case 'grep':
+      return {
+        verb,
+        usage: 'grep <name|ws:id> "pattern" [context=N]',
+        hint: 'search a workspace artifact locally and return compact line matches',
+      };
   }
 }
 
@@ -1464,7 +1688,15 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
   }
 }
 
-function specializedVerbSpec(kind: ActuationKind): VerbSpec {
+function specializedVerbSpec(kind: ActuationKind, surface: Surface): VerbSpec {
+  const registry = registryEntryForKindAndSurface(kind, surface);
+  if (registry) {
+    return {
+      verb: kind,
+      usage: `${registry.command} [key=value ...]`,
+      hint: registry.useWhen,
+    };
+  }
   switch (kind) {
     case 'insert-text':
       return {

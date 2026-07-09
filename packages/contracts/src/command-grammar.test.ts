@@ -93,6 +93,15 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     expect(parseCommandLine('search')).toMatchObject({ error: expect.stringContaining('search') });
   });
 
+  it('parses ls with a path', () => {
+    expect(parseCommandLine('ls /doc')).toEqual({ verb: 'ls', path: '/doc' });
+  });
+
+  it('rejects ls with no path', () => {
+    const result = parseCommandLine('ls');
+    expect(result).toHaveProperty('error');
+  });
+
   it('parses context strategy hints as a read-only command', () => {
     const cmd = parseCommandLine('context analytical full-scope upload-preferred');
     expect(cmd).toEqual({
@@ -145,6 +154,59 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
     });
     expect(parseCommandLine('open')).toMatchObject({
       error: expect.stringContaining('open needs'),
+    });
+  });
+});
+
+describe('command-grammar — workspace artifact verbs', () => {
+  it('parses workspace listing and artifact summary', () => {
+    expect(parseCommandLine('workspace')).toEqual({ verb: 'workspace' });
+    expect(parseCommandLine('workspace schedule.tsv')).toEqual({
+      verb: 'workspace',
+      ref: 'schedule.tsv',
+    });
+  });
+
+  it('parses save from host reads and pure pipelines', () => {
+    expect(parseCommandLine(`save schedule.tsv = read 'Daily schedule'!B3:I53`)).toEqual({
+      verb: 'save',
+      name: 'schedule.tsv',
+      source: { src: 'read', selector: `'Daily schedule'!B3:I53` },
+    });
+    expect(parseCommandLine('save top.md = (read Sales!A1:B9 | head 5)')).toMatchObject({
+      verb: 'save',
+      name: 'top.md',
+      source: {
+        src: 'expr',
+        expr: {
+          kind: 'pipeline',
+          source: { src: 'read', selector: 'Sales!A1:B9' },
+          stages: [{ name: 'head', args: '5' }],
+        },
+      },
+    });
+  });
+
+  it('parses bounded artifact preview and local grep', () => {
+    expect(parseCommandLine('cat schedule.tsv head=12')).toEqual({
+      verb: 'cat',
+      ref: 'schedule.tsv',
+      head: 12,
+    });
+    expect(parseCommandLine('grep schedule.tsv "Deep Work" context=1')).toEqual({
+      verb: 'grep',
+      ref: 'schedule.tsv',
+      pattern: 'Deep Work',
+      context: 1,
+    });
+  });
+
+  it('rejects path-like or malformed artifact names', () => {
+    expect(parseCommandLine('save ../secret = outline')).toMatchObject({
+      error: expect.stringContaining('workspace artifact name'),
+    });
+    expect(parseCommandLine('cat schedule.tsv head=0')).toMatchObject({
+      error: expect.stringContaining('positive integer'),
     });
   });
 });
@@ -726,6 +788,7 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).toContain('set');
     expect(verbs).not.toContain('suggest');
     expect(verbs).toContain('context');
+    expect(verbs).toEqual(expect.arrayContaining(['workspace', 'save', 'cat', 'grep']));
     expect(verbs).toEqual(expect.arrayContaining(['list', 'inspect', 'properties', 'open']));
     expect(verbs).toContain('tables');
     const read = grammarFor(excelManifest).find((v) => v.verb === 'read');
@@ -822,6 +885,27 @@ describe('command-grammar — capability scoping', () => {
       ],
     };
     expect(grammarFor(withoutShape).map((v) => v.verb)).not.toContain('shape');
+  });
+
+  it('advertises advanced registry-backed slash commands only when the live manifest includes them', () => {
+    expect(grammarFor(excelManifest).map((v) => v.verb)).not.toContain('insert-pivot');
+    const withPivot: CapabilityManifest = {
+      ...excelManifest,
+      actuations: [
+        ...excelManifest.actuations,
+        {
+          kind: 'insert-pivot',
+          surface: 'excel',
+          title: 'Insert PivotTable',
+          reversible: true,
+        },
+      ],
+    };
+    const pivot = grammarFor(withPivot).find((spec) => spec.verb === 'insert-pivot');
+    expect(pivot).toMatchObject({
+      usage: '/insert-pivot [key=value ...]',
+      hint: expect.stringContaining('summarize a table/range'),
+    });
   });
 
   it('scopes host read verbs to manifest.reads while keeping runtime context available', () => {

@@ -189,7 +189,14 @@ chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration
 4. **ADR-0005 Phase 4** — `for`/`each` iteration, durable skill persistence, cross-surface plans
    (read Excel → write PowerPoint).
 5. **Estate writes** — Graph/SharePoint reads are live; writes (send mail, create event, upload /
-   checkout) are modeled but not wired.
+   checkout) are modeled but not wired. The first estate write, `share`/`/shared` (a cross-surface
+   Graph app-folder handoff store — `packages/graph-client`'s `GraphSharedStore`, `packages/runtime`'s
+   `sharedMount`), is built and tested end-to-end but shipped **inert by default**
+   (`AssistSessionOptions.estateWritesEnabled` defaults to `false`, matching `ReleaseProfile
+   .estateWrites`); `web-shell` does not enable it. Turning it on needs an approval-UI card for
+   `RunCommandsOptions.approveShare` (mirroring the existing write-approval card) plus a deliberate
+   release-profile policy decision — a security review blocked the initial cut for lacking exactly
+   that gate.
 6. **Security hardenings noted by review** — keep `decideSend` total; bound the on-send trigger with
    a timeout so a *hung* trigger cannot wedge Send; validate `location`/`proxyUrl` at config
    construction.

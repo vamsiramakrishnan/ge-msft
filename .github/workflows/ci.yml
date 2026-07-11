@@ -11,25 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
+          bun-version: latest
+      - run: bun install --frozen-lockfile
       - name: typecheck
-        run: npm run typecheck
+        run: bun run typecheck
       - name: lint
-        run: npm run lint
+        run: bun run lint
       - name: test
-        run: npm run test
+        run: bun run test
       - name: build
-        run: npm run build
+        run: bun run build
       # ADR-0008 §4 drift gate: the committed language manifest must equal the emitter output.
       - name: language-manifest is not stale
         run: |
-          npm run emit:language
+          bun run emit:language
           git diff --exit-code skill/m365-surface-commander/scripts/m365-cli-1.0.json \
-            || { echo "::error::m365-cli-1.0.json is stale — run 'npm run emit:language' and commit."; exit 1; }
+            || { echo "::error::m365-cli-1.0.json is stale — run 'bun run emit:language' and commit."; exit 1; }
 
   skill-python:
     name: skill parsers · parity · eval
@@ -39,6 +38,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      # Catches the same drift `bun run skills:check` catches locally, BEFORE it reaches a
+      # workstation running `bun run ge:skills` against a stale checkout.
+      - name: resource indexes are not stale
+        run: python3 skill/generate_resource_index.py --check
       - name: parse_commands self-test
         run: python3 skill/m365-surface-commander/scripts/parse_commands.py --self-test
       - name: surface_cli self-test

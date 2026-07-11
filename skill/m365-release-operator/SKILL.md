@@ -122,4 +122,3 @@ For exact flows, load [Interactive Copy-Paste](references/interactive-copy-paste
   while valid; otherwise ask for a fresh paste/login.
 - Never mutate Office document content; this skill controls setup/release only.
 - Prefer repo scripts over raw API calls so behavior stays testable and documented.
-

@@ -164,14 +164,14 @@ When the user writes free text, normalize it with this ladder:
 
 Use this vocabulary in `step` lines:
 
-| Surface | Capability-shaped step vocabulary |
-| --- | --- |
-| Word | tracked rewrite of selected text/paragraph/section; comment on exact anchored text; reply to a comment; apply a style; insert a table, hyperlink, or content control; bounded find/replace. |
-| Excel | materialize one rectangular grid/table; write formulas; format a range; add comments; promote a table; create chart or pivot summary; sort/filter a range; create/rename worksheet. |
-| PowerPoint | create a slide/section; update selected shape or text box; insert image/table/chart-ready content; apply a layout; format shape/text; create slides from an approved handoff packet. |
-| Outlook | stage a reply or new draft; set body, subject, recipients, categories, or attachments; create a calendar draft. Never plan sending mail automatically. |
-| OneNote | append a page; add an outline/rich-text block; set page title; add a note tag; create a section when explicitly requested. |
-| Teams | stage a channel/chat post or adaptive card; summarize transcript/actions; prepare a meeting or thread handoff. Estate/Graph writes must remain explicit and gated. |
+| Surface    | Capability-shaped step vocabulary                                                                                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Word       | tracked rewrite of selected text/paragraph/section; comment on exact anchored text; reply to a comment; apply a style; insert a table, hyperlink, or content control; bounded find/replace. |
+| Excel      | materialize one rectangular grid/table; write formulas; format a range; add comments; promote a table; create chart or pivot summary; sort/filter a range; create/rename worksheet.         |
+| PowerPoint | create a slide/section; update selected shape or text box; insert image/table/chart-ready content; apply a layout; format shape/text; create slides from an approved handoff packet.        |
+| Outlook    | stage a reply or new draft; set body, subject, recipients, categories, or attachments; create a calendar draft. Never plan sending mail automatically.                                      |
+| OneNote    | append a page; add an outline/rich-text block; set page title; add a note tag; create a section when explicitly requested.                                                                  |
+| Teams      | stage a channel/chat post or adaptive card; summarize transcript/actions; prepare a meeting or thread handoff. Estate/Graph writes must remain explicit and gated.                          |
 
 Examples:
 
@@ -186,8 +186,8 @@ Examples:
 
 Use `context` lines when the request implies a material context-construction strategy:
 
-| Hint                       | Use when                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------ |
+| Hint                       | Use when                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
 | `incremental`              | the executor should read live host slices lazily (`outline`, `read`, `search`)              |
 | `inline-preferred`         | the selected item/range/thread is small and enough to answer or draft                       |
 | `reference-preferred`      | pinned `@` sources are already indexed and should be referenced rather than copied          |
@@ -261,13 +261,13 @@ rules, read [references/handoff-contract.md](references/handoff-contract.md).
 
 ## Bundled resources (load on demand)
 
-| File                                                     | Read it when…                                                                                             |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| [references/resource-index.md](references/resource-index.md) | you need to choose the smallest relevant planner reference or example to load                             |
-| [references/plan-grammar.md](references/plan-grammar.md) | you need the exact keyword rules, repeatability, and how steps map per surface                            |
-| [references/handoff-contract.md](references/handoff-contract.md) | you need to understand how an approved plan becomes a commander execution task without leaking authority |
-| [scripts/parse_plan.py](scripts/parse_plan.py)           | you want to verify a plan block parses before relying on it (`python3 scripts/parse_plan.py --self-test`) |
-| [assets/example-plans/](assets/example-plans/)           | you need a concrete single-surface, cross-surface, or clarification plan shape                            |
+| File                                                             | Read it when…                                                                                             |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| [references/resource-index.md](references/resource-index.md)     | you need to choose the smallest relevant planner reference or example to load                             |
+| [references/plan-grammar.md](references/plan-grammar.md)         | you need the exact keyword rules, repeatability, and how steps map per surface                            |
+| [references/handoff-contract.md](references/handoff-contract.md) | you need to understand how an approved plan becomes a commander execution task without leaking authority  |
+| [scripts/parse_plan.py](scripts/parse_plan.py)                   | you want to verify a plan block parses before relying on it (`python3 scripts/parse_plan.py --self-test`) |
+| [assets/example-plans/](assets/example-plans/)                   | you need a concrete single-surface, cross-surface, or clarification plan shape                            |
 
 ## Worked example
 

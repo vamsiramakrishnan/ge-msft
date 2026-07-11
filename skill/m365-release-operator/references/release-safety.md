@@ -54,4 +54,3 @@ tenant/profile, manifest/package path, skill labels, and whether old state will 
 - Never use `.env` as a secret store.
 - Never commit generated token files, HAR files, or raw pasted cURL.
 - Never claim deployment success unless the command output proves it.
-

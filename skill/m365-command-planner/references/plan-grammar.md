@@ -15,22 +15,22 @@ to the user for a one-tap confirm before anything runs.
 
 ## Keywords
 
-| Keyword      | Repeatable | Required | Meaning                                                                                                                                                                          |
-| ------------ | :--------: | :------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `intent`     |     no     |   yes    | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `visualize`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                              |
-| `surface`    |     no     |   yes    | The active app where the workflow starts: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                                         |
-| `scope`      |     no     |    no    | Where the first phase applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow.                                             |
-| `ground`     |    yes     |    no    | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                                        |
-| `context`    |    yes     |    no    | Context-construction hint: `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`, `code-execution-preferred`, `analytical`, or `full-scope`.              |
-| `workflow`   |     no     |    no    | `single-surface` or `cross-surface`. Omit or use `single-surface` for normal one-host work.                                                                                      |
-| `source`     |    yes     | cross-surface | Source app/scope, starting with a surface, e.g. `excel document`.                                                                                                           |
-| `target`     |    yes     | cross-surface | Target app/scope, starting with a surface, e.g. `powerpoint deck`.                                                                                                         |
-| `phase`      |    yes     | cross-surface | A per-host phase, starting with a surface, e.g. `excel prepare the handoff packet`.                                                                                        |
-| `handoff`    |    yes     | cross-surface | The user-visible artifact passed between phases: summary data, refs, draft text, constraints, provenance, next action.                                                     |
-| `step`       |    yes     | yes (≥1) | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                                   |
-| `exclude`    |    yes     |    no    | An explicit carve-out — something to leave unchanged.                                                                                                                            |
-| `clarify`    |    yes     |    no    | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                                  |
-| `confidence` |     no     |    no    | `high` / `medium` / `low` — your read of how well-specified the request is.                                                                                                      |
+| Keyword      | Repeatable |   Required    | Meaning                                                                                                                                                             |
+| ------------ | :--------: | :-----------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intent`     |     no     |      yes      | The general verb, one of `ask`, `summarize`, `explain`, `rewrite`, `review`, `visualize`, `draft`, `notes`. Use `ask` (custom prompt) if none fits.                 |
+| `surface`    |     no     |      yes      | The active app where the workflow starts: `word`, `excel`, `powerpoint`, `onenote`, `outlook`, `teams`.                                                             |
+| `scope`      |     no     |      no       | Where the first phase applies — one of `selection`, `document`, `range`, `section`, `comment`, `this-item`. A plain ref may follow.                                 |
+| `ground`     |    yes     |      no       | A pinned `@`source this plan relies on, by verbatim title. Must correspond to a source the host supplied.                                                           |
+| `context`    |    yes     |      no       | Context-construction hint: `incremental`, `inline-preferred`, `reference-preferred`, `upload-preferred`, `code-execution-preferred`, `analytical`, or `full-scope`. |
+| `workflow`   |     no     |      no       | `single-surface` or `cross-surface`. Omit or use `single-surface` for normal one-host work.                                                                         |
+| `source`     |    yes     | cross-surface | Source app/scope, starting with a surface, e.g. `excel document`.                                                                                                   |
+| `target`     |    yes     | cross-surface | Target app/scope, starting with a surface, e.g. `powerpoint deck`.                                                                                                  |
+| `phase`      |    yes     | cross-surface | A per-host phase, starting with a surface, e.g. `excel prepare the handoff packet`.                                                                                 |
+| `handoff`    |    yes     | cross-surface | The user-visible artifact passed between phases: summary data, refs, draft text, constraints, provenance, next action.                                              |
+| `step`       |    yes     |   yes (≥1)    | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                      |
+| `exclude`    |    yes     |      no       | An explicit carve-out — something to leave unchanged.                                                                                                               |
+| `clarify`    |    yes     |      no       | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                     |
+| `confidence` |     no     |      no       | `high` / `medium` / `low` — your read of how well-specified the request is.                                                                                         |
 
 `plan` and `end` lines are optional brackets; the fence itself delimits the block. Lines
 starting with `#` are comments. Unknown keywords are reported back as a corrective error.
@@ -49,7 +49,7 @@ task into the verb (no `regen-clause`, `draft-slides`, `synthesize`, `meeting-no
 | `explain`   | clarify the scope in plain language                      | chat (read)   |
 | `rewrite`   | apply any instruction to the scope → a reversible edit   | write (gated) |
 | `review`    | whole-scope pass → N findings → N gated annotations      | annotation    |
-| `visualize` | create a chart, visual summary, or chart-ready table      | write (gated) |
+| `visualize` | create a chart, visual summary, or chart-ready table     | write (gated) |
 | `draft`     | generate new material (slides, page, reply, column)      | write (gated) |
 | `notes`     | transcript → live notes + action items (Teams)           | annotation    |
 
@@ -64,14 +64,14 @@ A step is phrased so the executor can realize it with a bounded capability on th
 not a CLI command, but it should be close enough to the capability vocabulary that the commander can
 choose the right command after reading live host content.
 
-| Surface | Step should name… |
-| --- | --- |
-| Word | tracked rewrite; anchored comment/reply; style application; inserted table/hyperlink/content control; bounded find/replace. |
-| Excel | one rectangular grid/table materialization; formulas; range format; comment/reply; native table; chart/pivot summary; sort/filter; worksheet operation. |
-| PowerPoint | slide creation; selected shape/text update; image/table/chart-ready insertion; slide layout; shape/text formatting; deck handoff import. |
-| OneNote | page append; page title; outline/rich text block; note tag; explicit section creation. |
-| Outlook | staged reply or new draft; body/subject/recipients; attachment; categories; calendar draft. Never automatic send. |
-| Teams | staged post/card; transcript notes/actions; thread/channel handoff; estate/Graph write only when explicitly requested and gated. |
+| Surface    | Step should name…                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Word       | tracked rewrite; anchored comment/reply; style application; inserted table/hyperlink/content control; bounded find/replace.                             |
+| Excel      | one rectangular grid/table materialization; formulas; range format; comment/reply; native table; chart/pivot summary; sort/filter; worksheet operation. |
+| PowerPoint | slide creation; selected shape/text update; image/table/chart-ready insertion; slide layout; shape/text formatting; deck handoff import.                |
+| OneNote    | page append; page title; outline/rich text block; note tag; explicit section creation.                                                                  |
+| Outlook    | staged reply or new draft; body/subject/recipients; attachment; categories; calendar draft. Never automatic send.                                       |
+| Teams      | staged post/card; transcript notes/actions; thread/channel handoff; estate/Graph write only when explicitly requested and gated.                        |
 
 Write the intention, not the command: _"rewrite the SLA figure to 99.9% as a tracked change"_
 → the executor reads the clause, finds the exact text, and emits

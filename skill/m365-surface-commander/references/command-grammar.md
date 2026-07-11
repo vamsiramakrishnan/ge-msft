@@ -14,32 +14,32 @@ reviewable change.
 
 ## Selectors (the per-app part)
 
-| App        | Selector                                         | Example                  |
-| ---------- | ------------------------------------------------ | ------------------------ |
-| Excel      | A1 range, table, or named range                  | `Sales!C2:C7`, `Revenue` |
-| Word       | exact text, paragraph, comment, or content control anchor | `"Q3 revenue grew 12%"`  |
-| PowerPoint | slide, shape, text box, table, or chart          | `slide:4`, `shape:logo`  |
-| OneNote    | page, paragraph, table, or image anchor          | `page:current`           |
+| App        | Selector                                                        | Example                  |
+| ---------- | --------------------------------------------------------------- | ------------------------ |
+| Excel      | A1 range, table, or named range                                 | `Sales!C2:C7`, `Revenue` |
+| Word       | exact text, paragraph, comment, or content control anchor       | `"Q3 revenue grew 12%"`  |
+| PowerPoint | slide, shape, text box, table, or chart                         | `slide:4`, `shape:logo`  |
+| OneNote    | page, paragraph, table, or image anchor                         | `page:current`           |
 | Outlook    | current item, thread, compose body, draft target, or attachment | `item:current`           |
-| Teams      | message, thread, channel, transcript segment, or deep link | `thread:current`         |
+| Teams      | message, thread, channel, transcript segment, or deep link      | `thread:current`         |
 
 ## Read commands
 
-| Command       | Usage                         | Notes                                                               |
-| ------------- | ----------------------------- | ------------------------------------------------------------------- |
-| `outline`     | `outline`                     | Structure of the document/workbook. Not available in Outlook/Teams. |
-| `read`        | `read <selector>`             | Excel: an addressable range. Others: whole or current section.      |
-| `search`      | `search <text>`               | Find content containing the text.                                   |
-| `list`        | `list [kind]`                 | List addressable context refs. `kind` is optional.                  |
-| `inspect`     | `inspect <refId\|selector>`   | Resolve one context ref or selector into readable content.          |
-| `properties`  | `properties <refId\|selector>`| Return safe metadata: id, kind, title, locator, host ref.           |
-| `comments`    | `comments [selector]`         | List comment refs, optionally scoped near a selector.               |
-| `attachments` | `attachments [selector]`      | List attachment refs, optionally scoped near a selector.            |
-| `tables`      | `tables [selector]`           | List table/range refs, optionally scoped near a selector.           |
-| `slides`      | `slides [selector]`           | List slide refs, optionally scoped near a selector.                 |
-| `neighbors`   | `neighbors [refId\|selector]` | Show nearby context refs around a target.                           |
-| `context`     | `context [hints]`             | Ask the host for context/upload/code-execution strategy. Read-only. |
-| `open`        | `open <refId\|selector>`      | Navigate/select in the host only. Never sends or mutates.           |
+| Command       | Usage                          | Notes                                                               |
+| ------------- | ------------------------------ | ------------------------------------------------------------------- |
+| `outline`     | `outline`                      | Structure of the document/workbook. Not available in Outlook/Teams. |
+| `read`        | `read <selector>`              | Excel: an addressable range. Others: whole or current section.      |
+| `search`      | `search <text>`                | Find content containing the text.                                   |
+| `list`        | `list [kind]`                  | List addressable context refs. `kind` is optional.                  |
+| `inspect`     | `inspect <refId\|selector>`    | Resolve one context ref or selector into readable content.          |
+| `properties`  | `properties <refId\|selector>` | Return safe metadata: id, kind, title, locator, host ref.           |
+| `comments`    | `comments [selector]`          | List comment refs, optionally scoped near a selector.               |
+| `attachments` | `attachments [selector]`       | List attachment refs, optionally scoped near a selector.            |
+| `tables`      | `tables [selector]`            | List table/range refs, optionally scoped near a selector.           |
+| `slides`      | `slides [selector]`            | List slide refs, optionally scoped near a selector.                 |
+| `neighbors`   | `neighbors [refId\|selector]`  | Show nearby context refs around a target.                           |
+| `context`     | `context [hints]`              | Ask the host for context/upload/code-execution strategy. Read-only. |
+| `open`        | `open <refId\|selector>`       | Navigate/select in the host only. Never sends or mutates.           |
 
 Context kinds accepted by `list`: `selection`, `range`, `comment`, `slide`, `message`,
 `attachment`, `table`, `paragraph`, `shape`, `page`, `transcript`, `file`, `reference`.
@@ -70,12 +70,12 @@ the local workbench for large reads, derived notes, chart data, markdown tables,
 handoff packets. They are **not host writes**: they do not mutate Office content, upload files, run
 code, send messages, or approve later effects.
 
-| Command     | Usage                                                                 | Notes |
-| ----------- | --------------------------------------------------------------------- | ----- |
-| `workspace` | `workspace [name\|ws:id]`                                             | List artifacts, or summarize one artifact by name/id. |
-| `save`      | `save <name> = read <selector>`                                       | Save a bounded rendered read/search/outline/pipeline/literal output. |
-| `cat`       | `cat <name\|ws:id> [head=N]`                                          | Preview the first N lines of an artifact. |
-| `grep`      | `grep <name\|ws:id> "pattern" [context=N]`                            | Search an artifact locally and return compact line matches. |
+| Command     | Usage                                      | Notes                                                                |
+| ----------- | ------------------------------------------ | -------------------------------------------------------------------- |
+| `workspace` | `workspace [name\|ws:id]`                  | List artifacts, or summarize one artifact by name/id.                |
+| `save`      | `save <name> = read <selector>`            | Save a bounded rendered read/search/outline/pipeline/literal output. |
+| `cat`       | `cat <name\|ws:id> [head=N]`               | Preview the first N lines of an artifact.                            |
+| `grep`      | `grep <name\|ws:id> "pattern" [context=N]` | Search an artifact locally and return compact line matches.          |
 
 Accepted `save` sources:
 
@@ -122,7 +122,7 @@ that support it (see [capability-map.md](capability-map.md)).
 | `table`   | create a table     | Excel       | `table <range> [headers] [name=NAME]` — promote a range to a native Table                             |
 | `chart`   | insert a chart     | Excel       | `chart <type> <range> [title="…"] [series=rows\|columns]` — types: `column bar line pie scatter area` |
 | `cf`      | conditional format | Excel       | `cf <range> >VALUE [fill=#hex]` · `cf <range> databar\|colorscale` · `cf <range> top=N`               |
-| `shape`   | replace shape text | PowerPoint  | `shape <pp:shape:slideId:shapeId> "new text"`                                                        |
+| `shape`   | replace shape text | PowerPoint  | `shape <pp:shape:slideId:shapeId> "new text"`                                                         |
 | `spill`   | write a table grid | Excel       | `spill <range> = (<table expr>)` — write a composed table as a cell grid                              |
 
 PowerPoint generated-deck import is a client-staged artifact path: the host compiles a bounded
@@ -131,9 +131,9 @@ approval. Do not ask the model to write raw PPTX base64 in the CLI.
 
 ## Control commands
 
-| Command | Meaning                      |
-| ------- | ---------------------------- |
-| `done`  | The whole task is complete.  |
+| Command | Meaning                                                                  |
+| ------- | ------------------------------------------------------------------------ |
+| `done`  | The whole task is complete.                                              |
 | `help`  | List available commands, or `help <command>` for one generated playbook. |
 
 `<command> -h` and `<command> --help` are aliases for `help <command>`. Use targeted help before
@@ -197,7 +197,7 @@ Rules:
 - Use `set` for one scalar cell.
 - Use `spill` when the grid comes from a composed table expression, not literal generated data.
 - For very large, algorithmic, or file-derived grids, ask `context analytical full-scope
-  upload-preferred code-execution-preferred` first and wait for structured host context.
+upload-preferred code-execution-preferred` first and wait for structured host context.
 
 ### The table → grid sink (Excel): analyze → shape → materialize → visualize
 

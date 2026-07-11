@@ -51,13 +51,13 @@ Advanced Office.js actions are slash capabilities, not core algebra. Use them on
 surface advertises the exact kind or live help exposes it; otherwise fail closed or use an equivalent
 core command if it is genuinely equivalent and within scope.
 
-| Capability | Use when | Guardrail |
-| ---------- | -------- | --------- |
-| `/insert-pivot` | create a native pivot from a confirmed table/range | read/properties the source first; if grouping or measures require workbook-scale analysis, request `context analytical ... code-execution-preferred` before emitting |
-| `/sort-range` | reorder an existing worksheet range in place | do not use for derived top-N reports; use pure `sort | head | spill` when the source must remain untouched |
-| `/filter-range` | apply a native worksheet filter/view to an existing range | do not substitute for pure `filter` when the user asked for an extracted report |
-| `/manage-worksheet` | add, rename, move, hide, protect, or delete sheets | confirm exact sheet identity/name from `list`/`properties`; destructive or ambiguous sheet changes fail closed |
-| `/format-chart` | change an existing chart's style, axes, labels, colors, or data binding | resolve the chart object/range first; if no chart exists, use `chart` to create one instead of formatting a guessed target |
+| Capability          | Use when                                                                | Guardrail                                                                                                                                                            |
+| ------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | -------------------------------------------- |
+| `/insert-pivot`     | create a native pivot from a confirmed table/range                      | read/properties the source first; if grouping or measures require workbook-scale analysis, request `context analytical ... code-execution-preferred` before emitting |
+| `/sort-range`       | reorder an existing worksheet range in place                            | do not use for derived top-N reports; use pure `sort                                                                                                                 | head | spill` when the source must remain untouched |
+| `/filter-range`     | apply a native worksheet filter/view to an existing range               | do not substitute for pure `filter` when the user asked for an extracted report                                                                                      |
+| `/manage-worksheet` | add, rename, move, hide, protect, or delete sheets                      | confirm exact sheet identity/name from `list`/`properties`; destructive or ambiguous sheet changes fail closed                                                       |
+| `/format-chart`     | change an existing chart's style, axes, labels, colors, or data binding | resolve the chart object/range first; if no chart exists, use `chart` to create one instead of formatting a guessed target                                           |
 
 Slash commands are effect terminals: they do not pipe, do not produce table values, and count toward
 the approval/effect budget. If a slash kind is absent, stale, or unsupported, do not approximate it by

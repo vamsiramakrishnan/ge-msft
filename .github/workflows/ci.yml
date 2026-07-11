@@ -41,6 +41,14 @@ jobs:
           cache: pip
           cache-dependency-path: skill/requirements.txt
       - run: pip install -r skill/requirements.txt
+      # The zips are gitignored build artifacts (skill/**/*.zip) that test_tooling.py's
+      # HTTP-hardening/upload tests read from disk — build them fresh, same as
+      # scripts/update-ge-widget-skills.sh's own "Rebuild skill zips" step does locally.
+      - name: build skill zips
+        working-directory: skill
+        run: |
+          ./build_zip.sh m365-command-planner
+          ./build_zip.sh m365-surface-commander
       # Catches the same drift `bun run skills:check` catches locally, BEFORE it reaches a
       # workstation running `bun run ge:skills` against a stale checkout.
       - name: resource indexes are not stale

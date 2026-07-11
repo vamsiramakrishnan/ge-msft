@@ -38,6 +38,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: skill/requirements.txt
+      - run: pip install -r skill/requirements.txt
       # Catches the same drift `bun run skills:check` catches locally, BEFORE it reaches a
       # workstation running `bun run ge:skills` against a stale checkout.
       - name: resource indexes are not stale

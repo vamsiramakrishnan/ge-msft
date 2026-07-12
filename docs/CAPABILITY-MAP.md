@@ -140,18 +140,23 @@ just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
    (`slide`/`page`/`mail`/`post`/`compose`), and every text-bearing effect verb is
    composition-bearing (ADR-0005 expressions in the free-text slot). The remaining write frontier is
    not *more verbs* but **deeper host operations** per surface (Word styles/headers/revisions,
-   richer PowerPoint object creation/formatting, Outlook calendar/tasks) and **cross-surface composition** (a multi-bridge router so a
-   value read on one surface can be written on another — today an `AssistSession` owns one bridge;
-   live cross-surface needs Graph/the research unit because each add-in instance runs in one host).
-3. **Estate writes.** Reads are first-class (`@ge/graph-client`); Graph/SharePoint *writes*
-   (send mail, create event, upload/checkout) are modeled but not wired.
+   richer PowerPoint object creation/formatting, Outlook calendar/tasks) and **live cross-surface
+   composition** (a multi-bridge router so one session could read on one surface and write on another
+   *within the same turn* — today an `AssistSession` owns one bridge). The `share <name> = <source>`
+   verb + `/shared` DocFs mount cover the async, name-based version of this instead: a value shared
+   from one surface's session is `cat`-able by name from another surface's *separate* session, via a
+   Microsoft Graph app-folder handoff, not a live in-turn router.
+3. **Estate writes.** Reads are first-class (`@ge/graph-client`); the first write, `share`/`/shared`
+   (the cross-surface handoff store above), is live — fail-closed, approval-gated, provenanced.
+   Everything else (send mail, create event, upload/checkout) is still modeled but not wired.
 4. **Engine paths unbuilt:** the A2UI renderer. `addContextFile` client support exists; live host UX
    still needs the explicit attach/upload affordance.
 5. **Per-capability detection.** Host detection is built; the per-capability intersection gate from
    ADR-0002 is not.
 
 Net: **All six surface bridges (Word/Excel/PowerPoint/OneNote/Outlook/Teams) have a truthful,
-conformance-enforced read+write set, every write verb is CLI-reachable and composition-bearing, and
-the estate read/search path is live via `@ge/graph-client`.** The remaining holes are the sideload
-shell + live-host validation, cross-surface composition, deeper per-surface host operations, estate
-writes, and the two engine extras.
+conformance-enforced read+write set, every write verb is CLI-reachable and composition-bearing, the
+estate read/search path is live via `@ge/graph-client`, and the first estate write (`share`/`/shared`,
+async cross-surface handoff) is live and approval-gated.** The remaining holes are the sideload
+shell + live-host validation, *live* (same-turn) cross-surface composition, deeper per-surface host
+operations, the rest of estate writes, and the two engine extras.

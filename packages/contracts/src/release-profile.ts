@@ -29,7 +29,14 @@ export const ReleaseProfileSchema = z.object({
   enabledActuations: z.record(SurfaceSchema, z.array(ActuationKindSchema)),
   durableProvenanceRequired: z.boolean(),
   crossSurfacePlans: z.literal(false),
-  estateWrites: z.literal(false),
+  /**
+   * Whether this profile permits `share`/`/shared` (the cross-surface Graph-backed handoff
+   * store — the first estate write, see `AssistSessionOptions.estateWritesEnabled`).
+   * `packages/web-shell/src/compose.ts` reads this directly: `estateWritesEnabled` is `true`
+   * only when BOTH a `sharedStore` is wired AND this flag is `true` for the active profile —
+   * so this is a real, enforced tenant/deployment lever, not decorative.
+   */
+  estateWrites: z.boolean(),
   arbitraryCodeExecution: z.literal(false),
 });
 export type ReleaseProfile = z.infer<typeof ReleaseProfileSchema>;
@@ -50,7 +57,7 @@ export const INTERNAL_ALPHA_WORD_EXCEL_PROFILE: ReleaseProfile = {
   },
   durableProvenanceRequired: true,
   crossSurfacePlans: false,
-  estateWrites: false,
+  estateWrites: true,
   arbitraryCodeExecution: false,
 };
 
@@ -68,7 +75,7 @@ export const DEVELOPMENT_PROFILE: ReleaseProfile = {
   },
   durableProvenanceRequired: false,
   crossSurfacePlans: false,
-  estateWrites: false,
+  estateWrites: true,
   arbitraryCodeExecution: false,
 };
 

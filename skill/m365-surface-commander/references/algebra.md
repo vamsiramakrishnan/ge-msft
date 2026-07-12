@@ -16,14 +16,14 @@ teaches the _types and laws_, the signature is _authoritative_.
 
 ## Values
 
-| Type       | What it is                                          | Where it comes from                           |
-| ---------- | --------------------------------------------------- | --------------------------------------------- |
-| `Table`    | rows × named columns                                | `read` of a range; any pure transform         |
-| `Number`   | one scalar number                                   | `sum`/`avg`/`min`/`max`/`count` of a column   |
-| `Text`     | one string                                          | a cell/selection read; a literal              |
-| `Boolean`  | true/false                                          | a predicate                                   |
-| `Selector` | an address that names where to read (`Sales!A1:G9`) | you write it; never invent one                |
-| `RangeRef` | a concrete written range (`Report!A1:B11`)          | computed from a `spill`'s origin × table size |
+| Type          | What it is                                                  | Where it comes from                           |
+| ------------- | ----------------------------------------------------------- | --------------------------------------------- |
+| `Table`       | rows × named columns                                        | `read` of a range; any pure transform         |
+| `Number`      | one scalar number                                           | `sum`/`avg`/`min`/`max`/`count` of a column   |
+| `Text`        | one string                                                  | a cell/selection read; a literal              |
+| `Boolean`     | true/false                                                  | a predicate                                   |
+| `Selector`    | an address that names where to read (`Sales!A1:G9`)         | you write it; never invent one                |
+| `RangeRef`    | a concrete written range (`Report!A1:B11`)                  | computed from a `spill`'s origin × table size |
 | `ArtifactRef` | a bounded local workspace snapshot (`schedule.tsv`, `ws:1`) | `save`; inspect with `workspace`/`cat`/`grep` |
 
 You **cannot see content until you read it.** A `Selector` is a promise of where data is; a `Table`

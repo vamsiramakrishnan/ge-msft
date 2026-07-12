@@ -28,6 +28,7 @@ import { ProposalCard } from './ProposalCard.js';
 import { RunSteps } from './RunSteps.js';
 import { WriteApprovalCard } from './WriteApprovalCard.js';
 import { PlanApprovalCard } from './PlanApprovalCard.js';
+import { ShareApprovalCard } from './ShareApprovalCard.js';
 import { CommandPlanCard } from './CommandPlanCard.js';
 import { PlanClarificationCard } from './PlanClarificationCard.js';
 import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
@@ -249,7 +250,7 @@ export function App({
   // either way so its default routing still loads on open.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const hasBlockingGate = Boolean(
-    state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite,
+    state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite ?? state.pendingShare,
   );
   const actionBlocked = state.busy || hasBlockingGate;
   const primaryActions = useMemo(
@@ -462,6 +463,12 @@ export function App({
             pending={state.pendingWrite}
             onApprove={() => controller.approvePendingWrite()}
             onReject={() => controller.rejectPendingWrite()}
+          />
+
+          <ShareApprovalCard
+            pending={state.pendingShare}
+            onApprove={() => controller.approvePendingShare()}
+            onReject={() => controller.rejectPendingShare()}
           />
         </section>
       )}

@@ -161,13 +161,18 @@ DOCUMENTED_CONTROL_VERBS = {"done", "help"}
 
 
 def _documented_verbs() -> set:
-    """Extract the verb set from capability-map.md: the read columns,
+    """Extract the verb set from capability-map.md: the read columns, the workspace-verb prose,
     every `\\`verb\\`` named in the Writes table's first column, plus the control verbs."""
     cap_map = HERE / "m365-surface-commander" / "references" / "capability-map.md"
     text = cap_map.read_text(encoding="utf-8")
     verbs = set(DOCUMENTED_CONTROL_VERBS)
     # Read verbs are referenced inline in the read table and read-body prose.
     for v in sorted(parse_commands.READ_VERBS):
+        if f"`{v}`" in text:
+            verbs.add(v)
+    # Workspace verbs (local /work + the /shared estate write) are documented as prose, not a
+    # table — same simple backtick-mention check as read verbs above.
+    for v in sorted(parse_commands.WORKSPACE_VERBS):
         if f"`{v}`" in text:
             verbs.add(v)
     # Write verbs: rows of the Writes table begin with `| \`<verb>\``.
@@ -195,7 +200,12 @@ def _check_manifest_parity() -> list:
         print("  [manifest] note: bundled manifest absent — parser on hardcoded fallback")
         return failures
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest_all = set(data["verbs"]["read"]) | set(data["verbs"]["control"]) | set(data["verbs"]["write"])
+    manifest_all = (
+        set(data["verbs"]["read"])
+        | set(data["verbs"]["control"])
+        | set(data["verbs"]["write"])
+        | set(data["verbs"]["workspace"])
+    )
     manifest_write = set(data["verbs"]["write"])
 
     # 1. parser ≡ manifest (guards the loader + that the fallback never silently diverges).
@@ -208,7 +218,12 @@ def _check_manifest_parity() -> list:
         failures.append(f"  [manifest] write verbs without a parse arm: "
                         f"{sorted(manifest_write - parse_commands.HANDLED_WRITE_VERBS)}")
     # 3. doc ≡ manifest (the human capability-map matches the generated source).
-    doc_write = _documented_verbs() - DOCUMENTED_CONTROL_VERBS - set(parse_commands.READ_VERBS)
+    doc_write = (
+        _documented_verbs()
+        - DOCUMENTED_CONTROL_VERBS
+        - set(parse_commands.READ_VERBS)
+        - set(parse_commands.WORKSPACE_VERBS)
+    )
     if doc_write != manifest_write:
         failures.append(f"  [manifest] capability-map writes != manifest writes: "
                         f"doc-only {sorted(doc_write - manifest_write)}, "

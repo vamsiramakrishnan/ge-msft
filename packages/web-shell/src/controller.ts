@@ -26,7 +26,7 @@ import {
   type WorkspaceResult,
 } from '@ge/runtime';
 import type { HostEvent } from '@ge/triggers';
-import { ProvenanceStore, type ChangeRecord } from './provenance-store.js';
+import { ProvenanceStore, type ChangeRecord, type ShareRecord } from './provenance-store.js';
 import { renderCommandLine } from './render-command.js';
 import { assertNever } from './assert-never.js';
 import { TurnQueue } from './turn-queue.js';
@@ -65,6 +65,8 @@ export interface EffectDryRun {
 export type ApprovePlan = NonNullable<RunCommandsOptions['approvePlan']>;
 /** The per-write approver type — the CANONICAL runtime option (Finding #6: not redeclared here). */
 type ApproveWrite = NonNullable<RunCommandsOptions['approveWrite']>;
+/** The per-share (estate write) approver type — the CANONICAL runtime option. */
+type ApproveShare = NonNullable<RunCommandsOptions['approveShare']>;
 
 /** Direct pasted CLI is user-authored and fully previewed, so it can stage larger exact programs. */
 const DIRECT_COMMAND_LIMIT = 128;
@@ -268,6 +270,35 @@ export interface PendingWrite {
   command: string;
 }
 
+/** Preview lines shown on the share approval card before the content is truncated (`…`). */
+const SHARE_PREVIEW_LINES = 24;
+/** `sourceLabel` is model/document-controlled (a `read`/`search` selector or literal echo) — cap it
+ *  defensively so it can't grow into a wall of untrusted text on the approval card. */
+const SHARE_SOURCE_LABEL_MAX = 200;
+
+/**
+ * A pending `share` awaiting the user's decision — the estate-write fail-closed gate
+ * (`AssistSessionOptions.estateWritesEnabled` + `RunCommandsOptions.approveShare`, see
+ * `@ge/runtime`). Unlike `PendingWrite`, this never actuates Office content: approving it persists
+ * the runtime's already-capped `text` (see `bytes`/`truncated`) to the user's own Microsoft Graph
+ * app folder, readable back by every other surface's session — `preview` is only this card's OWN
+ * display slice of that same (already-capped) content, never a different, larger payload.
+ */
+export interface PendingShare {
+  /** The artifact name the content will be written under in `/shared`. */
+  name: string;
+  /** What produced the content (`read Sales!A1:D50`, `outline`, `"literal"`, …) — untrusted, capped. */
+  sourceLabel: string;
+  /** Total size, in bytes, of what will actually be written (post-runtime-cap, pre-card-preview). */
+  bytes: number;
+  /** The runtime capped the content from a larger source before it ever reached this card. */
+  truncated: boolean;
+  /** This card's own line-limited display slice of `text` — always ≤ the full written content. */
+  preview: string;
+  /** Whether `preview` itself was cut short of the (already `truncated`-capped) written content. */
+  previewTruncated: boolean;
+}
+
 /**
  * A composed plan awaiting the user's ONE plan-level decision (ADR-0005 §3). The runtime has
  * type-checked the plan and dry-run it (reads + pure transforms, no writes) and emitted the full
@@ -376,12 +407,16 @@ export interface PanelState {
   suggestions: Suggestion[];
   proposals: Proposal[];
   changes: ChangeRecord[];
+  /** `share` (estate write) audit records — the `/shared` analog of `changes` (see `ShareRecord`). */
+  shares: ShareRecord[];
   /** The command-loop transcript (ADR-0004 read-many/write-one steps). */
   steps: RunStep[];
   /** The single write awaiting approval, if the loop is currently gated on the user (ADR-0004). */
   pendingWrite?: PendingWrite;
   /** The composed plan awaiting ONE plan-level approval, if the loop is gated on it (ADR-0005). */
   pendingPlan?: PendingPlan;
+  /** The `share` (estate write) awaiting approval, if the loop is currently gated on it. */
+  pendingShare?: PendingShare;
   /**
    * The planner's high-level {@link CommandPlan} awaiting the user's confirm before the executor runs
    * (EXPERIENCE.md §F — the complex-free-text front door). Distinct from `pendingPlan`.
@@ -418,6 +453,7 @@ const EMPTY_STATE: PanelState = {
   suggestions: [],
   proposals: [],
   changes: [],
+  shares: [],
   steps: [],
   availableAgents: [],
   availableDataStores: [],
@@ -452,13 +488,14 @@ export class PanelController {
    */
   private readonly turnQueue = new TurnQueue();
   /**
-   * The fail-closed approval state machine (E-full): owns the per-write changeId + the two resolver
-   * promises the loop awaits (Finding #6). The `pendingWrite`/`pendingPlan` VIEW slice stays in
-   * `PanelState`, pushed here via the `set` callbacks below.
+   * The fail-closed approval state machine (E-full): owns the per-write changeId + the resolver
+   * promises the loop awaits (Finding #6). The `pendingWrite`/`pendingPlan`/`pendingShare` VIEW slice
+   * stays in `PanelState`, pushed here via the `set` callbacks below.
    */
   private readonly approvals = new ApprovalCoordinator(
     (write) => this.set({ pendingWrite: write }),
     (plan) => this.set({ pendingPlan: plan }),
+    (share) => this.set({ pendingShare: share }),
   );
 
   constructor(
@@ -813,10 +850,23 @@ export class PanelController {
     const approvePlan: ApprovePlan = (effects) =>
       this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
 
+    // The `share` (estate write) approver — a separate gate from `approveWrite`/`approvePlan`
+    // since it never actuates Office content via `bridge.actuate()` (ADR-0008 distinct-approval-
+    // authorities: the `/shared` write is a different authority than an in-document change).
+    const approveShare: ApproveShare = ({ name, text, bytes, truncated, sourceLabel }) =>
+      this.approvals.awaitShare({
+        name,
+        bytes,
+        truncated,
+        sourceLabel: truncateSourceLabel(sourceLabel),
+        ...sharePreview(text),
+      });
+
     const opts: RunCommandsOptions = {
       signal: controller.signal,
       approveWrite,
       approvePlan,
+      approveShare,
       ...(grounding ? { grounding } : {}),
     };
 
@@ -839,7 +889,7 @@ export class PanelController {
       this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
-      this.set({ busy: false, changes: this.store.list() });
+      this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
       this.drainPendingTurn();
     }
   }
@@ -872,10 +922,19 @@ export class PanelController {
       );
     const approvePlan: ApprovePlan = (effects) =>
       this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
+    const approveShare: ApproveShare = ({ name, text, bytes, truncated, sourceLabel }) =>
+      this.approvals.awaitShare({
+        name,
+        bytes,
+        truncated,
+        sourceLabel: truncateSourceLabel(sourceLabel),
+        ...sharePreview(text),
+      });
     const opts: RunCommandsOptions = {
       signal: controller.signal,
       approveWrite,
       approvePlan,
+      approveShare,
       maxCommandsPerTurn: DIRECT_COMMAND_LIMIT,
       maxWritesPerTurn: DIRECT_COMMAND_LIMIT,
     };
@@ -902,7 +961,7 @@ export class PanelController {
       this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
-      this.set({ busy: false, changes: this.store.list() });
+      this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
       this.drainPendingTurn();
     }
   }
@@ -969,6 +1028,20 @@ export class PanelController {
             artifact ? workspaceStepText(ev.result) : `read ${ev.intentLabel}`,
             artifact,
           );
+          // A successful `share` is an estate write — record it on the same audit surface as
+          // in-document changes (Convention #5: no silent or unattributed writes), stamped with
+          // the SAME turn-scoped provenance the runtime attempted (never a leftover/ambient one).
+          if (isWorkspaceResult(ev.result) && ev.result.workspace === 'share') {
+            this.store.recordShare(
+              {
+                name: ev.result.name,
+                bytes: ev.result.bytes,
+                sourceLabel: truncateSourceLabel(ev.result.sourceLabel),
+                truncated: ev.result.truncated,
+              },
+              this.currentTurnProvenance,
+            );
+          }
         }
         return;
       case 'plan-preview':
@@ -1029,6 +1102,19 @@ export class PanelController {
   /** Reject the staged plan — resolves `approvePlan` with `false`; the WHOLE plan is blocked. */
   rejectPlan(): void {
     this.approvals.rejectPlan();
+  }
+
+  /**
+   * Approve the staged `share` (estate write) — resolves the loop's `approveShare` with `true`, so
+   * the runtime persists the content to `/shared` and stamps its provenance companion file.
+   */
+  approvePendingShare(): void {
+    this.approvals.approveShare();
+  }
+
+  /** Reject the staged share — resolves `approveShare` with `false`; nothing is written. */
+  rejectPendingShare(): void {
+    this.approvals.rejectShare();
   }
 
   private addStep(kind: RunStep['kind'], text: string, artifact?: RunStepArtifact): void {
@@ -1316,6 +1402,24 @@ function renderSkillCall(skill: Skill, args: Record<string, string>): string {
 }
 
 /**
+ * Cap the runtime-already-capped share content down to a card-sized display slice. This never
+ * changes what gets WRITTEN (that's `bytes`/`truncated` on `PendingShare`, set from the runtime's
+ * own cap) — only how much of it this card shows the user before they approve.
+ */
+function sharePreview(text: string): { preview: string; previewTruncated: boolean } {
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= SHARE_PREVIEW_LINES) return { preview: text, previewTruncated: false };
+  return { preview: lines.slice(0, SHARE_PREVIEW_LINES).join('\n'), previewTruncated: true };
+}
+
+/** Defensively cap an untrusted (model/document-controlled) label before it reaches the card. */
+function truncateSourceLabel(label: string): string {
+  return label.length > SHARE_SOURCE_LABEL_MAX
+    ? `${label.slice(0, SHARE_SOURCE_LABEL_MAX)}…`
+    : label;
+}
+
+/**
  * A one-line count summary of a plan's effect-set for the preview header, e.g. "3 writes + 2
  * comments". Groups by a human label for each `ActuationRequest.kind` and pluralizes. Pure/total —
  * an empty set degrades to "no effects" rather than rendering an empty header.
@@ -1377,7 +1481,9 @@ function workspaceStepText(result: unknown): string {
     case 'rm':
       return `deleted ${result.name}`;
     case 'share':
-      return `shared ${result.name} · ${formatBytes(result.bytes)}`;
+      return `shared ${result.name} · ${formatBytes(result.bytes)}${
+        result.provenanceMissing ? ' (⚠ unattributed — no provenance)' : ''
+      }`;
     case 'error':
       return `workspace error: ${result.error}`;
   }
@@ -1416,7 +1522,15 @@ function workspaceStepArtifact(result: unknown): RunStepArtifact | undefined {
     case 'rm':
       return { title: `deleted ${result.name}`, meta: [] };
     case 'share':
-      return { title: `shared/${result.name}`, meta: [formatBytes(result.bytes)] };
+      return {
+        title: `shared/${result.name}`,
+        meta: [
+          formatBytes(result.bytes),
+          `source: ${truncateSourceLabel(result.sourceLabel)}`,
+          ...(result.truncated ? ['truncated'] : []),
+          ...(result.provenanceMissing ? ['⚠ unattributed'] : []),
+        ],
+      };
     case 'error':
       return { title: 'Workspace error', meta: [result.error] };
   }
@@ -1430,7 +1544,10 @@ function artifactMeta(artifact: WorkspaceArtifactSummary): string[] {
   return [
     `${artifact.kind} · ${artifact.mimeType}`,
     `${artifact.lineCount} line${artifact.lineCount === 1 ? '' : 's'} · ${formatBytes(artifact.bytes)}`,
-    `source: ${artifact.sourceLabel}`,
+    // `sourceLabel` traces back to the same untrusted `resolveWorkspaceSource` origin `share` reads
+    // from (a `search`/`read` selector can echo document/transcript-influenced text) — cap it here
+    // too, not just on the `share` paths, so no workspace verb's transcript can grow unbounded.
+    `source: ${truncateSourceLabel(artifact.sourceLabel)}`,
     ...(artifact.truncated ? ['truncated'] : []),
   ];
 }

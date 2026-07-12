@@ -62,7 +62,13 @@ type CommandAction =
    * card + the staged id), then stage write `second` and BLOCK awaiting its decision — so a test can
    * fire a LATE decision carrying `first`'s id at a card now showing `second` (Finding #6: ignored).
    */
-  | { supersede: { first: ActuationRequest; second: ActuationRequest } };
+  | { supersede: { first: ActuationRequest; second: ActuationRequest } }
+  /**
+   * Stage a `share` (estate write), await its own `approveShare` decision, and narrate the outcome
+   * as a `read-result` — mirroring how `runWorkspaceIntent`'s `share` case actually behaves (no
+   * separate later `write-result`-style event; the write happens synchronously right after approval).
+   */
+  | { share: { name: string; text: string; sourceLabel: string; truncated?: boolean } };
 
 const ev = (event: SseEvent | CommandLoopEvent): CommandAction => ({ event });
 
@@ -198,6 +204,15 @@ class FakeAssist implements AssistLike {
   /** The plan effect-sets passed to `approvePlan` and the decisions returned, for assertions. */
   planCalls: PlanEffect[][] = [];
   planResults: boolean[] = [];
+  /** The share inputs passed to `approveShare` and the decisions returned, for assertions. */
+  shareCalls: Array<{
+    name: string;
+    text: string;
+    bytes: number;
+    truncated: boolean;
+    sourceLabel: string;
+  }> = [];
+  shareResults: boolean[] = [];
   async *runCommands(
     task: string,
     opts?: PlanRunCommandsOptions,
@@ -285,6 +300,34 @@ class FakeAssist implements AssistLike {
             };
           }
         }
+      } else if ('share' in action) {
+        const input = action.share;
+        const truncated = input.truncated ?? false;
+        const approveInput = {
+          name: input.name,
+          text: input.text,
+          bytes: input.text.length,
+          truncated,
+          sourceLabel: input.sourceLabel,
+        };
+        this.shareCalls.push(approveInput);
+        const approved = opts?.approveShare ? await opts.approveShare(approveInput) : false;
+        this.shareResults.push(approved);
+        const result = approved
+          ? {
+              workspace: 'share',
+              name: input.name,
+              bytes: input.text.length,
+              sourceLabel: input.sourceLabel,
+              truncated,
+            }
+          : { workspace: 'error', error: 'share requires user approval (none granted)' };
+        yield {
+          type: 'read-result',
+          turn: 1,
+          intentLabel: `share ${input.name}`,
+          result,
+        } as unknown as CommandLoopEvent;
       } else {
         yield action.event;
       }
@@ -721,7 +764,13 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
         type: 'read-result',
         turn: 1,
         intentLabel: 'share schedule.tsv',
-        result: { workspace: 'share', name: 'schedule.tsv', bytes: 1200 },
+        result: {
+          workspace: 'share',
+          name: 'schedule.tsv',
+          bytes: 1200,
+          sourceLabel: "read 'Daily schedule'!B3:I53",
+          truncated: false,
+        },
       } as unknown as CommandLoopEvent),
     ];
     const c = new PanelController(assist, lister([]));
@@ -730,7 +779,179 @@ describe('PanelController — command loop (ADR-0004 human-in-the-loop)', () => 
 
     const step = c.getState().steps.at(-1);
     expect(step?.text).toBe('shared schedule.tsv · 1.2 KB');
-    expect(step?.artifact).toMatchObject({ title: 'shared/schedule.tsv', meta: ['1.2 KB'] });
+    expect(step?.artifact).toMatchObject({
+      title: 'shared/schedule.tsv',
+      meta: ['1.2 KB', "source: read 'Daily schedule'!B3:I53"],
+    });
+  });
+
+  it('flags an unattributed share (no provenance) on both the step text and artifact meta', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'share note.txt',
+        result: {
+          workspace: 'share',
+          name: 'note.txt',
+          bytes: 5,
+          sourceLabel: '"hi"',
+          truncated: false,
+          provenanceMissing: true,
+        },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('share without provenance');
+
+    const step = c.getState().steps.at(-1);
+    expect(step?.text).toContain('⚠ unattributed — no provenance');
+    expect(step?.artifact?.meta).toContain('⚠ unattributed');
+  });
+
+  it('records an approved share on the audit ledger (state.shares), stamped with turn provenance', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'provenance', payload: PROV_A }),
+      ev({
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'share schedule.tsv',
+        result: {
+          workspace: 'share',
+          name: 'schedule.tsv',
+          bytes: 1200,
+          sourceLabel: 'outline',
+          truncated: false,
+        },
+      } as unknown as CommandLoopEvent),
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    await c.runCommands('share schedule');
+
+    expect(c.getState().shares).toEqual([
+      expect.objectContaining({
+        name: 'schedule.tsv',
+        bytes: 1200,
+        sourceLabel: 'outline',
+        truncated: false,
+        provenance: PROV_A,
+      }),
+    ]);
+  });
+
+  it('stages a share as pending and writes only after approvePendingShare() (resolves true)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    // Don't await: the loop blocks on the pending-share decision.
+    const run = c.runCommands('share the schedule');
+    await tick();
+
+    const pending = c.getState().pendingShare;
+    expect(pending).toMatchObject({
+      name: 'schedule.tsv',
+      sourceLabel: 'read Sales!A1:B2',
+      bytes: 7,
+      truncated: false,
+      preview: 'a\tb\n1\t2',
+      previewTruncated: false,
+    });
+    expect(assist.shareResults).toEqual([]); // decision not made yet
+    expect(c.getState().busy).toBe(true);
+
+    c.approvePendingShare();
+    await run;
+
+    expect(assist.shareResults).toEqual([true]);
+    expect(c.getState().pendingShare).toBeUndefined();
+    const shareStep = c.getState().steps.find((s) => s.text.startsWith('shared '));
+    expect(shareStep?.text).toBe('shared schedule.tsv · 7 B');
+    expect(c.getState().busy).toBe(false);
+  });
+
+  it('defensively truncates an oversized (untrusted, model-controlled) sourceLabel before staging', async () => {
+    const assist = new FakeAssist();
+    const hostile = `search ${'x'.repeat(500)}`;
+    assist.commandScript = [{ share: { name: 'note.txt', text: 'hi', sourceLabel: hostile } }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share with a hostile source label');
+    await tick();
+
+    const pending = c.getState().pendingShare;
+    expect(pending?.sourceLabel.length).toBeLessThan(hostile.length);
+    expect(pending?.sourceLabel.endsWith('…')).toBe(true);
+
+    c.rejectPendingShare();
+    await run;
+  });
+
+  it('caps sourceLabel on the audit ledger AND the transcript step artifact, not just the pending card', async () => {
+    const assist = new FakeAssist();
+    const hostile = `search ${'x'.repeat(500)}`;
+    assist.commandScript = [{ share: { name: 'note.txt', text: 'hi', sourceLabel: hostile } }];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share with a hostile source label');
+    await tick();
+    c.approvePendingShare();
+    await run;
+
+    const share = c.getState().shares.at(-1);
+    expect(share?.sourceLabel.length).toBeLessThan(hostile.length);
+    expect(share?.sourceLabel.endsWith('…')).toBe(true);
+
+    const step = c
+      .getState()
+      .steps.filter((s) => s.kind === 'read-result')
+      .at(-1);
+    const meta = step?.artifact?.meta.find((m) => m.startsWith('source: '));
+    expect(meta?.length).toBeLessThan(hostile.length);
+  });
+
+  it('rejectPendingShare() resolves false: nothing is written and the card clears', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share the schedule');
+    await tick();
+    expect(c.getState().pendingShare?.name).toBe('schedule.tsv');
+
+    c.rejectPendingShare();
+    await run;
+
+    expect(assist.shareResults).toEqual([false]);
+    expect(c.getState().pendingShare).toBeUndefined();
+    const errorStep = c.getState().steps.find((s) => s.text.includes('workspace error'));
+    expect(errorStep?.text).toContain('requires user approval');
+  });
+
+  it('cancel() while gated on a share releases fail-closed (rejects the pending share)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { share: { name: 'schedule.tsv', text: 'a\tb\n1\t2', sourceLabel: 'read Sales!A1:B2' } },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    const run = c.runCommands('share the schedule');
+    await tick();
+    expect(c.getState().pendingShare).toBeDefined();
+
+    c.cancel();
+    await run;
+
+    expect(assist.shareResults).toEqual([false]);
+    expect(c.getState().pendingShare).toBeUndefined();
   });
 
   it('stages a write as pending and actuates only after approvePendingWrite() (resolves true)', async () => {

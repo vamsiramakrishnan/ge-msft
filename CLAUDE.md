@@ -63,7 +63,9 @@ lockstep with `packages/contracts` + `packages/runtime` (the TS side is authorit
 
 `web-shell` and `runtime` are the bulk of the client and are **surface-agnostic** — they must not
 contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*` and `teams/`,
-which are the ONLY code that touches Office.js / TeamsJS / Graph.
+which are the ONLY code that touches Office.js / TeamsJS. Microsoft Graph (Plane B / estate) is
+different: `graph-client` is its own surface-agnostic package, called directly from `web-shell`
+(not routed through a bridge) — see `graph-client/` below.
 
 ## Tech stack (decided — don't re-litigate without reason)
 

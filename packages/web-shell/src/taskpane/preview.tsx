@@ -86,6 +86,7 @@ function buildState(t: Toggles): PanelState {
     suggestions: t.suggestions ? FIXTURE_SUGGESTIONS : [],
     proposals: t.proposals ? FIXTURE_PROPOSALS : [],
     changes: [],
+    shares: [],
     steps: t.steps ? FIXTURE_STEPS : [],
     availableAgents: [],
     availableDataStores: [],

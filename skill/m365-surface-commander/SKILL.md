@@ -279,20 +279,20 @@ needs them, so you keep context small.
 
 **`references/` — read when you need exact detail:**
 
-| File                                                                             | Read it when…                                                                                                                                                            |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [references/resource-index.md](references/resource-index.md)                     | you need to choose the smallest relevant commander reference, pattern, or example to load                                                                                |
-| [references/algebra.md](references/algebra.md)                                   | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                        |
-| [references/composition-rules.md](references/composition-rules.md)               | you're composing more than a direct command — the operational laws + the composition decision procedure                                                                  |
-| [references/planning-normal-form.md](references/planning-normal-form.md)         | you're planning a multi-step program — the OBSERVE→DERIVE→EFFECT→VERIFY normal form and the six semantic break boundaries                                                |
-| [references/errors-and-recovery.md](references/errors-and-recovery.md)           | you got a corrective `error:` — the error families and how to repair each (typos, out-of-signature verbs, unbound vars, stale anchors, budget)                           |
-| [references/specialized-capabilities.md](references/specialized-capabilities.md) | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`         |
-| [references/command-grammar.md](references/command-grammar.md)                   | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                           |
-| [references/capability-map.md](references/capability-map.md)                     | you need the cross-surface table of which read/write commands each app supports and their limits                                                                         |
-| [references/generated-capability-catalog.md](references/generated-capability-catalog.md) | you need generated registry truth — implemented/promotable/catalog-only capability status, requirement sets, command mapping, and capability-specific use cases |
-| [references/generated-command-catalog.md](references/generated-command-catalog.md) | you need generated CLI truth — verb groups, write-verb actuation mapping, or the specialized slash-command surface |
-| [references/progressive-disclosure.md](references/progressive-disclosure.md)     | you're deciding how much host/context/file information to ask for before acting, especially from an approved planner handoff                                            |
-| `references/<surface>-semantics.md`                                              | load the ONE matching the active surface (excel / word / powerpoint / outlook / teams / onenote) for its reading/anchoring model, surface verbs + `/`-kinds, and gotchas |
+| File                                                                                     | Read it when…                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [references/resource-index.md](references/resource-index.md)                             | you need to choose the smallest relevant commander reference, pattern, or example to load                                                                                |
+| [references/algebra.md](references/algebra.md)                                           | you want the value algebra — the value types, the pure/effect operator signatures, and the type laws (`sort` before `head`, etc.)                                        |
+| [references/composition-rules.md](references/composition-rules.md)                       | you're composing more than a direct command — the operational laws + the composition decision procedure                                                                  |
+| [references/planning-normal-form.md](references/planning-normal-form.md)                 | you're planning a multi-step program — the OBSERVE→DERIVE→EFFECT→VERIFY normal form and the six semantic break boundaries                                                |
+| [references/errors-and-recovery.md](references/errors-and-recovery.md)                   | you got a corrective `error:` — the error families and how to repair each (typos, out-of-signature verbs, unbound vars, stale anchors, budget)                           |
+| [references/specialized-capabilities.md](references/specialized-capabilities.md)         | you need a host-native capability beyond the core verbs — insert an image, attach a file, fill a content control, post to a channel, etc. — reached as `/<kind>`         |
+| [references/command-grammar.md](references/command-grammar.md)                           | you need exact selector syntax, the full transform list, composed writes, or how to define a recipe (a reusable named command)                                           |
+| [references/capability-map.md](references/capability-map.md)                             | you need the cross-surface table of which read/write commands each app supports and their limits                                                                         |
+| [references/generated-capability-catalog.md](references/generated-capability-catalog.md) | you need generated registry truth — implemented/promotable/catalog-only capability status, requirement sets, command mapping, and capability-specific use cases          |
+| [references/generated-command-catalog.md](references/generated-command-catalog.md)       | you need generated CLI truth — verb groups, write-verb actuation mapping, or the specialized slash-command surface                                                       |
+| [references/progressive-disclosure.md](references/progressive-disclosure.md)             | you're deciding how much host/context/file information to ask for before acting, especially from an approved planner handoff                                             |
+| `references/<surface>-semantics.md`                                                      | load the ONE matching the active surface (excel / word / powerpoint / outlook / teams / onenote) for its reading/anchoring model, surface verbs + `/`-kinds, and gotchas |
 
 **`patterns/` — reasoning templates (read for shape, then write the turn's actual algebra):**
 
@@ -306,20 +306,20 @@ needs them, so you keep context small.
 
 **`assets/example-sessions/` — worked transcripts; read the one matching the current app for a concrete pattern:**
 
-| File                                                                                                           | App                                                                 |
-| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [assets/example-sessions/example-session-excel.md](assets/example-sessions/example-session-excel.md)           | Excel — read a range, compute, write a formula, comment an outlier  |
+| File                                                                                                                   | App                                                                     |
+| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [assets/example-sessions/example-session-excel.md](assets/example-sessions/example-session-excel.md)                   | Excel — read a range, compute, write a formula, comment an outlier      |
 | [assets/example-sessions/example-session-context-upload.md](assets/example-sessions/example-session-context-upload.md) | Progressive context — ask for full-file upload/hosted analysis strategy |
-| [assets/example-sessions/example-session-word.md](assets/example-sessions/example-session-word.md)             | Word — find claims, propose tracked changes, comment unsourced text |
-| [assets/example-sessions/example-session-powerpoint.md](assets/example-sessions/example-session-powerpoint.md) | PowerPoint — read slides, insert a summary slide                    |
-| [assets/example-sessions/example-session-outlook.md](assets/example-sessions/example-session-outlook.md)       | Outlook — read the open mail, stage a reply or a new draft          |
+| [assets/example-sessions/example-session-word.md](assets/example-sessions/example-session-word.md)                     | Word — find claims, propose tracked changes, comment unsourced text     |
+| [assets/example-sessions/example-session-powerpoint.md](assets/example-sessions/example-session-powerpoint.md)         | PowerPoint — read slides, insert a summary slide                        |
+| [assets/example-sessions/example-session-outlook.md](assets/example-sessions/example-session-outlook.md)               | Outlook — read the open mail, stage a reply or a new draft              |
 
 **`scripts/` — run only if you need to verify a block before relying on it:**
 
 | File                                                   | Purpose                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [scripts/parse_commands.py](scripts/parse_commands.py) | dependency-free checker: extracts the `cmd` block from a reply and parses each line into a structured record, flagging malformed commands (`python3 scripts/parse_commands.py --self-test`)                                                                  |
-| [scripts/command_help.py](scripts/command_help.py)     | generated command playbooks from `m365-cli-1.0.json`, e.g. `python3 scripts/command_help.py shape`; mirrors live `help <command>` / `<command> -h` progressive disclosure                      |
+| [scripts/command_help.py](scripts/command_help.py)     | generated command playbooks from `m365-cli-1.0.json`, e.g. `python3 scripts/command_help.py shape`; mirrors live `help <command>` / `<command> -h` progressive disclosure                                                                                    |
 | [scripts/surface_cli.py](scripts/surface_cli.py)       | the **preflight compiler**: `check` (parse + capability scope + inferred binding types), `budget` (reads/effects/cells vs limits), `plan` (effect dependency groups), `normalize` (reorder into OBSERVE→DERIVE→EFFECT form). Pure — never runs Office/Graph. |
 
 ### Preflight a program with `surface_cli` (when it's worth it)

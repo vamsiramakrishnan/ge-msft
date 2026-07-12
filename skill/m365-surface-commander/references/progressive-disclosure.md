@@ -31,14 +31,14 @@ level cannot answer or safely anchor the next command.
 
 ## Surface-specific first moves
 
-| Surface | Good first move | Why |
-| ------- | --------------- | --- |
-| Excel | `tables`, `list range`, `properties <range>`, then `read <range>` | keeps workbook-scale data out of context until a target is known |
-| Word | `list paragraph`, `comments`, `search <anchor>` | resolves content anchors before tracked changes/comments |
-| PowerPoint | `slides`, then `inspect slide:N` | slide inventory is cheap; full slide content is pulled only for targets |
-| Outlook | `attachments`, `inspect item:current` | separates message body, thread, and attachment decisions |
-| OneNote | `list page`, `neighbors <page>` | page/paragraph anchors are often enough before reading full page text |
-| Teams | `neighbors <segment>` or `open <deep-link>` | uses transcript/message refs or closest deep link without posting |
+| Surface    | Good first move                                                   | Why                                                                     |
+| ---------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Excel      | `tables`, `list range`, `properties <range>`, then `read <range>` | keeps workbook-scale data out of context until a target is known        |
+| Word       | `list paragraph`, `comments`, `search <anchor>`                   | resolves content anchors before tracked changes/comments                |
+| PowerPoint | `slides`, then `inspect slide:N`                                  | slide inventory is cheap; full slide content is pulled only for targets |
+| Outlook    | `attachments`, `inspect item:current`                             | separates message body, thread, and attachment decisions                |
+| OneNote    | `list page`, `neighbors <page>`                                   | page/paragraph anchors are often enough before reading full page text   |
+| Teams      | `neighbors <segment>` or `open <deep-link>`                       | uses transcript/message refs or closest deep link without posting       |
 
 ## Planner handoff
 

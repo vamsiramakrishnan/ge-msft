@@ -76,4 +76,3 @@ Keep the handoff short:
 3. Run the extractor locally.
 4. Show only non-secret results: config id, visible skill labels, numeric agent ids, bundle hashes,
    and next command.
-

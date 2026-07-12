@@ -1,5 +1,5 @@
 import type { ContextKind, ReleaseProfileName, UnitDescriptor } from '@ge/contracts';
-import { asSessionId, filterManifestForReleaseProfile } from '@ge/contracts';
+import { asSessionId, filterManifestForReleaseProfile, releaseProfile } from '@ge/contracts';
 import type {
   AssistantPath,
   GeminiSkillMention,
@@ -104,6 +104,21 @@ export interface ComposedSession {
 }
 
 /**
+ * Whether `share`/`/shared` may run for this session: a real `sharedStore` to write to, AND the
+ * active release profile actually permitting estate writes. No configured profile ⇒ unrestricted,
+ * matching how `filterManifestForReleaseProfile` is also skipped when `releaseProfileName` is
+ * absent. Exported (pure, no I/O) so the AND — the actual enforcement — is unit-testable against a
+ * fabricated profile, not just the two named profiles this repo currently ships.
+ */
+export function estateWritesEnabledFor(
+  hasSharedStore: boolean,
+  releaseProfileName: ReleaseProfileName | undefined,
+): boolean {
+  if (!hasSharedStore) return false;
+  return releaseProfileName ? releaseProfile(releaseProfileName).estateWrites : true;
+}
+
+/**
  * Wire the chain once: user identity → WIF token exchange → Discovery Engine client →
  * a ready `AssistSession` bound to this surface's bridge. The identity is resolved up front
  * so every turn's provenance is stamped with the signed-in user.
@@ -174,7 +189,7 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
   }
 
   // `/shared` cross-surface handoff (see docs/ACCESS-MODEL.md Plane B): only wired when this
-  // AuthClient actually carries a Graph token source. Absent that, `share`/`` /shared`` degrade to
+  // AuthClient actually carries a Graph token source. Absent that, `share`/`/shared` degrade to
   // the runtime's own "not configured" behavior — never a hard dependency on Graph consent.
   const sharedStore = auth.getGraphToken
     ? new GraphSharedStore(
@@ -185,11 +200,13 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
         ),
       )
     : undefined;
+  const estateWritesEnabled = estateWritesEnabledFor(Boolean(sharedStore), config.releaseProfile);
 
   const session = new AssistSession(bridge, client, {
     unit,
     skillFiles: SKILL_FILES,
     ...(sharedStore ? { sharedStore } : {}),
+    ...(estateWritesEnabled ? { estateWritesEnabled: true } : {}),
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),

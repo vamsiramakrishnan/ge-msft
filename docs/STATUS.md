@@ -22,7 +22,7 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 
 ## Verification baseline
 
-`bun run typecheck` clean · **1538 tests across 128 files green** (Vitest) · `bun run lint` clean.
+`bun run typecheck` clean · **2038 tests across 160 files green** (Vitest) · `bun run lint` clean.
 
 ## Packages — built vs planned
 
@@ -167,7 +167,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
 
 ## Testing approach
 
-Vitest across all workspaces (**1538 tests / 128 files**). Bridges are tested against **in-repo Office
+Vitest across all workspaces (**2038 tests / 160 files**). Bridges are tested against **in-repo Office
 fakes** (`web-shell/src/test-harness/fake-{office,word,excel,powerpoint}.ts`), not a live host.
 Coverage includes: contract schema round-trips; the command/expr/skill grammars; per-surface
 **capability-closure conformance** (no phantoms; gaps within the allow-list); capture + actuate
@@ -188,15 +188,23 @@ chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration
    tracked **gaps** on the closure allow-list (handled by the bridge, not yet reachable by a verb).
 4. **ADR-0005 Phase 4** — `for`/`each` iteration, durable skill persistence, cross-surface plans
    (read Excel → write PowerPoint).
-5. **Estate writes** — Graph/SharePoint reads are live; writes (send mail, create event, upload /
-   checkout) are modeled but not wired. The first estate write, `share`/`/shared` (a cross-surface
-   Graph app-folder handoff store — `packages/graph-client`'s `GraphSharedStore`, `packages/runtime`'s
-   `sharedMount`), is built and tested end-to-end but shipped **inert by default**
-   (`AssistSessionOptions.estateWritesEnabled` defaults to `false`, matching `ReleaseProfile
-   .estateWrites`); `web-shell` does not enable it. Turning it on needs an approval-UI card for
-   `RunCommandsOptions.approveShare` (mirroring the existing write-approval card) plus a deliberate
-   release-profile policy decision — a security review blocked the initial cut for lacking exactly
-   that gate.
+5. **Estate writes** — Graph/SharePoint reads are live; most writes (send mail, create event, upload
+   / checkout) remain modeled but not wired. The first estate write, `share`/`/shared` (a
+   cross-surface Graph app-folder handoff store — `packages/graph-client`'s `GraphSharedStore`,
+   `packages/runtime`'s `sharedMount`), is **live**, gated by several independent controls: (1) the
+   active `ReleaseProfile.estateWrites` (`@ge/contracts`) must permit it — a real, enforced
+   deployment lever, not just "Graph consent exists"; (2) a dedicated `ShareApprovalCard`
+   (`RunCommandsOptions.approveShare`, fail-closed, independent of the in-document write/plan
+   approval lanes since `share` never reaches `bridge.actuate()`) that discloses the FULL size of
+   what will be written, not just its own line-limited preview; (3) content is capped to 256 KiB
+   before it's ever shown for approval; (4) `share` never silently overwrites an existing `/shared`
+   name and rejects targeting the reserved `*.provenance.json` suffix; (5) attempts are bounded
+   across the WHOLE task (not reset per turn); (6) a successful share is recorded on the panel's own
+   audit ledger (`ProvenanceStore.listShares()` / `state.shares`) and flagged `⚠ unattributed` when
+   the turn produced no provenance. Security-reviewed three times over its build-out: once when the
+   approval gate was added (initially blocked for lacking it), once after wiring the live UI
+   (blocked again — policy enforcement, audit-trail, and size-disclosure gaps), and once more after
+   closing those.
 6. **Security hardenings noted by review** — keep `decideSend` total; bound the on-send trigger with
    a timeout so a *hung* trigger cannot wedge Send; validate `location`/`proxyUrl` at config
    construction.

@@ -14,14 +14,14 @@ listed for the current app.
 
 ## Reads
 
-| App        | `outline` |                   `read`                   |      `search`       | `list`/`inspect`/`properties`/`open` | Surface refs exposed                       |
-| ---------- | :-------: | :----------------------------------------: | :-----------------: | :----------------------------------: | ------------------------------------------ |
-| Word       |    yes    |            yes (whole/section)             |         yes         |                 yes                  | selection, paragraphs, comments, anchors   |
-| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         |                 yes                  | ranges, tables, named ranges, comments     |
-| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   |                 yes                  | slides, shapes, text boxes, charts         |
-| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) |                 yes                  | pages, paragraphs, tables, images          |
-| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    |                 yes                  | current item, thread, attachments, draft   |
-| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    |                 yes                  | transcript segments, messages, deep links  |
+| App        | `outline` |                   `read`                   |      `search`       | `list`/`inspect`/`properties`/`open` | Surface refs exposed                      |
+| ---------- | :-------: | :----------------------------------------: | :-----------------: | :----------------------------------: | ----------------------------------------- |
+| Word       |    yes    |            yes (whole/section)             |         yes         |                 yes                  | selection, paragraphs, comments, anchors  |
+| Excel      |    yes    | yes (`read <A1\|range>`, up to ~10k cells) |         yes         |                 yes                  | ranges, tables, named ranges, comments    |
+| PowerPoint |    yes    |           yes (`read <slide:N>`)           |   yes (≤8 slides)   |                 yes                  | slides, shapes, text boxes, charts        |
+| OneNote    |    yes    |              yes (whole page)              | yes (≤8 paragraphs) |                 yes                  | pages, paragraphs, tables, images         |
+| Outlook    |     —     |              yes (whole item)              |   yes (≤8 lines)    |                 yes                  | current item, thread, attachments, draft  |
+| Teams      |     —     |           yes (whole transcript)           |   yes (≤8 lines)    |                 yes                  | transcript segments, messages, deep links |
 
 Reads are bounded and scoped to the open item/window. They return empty on bad input and
 always frame document content as data. `context` is runtime-served: it returns a strategy for
@@ -52,30 +52,37 @@ lifecycle alongside `workspace`/`save`/`cat`/`grep`: `cp` duplicates an artifact
 `/work` — there is no `/doc` equivalent, and none of them ever touch Office content. An unknown
 source ref is a corrective error, never a silent no-op.
 
+`share <name> = <source>` has the exact same source grammar as `save`, but persists to `/shared` —
+a cross-surface handoff store (a Microsoft Graph app-folder) instead of the local `/work` store, so
+a value shared from one surface's session is readable back by name from any other surface's
+session. `share` is the one workspace verb that is NOT purely local: it is an estate-class write,
+gated by the active release profile and a dedicated human approval before anything leaves the
+device, and is unavailable when the session has no shared store configured.
+
 ## Writes
 
-| Command   | Change             | Word | Excel | PPT | OneNote | Outlook | Teams |
-| --------- | ------------------ | :--: | :---: | :-: | :-----: | :-----: | :---: |
-| `set`     | write a cell       |      |  yes  |     |         |         |       |
-| `grid`    | write a cell grid  |      |  yes  |     |         |         |       |
-| `format`  | format cells       |      |  yes  |     |         |         |       |
-| `table`   | create a table     |      |  yes  |     |         |         |       |
-| `chart`   | insert a chart     |      |  yes  |     |         |         |       |
-| `cf`      | conditional format |      |  yes  |     |         |         |       |
-| `spill`   | write a table grid |      |  yes  |     |         |         |       |
-| `suggest` | tracked change     | yes  |       |     |         |         |       |
-| `comment` | add a comment      | yes  |  yes  |     |         |         |       |
-| `reply`   | reply to a comment | yes  |  yes  |     |         |         |       |
-| `slide`   | insert a slide     |      |       | yes |         |         |       |
-| `shape`   | replace shape text |      |       | yes |         |         |       |
-| `page`    | append a page      |      |       |     |   yes   |         |       |
-| `mail`    | reply to mail      |      |       |     |         |   yes   |       |
-| `compose` | draft new mail     |      |       |     |         |   yes   |       |
-| `post`    | post to a channel  |      |       |     |         |         |  yes  |
-| `/insert-text` | direct text insert | yes | | | | | |
-| `/replace-selection` | direct selection replacement | yes | | | | | |
-| `/insert-ooxml` | direct rich OOXML insert | yes | | | | | |
-| `/fill-content-control` | fill known content control | yes | | | | | |
+| Command                 | Change                       | Word | Excel | PPT | OneNote | Outlook | Teams |
+| ----------------------- | ---------------------------- | :--: | :---: | :-: | :-----: | :-----: | :---: |
+| `set`                   | write a cell                 |      |  yes  |     |         |         |       |
+| `grid`                  | write a cell grid            |      |  yes  |     |         |         |       |
+| `format`                | format cells                 |      |  yes  |     |         |         |       |
+| `table`                 | create a table               |      |  yes  |     |         |         |       |
+| `chart`                 | insert a chart               |      |  yes  |     |         |         |       |
+| `cf`                    | conditional format           |      |  yes  |     |         |         |       |
+| `spill`                 | write a table grid           |      |  yes  |     |         |         |       |
+| `suggest`               | tracked change               | yes  |       |     |         |         |       |
+| `comment`               | add a comment                | yes  |  yes  |     |         |         |       |
+| `reply`                 | reply to a comment           | yes  |  yes  |     |         |         |       |
+| `slide`                 | insert a slide               |      |       | yes |         |         |       |
+| `shape`                 | replace shape text           |      |       | yes |         |         |       |
+| `page`                  | append a page                |      |       |     |   yes   |         |       |
+| `mail`                  | reply to mail                |      |       |     |         |   yes   |       |
+| `compose`               | draft new mail               |      |       |     |         |   yes   |       |
+| `post`                  | post to a channel            |      |       |     |         |         |  yes  |
+| `/insert-text`          | direct text insert           | yes  |       |     |         |         |       |
+| `/replace-selection`    | direct selection replacement | yes  |       |     |         |         |       |
+| `/insert-ooxml`         | direct rich OOXML insert     | yes  |       |     |         |         |       |
+| `/fill-content-control` | fill known content control   | yes  |       |     |         |         |       |
 
 Every change is previewed and approved before it is applied and recorded for traceability. Some
 writes are reversible by a bridge inverse or app review mechanism; direct inserts such as
@@ -92,14 +99,14 @@ known, such as generated schedules, seed tables, and CSV-shaped results.
 
 ## Structured-operation equivalents by app
 
-| App        | Best native shape for bulk/structured output                                                                 |
-| ---------- | ------------------------------------------------------------------------------------------------------------- |
-| Excel      | `grid` for literal rectangles; `spill` for computed tables; then `table`, `chart`, `cf` over the range.       |
-| Word       | `suggest` for paragraph-level surgical changes; `/insert-table`, `/insert-content-control`, `/insert-html`, and `/insert-ooxml` for structured insertions. |
+| App        | Best native shape for bulk/structured output                                                                                                                                     |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Excel      | `grid` for literal rectangles; `spill` for computed tables; then `table`, `chart`, `cf` over the range.                                                                          |
+| Word       | `suggest` for paragraph-level surgical changes; `/insert-table`, `/insert-content-control`, `/insert-html`, and `/insert-ooxml` for structured insertions.                       |
 | PowerPoint | `slide` for simple bullets; `/add-table-slide`, `/add-shape`, `/set-shape-text`, `/format-shape`, `/insert-image`, and `/insert-html`-derived image/slides for designed layouts. |
-| OneNote    | `page` for new synthesized pages; `/add-outline`, `/insert-table`, `/append-rich-text`, and `/insert-image` for structured page regions. |
-| Outlook    | `mail`/`compose` and `/set-body`/`/prepend-body` for draft bodies; `/add-attachment` for generated files. Nothing auto-sends. |
-| Teams      | `post` for reviewable text; `/post-card` for structured Adaptive Cards; Graph post/update/reply kinds only when estate writes are advertised. |
+| OneNote    | `page` for new synthesized pages; `/add-outline`, `/insert-table`, `/append-rich-text`, and `/insert-image` for structured page regions.                                         |
+| Outlook    | `mail`/`compose` and `/set-body`/`/prepend-body` for draft bodies; `/add-attachment` for generated files. Nothing auto-sends.                                                    |
+| Teams      | `post` for reviewable text; `/post-card` for structured Adaptive Cards; Graph post/update/reply kinds only when estate writes are advertised.                                    |
 
 When the generated payload is large enough that a model should not hand-type it, first ask `context
 analytical full-scope upload-preferred code-execution-preferred`. The host may return file/code

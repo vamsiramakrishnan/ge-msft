@@ -16,7 +16,7 @@
  * Usage: bun run release:web [-- mode=production] [--fail-on-warning=false]
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,6 +47,7 @@ ok(`built ${relative(rootDir, distDir)}`);
 
 // Gate 1: every referenced entry page emitted.
 for (const entry of [
+  'index.html',
   'taskpane.html',
   'commands.html',
   'functions.html',
@@ -56,6 +57,22 @@ for (const entry of [
   if (!existsSync(join(distDir, entry))) fail(`dist-web is missing ${entry}`);
 }
 ok('all entry pages + functions.json emitted');
+
+// The unified manifest needs a stable command-script URL. Vite emits a content-hashed command
+// chunk, while `public/assets/commands.js` is only a dev-server shim that imports `/src/...`.
+// Replace that shim in the release artifact with the real production bundle or Office will keep
+// the add-in in "Loading add-ins" while the command runtime fails to initialize.
+const assetsDir = join(distDir, 'assets');
+const commandsChunk = readdirSync(assetsDir).find((name) =>
+  /^commands-[A-Za-z0-9_-]+\.js$/.test(name),
+);
+if (!commandsChunk) fail('dist-web is missing the hashed commands runtime');
+copyFileSync(join(assetsDir, commandsChunk), join(assetsDir, 'commands.js'));
+const stableCommands = readFileSync(join(assetsDir, 'commands.js'), 'utf8');
+if (/\/src\/commands\//.test(stableCommands)) {
+  fail('stable assets/commands.js still points at a development source path');
+}
+ok(`published stable commands runtime from assets/${commandsChunk}`);
 
 // Gate 2/3: walk the bundle for placeholders and dev origins.
 function* files(dir) {

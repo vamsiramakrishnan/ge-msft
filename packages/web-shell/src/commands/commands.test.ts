@@ -5,7 +5,7 @@ import { askSelectionQuery, isAskSelectionSeed } from './ask-selection-seed.js';
 const WORD_KEY = askSelectionSeedKey('word');
 
 /**
- * Tests for the right-click "Ask Gemini about this" function-command. The load-bearing behavior:
+ * Tests for the deterministic right-click selection commands. The load-bearing behavior:
  * `buildAskSelectionSeed` grounds the selection as an `@this` `assist` seed (and stays valid on an
  * empty selection), and `askSelection` reads the host selection, stashes that seed where the pane
  * picks it up, reveals the pane, and ALWAYS completes the Office event — even when the read, the
@@ -101,6 +101,19 @@ describe('askSelection', () => {
 
     const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
     expect(seed).toMatchObject({ kind: 'ask-selection', mode: 'ask', hasSelection: false });
+    expect(completed).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists only the requested fixed context action mode', async () => {
+    const completed = vi.fn();
+    const setItem = vi.fn();
+    const office = fakeOffice({ selection: 'EBITDA grew 8%' });
+
+    await askSelection({ completed }, { office, sink: { setItem } }, 'explain');
+
+    const seed = JSON.parse(setItem.mock.calls[0]![1] as string);
+    expect(seed).toMatchObject({ kind: 'ask-selection', mode: 'explain', hasSelection: true });
+    expect(JSON.stringify(seed)).not.toContain('EBITDA');
     expect(completed).toHaveBeenCalledTimes(1);
   });
 

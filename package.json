@@ -1,7 +1,7 @@
 {
   "name": "gemini-m365-addin",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.3",
   "description": "Gemini Enterprise add-ins for Microsoft 365, with a controlled Word + Excel internal alpha release profile.",
   "packageManager": "bun@1.3.13",
   "workspaces": [
@@ -67,6 +67,8 @@
     "skills:validate:official": "uvx --from skills-ref agentskills validate skill/m365-command-planner && uvx --from skills-ref agentskills validate skill/m365-surface-commander && uvx --from skills-ref agentskills validate skill/m365-release-operator",
     "skills:index": "python3 skill/generate_resource_index.py",
     "test:streamassist:live": "GE_LIVE_STREAMASSIST=1 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
+    "test:streamassist:latency": "GE_LIVE_STREAMASSIST=1 GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-excel-visualize,commander-word-surgical,planner-single-surface GE_LIVE_STREAMASSIST_REPETITIONS=3 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
+    "test:streamassist:widget": "GE_LIVE_STREAMASSIST=1 GE_LIVE_STREAMASSIST_TRANSPORT=widget vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
     "test:streamassist:live:login": "bun scripts/streamassist-live-login.mjs",
     "probe:streamassist-code-exec": "bun scripts/streamassist-code-exec-probe.mjs",
     "coverage": "vitest run --coverage",

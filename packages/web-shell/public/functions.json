@@ -6,7 +6,7 @@
       "id": "GE.ASK",
       "name": "GE.ASK",
       "description": "Streams a grounded Gemini Enterprise answer into the cell, grounded on the given range's values. Runs as the signed-in user.",
-      "helpUrl": "https://example.com/ge-ask",
+      "helpUrl": "https://vital-octagon-19612.web.app/support",
       "parameters": [
         {
           "name": "prompt",

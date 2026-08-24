@@ -34,6 +34,9 @@ export interface ManifestFinding {
 /** The Office host scopes the unified package must request — one per surface we ship. */
 export const REQUIRED_OFFICE_SCOPES = ['mail', 'workbook', 'document', 'presentation'] as const;
 
+/** Office for Mac rejects ribbon groups unless their controls provide all three required sizes. */
+export const REQUIRED_RIBBON_ICON_SIZES = [16, 32, 80] as const;
+
 /** A `REPLACE_*` placeholder must be clean upper-snake — catches half-edited tenant values. */
 const PLACEHOLDER_RE = /REPLACE_[A-Za-z0-9_]*/g;
 const CLEAN_PLACEHOLDER_RE = /^REPLACE_[A-Z0-9][A-Z0-9_]*$/;
@@ -118,9 +121,22 @@ export function lintUnifiedManifest(
   // 2c. Wiring integrity: every ribbon control actionId resolves to a runtime action.
   for (const ribbon of arr(ext.ribbons))
     for (const tab of arr(obj(ribbon).tabs))
-      for (const group of arr(obj(tab).groups))
+      for (const group of arr(obj(tab).groups)) {
+        const g = obj(group);
+        const groupIconSizes = new Set(arr(g.icons).map((icon) => Number(obj(icon).size)));
+        for (const size of REQUIRED_RIBBON_ICON_SIZES) {
+          if (!groupIconSizes.has(size)) {
+            findings.push(
+              err(
+                'missing-ribbon-group-icon',
+                `${path}: ribbon group "${String(g.id)}" is missing required ${size}px icon`,
+              ),
+            );
+          }
+        }
         for (const control of arr(obj(group).controls)) {
-          const actionId = obj(control).actionId;
+          const c = obj(control);
+          const actionId = c.actionId;
           if (typeof actionId === 'string' && !actionIds.has(actionId))
             findings.push(
               err(
@@ -128,7 +144,19 @@ export function lintUnifiedManifest(
                 `${path}: ribbon control "${String(obj(control).id)}" references unknown actionId "${actionId}"`,
               ),
             );
+          const iconSizes = new Set(arr(c.icons).map((icon) => Number(obj(icon).size)));
+          for (const size of REQUIRED_RIBBON_ICON_SIZES) {
+            if (!iconSizes.has(size)) {
+              findings.push(
+                err(
+                  'missing-ribbon-icon',
+                  `${path}: ribbon control "${String(c.id)}" is missing required ${size}px icon`,
+                ),
+              );
+            }
+          }
         }
+      }
 
   // 2d. The Outlook on-send gate: the event must resolve to an action AND stay a reviewable
   //     softBlock (CLAUDE.md — reversible/reviewable writes; never a silent send).

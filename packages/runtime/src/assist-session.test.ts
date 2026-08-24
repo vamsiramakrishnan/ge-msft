@@ -896,8 +896,8 @@ describe('AssistSession.runCommands — ADR-0005 composition (pure)', () => {
 
     const body = bodies[0]!;
     const query = (body.query as { text?: string }).text ?? '';
-    expect(body.skillsSpec).toEqual({
-      skills: [{ name: 'projects/proj/locations/global/agents/7404511736383961129' }],
+    expect(body.agentsSpec).toEqual({
+      agentSpecs: [{ agentId: '7404511736383961129' }],
     });
     expect(query).toContain('[m365-surface-commander](mention://?uri=7404511736383961129)');
     expect(query).not.toContain('m365-command-planner');

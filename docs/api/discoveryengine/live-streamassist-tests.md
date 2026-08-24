@@ -3,26 +3,41 @@
 These tests are opt-in. Normal `bun run test` does not call Gemini Enterprise.
 
 Run them only when you want to cross-validate the current add-in skill wiring against the real
-Gemini Enterprise `widgetStreamAssist` endpoint.
+Gemini Enterprise public `streamAssist` endpoint. This is the production-auth path: the suite uses
+the signed-in Workforce Identity Federation principal's Google access token. Widget authentication
+is retained only as an explicit compatibility mode for private skill catalog diagnostics.
 
 ## Inputs
 
-Required:
+Required for the default WIF transport:
 
-- `GE_WIDGET_BEARER_TOKEN_FILE` or `GE_WIDGET_BEARER_TOKEN`
-- `GE_WIDGET_CONFIG_ID`
-- `GE_WIDGET_SERVER_TOKEN`
 - `GE_ENGINE`
 - `GE_SURFACE_COMMANDER_SKILL`
 - `GE_COMMAND_PLANNER_SKILL`
 
+The access token resolves in this order:
+
+1. `GE_WIF_ACCESS_TOKEN` or `GE_ACCESS_TOKEN`;
+2. `GE_WIF_ACCESS_TOKEN_FILE` or `GE_ACCESS_TOKEN_FILE`;
+3. `gcloud auth print-access-token`, using `GE_CLOUDSDK_CONFIG`, `CLOUDSDK_CONFIG`, or the repo's
+   `.gcloud` directory.
+
+For explicit widget compatibility mode (`bun run test:streamassist:widget`), also supply
+`GE_WIDGET_BEARER_TOKEN_FILE`/`GE_WIDGET_BEARER_TOKEN`, `GE_WIDGET_CONFIG_ID`, and
+`GE_WIDGET_SERVER_TOKEN`.
+
 Optional:
 
+- `GE_PROJECT_NUMBER` (otherwise derived from the configured skill resource names)
+- `GE_PROJECT` or `GE_USER_PROJECT` for the quota header (otherwise read from gcloud)
 - `GE_LOCATION` (defaults to `global`)
 - `GE_TIME_ZONE` (defaults to `UTC`)
 - `GE_LIVE_STREAMASSIST_SCENARIOS` comma-separated scenario ids
+- `GE_LIVE_STREAMASSIST_REPETITIONS` runs every selected scenario 1–10 times (defaults to `1`)
 - `GE_LIVE_STREAMASSIST_REQUIRE_CODE=1` to fail when the code-execution probe does not emit
   executable-code/code-result parts
+- `GE_LIVE_STREAMASSIST_REQUIRE_CLOSED_FENCE=1` to make a recoverable unclosed `cmd` or `plan`
+  fence fail the live test instead of recording a protocol warning
 
 The test also reads these fallback files when present:
 
@@ -30,9 +45,8 @@ The test also reads these fallback files when present:
 - `packages/web-shell/.env`
 
 `packages/web-shell/.env` supplies the current dev engine and skill resource names. `/tmp/ge-widget.env`
-should contain only short-lived local widget credentials produced from a browser-authenticated Gemini
-Enterprise session. Do not commit either bearer tokens or generated evidence that contains sensitive
-live prompts.
+is read only for explicit widget compatibility runs and skill catalog uploads. Do not commit either
+bearer tokens or generated evidence that contains sensitive live prompts.
 
 ## Command
 
@@ -40,16 +54,21 @@ live prompts.
 bun run test:streamassist:live
 ```
 
-If the local widget token is missing or expired, use the interactive login preflight:
+Run the focused first-token benchmark (four representative scenarios, three samples each):
 
 ```bash
-bun run test:streamassist:live:login
+bun run test:streamassist:latency
 ```
 
-The preflight opens or prints the Gemini Enterprise URL, asks you to paste one authenticated
-`content-discoveryengine.googleapis.com` DevTools cURL/HAR request, extracts only the short-lived
-widget bearer/config into `/tmp/ge-widget.env`, then launches the same Vitest suite. It deliberately
-does not automate browser cookies, XSRF state, or Google session secrets.
+Widget-only compatibility check:
+
+```bash
+bun run test:streamassist:widget
+```
+
+The separate skill uploader may ask for a browser-authenticated widget cURL/HAR because private
+skill catalog list/upload is not the public `streamAssist` data path. Never substitute that
+five-minute widget JWT for the WIF access token used by the add-in and default live suite.
 
 Run one or a few scenarios while debugging:
 
@@ -57,15 +76,9 @@ Run one or a few scenarios while debugging:
 GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-excel-visualize bun run test:streamassist:live
 ```
 
-The login preflight supports the same scenario filter:
-
-```bash
-bun run test:streamassist:live:login -- --scenarios smoke-basic,commander-excel-visualize
-```
-
 The suite verifies:
 
-- the widget StreamAssist endpoint is reachable and returns a streamed answer;
+- the public WIF-authenticated StreamAssist endpoint is reachable and returns a streamed answer;
 - hosted code-execution behavior is observable on analytical prompts;
 - `m365-surface-commander` can be mounted with `skillsSpec` and returns `cmd` fences for strict
   Excel, Word, PowerPoint, Outlook, and injection-resistance command-loop fixtures;
@@ -89,7 +102,7 @@ planner-cross-surface
 multi-skill-mount
 ```
 
-If the bearer token has expired, refresh `/tmp/ge-widget.env` and rerun the command.
+If gcloud cannot mint a token, refresh the repo WIF login with `bun run setup:gcloud:wif`.
 
 ## Evidence
 
@@ -100,5 +113,10 @@ dist/probes/streamassist-live.json
 ```
 
 The evidence file contains scenario status, failure messages, response hashes, small synthetic
-previews, invoked skill names, session names, chunk counts, and whether code execution parts were
-observed. It does not store bearer tokens.
+previews, invoked skill names, session names, chunk counts, whether code execution parts were
+observed, and wire-level latency for response headers, first parsed chunk, first non-thought answer
+token, first visible text (including the activity text the client emits from thought frames), and
+completion. Its summary records median and p95 visible-text, answer-token, and total duration.
+An opening `cmd` or `plan` fence that reaches end-of-response is recorded in `protocolWarnings`:
+the production parsers deliberately recover only this bounded whole-response shape. The report does
+not store bearer tokens.

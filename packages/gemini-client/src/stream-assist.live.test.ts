@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseJsonArrayStream } from './json-stream.js';
 
 type LiveSkillRef = {
   label: string;
@@ -10,15 +12,20 @@ type LiveSkillRef = {
 };
 
 type LiveConfig = {
-  widgetConfigId: string;
-  widgetServerToken: string;
-  widgetBearerToken: string;
+  transport: 'wif' | 'widget';
+  tokenSource: 'widget' | 'env' | 'file' | 'gcloud-wif' | 'metadata-service-account';
+  bearerToken: string;
+  projectNumber: string;
+  quotaProject?: string;
+  widgetConfigId?: string;
+  widgetServerToken?: string;
   location: string;
   engine: string;
   timeZone: string;
   commandSkill: LiveSkillRef;
   plannerSkill: LiveSkillRef;
   requireCodeExecution: boolean;
+  repetitions: number;
   scenarioFilter?: Set<string>;
 };
 
@@ -30,6 +37,15 @@ type LiveCallResult = {
   invokedSkills: string[];
   codeExecutionObserved: boolean;
   codeExecutionEventCount: number;
+  timing: LiveTiming;
+};
+
+type LiveTiming = {
+  requestToHeadersMs: number;
+  timeToFirstChunkMs?: number;
+  timeToFirstVisibleTextMs?: number;
+  timeToFirstTokenMs?: number;
+  totalMs: number;
 };
 
 type LiveResult = {
@@ -44,7 +60,9 @@ type LiveResult = {
   rawResponseSha256?: string;
   codeExecutionObserved: boolean;
   codeExecutionEventCount: number;
+  timing?: LiveTiming;
   failures: string[];
+  protocolWarnings: string[];
   error?: string;
 };
 
@@ -58,6 +76,7 @@ type LiveScenario = {
 };
 
 const LIVE = process.env.GE_LIVE_STREAMASSIST === '1' || process.env.GE_STREAMASSIST_LIVE === '1';
+const REQUIRE_CLOSED_FENCE = process.env.GE_LIVE_STREAMASSIST_REQUIRE_CLOSED_FENCE === '1';
 const envFiles = [
   process.env.GE_STREAMASSIST_ENV_FILE,
   process.env.GE_WIDGET_ENV_FILE,
@@ -70,7 +89,7 @@ const evidence: LiveResult[] = [];
 
 let cfg: LiveConfig;
 
-describe.skipIf(!LIVE)('live Gemini Enterprise widget StreamAssist', () => {
+describe.skipIf(!LIVE)('live Gemini Enterprise StreamAssist', () => {
   beforeAll(() => {
     cfg = liveConfig();
   });
@@ -89,7 +108,28 @@ describe.skipIf(!LIVE)('live Gemini Enterprise widget StreamAssist', () => {
 
 function selectedScenarios(): LiveScenario[] {
   const filter = scenarioFilter();
-  return scenarios().filter((scenario) => !filter || filter.has(scenario.id));
+  const selected = scenarios().filter((scenario) => !filter || filter.has(scenario.id));
+  const repetitions = liveRepetitions();
+  return Array.from({ length: repetitions }, (_, iteration) =>
+    selected.map((scenario) => ({
+      ...scenario,
+      id: repetitions === 1 ? scenario.id : `${scenario.id}-run-${iteration + 1}`,
+      title:
+        repetitions === 1
+          ? scenario.title
+          : `${scenario.title} (run ${iteration + 1}/${repetitions})`,
+    })),
+  ).flat();
+}
+
+function liveRepetitions(): number {
+  const raw = env('GE_LIVE_STREAMASSIST_REPETITIONS');
+  if (!raw) return 1;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 10) {
+    throw new Error('GE_LIVE_STREAMASSIST_REPETITIONS must be an integer from 1 to 10');
+  }
+  return value;
 }
 
 function scenarioFilter(): Set<string> | undefined {
@@ -105,7 +145,7 @@ function scenarioFilter(): Set<string> | undefined {
 
 async function runScenario(cfg: LiveConfig, scenario: LiveScenario): Promise<LiveResult> {
   try {
-    const result = await callWidgetStreamAssist(
+    const result = await callLiveStreamAssist(
       cfg,
       scenario.prompt(cfg),
       scenario.id,
@@ -267,18 +307,14 @@ function scenarios(): LiveScenario[] {
     {
       id: 'multi-skill-mount',
       group: 'routing',
-      title: 'planner and commander can be mounted in the same session without schema breakage',
+      title: 'planner is selected explicitly while planner and commander are both mounted',
       skills: (cfg) => [cfg.plannerSkill, cfg.commandSkill],
       prompt: (cfg) =>
-        `${mention(cfg.plannerSkill)} ${mention(cfg.commandSkill)} Active surface: excel. Request: Plan then execute only the observation step for /summarize @this on the selected range; no writes.`,
+        `${mention(cfg.plannerSkill)} Active surface: excel. Request: Plan /summarize @this on the selected range; emit a plan only and do not execute it.`,
       assert: (result) => [
         ...expectChunked(result),
-        ...expectInvokedSkill(result, /planner|commander|m365|surface|command/i),
-        ...expectText(
-          result,
-          /```(plan|cmd)|outline|read|scope|step/i,
-          'expected either a plan or command protocol response',
-        ),
+        ...expectInvokedSkill(result, /planner|command-planner|m365/i),
+        ...expectFence(result, 'plan'),
         ...expectNoFence(result, 'python'),
       ],
     },
@@ -286,20 +322,35 @@ function scenarios(): LiveScenario[] {
 }
 
 function liveConfig(): LiveConfig {
+  const transport = env('GE_LIVE_STREAMASSIST_TRANSPORT') === 'widget' ? 'widget' : 'wif';
+  const commandSkill = requiredSkillRef(
+    requiredEnv('GE_SURFACE_COMMANDER_SKILL', 'VITE_GE_SURFACE_COMMANDER_SKILL'),
+  );
+  const plannerSkill = requiredSkillRef(
+    requiredEnv('GE_COMMAND_PLANNER_SKILL', 'VITE_GE_COMMAND_PLANNER_SKILL'),
+  );
+  const auth = transport === 'widget' ? widgetAuth() : publicAuth();
   return {
-    widgetConfigId: requiredEnv('GE_WIDGET_CONFIG_ID', 'VITE_GE_WIDGET_CONFIG_ID'),
-    widgetServerToken: requiredEnv('GE_WIDGET_SERVER_TOKEN', 'VITE_GE_WIDGET_SERVER_TOKEN'),
-    widgetBearerToken: tokenFromEnv(),
+    transport,
+    bearerToken: auth.token,
+    tokenSource: auth.source,
+    projectNumber:
+      env('GE_PROJECT_NUMBER') ??
+      projectNumberFromSkill(commandSkill.resource, plannerSkill.resource),
+    quotaProject: env('GE_USER_PROJECT', 'GE_PROJECT') ?? gcloudProject(),
+    ...(transport === 'widget'
+      ? {
+          widgetConfigId: requiredEnv('GE_WIDGET_CONFIG_ID', 'VITE_GE_WIDGET_CONFIG_ID'),
+          widgetServerToken: requiredEnv('GE_WIDGET_SERVER_TOKEN', 'VITE_GE_WIDGET_SERVER_TOKEN'),
+        }
+      : {}),
     location: env('GE_LOCATION', 'VITE_GCP_LOCATION') ?? 'global',
     engine: requiredEnv('GE_ENGINE', 'VITE_GE_ENGINE'),
     timeZone: env('GE_TIME_ZONE') ?? 'UTC',
-    commandSkill: requiredSkillRef(
-      requiredEnv('GE_SURFACE_COMMANDER_SKILL', 'VITE_GE_SURFACE_COMMANDER_SKILL'),
-    ),
-    plannerSkill: requiredSkillRef(
-      requiredEnv('GE_COMMAND_PLANNER_SKILL', 'VITE_GE_COMMAND_PLANNER_SKILL'),
-    ),
+    commandSkill,
+    plannerSkill,
     requireCodeExecution: env('GE_LIVE_STREAMASSIST_REQUIRE_CODE') === '1',
+    repetitions: liveRepetitions(),
     scenarioFilter: scenarioFilter(),
   };
 }
@@ -324,16 +375,88 @@ function requiredEnv(name: string, ...fallbacks: string[]): string {
   return value;
 }
 
-function tokenFromEnv(): string {
-  const inline = env('GE_WIDGET_BEARER_TOKEN', 'GE_TOKEN', 'GE_ACCESS_TOKEN');
-  if (inline) return inline;
+function widgetAuth(): { token: string; source: 'widget' } {
+  const inline = env('GE_WIDGET_BEARER_TOKEN');
+  if (inline) return { token: inline, source: 'widget' };
   const tokenFile = env('GE_WIDGET_BEARER_TOKEN_FILE');
   if (!tokenFile) {
     throw new Error(
       'Missing GE_WIDGET_BEARER_TOKEN_FILE. Run skill/extract_widget_credentials.py after refreshing the GE web session.',
     );
   }
-  return readFileSync(tokenFile, 'utf8').trim();
+  return { token: readFileSync(tokenFile, 'utf8').trim(), source: 'widget' };
+}
+
+function publicAuth(): {
+  token: string;
+  source: 'env' | 'file' | 'gcloud-wif' | 'metadata-service-account';
+} {
+  const inline = env('GE_WIF_ACCESS_TOKEN', 'GE_ACCESS_TOKEN');
+  if (inline) return { token: inline, source: 'env' };
+  const tokenFile = env('GE_WIF_ACCESS_TOKEN_FILE', 'GE_ACCESS_TOKEN_FILE');
+  if (tokenFile) return { token: readFileSync(tokenFile, 'utf8').trim(), source: 'file' };
+  if (env('GE_WIF_TOKEN_SOURCE') === 'metadata') {
+    return { token: metadataAccessToken(), source: 'metadata-service-account' };
+  }
+  return {
+    token: execFileSync('gcloud', ['auth', 'print-access-token'], {
+      encoding: 'utf8',
+      env: gcloudEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim(),
+    source: 'gcloud-wif',
+  };
+}
+
+function metadataAccessToken(): string {
+  const raw = execFileSync(
+    'curl',
+    [
+      '-fsS',
+      '-H',
+      'Metadata-Flavor: Google',
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+    ],
+    {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  const parsed = JSON.parse(raw) as { access_token?: unknown };
+  if (typeof parsed.access_token !== 'string' || !parsed.access_token) {
+    throw new Error('Metadata server did not return an access token.');
+  }
+  return parsed.access_token;
+}
+
+function gcloudProject(): string | undefined {
+  try {
+    const project = execFileSync('gcloud', ['config', 'get-value', 'project'], {
+      encoding: 'utf8',
+      env: gcloudEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return project && project !== '(unset)' ? project : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function gcloudEnv(): NodeJS.ProcessEnv {
+  const configured = env('GE_CLOUDSDK_CONFIG', 'CLOUDSDK_CONFIG');
+  const repoConfig = join(process.cwd(), '.gcloud');
+  const cloudSdkConfig = configured ?? (existsSync(repoConfig) ? repoConfig : undefined);
+  return { ...process.env, ...(cloudSdkConfig ? { CLOUDSDK_CONFIG: cloudSdkConfig } : {}) };
+}
+
+function projectNumberFromSkill(...resources: string[]): string {
+  for (const resource of resources) {
+    const match = /(?:^|\/)projects\/(\d+)(?:\/|$)/.exec(resource);
+    if (match?.[1]) return match[1];
+  }
+  throw new Error(
+    'Missing GE_PROJECT_NUMBER and no numeric project was found in the skill routes.',
+  );
 }
 
 function loadEnvFiles(files: string[]): Record<string, string> {
@@ -383,59 +506,126 @@ function mention(skill: LiveSkillRef): string {
   return `[${skill.label}](mention://?uri=${encodeURIComponent(skill.mentionUri)})`;
 }
 
-function widgetStreamAssistUrl(config: Pick<LiveConfig, 'location'>): string {
-  return `https://content-discoveryengine.googleapis.com/v1alpha/locations/${config.location}/widgetStreamAssist`;
+function liveStreamAssistUrl(
+  config: Pick<LiveConfig, 'transport' | 'projectNumber' | 'location' | 'engine'>,
+): string {
+  if (config.transport === 'widget') {
+    return `https://content-discoveryengine.googleapis.com/v1alpha/locations/${config.location}/widgetStreamAssist`;
+  }
+  const host =
+    config.location === 'global'
+      ? 'discoveryengine.googleapis.com'
+      : `discoveryengine.${config.location}.rep.googleapis.com`;
+  return (
+    `https://${host}/v1alpha/projects/${config.projectNumber}/locations/${config.location}/` +
+    `collections/default_collection/engines/${config.engine}/assistants/default_assistant:streamAssist`
+  );
 }
 
 function seededSession(config: LiveConfig, id: string): string {
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1_000_000)}`;
-  return `collections/default_collection/engines/${config.engine}/sessions/${id}-${suffix}`;
+  const relative = `collections/default_collection/engines/${config.engine}/sessions/${id}-${suffix}`;
+  return config.transport === 'widget'
+    ? relative
+    : `projects/${config.projectNumber}/locations/${config.location}/${relative}`;
 }
 
-async function callWidgetStreamAssist(
+async function callLiveStreamAssist(
   config: LiveConfig,
   text: string,
   scenarioId: string,
   opts: { skills?: LiveSkillRef[] } = {},
 ): Promise<LiveCallResult> {
+  const startedAt = performance.now();
+  const requestSession =
+    config.transport === 'widget' ? seededSession(config, scenarioId) : undefined;
   const streamAssistRequest: Record<string, unknown> = {
-    session: seededSession(config, scenarioId),
-    query: { parts: [{ text }] },
-    answerGenerationMode: 'NORMAL',
-    languageCode: 'en-US',
+    ...(requestSession ? { session: requestSession } : {}),
+    query: config.transport === 'widget' ? { parts: [{ text }] } : { text },
     userMetadata: { timeZone: config.timeZone },
-    assistSkippingMode: 'REQUEST_ASSIST',
+    ...(config.transport === 'widget'
+      ? {
+          answerGenerationMode: 'NORMAL',
+          languageCode: 'en-US',
+          assistSkippingMode: 'REQUEST_ASSIST',
+        }
+      : {}),
   };
   if (opts.skills?.length) {
-    streamAssistRequest.skillsSpec = {
-      skills: opts.skills.map((skill) => ({ name: skill.resource })),
+    streamAssistRequest.agentsSpec = {
+      agentSpecs: opts.skills.map((skill) => ({ agentId: skill.mentionUri })),
     };
   }
 
-  const res = await fetch(widgetStreamAssistUrl(config), {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.bearerToken}`,
+    'Content-Type': 'application/json',
+  };
+  if (config.quotaProject) headers['X-Goog-User-Project'] = config.quotaProject;
+  if (config.transport === 'widget') {
+    headers.Origin = 'https://vertexaisearch.cloud.google';
+    headers.Referer = 'https://vertexaisearch.cloud.google/';
+    if (!config.widgetServerToken) throw new Error('Missing widget server token.');
+    headers['x-server-token'] = config.widgetServerToken;
+  }
+  const requestBody =
+    config.transport === 'widget'
+      ? {
+          configId: config.widgetConfigId,
+          additionalParams: { token: '-', origin: 'ORIGIN_UNSPECIFIED' },
+          streamAssistRequest,
+        }
+      : streamAssistRequest;
+  const res = await fetch(liveStreamAssistUrl(config), {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.widgetBearerToken}`,
-      'Content-Type': 'application/json',
-      Origin: 'https://vertexaisearch.cloud.google',
-      Referer: 'https://vertexaisearch.cloud.google/',
-      'x-server-token': config.widgetServerToken,
-    },
-    body: JSON.stringify({
-      configId: config.widgetConfigId,
-      additionalParams: { token: '-', origin: 'ORIGIN_UNSPECIFIED' },
-      streamAssistRequest,
-    }),
+    headers,
+    body: JSON.stringify(requestBody),
     signal: AbortSignal.timeout(90_000),
   });
-
-  const raw = await res.text();
-  if (!res.ok) throw new Error(`widgetStreamAssist failed (${res.status}): ${raw.slice(0, 600)}`);
-  return parseLiveResponse(raw, streamAssistRequest.session as string | undefined);
+  const headersAt = performance.now();
+  if (!res.body) {
+    const raw = await res.text();
+    throw new Error(`streamAssist returned no response body (${res.status}): ${raw.slice(0, 600)}`);
+  }
+  const [parseBranch, rawBranch] = res.body.tee();
+  const rawPromise = readStreamText(rawBranch);
+  const chunks: unknown[] = [];
+  let firstChunkAt: number | undefined;
+  let firstVisibleTextAt: number | undefined;
+  let firstTokenAt: number | undefined;
+  for await (const chunk of parseJsonArrayStream(parseBranch)) {
+    const now = performance.now();
+    firstChunkAt ??= now;
+    if (firstVisibleTextAt === undefined && responseTextPiece(chunk, true))
+      firstVisibleTextAt = now;
+    if (firstTokenAt === undefined && responseTextPiece(chunk)) firstTokenAt = now;
+    chunks.push(chunk);
+  }
+  const raw = await rawPromise;
+  const completedAt = performance.now();
+  if (!res.ok) throw new Error(`streamAssist failed (${res.status}): ${raw.slice(0, 600)}`);
+  return parseLiveResponse(raw, requestSession, chunks, {
+    requestToHeadersMs: roundMs(headersAt - startedAt),
+    ...(firstChunkAt === undefined
+      ? {}
+      : { timeToFirstChunkMs: roundMs(firstChunkAt - startedAt) }),
+    ...(firstVisibleTextAt === undefined
+      ? {}
+      : { timeToFirstVisibleTextMs: roundMs(firstVisibleTextAt - startedAt) }),
+    ...(firstTokenAt === undefined
+      ? {}
+      : { timeToFirstTokenMs: roundMs(firstTokenAt - startedAt) }),
+    totalMs: roundMs(completedAt - startedAt),
+  });
 }
 
-function parseLiveResponse(raw: string, fallbackSession: string | undefined): LiveCallResult {
-  const chunks = parseChunks(raw);
+function parseLiveResponse(
+  raw: string,
+  fallbackSession: string | undefined,
+  streamedChunks = parseChunks(raw),
+  timing: LiveTiming = { requestToHeadersMs: 0, totalMs: 0 },
+): LiveCallResult {
+  const chunks = streamedChunks;
   let text = '';
   let session = fallbackSession;
   const invokedSkills = new Set<string>();
@@ -474,7 +664,39 @@ function parseLiveResponse(raw: string, fallbackSession: string | undefined): Li
     invokedSkills: [...invokedSkills],
     codeExecutionObserved: codeExecutionEventCount > 0,
     codeExecutionEventCount,
+    timing,
   };
+}
+
+function responseTextPiece(rawChunk: unknown, includeThought = false): string | undefined {
+  const chunk = unwrapWidgetResponse(rawChunk);
+  if (!chunk || typeof chunk !== 'object') return undefined;
+  const answer = (chunk as Record<string, unknown>).answer as Record<string, unknown> | undefined;
+  for (const reply of Array.isArray(answer?.replies) ? answer.replies : []) {
+    const content = ((
+      (reply as Record<string, unknown>).groundedContent as Record<string, unknown> | undefined
+    )?.content ?? {}) as Record<string, unknown>;
+    if (!includeThought && content.thought === true) continue;
+    const piece = stringValue(content.text);
+    if (piece) return piece;
+  }
+  return undefined;
+}
+
+async function readStreamText(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let raw = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    raw += decoder.decode(value, { stream: true });
+  }
+  return raw + decoder.decode();
+}
+
+function roundMs(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function unwrapWidgetResponse(chunk: unknown): unknown {
@@ -507,6 +729,7 @@ function parseChunks(raw: string): unknown[] {
 }
 
 function record(scenario: LiveScenario, result: LiveCallResult, failures: string[]): LiveResult {
+  const protocolWarnings = fenceWarnings(result.text);
   const recorded: LiveResult = {
     id: scenario.id,
     group: scenario.group,
@@ -519,7 +742,9 @@ function record(scenario: LiveScenario, result: LiveCallResult, failures: string
     rawResponseSha256: sha256(result.raw),
     codeExecutionObserved: result.codeExecutionObserved,
     codeExecutionEventCount: result.codeExecutionEventCount,
+    timing: result.timing,
     failures,
+    protocolWarnings,
   };
   evidence.push(recorded);
   return recorded;
@@ -538,6 +763,7 @@ function recordFailure(scenario: LiveScenario, error: unknown): LiveResult {
     codeExecutionObserved: false,
     codeExecutionEventCount: 0,
     failures: [message],
+    protocolWarnings: [],
     error: message,
   };
   evidence.push(recorded);
@@ -553,16 +779,24 @@ function writeEvidence(config: LiveConfig | undefined, results: LiveResult[]): v
     `${JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
-        endpoint: config ? widgetStreamAssistUrl(config) : undefined,
-        widgetConfigId: config?.widgetConfigId,
+        endpoint: config ? liveStreamAssistUrl(config) : undefined,
+        transport: config?.transport,
+        tokenSource: config?.tokenSource,
+        widgetConfigId: config?.transport === 'widget' ? config.widgetConfigId : undefined,
         location: config?.location,
         engine: config?.engine,
         scenarioFilter: config?.scenarioFilter ? [...config.scenarioFilter] : undefined,
+        repetitions: config?.repetitions,
         summary: {
           total: results.length,
           pass: results.filter((r) => r.status === 'pass').length,
           fail: results.filter((r) => r.status === 'fail').length,
+          protocolWarnings: results.reduce(
+            (count, result) => count + result.protocolWarnings.length,
+            0,
+          ),
           codeExecutionObserved: results.filter((r) => r.codeExecutionObserved).length,
+          timing: timingSummary(results),
         },
         results,
       },
@@ -570,6 +804,34 @@ function writeEvidence(config: LiveConfig | undefined, results: LiveResult[]): v
       2,
     )}\n`,
   );
+}
+
+function timingSummary(results: LiveResult[]): Record<string, number | undefined> {
+  const visible = results
+    .map((result) => result.timing?.timeToFirstVisibleTextMs)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((a, b) => a - b);
+  const ttft = results
+    .map((result) => result.timing?.timeToFirstTokenMs)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((a, b) => a - b);
+  const total = results
+    .map((result) => result.timing?.totalMs)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((a, b) => a - b);
+  return {
+    medianTimeToFirstVisibleTextMs: percentile(visible, 0.5),
+    p95TimeToFirstVisibleTextMs: percentile(visible, 0.95),
+    medianTimeToFirstTokenMs: percentile(ttft, 0.5),
+    p95TimeToFirstTokenMs: percentile(ttft, 0.95),
+    medianTotalMs: percentile(total, 0.5),
+    p95TotalMs: percentile(total, 0.95),
+  };
+}
+
+function percentile(values: number[], fraction: number): number | undefined {
+  if (!values.length) return undefined;
+  return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
 }
 
 function sha256(text: string): string {
@@ -596,17 +858,20 @@ function expectInvokedSkill(result: LiveCallResult, pattern: RegExp): string[] {
 }
 
 function expectFence(result: LiveCallResult, fence: string): string[] {
-  return fencedBlock(result.text, fence)
-    ? []
-    : [`expected exactly usable \`\`\`${fence} fenced output`];
+  const block = usableFencedBlock(result.text, fence);
+  if (!block) return [`expected exactly usable \`\`\`${fence} fenced output`];
+  if (REQUIRE_CLOSED_FENCE && !closedFencedBlock(result.text, fence)) {
+    return [`expected closed \`\`\`${fence} fenced output in strict mode`];
+  }
+  return [];
 }
 
 function expectNoFence(result: LiveCallResult, fence: string): string[] {
-  return fencedBlock(result.text, fence) ? [`unexpected \`\`\`${fence} fence`] : [];
+  return usableFencedBlock(result.text, fence) ? [`unexpected \`\`\`${fence} fence`] : [];
 }
 
 function expectAnyCommand(result: LiveCallResult, commands: string[]): string[] {
-  const body = fencedBlock(result.text, 'cmd') ?? result.text;
+  const body = usableFencedBlock(result.text, 'cmd') ?? result.text;
   const lines = body
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -619,7 +884,7 @@ function expectAnyCommand(result: LiveCallResult, commands: string[]): string[] 
 }
 
 function expectNoCommand(result: LiveCallResult, commands: string[]): string[] {
-  const body = fencedBlock(result.text, 'cmd') ?? result.text;
+  const body = usableFencedBlock(result.text, 'cmd') ?? result.text;
   const lines = body
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -630,9 +895,29 @@ function expectNoCommand(result: LiveCallResult, commands: string[]): string[] {
   return bad ? [`unexpected unsafe command: ${bad}`] : [];
 }
 
-function fencedBlock(text: string, fence: string): string | undefined {
+function closedFencedBlock(text: string, fence: string): string | undefined {
   const pattern = new RegExp(`\`\`\`${fence}\\s*\\n([\\s\\S]*?)\\n\`\`\``, 'i');
   return pattern.exec(text)?.[1];
+}
+
+/** Match the same bounded recovery contract used by the production command and plan parsers. */
+function usableFencedBlock(text: string, fence: string): string | undefined {
+  const closed = closedFencedBlock(text, fence);
+  if (closed !== undefined) return closed;
+  const escapedFence = fence.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const trimmed = text.trim();
+  const open = new RegExp(`^\`\`\`${escapedFence}[^\\S\\n]*\\r?\\n([\\s\\S]+)$`, 'i').exec(trimmed);
+  if (!open?.[1] || open[1].includes('```')) return undefined;
+  return open[1].trim();
+}
+
+function fenceWarnings(text: string): string[] {
+  for (const fence of ['cmd', 'plan']) {
+    if (usableFencedBlock(text, fence) && !closedFencedBlock(text, fence)) {
+      return [`recovered unclosed \`\`\`${fence} fence using the production EOF contract`];
+    }
+  }
+  return [];
 }
 
 function commanderProtocol(

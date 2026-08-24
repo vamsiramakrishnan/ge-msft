@@ -180,6 +180,20 @@ describe('re-tagged actions (the audit fixes)', () => {
     expect(byId('add-sources-to-unit').surfaces).toContain('onenote');
   });
 
+  it('keeps mailbox and calendar briefing presets evidence-bound', () => {
+    const recentMail = byId('recent-mail-briefing');
+    expect(recentMail.surfaces).toEqual(['outlook']);
+    expect(recentMail.output).toBe('chat');
+    expect(recentMail.prompt).toContain('10 most recent messages');
+    expect(recentMail.prompt).toContain('do not infer or invent messages');
+
+    const nextMeeting = byId('prepare-next-meeting');
+    expect(nextMeeting.surfaces).toEqual(['outlook']);
+    expect(nextMeeting.output).toBe('chat');
+    expect(nextMeeting.prompt).toContain('connected calendar context');
+    expect(nextMeeting.prompt).toContain('do not infer or invent an event');
+  });
+
   it('keeps the contract-review nouns out of the default catalog', () => {
     const ids = QUICK_ACTIONS.map((a) => a.id);
     expect(ids).not.toContain('review-policy');

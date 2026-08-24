@@ -13,7 +13,8 @@ const hostFromUrl = (value: string | undefined): string[] => {
 };
 
 /**
- * Build the runnable add-in shell. Two entry HTML pages:
+ * Build the runnable add-in shell. Its entry HTML pages are:
+ *   • index.html     — the hosting status page and Teams launch forwarder.
  *   • taskpane.html  — the React task pane (the document-bound assist panel).
  *   • commands.html  — the headless function-command runtime (ribbon actions + OnMessageSend).
  *   • auth-redirect.html — the minimal MSAL redirect bridge for popup/iframe token flows.
@@ -49,6 +50,7 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
       rollupOptions: {
         input: {
+          index: resolve(__dirname, 'index.html'),
           taskpane: resolve(__dirname, 'taskpane.html'),
           commands: resolve(__dirname, 'commands.html'),
           functions: resolve(__dirname, 'functions.html'),

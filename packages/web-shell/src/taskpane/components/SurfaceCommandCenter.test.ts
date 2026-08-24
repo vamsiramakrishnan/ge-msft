@@ -72,9 +72,19 @@ describe('SurfaceCommandCenter', () => {
       'redesign',
     ]);
     expect(surfacePrimaryActions('outlook').map((action) => action.id)).toEqual([
+      'recent-mail-briefing',
+      'prepare-next-meeting',
       'draft-reply',
-      'catch-up',
-      'extract-actions',
+    ]);
+    expect(surfacePrimaryActions('onenote').map((action) => action.id)).toEqual([
+      'synthesize-page',
+      'discover-sources',
+      'audio-overview',
+    ]);
+    expect(surfacePrimaryActions('teams').map((action) => action.id)).toEqual([
+      'live-notes',
+      'action-items',
+      'catch-up-teams',
     ]);
   });
 

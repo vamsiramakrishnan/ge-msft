@@ -78,7 +78,7 @@ export const QuickActionSchema = z
     prompt: z.string(), // templated free-text seed; `{{name}}` slots are declared in `parameters`
     ground: z.array(z.string()).default([]), // default @-sources, e.g. ['this']
     output: QuickActionOutputSchema, // MUST equal deriveOutput(intent) — enforced below
-    contextMenu: z.boolean().default(false), // also offered on right-click
+    contextMenu: z.boolean().default(false), // candidate for hosts with a matching menu entry point
     parameters: z.array(QuickActionParamSchema).optional(), // typed `{{name}}` fill slots (H)
   })
   // Fail-closed: an action's declared `output` MUST match the closure-derived output for its intent.
@@ -240,7 +240,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     scope: SELECTION,
     prompt: 'Tighten and rewrite the selected text as a tracked change, preserving its meaning.',
     ground: ['this'],
-    contextMenu: true,
+    contextMenu: false,
   }),
   surfaceAction({
     id: 'exec-summary',
@@ -280,7 +280,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     // (unescaped) substitution into the formula string is safe. If a formula-shaped prompt ever gains
     // a WRITE path, add a formula-slot encoder (escape `"`, reject newlines) first (security review H).
     id: 'ge-ask',
-    label: '=GE.ASK in the grid',
+    label: 'Suggest a GE.ASK formula',
     surfaces: ['excel'],
     intent: 'ask',
     scope: { kind: 'range' },
@@ -382,7 +382,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
   }),
   surfaceAction({
     id: 'speaker-notes',
-    label: 'Draft speaker notes',
+    label: 'Draft speaker notes in chat',
     surfaces: ['powerpoint'],
     // No host write path for speaker notes yet (CAPABILITY-MAP: set-speaker-notes is
     // modeled-not-advertised) — draft them into the pane as chat until the bridge can actuate.
@@ -426,7 +426,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
   }),
   surfaceAction({
     id: 'add-sources-to-unit',
-    label: "Add this page's sources to the unit",
+    label: 'Prepare sources to add',
     surfaces: ['onenote'],
     // OneNote is where the unit is assembled (EXPERIENCE.md §2) — a staged composition action;
     // it adds to the unit rather than writing host material, so it stays a chat/staged action.
@@ -438,7 +438,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
   }),
   surfaceAction({
     id: 'audio-overview',
-    label: 'Make an audio overview',
+    label: 'Write an audio overview script',
     surfaces: ['onenote'],
     intent: 'ask',
     scope: DOCUMENT,
@@ -459,6 +459,28 @@ export const SURFACE_ACTIONS: QuickAction[] = [
 
   // ── Outlook ──────────────────────────────────────────────────────────────────
   surfaceAction({
+    id: 'recent-mail-briefing',
+    label: 'Brief my latest 10 emails',
+    surfaces: ['outlook'],
+    intent: 'summarize',
+    scope: DOCUMENT,
+    prompt:
+      'Using connected Outlook mail context, review the 10 most recent messages in received-date order. Return sender, subject, received time, a one-line summary, and any required action for each. If context for multiple messages is unavailable, state what connection is required and do not infer or invent messages.',
+    ground: ['unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'prepare-next-meeting',
+    label: 'Prepare for my next meeting',
+    surfaces: ['outlook'],
+    intent: 'ask',
+    scope: DOCUMENT,
+    prompt:
+      'Using connected calendar context and related Outlook mail, prepare me for my next meeting. Include the time, attendees, objective, relevant recent correspondence, open decisions, and three preparation points. If calendar context is unavailable, state what connection is required and do not infer or invent an event.',
+    ground: ['unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
     id: 'summarize-email',
     label: 'Summarize this email / thread',
     surfaces: ['outlook'],
@@ -466,7 +488,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     scope: THIS_ITEM,
     prompt: 'Summarize this email or thread, keeping decisions and asks.',
     ground: ['this'],
-    contextMenu: true,
+    contextMenu: false,
   }),
   surfaceAction({
     id: 'catch-up',
@@ -496,7 +518,7 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     scope: DOCUMENT,
     prompt: 'Draft a reviewable reply to this thread.',
     ground: ['this'],
-    contextMenu: true,
+    contextMenu: false,
   }),
   surfaceAction({
     id: 'draft-new-email',

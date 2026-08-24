@@ -10,8 +10,8 @@ import {
  * here, NOT in the task-pane document — so this file is deliberately tiny and has no React/UI. It
  * registers:
  *   • `openGemini` — a ribbon button action that opens the task pane.
- *   • `askSelection` — the right-click "Ask Gemini about this" context-menu action: read the host
- *     selection, stash an `assist` seed grounding it as `@this`, then reveal the pane.
+ *   • `summarizeSelection` / `explainSelection` — deterministic right-click actions: read the
+ *     host selection, stash a typed seed grounding it as `@this`, then reveal the pane.
  *   • `onMessageSend` — the Outlook `OnMessageSend` (Smart Alerts) gate, pointed at the bridge's
  *     pure on-send handler.
  *
@@ -104,10 +104,10 @@ function readSelectedText(office: OfficeSelectionLike | undefined): Promise<stri
 }
 
 /**
- * The right-click "Ask Gemini about this" action. Reads the host selection, stashes an `assist`
- * seed (grounding the selection as `@this`) where the task pane picks it up on boot, then reveals
- * the pane. The selection is untrusted host content — it rides as `@this` data, never instructions.
- * Always completes the Office event, even on a read failure, so the command never hangs the host.
+ * A right-click action. Reads the host selection, stashes a typed read-only seed (grounding the
+ * selection as `@this`) where the task pane picks it up on boot, then reveals the pane. The
+ * selection is untrusted host content — it rides as `@this` data, never instructions. Always
+ * completes the Office event, even on a read failure, so the command never hangs the host.
  *
  * The task-pane boot (`taskpane/main.tsx`) reads the per-surface {@link askSelectionSeedKey} from
  * `localStorage` once on mount, clears it, validates the version + TTL, and seeds the turn via
@@ -116,13 +116,14 @@ function readSelectedText(office: OfficeSelectionLike | undefined): Promise<stri
 async function askSelection(
   event: { completed(): void },
   deps: { office?: OfficeSelectionLike; sink?: SeedSink; broadcaster?: SeedBroadcaster } = {},
+  mode: AskSelectionSeed['mode'] = 'ask',
 ): Promise<void> {
   const office =
     deps.office ?? (globalThis as { Office?: OfficeSelectionLike }).Office ?? undefined;
   const sink = deps.sink ?? (globalThis as { localStorage?: SeedSink }).localStorage ?? undefined;
   try {
     const selection = await readSelectedText(office);
-    const seed = buildAskSelectionSeed(selection);
+    const seed = buildAskSelectionSeed(selection, Date.now(), mode);
     const surface = resolveSurface(office) ?? 'word';
     try {
       sink?.setItem(askSelectionSeedKey(surface), JSON.stringify(seed));
@@ -138,6 +139,15 @@ async function askSelection(
   } finally {
     event.completed();
   }
+}
+
+/** Fixed host-command wrappers keep the manifest action IDs free of arbitrary prompt text. */
+function summarizeSelection(event: { completed(): void }): void {
+  void askSelection(event, {}, 'summarize');
+}
+
+function explainSelection(event: { completed(): void }): void {
+  void askSelection(event, {}, 'explain');
 }
 
 function publishSeedWritten(surface: Surface, injected?: SeedBroadcaster): void {
@@ -170,6 +180,8 @@ function register(): void {
   const associate = (): void => {
     office.actions?.associate('openGemini', openGemini);
     office.actions?.associate('askSelection', (e: { completed(): void }) => void askSelection(e));
+    office.actions?.associate('summarizeSelection', summarizeSelection);
+    office.actions?.associate('explainSelection', explainSelection);
     office.actions?.associate('onMessageSend', onMessageSend as (e: { completed(): void }) => void);
   };
   if (office.onReady) office.onReady(associate);
@@ -179,4 +191,11 @@ function register(): void {
 register();
 
 // Exported for unit testing / explicit host association.
-export { openGemini, askSelection, onMessageSend, handleMessageSend };
+export {
+  openGemini,
+  askSelection,
+  summarizeSelection,
+  explainSelection,
+  onMessageSend,
+  handleMessageSend,
+};

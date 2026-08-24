@@ -286,7 +286,10 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--upload-existing",
         action="store_true",
-        help="widget mode: upload to the selected numeric agent IDs instead of creating new agents",
+        help=(
+            "upload directly to selected existing agent IDs without create/delete; widget mode "
+            "resolves the visible numeric ID, public mode uses the configured GE_*_AGENT_ID"
+        ),
     )
     ap.add_argument(
         "--create-new",
@@ -350,8 +353,8 @@ def main(argv=None) -> int:
         raise SystemExit("--list is implemented for widget mode only")
     if args.api_mode == "widget" and args.share:
         raise SystemExit("--share is only implemented for public API mode")
-    if args.api_mode in create_skill.PUBLIC_API_MODES and (args.upload_existing or args.create_new):
-        raise SystemExit("--upload-existing/--create-new are widget mode options")
+    if args.api_mode in create_skill.PUBLIC_API_MODES and args.create_new:
+        raise SystemExit("--create-new is a widget mode option")
 
     cfg = create_skill.resolve_live_config()
     widget = create_skill.resolve_widget_config() if args.api_mode == "widget" else None
@@ -395,6 +398,8 @@ def main(argv=None) -> int:
                     "  step:        dry-run only; live widget mode needs --replace, "
                     "--upload-existing, or --create-new"
                 )
+        elif args.upload_existing:
+            print("  step:        upload zip in place to this exact existing public agent id")
 
     if not args.live:
         print("\nDRY-RUN (default): no API calls made. Re-run with --live to execute.")
@@ -508,21 +513,24 @@ def main(argv=None) -> int:
             continue
 
         print(f"\nUpdate {bundle.agent_id}")
-        print("  1) create shell agent")
-        try:
-            create_skill.create_shell(
-                s,
-                cfg,
-                bundle.agent_id,
-                "placeholder — replaced by SKILL.md on upload",
-                bundle.display_name,
-                bundle.description,
-            )
-        except Exception as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status != 409:
-                raise
-            print("     existing agent shell detected (HTTP 409); uploading zip in place")
+        if args.upload_existing:
+            print(f"  1) use exact existing agent id {bundle.agent_id}")
+        else:
+            print("  1) create shell agent")
+            try:
+                create_skill.create_shell(
+                    s,
+                    cfg,
+                    bundle.agent_id,
+                    "placeholder — replaced by SKILL.md on upload",
+                    bundle.display_name,
+                    bundle.description,
+                )
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status != 409:
+                    raise
+                print("     existing agent shell detected (HTTP 409); uploading zip in place")
         print("  2) upload zip (server unpacks)")
         upload_zip_path = create_skill.stamped_skill_zip(
             bundle.zip_path,

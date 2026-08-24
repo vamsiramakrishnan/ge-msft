@@ -49,7 +49,7 @@ export function QuickActionBar({
     ? preferredGroup
     : (availableGroups[0]?.output ?? 'chat');
   const activeActions = groups[activeGroup];
-  const visibleActions = expanded ? activeActions : activeActions.slice(0, 4);
+  const visibleActions = embedded || expanded ? activeActions : activeActions.slice(0, 4);
   const hiddenCount = Math.max(0, activeActions.length - visibleActions.length);
 
   return (
@@ -84,7 +84,7 @@ export function QuickActionBar({
               </button>
             ))}
           </div>
-          {activeActions.length > 4 ? (
+          {!embedded && activeActions.length > 4 ? (
             <button
               type="button"
               className="mini-btn action-more"
@@ -122,12 +122,22 @@ export function QuickActionBar({
               <span>
                 {action.intent} · {action.scope.kind} · {actionMeta(action.output)}
               </span>
-              {action.contextMenu ? <span>Also available from the host context menu.</span> : null}
+              {isHostContextAction(surface, action) ? (
+                <span>Also available from the host context menu.</span>
+              ) : null}
             </span>
           </span>
         ))}
       </div>
     </section>
+  );
+}
+
+/** Unified-manifest selection menus are available only on document hosts with text/cell entry
+ * points. The catalog flag marks a matching fixed Summarize/Explain mode, not universal support. */
+function isHostContextAction(surface: Surface, action: QuickAction): boolean {
+  return (
+    (surface === 'word' || surface === 'excel' || surface === 'powerpoint') && action.contextMenu
   );
 }
 

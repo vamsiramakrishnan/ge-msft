@@ -26,6 +26,8 @@ const officeXmlManifests = officeXmlSurfaces.map((surface) => ({
   surface,
   path: generatedOfficeXmlManifestPath(profile, surface),
 }));
+const centralizedOfficeManifest = generatedOfficeXmlManifestPath(profile, 'office');
+const centralizedOutlookManifest = generatedOfficeXmlManifestPath(profile, 'outlook');
 const web = join(repoRoot, 'packages', 'web-shell', 'dist-web');
 const publicDir = join(repoRoot, 'packages', 'web-shell', 'public');
 const requiredIcons = [
@@ -51,6 +53,12 @@ for (const { surface, path } of officeXmlManifests) {
     process.exit(1);
   }
 }
+if (!existsSync(centralizedOfficeManifest)) {
+  console.error(
+    `Generated development centralized Office XML manifest missing: ${centralizedOfficeManifest}`,
+  );
+  process.exit(1);
+}
 if (!existsSync(web)) {
   console.error(`Built web shell missing: ${web}. Run bun run build first.`);
   process.exit(1);
@@ -67,6 +75,7 @@ const outDir = packageDir(profile);
 const m365Dir = join(outDir, 'm365');
 const oneNoteDir = join(outDir, 'onenote');
 const xmlDir = join(outDir, 'xml');
+const centralizedDir = join(outDir, 'centralized');
 const webDir = join(outDir, 'web');
 cleanDir(outDir);
 
@@ -76,6 +85,8 @@ copyFile(oneNoteManifest, join(oneNoteDir, 'onenote.manifest.xml'));
 for (const { surface, path } of officeXmlManifests) {
   copyFile(path, join(xmlDir, `${surface}.manifest.xml`));
 }
+copyFile(centralizedOfficeManifest, join(centralizedDir, 'office.manifest.xml'));
+copyFile(centralizedOutlookManifest, join(centralizedDir, 'outlook.manifest.xml'));
 copyDir(web, webDir);
 
 const commandsChunk = walk(join(webDir, 'assets')).find((file) => /commands-.*\.js$/.test(file));
@@ -85,8 +96,9 @@ const releaseNotes = [
   `# Gemini Enterprise Development Sideload Package v${rootVersion()}`,
   '',
   'Profile: development',
-  'Unified package surfaces: Word, Excel, PowerPoint, Outlook, Teams',
+  'Unified package surfaces: Word, Excel, PowerPoint, Outlook',
   'Companion package: OneNote legacy XML manifest',
+  'Centralized deployment: centralized/office.manifest.xml + centralized/outlook.manifest.xml',
   '',
   'This package is for local/end-to-end development and is not a production alpha artifact.',
   'Run the web shell with `bun run --filter @ge/web-shell dev` while sideloading this package.',
@@ -96,10 +108,25 @@ writeFileSync(join(outDir, 'README.md'), releaseNotes);
 
 const zipPath = join(repoRoot, 'dist', 'release', `development-m365-v${rootVersion()}.zip`);
 createZip(walk(m365Dir), m365Dir, zipPath);
+const centralizedZipPath = join(
+  repoRoot,
+  'dist',
+  'release',
+  `development-office-centralized-v${rootVersion()}.zip`,
+);
+createZip(walk(centralizedDir), centralizedDir, centralizedZipPath);
 
 const checksumPath = join(repoRoot, 'dist', 'release', 'SHA256SUMS');
 writeChecksums(
-  [zipPath, manifest, oneNoteManifest, ...officeXmlManifests.map((x) => x.path)],
+  [
+    zipPath,
+    centralizedZipPath,
+    manifest,
+    oneNoteManifest,
+    centralizedOfficeManifest,
+    centralizedOutlookManifest,
+    ...officeXmlManifests.map((x) => x.path),
+  ],
   checksumPath,
 );
 
@@ -124,6 +151,14 @@ writeJson(join(repoRoot, 'dist', 'release', 'development-artifact.json'), {
   oneNoteManifest,
   oneNoteManifestSha256: sha256File(oneNoteManifest),
   officeXml,
+  centralizedDeployment: {
+    package: centralizedZipPath,
+    packageSha256: sha256File(centralizedZipPath),
+    officeManifest: join(centralizedDir, 'office.manifest.xml'),
+    officeManifestSha256: sha256File(centralizedOfficeManifest),
+    outlookManifest: join(centralizedDir, 'outlook.manifest.xml'),
+    outlookManifestSha256: sha256File(centralizedOutlookManifest),
+  },
   manifestVersion: m365Manifest.version,
   webBuild: webDir,
 });
@@ -132,3 +167,5 @@ console.log(`packaged ${zipPath}`);
 console.log(`sha256 ${sha256File(zipPath)}`);
 console.log(`onenote ${join(oneNoteDir, 'onenote.manifest.xml')}`);
 console.log(`office xml ${xmlDir}`);
+console.log(`centralized office xml ${centralizedDir}`);
+console.log(`centralized package ${centralizedZipPath}`);

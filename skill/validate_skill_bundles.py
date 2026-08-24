@@ -20,7 +20,11 @@ DEFAULT_SKILLS = (
     "m365-surface-commander",
     "m365-release-operator",
 )
-MAX_SKILL_LINES = 500
+# The platform ingests SKILL.md as the always-on instruction. Keep that entrypoint small enough to
+# reach the first useful token quickly; put exact syntax, examples, and long-tail behavior in routed
+# references instead. All current bundles fit comfortably under both limits.
+MAX_SKILL_LINES = 200
+MAX_SKILL_BYTES = 10_000
 
 REQUIRED_SKILL_FRONTMATTER = ("name", "description")
 REQUIRED_RESOURCE_FRONTMATTER = ("title", "kind", "skill", "topics", "load_when")
@@ -151,9 +155,26 @@ def validate_skill(skill_dir: Path) -> list[str]:
             if not frontmatter.get(key):
                 errors.append(f"{skill_dir.name}/SKILL.md missing frontmatter field {key}")
 
-    line_count = len(skill_md.read_text(encoding="utf-8").splitlines())
+    skill_text = skill_md.read_text(encoding="utf-8")
+    line_count = len(skill_text.splitlines())
     if line_count > MAX_SKILL_LINES:
         errors.append(f"{skill_dir.name}/SKILL.md has {line_count} lines; max is {MAX_SKILL_LINES}")
+    byte_count = len(skill_text.encode("utf-8"))
+    if byte_count > MAX_SKILL_BYTES:
+        errors.append(
+            f"{skill_dir.name}/SKILL.md has {byte_count} bytes; max is {MAX_SKILL_BYTES}; "
+            "move exact detail into a routed reference",
+        )
+    if (skill_dir / "references").is_dir():
+        if "references/resource-index.md" not in skill_text:
+            errors.append(
+                f"{skill_dir.name}/SKILL.md must link references/resource-index.md for "
+                "progressive disclosure",
+            )
+        if "load" not in skill_text.lower() or "only" not in skill_text.lower():
+            errors.append(
+                f"{skill_dir.name}/SKILL.md must explain selective reference loading",
+            )
 
     for md in sorted(skill_dir.rglob("*.md")):
         errors.extend(validate_links(md))

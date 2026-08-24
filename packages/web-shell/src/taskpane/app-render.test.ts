@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { App } from './components/App.js';
+import { App, type AppProps } from './components/App.js';
 import { makeMockController } from './preview.js';
 import { FIXTURE_STATE } from './preview-fixtures.js';
 import type { Surface } from '@ge/contracts';
@@ -21,13 +21,13 @@ import type { Surface } from '@ge/contracts';
 let container: HTMLDivElement;
 let root: Root;
 
-function render(surface: Surface = 'word'): void {
+function render(surface: Surface = 'word', props: Partial<AppProps> = {}): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   const controller = makeMockController(FIXTURE_STATE);
   act(() => {
-    root.render(createElement(App, { controller, surface }));
+    root.render(createElement(App, { controller, surface, ...props }));
   });
 }
 
@@ -45,6 +45,29 @@ describe('<App/> render smoke', () => {
     expect(panel?.getAttribute('aria-busy')).toBe('true');
   });
 
+  it('keeps the core toolbar destinations labeled at narrow-pane density', () => {
+    render();
+    const labels = [...container.querySelectorAll('.tw-label')].map((node) => node.textContent);
+    expect(labels).toContain('Context');
+    expect(labels).toContain('Actions');
+    expect(labels).toContain('History');
+  });
+
+  it('opens catalog routing in the same unclipped modal surface', () => {
+    const catalogClient = {
+      listCatalog: () => new Promise<never>(() => undefined),
+    } as unknown as NonNullable<AppProps['catalogClient']>;
+    render('word', { catalogClient });
+    const routingButton = container.querySelector<HTMLButtonElement>(
+      '.tw-icon[aria-label="Catalog and routing settings"]',
+    );
+    act(() => routingButton?.click());
+    expect(container.querySelector('.tw-modal-title')?.textContent).toContain(
+      'Catalog and routing',
+    );
+    expect(container.querySelector('#ge-catalog-settings')).not.toBeNull();
+  });
+
   it('renders the conversation thread with an assistant message and its citations', () => {
     render();
     const thread = container.querySelector('.thread[role="log"]');
@@ -58,6 +81,8 @@ describe('<App/> render smoke', () => {
   it('renders the streaming caret on the in-flight assistant message', () => {
     render();
     expect(container.querySelector('.caret')).not.toBeNull();
+    const activity = container.querySelector('.message-activity[role="status"]');
+    expect(activity?.textContent).toContain('Checking the selected policy');
   });
 
   it('renders the context tray with attached and available chips', () => {
@@ -66,11 +91,18 @@ describe('<App/> render smoke', () => {
       '.tw-icon[aria-label^="Context"]',
     );
     act(() => contextButton?.click());
+    const modal = container.querySelector('[role="dialog"][aria-modal="true"]');
+    expect(modal?.querySelector('.tw-modal-title')?.textContent).toContain('Context and grounding');
     const tray = container.querySelector('.unit[aria-label="Research unit grounding scope"]');
     expect(tray).not.toBeNull();
+    expect(tray?.classList.contains('unit--embedded')).toBe(true);
+    expect(contextButton?.getAttribute('aria-controls')).toBe('tw-panel-context');
     expect(tray?.querySelector('[aria-label="Attached sources"]')).not.toBeNull();
     expect(tray?.querySelector('[aria-label="Available to attach"]')).not.toBeNull();
     expect(container.querySelectorAll('.chip').length).toBe(FIXTURE_STATE.chips.length);
+    act(() => modal?.querySelector<HTMLButtonElement>('.tw-modal-close')?.click());
+    expect(container.querySelector('.tw-modal-layer')?.hasAttribute('hidden')).toBe(true);
+    expect(contextButton?.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('renders a surface-aware command center above the workstream', () => {
@@ -79,6 +111,7 @@ describe('<App/> render smoke', () => {
       '.tw-icon[aria-label="Actions"]',
     );
     act(() => actionsButton?.click());
+    expect(container.querySelector('.tw-modal-title')?.textContent).toContain('Quick tasks');
     const center = container.querySelector(
       '.surface-center[aria-label="Word workspace command center"]',
     );
@@ -86,6 +119,7 @@ describe('<App/> render smoke', () => {
     expect(center?.querySelector('.surface-title')?.textContent).toBe('Word workspace');
     expect(center?.querySelectorAll('.surface-action').length).toBe(3);
     expect(center?.textContent).toContain('Gate');
+    expect(container.querySelector('.action-drawer--embedded .action-drawer-list')).not.toBeNull();
   });
 
   it('renders surface-specific primary actions and keeps the secondary row deduplicated', () => {

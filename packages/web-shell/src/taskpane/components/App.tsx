@@ -245,10 +245,6 @@ export function App({
   const state = usePanelState(controller);
   // The parameterized action awaiting its `{{name}}` fill values (Workstream H), or undefined.
   const [paramFill, setParamFill] = useState<QuickAction | undefined>(undefined);
-  // Catalog routing is admin-grade config; it lives behind this settings toggle, not as always-on
-  // chrome, so the default pane stays task-focused (quiet by default). The catalog stays mounted
-  // either way so its default routing still loads on open.
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const hasBlockingGate = Boolean(
     state.pendingCommandPlan ?? state.pendingPlan ?? state.pendingWrite ?? state.pendingShare,
   );
@@ -376,7 +372,15 @@ export function App({
         conversations={state.conversations}
         primaryActionIds={primaryActionIds}
         hasSettings={Boolean(catalogClient)}
-        onOpenSettings={() => setSettingsOpen((v) => !v)}
+        settingsPanel={
+          <GeminiCatalogPanel
+            catalogClient={catalogClient}
+            disabled={actionBlocked}
+            onApply={(selection: GeminiCatalogSelection) => {
+              onCatalogRouting?.(applyCatalogSelection(selection));
+            }}
+          />
+        }
         onToggleChip={onToggle}
         onRevealChip={(id) => void controller.reveal(id)}
         onRefreshContext={() => void controller.refreshContext()}
@@ -384,15 +388,6 @@ export function App({
         onResumeConversation={(name) => controller.resumeConversation(name)}
         onInvokeSkill={(name, args) => void controller.invokeSkill(name, args)}
         onQuickAction={onQuickAction}
-      />
-
-      <GeminiCatalogPanel
-        catalogClient={catalogClient}
-        open={settingsOpen}
-        disabled={actionBlocked}
-        onApply={(selection: GeminiCatalogSelection) => {
-          onCatalogRouting?.(applyCatalogSelection(selection));
-        }}
       />
 
       {state.suggestions.length > 0 && (

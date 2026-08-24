@@ -15,6 +15,7 @@ The add-in is **static files + a manifest**:
 
 | Piece | Where it lives | What points at it |
 | --- | --- | --- |
+| Hosting status page and Teams launch forwarder | `packages/web-shell/dist-web/index.html` | Hosting root `/` and Teams `/?host=teams` |
 | Task pane, commands runtime, functions runtime, auth redirect | `packages/web-shell/dist-web/` (Vite build) | manifest `SourceLocation` / `FunctionFile` URLs |
 | `functions.json` (custom-function metadata) | `dist-web/functions.json` | Excel XML manifest `<ExtendedOverrides>` |
 | Manifests | `dist/package/<profile>/` via `bun run package:dev` / `package:alpha` | uploaded to M365 |
@@ -55,8 +56,11 @@ and regenerate manifests with the same origin.
 
 ```bash
 firebase init hosting   # public dir: packages/web-shell/dist-web; SPA rewrite not needed
-firebase deploy --only hosting
+bun run deploy:web      # rebuilds, checks, then deploys Hosting
 ```
+
+The generated `index.html` makes the hosting root a valid readiness page and forwards
+`/?host=teams` to the task-pane shell. Do not replace it with a catch-all SPA rewrite.
 
 ### Azure Static Web Apps
 
@@ -87,9 +91,12 @@ The guided flow is `bun run sideload` (ATK login, tunnel, package, install, stat
 | **OneNote** | OneNote web only, separate legacy package: upload `manifests/onenote.manifest.xml` variant from `dist/manifests/` |
 | **Teams** | Teams → Apps → **Manage your apps → Upload an app** (custom app upload must be enabled by admin policy) |
 
-Admin-center route (no end-user action): Microsoft 365 admin center → Settings → Integrated
-apps → **Upload custom apps** → the unified zip → assign users/groups. This is also the
-intuitive path for pilot tenants.
+Admin-center route (no end-user action): Microsoft 365 admin center → Settings → Integrated apps →
+**Upload custom apps** → **Office Add-in**. Upload
+`dist/package/development/centralized/office.manifest.xml` for Word/Excel/PowerPoint, then upload
+`dist/package/development/centralized/outlook.manifest.xml` separately for Outlook, and assign the
+same pilot user/group to both. This classic XML lane is the default for Mac desktop pilots. Keep the
+unified zip in the Agents Toolkit/M365 catalog development lane.
 
 ## 5. Marketplace (AppSource / Microsoft 365 Store) checklist
 

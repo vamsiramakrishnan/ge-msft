@@ -32,6 +32,11 @@ describe('Word capability closure', () => {
       'fill-content-control',
       'add-comment',
       'comment-reply',
+      'apply-style',
+      'insert-table',
+      'insert-content-control',
+      'insert-hyperlink',
+      'find-replace',
     ]);
   });
 

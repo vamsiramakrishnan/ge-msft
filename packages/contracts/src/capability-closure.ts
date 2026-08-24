@@ -60,6 +60,11 @@ const RUNTIME_SERVED_READS: ReadonlySet<ReadVerb> = new Set([
   'slides',
   'neighbors',
   'open',
+  // DocFs coreutils — served by the runtime's command protocol (command-protocol.ts), not by
+  // bridge read ports; listed here so the closure helper doesn't false-flag them as unreached.
+  'ls',
+  'find',
+  'tail',
 ]);
 
 /**

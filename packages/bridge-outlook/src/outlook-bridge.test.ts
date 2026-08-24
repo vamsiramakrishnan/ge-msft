@@ -3,23 +3,29 @@ import {
   asChangeId,
   DocStateSnapshotSchema,
   ResolvedContextSchema,
+  type ActuationKind,
+  type ActuationParams,
   type ActuationRequest,
   type ContextRef,
 } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
+import { MAX_ATTACHMENT_BASE64_CHARS } from './actuate-plan.js';
 import { HANDLED_ACTUATIONS, OutlookBridge } from './outlook-bridge.js';
 
 /**
  * Self-contained, in-memory **Outlook mailbox simulator** for the bridge-outlook package. It models
  * ONLY the slice of the Office.js mailbox object model {@link OutlookBridge} drives: the single
- * active `Office.context.mailbox.item` (subject / from / callback-based `body.getAsync`), the
+ * active `Office.context.mailbox.item` (read-mode statics AND the compose-mode write callbacks —
+ * `Recipients.setAsync/addAsync`, `Subject.setAsync`, `Body.setAsync`,
+ * `addFileAttachmentFromBase64Async`/`addFileAttachmentAsync`/`addItemAttachmentAsync`), the
  * compose-form launchers (`displayReplyForm` / `displayNewMessageForm`), and the `ItemChanged`
  * event registration. Reads are callback-based exactly like the host; writes record into the seed
- * so a test can assert the reviewable form actually opened with the right payload.
+ * so a test can assert the reviewable form actually opened with the right payload and that draft
+ * edits never send.
  *
  * Kept local to this package (mirrors the fake-excel harness shape) so it adds no cross-package
  * dependency. The mail body/subject are UNTRUSTED — these tests assert the bridge never auto-sends
- * and that the reviewable-form boundary is the only write path.
+ * and that the reviewable-form/draft boundary is the only write path.
  */
 
 /* ───────────────────────────── seed + recorders ────────────────────────── */
@@ -33,6 +39,39 @@ interface NewMessageFormCall {
   toRecipients?: string[];
 }
 
+interface RecipientWrite {
+  mode: 'set' | 'add';
+  field: string;
+  addresses: string[];
+}
+interface SubjectSet {
+  subject: string;
+}
+interface BodySet {
+  data: string;
+  coercionType: unknown;
+}
+interface AttachmentAdded {
+  transport: 'uri' | 'base64' | 'item';
+  value: string;
+  name: string;
+  isInline: boolean;
+}
+
+/** Compose-mode draft state behind the active item (drives the write-capable host objects). */
+interface DraftSeed {
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  /** Field whose setAsync/addAsync invokes its callback with a failed status. */
+  recipientsFailsOn?: 'to' | 'cc' | 'bcc';
+  subjectSetFails?: boolean;
+  bodySetFails?: boolean;
+  attachmentAddFails?: boolean;
+  /** Strip every compose write API → the item looks like a READ-mode message. */
+  readOnly?: boolean;
+}
+
 interface MailItemSeed {
   itemId?: string;
   subject?: string;
@@ -41,6 +80,8 @@ interface MailItemSeed {
   body: string;
   /** When true, `body.getAsync` invokes its callback with a failed status (host read error). */
   bodyFails?: boolean;
+  /** When present (and not readOnly), exposes the compose-mode write APIs on the item. */
+  draft?: DraftSeed;
 }
 
 interface OutlookHandle {
@@ -53,6 +94,10 @@ interface Installed {
   newMessageForms: NewMessageFormCall[];
   openedMessages: string[];
   handlers: OutlookHandle[];
+  recipientWrites: RecipientWrite[];
+  subjectSets: SubjectSet[];
+  bodySets: BodySet[];
+  attachmentsAdded: AttachmentAdded[];
   /** Swap the active item (or clear it) to simulate ItemChanged / a switch to a draft. */
   setItem(seed: MailItemSeed | undefined): void;
   /** Fire the registered ItemChanged handler(s). */
@@ -79,14 +124,86 @@ function installOutlook(
   const newMessageForms: NewMessageFormCall[] = [];
   const openedMessages: string[] = [];
   const handlers: OutlookHandle[] = [];
+  const recipientWrites: RecipientWrite[] = [];
+  const subjectSets: SubjectSet[] = [];
+  const bodySets: BodySet[] = [];
+  const attachmentsAdded: AttachmentAdded[] = [];
   let current: MailItemSeed | undefined = initial;
+
+  type ResultCb<T> = (r: { status: string; value?: T; error?: { message?: string } }) => void;
+  const ok = <T>(value: T) => ({ status: 'succeeded', value });
+  const fail = (message: string) => ({ status: 'failed', error: { message } });
 
   const buildItem = (seed: MailItemSeed | undefined): unknown => {
     if (!seed) return undefined;
+    const d = seed.draft;
+    const compose = d !== undefined && !d.readOnly;
+
+    const recipientField = (field: 'to' | 'cc' | 'bcc') => ({
+      setAsync(list: string[], cb: ResultCb<void>): void {
+        recipientWrites.push({ mode: 'set', field, addresses: list });
+        if (d?.recipientsFailsOn === field) {
+          cb(fail('recipient write failed'));
+        } else {
+          if (d) d[field] = [...list];
+          cb(ok(undefined));
+        }
+      },
+      addAsync(list: string[], cb: ResultCb<void>): void {
+        recipientWrites.push({ mode: 'add', field, addresses: list });
+        if (d?.recipientsFailsOn === field) {
+          cb(fail('recipient write failed'));
+        } else {
+          if (d) d[field] = [...(d[field] ?? []), ...list];
+          cb(ok(undefined));
+        }
+      },
+    });
+
+    const attachmentApi =
+      (transport: AttachmentAdded['transport']) =>
+      (
+        value: string,
+        name: string,
+        options: { isInline?: boolean },
+        cb: ResultCb<string>,
+      ): void => {
+        attachmentsAdded.push({
+          transport,
+          value,
+          name,
+          isInline: options?.isInline === true,
+        });
+        if (d?.attachmentAddFails) {
+          cb(fail('attachment upload failed'));
+        } else {
+          cb(ok(`att-${transport}-1`));
+        }
+      };
+
     return {
       ...(seed.itemId !== undefined ? { itemId: seed.itemId } : {}),
-      ...(seed.subject !== undefined ? { subject: seed.subject } : {}),
+      // Compose mode exposes Subject as a write-capable object; read mode as a static string.
+      ...(compose
+        ? {
+            subject: {
+              getAsync(cb: ResultCb<string>): void {
+                cb(ok(seed.subject ?? ''));
+              },
+              setAsync(value: string, cb: ResultCb<void>): void {
+                subjectSets.push({ subject: value });
+                if (d.subjectSetFails) cb(fail('subject write failed'));
+                else cb(ok(undefined));
+              },
+            },
+          }
+        : seed.subject !== undefined
+          ? { subject: seed.subject }
+          : {}),
       ...(seed.from !== undefined ? { from: seed.from } : {}),
+      ...(compose && d.to !== undefined ? { to: recipientField('to') } : {}),
+      ...(compose && d.cc !== undefined ? { cc: recipientField('cc') } : {}),
+      ...(compose && d.bcc !== undefined ? { bcc: recipientField('bcc') } : {}),
       body: {
         getAsync(
           _coercion: unknown,
@@ -98,7 +215,27 @@ function installOutlook(
             cb({ status: 'succeeded', value: seed.body });
           }
         },
+        ...(compose
+          ? {
+              setAsync(
+                data: string,
+                options: { coercionType?: unknown },
+                cb: ResultCb<void>,
+              ): void {
+                bodySets.push({ data, coercionType: options?.coercionType });
+                if (d.bodySetFails) cb(fail('body write failed'));
+                else cb(ok(undefined));
+              },
+            }
+          : {}),
       },
+      ...(compose
+        ? {
+            addFileAttachmentAsync: attachmentApi('uri'),
+            addFileAttachmentFromBase64Async: attachmentApi('base64'),
+            addItemAttachmentAsync: attachmentApi('item'),
+          }
+        : {}),
       displayReplyForm(arg: ReplyFormCall): void {
         replyForms.push(arg);
       },
@@ -148,6 +285,10 @@ function installOutlook(
     newMessageForms,
     openedMessages,
     handlers,
+    recipientWrites,
+    subjectSets,
+    bodySets,
+    attachmentsAdded,
     setItem(seed) {
       current = seed;
     },
@@ -176,6 +317,18 @@ function reply(params: ActuationRequest['params'], id = 'c1'): ActuationRequest 
 }
 function compose(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'create-mail', surface: 'outlook', params };
+}
+function act(kind: ActuationKind, params: ActuationParams, id = 'chg-x'): ActuationRequest {
+  return { changeId: asChangeId(id), kind, surface: 'outlook', params };
+}
+
+/** A compose-mode draft item: functional To/Cc/Bcc (empty), editable subject/body, attachments. */
+function draftMail(overrides: DraftSeed = {}): MailItemSeed {
+  return {
+    subject: 'Q3 follow-up',
+    body: '<p>Current draft body.</p>',
+    draft: { to: [], cc: [], bcc: [], ...overrides },
+  };
 }
 
 let active: Installed | undefined;
@@ -436,6 +589,259 @@ describe('OutlookBridge.actuate create-mail (reviewable new draft)', () => {
     const res = await new OutlookBridge().actuate(compose({ mail: { body: 'orphan body' } }));
     expect(res).toMatchObject({ ok: false, error: { code: 'no_subject' } });
     expect(active.newMessageForms).toHaveLength(0);
+  });
+});
+
+describe('OutlookBridge.actuate set-recipients (in-place draft edit)', () => {
+  it('replaces To/Cc via setAsync and returns ok at recipients:set', async () => {
+    active = installOutlook(draftMail({ to: ['old@acme.com'] }));
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { to: ['a@acme.com'], cc: ['b@acme.com'] } }),
+    );
+    expect(res).toMatchObject({ ok: true, kind: 'set-recipients', location: 'recipients:set' });
+    expect(active.recipientWrites).toEqual([
+      { mode: 'set', field: 'to', addresses: ['a@acme.com'] },
+      { mode: 'set', field: 'cc', addresses: ['b@acme.com'] },
+    ]);
+  });
+
+  it('appends via addAsync when recipientMode=add and returns location recipients:add', async () => {
+    active = installOutlook(draftMail({ to: ['old@acme.com'] }));
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', {
+        mail: { to: ['new@acme.com'], recipientMode: 'add' },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'recipients:add' });
+    expect(active.recipientWrites).toEqual([
+      { mode: 'add', field: 'to', addresses: ['new@acme.com'] },
+    ]);
+  });
+
+  it('rejects with no_recipients when no usable address is supplied (nothing written)', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    for (const params of [{}, { mail: {} }, { mail: { to: [], cc: ['   '] } }]) {
+      const res = await bridge.actuate(act('set-recipients', params));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_recipients' } });
+    }
+    expect(active.recipientWrites).toHaveLength(0);
+  });
+
+  it('validates every requested field up front so a missing field never partially applies', async () => {
+    // A draft that exposes To but has NO cc field at all.
+    active = installOutlook({ subject: 'd', body: 'x', draft: { to: [] } });
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { to: ['a@acme.com'], cc: ['b@acme.com'] } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_compose' } });
+    expect(active.recipientWrites).toHaveLength(0);
+  });
+
+  it('surfaces a host write failure as write_failed', async () => {
+    active = installOutlook(draftMail({ recipientsFailsOn: 'bcc' }));
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { bcc: ['x@acme.com'] } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+  });
+
+  it('rejects with no_item when there is no active item at all', async () => {
+    active = installOutlook(undefined);
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { to: ['a@acme.com'] } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_item' } });
+  });
+
+  it('rejects with no_compose when the active item is a read-mode message', async () => {
+    active = installOutlook(readMail());
+    const res = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { to: ['a@acme.com'] } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_compose' } });
+  });
+});
+
+describe('OutlookBridge.actuate add-attachment (in-place draft edit)', () => {
+  it('attaches a base64 payload via addFileAttachmentFromBase64Async and records the minted id', async () => {
+    active = installOutlook(draftMail());
+    const base64 = 'aGVsbG8='; // "hello"
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { name: 'brief.txt', base64 } }, 'chg-att'),
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      changeId: asChangeId('chg-att'),
+      kind: 'add-attachment',
+      location: 'draft-attachment:att-base64-1',
+    });
+    expect(active.attachmentsAdded).toEqual([
+      { transport: 'base64', value: base64, name: 'brief.txt', isInline: false },
+    ]);
+  });
+
+  it('derives the file name from an https uri and attaches via addFileAttachmentAsync', async () => {
+    active = installOutlook(draftMail());
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', {
+        attachment: { uri: 'https://contoso.example/reports/q3.pdf?token=x' },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'draft-attachment:att-uri-1' });
+    expect(active.attachmentsAdded).toEqual([
+      {
+        transport: 'uri',
+        value: 'https://contoso.example/reports/q3.pdf?token=x',
+        name: 'q3.pdf',
+        isInline: false,
+      },
+    ]);
+  });
+
+  it('attaches another mail item via addItemAttachmentAsync when itemId is given with a name', async () => {
+    active = installOutlook(draftMail());
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { itemId: 'AAMk-src', name: 'Forwarded.msg' } }),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'draft-attachment:att-item-1' });
+    expect(active.attachmentsAdded).toEqual([
+      { transport: 'item', value: 'AAMk-src', name: 'Forwarded.msg', isInline: false },
+    ]);
+  });
+
+  it('rejects with no_attachment when the request carries no usable payload or name', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    for (const params of [
+      {},
+      { attachment: {} },
+      { attachment: { name: 'blank.txt', base64: '   ' } },
+      { attachment: { itemId: 'AAMk-src' } },
+    ]) {
+      const res = await bridge.actuate(act('add-attachment', params));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_attachment' } });
+    }
+    expect(active.attachmentsAdded).toHaveLength(0);
+  });
+
+  it('rejects an oversized base64 payload before any host call and never echoes it', async () => {
+    active = installOutlook(draftMail());
+    const oversized = `${'Q'.repeat(1024)}${'Q'.repeat(MAX_ATTACHMENT_BASE64_CHARS)}`;
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { name: 'big.bin', base64: oversized } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'attachment_too_large' } });
+    expect(JSON.stringify(res.error)).not.toContain('QQQQ');
+    expect(active.attachmentsAdded).toHaveLength(0);
+  });
+
+  it('rejects invalid base64 (bad charset/padding) as invalid_attachment', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    for (const base64 of ['abc', 'not+base64!', 'aGVs*b64=']) {
+      const res = await bridge.actuate(
+        act('add-attachment', { attachment: { name: 'x.bin', base64 } }),
+      );
+      expect(res).toMatchObject({ ok: false, error: { code: 'invalid_attachment' } });
+    }
+    expect(active.attachmentsAdded).toHaveLength(0);
+  });
+
+  it('rejects a non-https uri scheme (local-file exfil guard) as invalid_attachment', async () => {
+    active = installOutlook(draftMail());
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { uri: 'file:///etc/hosts' } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'invalid_attachment' } });
+    expect(active.attachmentsAdded).toHaveLength(0);
+  });
+
+  it('surfaces a host upload failure as write_failed', async () => {
+    active = installOutlook(draftMail({ attachmentAddFails: true }));
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { name: 'brief.txt', base64: 'aGVsbG8=' } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+  });
+
+  it('rejects with no_compose on a read-mode item', async () => {
+    active = installOutlook(readMail());
+    const res = await new OutlookBridge().actuate(
+      act('add-attachment', { attachment: { name: 'brief.txt', base64: 'aGVsbG8=' } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_compose' } });
+  });
+});
+
+describe('OutlookBridge.actuate set-body (in-place draft edit)', () => {
+  it('writes HTML by default via Body.setAsync and returns ok at draft-body', async () => {
+    active = installOutlook(draftMail());
+    const res = await new OutlookBridge().actuate(
+      act('set-body', { mail: { body: '<p>Raised to 99.9%.</p>' } }),
+    );
+    expect(res).toMatchObject({ ok: true, kind: 'set-body', location: 'draft-body' });
+    expect(active.bodySets).toEqual([{ data: '<p>Raised to 99.9%.</p>', coercionType: 'html' }]);
+  });
+
+  it('falls back to params.text with Text coercion, overridable by mail.coercion', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    await bridge.actuate(act('set-body', { text: 'Plain prose.' }));
+    expect(active.bodySets[0]).toEqual({ data: 'Plain prose.', coercionType: 'text' });
+
+    await bridge.actuate(act('set-body', { html: '<p>Rich</p>' }));
+    expect(active.bodySets[1]).toEqual({ data: '<p>Rich</p>', coercionType: 'html' });
+
+    await bridge.actuate(act('set-body', { mail: { body: '<p>x</p>', coercion: 'text' } }));
+    expect(active.bodySets[2]).toEqual({ data: '<p>x</p>', coercionType: 'text' });
+  });
+
+  it('rejects with no_body when no usable body is supplied (nothing written)', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    for (const params of [{}, { mail: {} }, { text: '   ' }]) {
+      const res = await bridge.actuate(act('set-body', params));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_body' } });
+    }
+    expect(active.bodySets).toHaveLength(0);
+  });
+
+  it('surfaces a host write failure as write_failed', async () => {
+    active = installOutlook(draftMail({ bodySetFails: true }));
+    const res = await new OutlookBridge().actuate(act('set-body', { mail: { body: '<p>x</p>' } }));
+    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+  });
+});
+
+describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
+  it('replaces the subject via Subject.setAsync and returns ok at draft-subject', async () => {
+    active = installOutlook(draftMail());
+    const res = await new OutlookBridge().actuate(
+      act('set-subject', { mail: { subject: 'Updated project plan' } }),
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      kind: 'set-subject',
+      location: 'draft-subject',
+    });
+    expect(active.subjectSets).toEqual([{ subject: 'Updated project plan' }]);
+  });
+
+  it('rejects with no_subject when the subject is missing or blank (nothing written)', async () => {
+    active = installOutlook(draftMail());
+    const bridge = new OutlookBridge();
+    for (const params of [{}, { mail: {} }, { mail: { subject: '   ' } }]) {
+      const res = await bridge.actuate(act('set-subject', params));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_subject' } });
+    }
+    expect(active.subjectSets).toHaveLength(0);
+  });
+
+  it('surfaces a host write failure as write_failed', async () => {
+    active = installOutlook(draftMail({ subjectSetFails: true }));
+    const res = await new OutlookBridge().actuate(act('set-subject', { mail: { subject: 'x' } }));
+    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
   });
 });
 

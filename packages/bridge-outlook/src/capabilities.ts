@@ -32,5 +32,38 @@ export const OUTLOOK_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['mail-item'],
     },
+    {
+      kind: 'add-attachment',
+      surface: 'outlook',
+      title: 'Attach file to draft',
+      description:
+        'Attach a base64 file, an https link, or a mail item to the open draft; nothing sends.',
+      reversible: true,
+      appliesTo: ['mail-item', 'attachment'],
+    },
+    {
+      kind: 'set-body',
+      surface: 'outlook',
+      title: 'Replace draft body',
+      description: 'Replace the body of the open draft as HTML or text; nothing sends.',
+      reversible: true,
+      appliesTo: ['mail-item'],
+    },
+    {
+      kind: 'set-recipients',
+      surface: 'outlook',
+      title: 'Set draft recipients',
+      description: 'Set (replace) or add To/Cc/Bcc on the open draft; send stays with the user.',
+      reversible: true,
+      appliesTo: ['mail-item', 'person'],
+    },
+    {
+      kind: 'set-subject',
+      surface: 'outlook',
+      title: 'Set draft subject',
+      description: 'Replace the subject of the open draft; nothing sends.',
+      reversible: true,
+      appliesTo: ['mail-item'],
+    },
   ],
 };

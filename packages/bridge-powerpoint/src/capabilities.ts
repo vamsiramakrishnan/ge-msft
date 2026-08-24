@@ -30,6 +30,36 @@ export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['shape'],
     },
+    {
+      kind: 'add-shape',
+      surface: 'powerpoint',
+      title: 'Add shape',
+      description: 'Add a text box, geometric shape, or line to a slide with explicit geometry.',
+      reversible: true,
+      appliesTo: ['slide'],
+    },
+    {
+      kind: 'format-shape',
+      surface: 'powerpoint',
+      title: 'Format shape',
+      description: 'Change fill, line, font, or z-order of an explicitly addressed shape in place.',
+      reversible: true,
+      appliesTo: ['shape'],
+    },
+    {
+      kind: 'add-table-slide',
+      surface: 'powerpoint',
+      title: 'Add slide table',
+      description: 'Insert a small native table seeded from a value grid onto an addressed slide.',
+      reversible: true,
+      appliesTo: ['slide', 'table'],
+    },
+    // NOTE: `set-speaker-notes` was advertised but its `actuate()` case ALWAYS degrades — this
+    // Office.js typings version has no `Slide.notes`/notesSlide write path. Un-advertised (ADR-0006
+    // phantom: advertised-but-never-actuates). Re-add once the host typings expose a notes writer.
+    // The same rule keeps `insert-image` un-advertised: this typings version exposes NO PowerPoint
+    // image-insertion write path (only Excel's ShapeCollection.addImage; PPT's getImageAsBase64 is
+    // read-only), so there is no typed host call for the bridge to make.
     // NOTE: `set-speaker-notes` was advertised but its `actuate()` case ALWAYS degrades — this
     // Office.js typings version has no `Slide.notes`/notesSlide write path. Un-advertised (ADR-0006
     // phantom: advertised-but-never-actuates). Re-add once the host typings expose a notes writer.

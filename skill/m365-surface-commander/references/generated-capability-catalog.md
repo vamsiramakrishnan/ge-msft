@@ -34,42 +34,42 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | onenote | promotable | `/set-page-title` | `set-page-title` | OneNote page title | OneNoteApi 1.1 | rename the active OneNote page with a reversible title edit |
 | outlook | catalog-only | `/add-categories` | `add-categories` | Outlook category assignment | Mailbox 1.8 | apply existing mailbox categories to a message or draft |
 | outlook | catalog-only | `/compose-appointment` | `compose-appointment` | Outlook appointment compose | Mailbox 1.1 | open a meeting/appointment draft from grounded details without auto-sending invites |
+| outlook | implemented | `/add-attachment` | `add-attachment` | Outlook draft attachment | Mailbox 1.8 | attach a generated or approved file to a draft without sending mail |
 | outlook | implemented | `compose` | `create-mail` | Outlook new draft | Mailbox 1.6 | open a new grounded draft without adding recipients or sending |
 | outlook | implemented | `mail` | `reply-mail` | Outlook reviewable reply draft | Mailbox 1.1 | stage a reply draft for the current message without sending it |
-| outlook | promotable | `/add-attachment` | `add-attachment` | Outlook draft attachment | Mailbox 1.8 | attach a generated or approved file to a draft without sending mail |
-| outlook | promotable | `/set-body` | `set-body` | Outlook draft body update | Mailbox 1.3 | replace the body of an open draft while leaving send control with the user |
-| outlook | promotable | `/set-recipients` | `set-recipients` | Outlook draft recipients | Mailbox 1.1 | set or add recipients on an open draft while preserving final send control |
-| outlook | promotable | `/set-subject` | `set-subject` | Outlook draft subject | Mailbox 1.1 | replace the subject of an open draft without sending |
-| powerpoint | catalog-only | `/add-table-slide` | `add-table-slide` | PowerPoint native slide table | PowerPointApi 1.8 | insert a small native table onto a slide instead of flattening it into text |
+| outlook | implemented | `/set-body` | `set-body` | Outlook draft body update | Mailbox 1.3 | replace the body of an open draft while leaving send control with the user |
+| outlook | implemented | `/set-recipients` | `set-recipients` | Outlook draft recipients | Mailbox 1.1 | set or add recipients on an open draft while preserving final send control |
+| outlook | implemented | `/set-subject` | `set-subject` | Outlook draft subject | Mailbox 1.1 | replace the subject of an open draft without sending |
 | powerpoint | catalog-only | `/apply-slide-layout` | `apply-slide-layout` | PowerPoint slide layout application | PowerPointApi 1.8 | apply an existing deck layout to a specific slide without recreating the slide |
+| powerpoint | implemented | `/add-shape` | `add-shape` | PowerPoint shape/textbox insertion | PowerPointApi 1.4 | add a text box, geometric shape, or line to an addressed slide with explicit geometry |
+| powerpoint | implemented | `/add-table-slide` | `add-table-slide` | PowerPoint native slide table | PowerPointApi 1.8 | insert a small native table onto a slide instead of flattening it into text |
+| powerpoint | implemented | `/format-shape` | `format-shape` | PowerPoint shape formatting | PowerPointApi 1.4 | change fill, line, font, or z-order for one addressed shape |
 | powerpoint | implemented | `slide` | `insert-slide` | PowerPoint slide insertion | PowerPointApi 1.2 | add a grounded title-and-bullets slide to the active deck |
 | powerpoint | implemented | `shape` | `set-shape-text` | PowerPoint shape text replacement | PowerPointApi 1.4 | replace text in one addressed slide shape without rewriting the whole slide |
-| powerpoint | promotable | `/add-shape` | `add-shape` | PowerPoint shape/textbox insertion | PowerPointApi 1.4 | add a text box, geometric shape, or line to an addressed slide with explicit geometry |
-| powerpoint | promotable | `/format-shape` | `format-shape` | PowerPoint shape formatting | PowerPointApi 1.4 | change fill, line, font, or z-order for one addressed shape |
 | powerpoint | promotable | `/insert-image` | `insert-image` | PowerPoint image insertion | PowerPointApi 1.4 | place a generated or grounded image onto a slide as an image object |
 | teams | estate-gated | `/create-online-meeting` | `create-online-meeting` | Teams online meeting via Graph | Graph OnlineMeetings.ReadWrite | create an online meeting only through an estate-approved Graph write path |
 | teams | estate-gated | `/post-channel-message` | `post-channel-message` | Teams channel message via Graph | Graph ChannelMessage.Send | post to a channel only when tenant estate-write policy and Graph scopes are enabled |
 | teams | estate-gated | `/update-message` | `update-message` | Teams message/card update via Graph | Graph ChannelMessage.Send | update a previously posted Teams message/card with a recorded message id |
 | teams | implemented | `post` | `post-message` | Teams staged message | TeamsJS 2.x | stage a reviewable Teams message from meeting/chat context without silently posting |
 | teams | promotable | `/post-card` | `post-card` | Teams Adaptive Card post | TeamsJS 2.x (Graph send remains estate-gated) | stage a structured Adaptive Card instead of plain chat text |
-| word | catalog-only | `/find-replace` | `find-replace` | Word bounded find/replace | WordApi 1.1 | replace repeated exact text after previewing hit count and blast radius |
 | word | implemented | `comment` | `add-comment` | Word anchored comment | WordApi 1.4 | attach a comment to exact selected or matched Word text |
+| word | implemented | `/apply-style` | `apply-style` | Word paragraph/style application | WordApi 1.1 | apply a built-in or known document style to an exact paragraph/range |
 | word | implemented | `reply` | `comment-reply` | Word comment reply | WordApi 1.4 | reply to or resolve an existing Word comment by id |
 | word | implemented | `/fill-content-control` | `fill-content-control` | Word content-control fill | WordApi 1.1 | populate a known content control by id, tag, or title |
+| word | implemented | `/find-replace` | `find-replace` | Word bounded find/replace | WordApi 1.1 | replace repeated exact text after previewing hit count and blast radius |
+| word | implemented | `/insert-content-control` | `insert-content-control` | Word content-control insertion | WordApi 1.1 | create a new plain, rich-text, or tagged content control at a resolved Word range |
+| word | implemented | `/insert-hyperlink` | `insert-hyperlink` | Word screened hyperlink | WordApi 1.4 | add or update a hyperlink on exact Word text after URL safety screening |
 | word | implemented | `/insert-ooxml` | `insert-ooxml` | Word screened OOXML insertion | WordApi 1.1 | insert a screened rich Word fragment where plain text is insufficient |
+| word | implemented | `/insert-table` | `insert-table` | Word native table insertion | WordApi 1.3 | insert a small grounded table into a Word document |
 | word | implemented | `/insert-text` | `insert-text` | Word plain-text insertion | WordApi 1.1 | insert grounded plain text at the current selection or after an exact anchor |
 | word | implemented | `/replace-selection` | `replace-selection` | Word selection replacement | WordApi 1.1 | replace the current Word selection after previewing prior and new text |
 | word | implemented | `suggest` | `tracked-change` | Word tracked rewrite | WordApi 1.1 | replace exact existing text as a reviewable tracked change |
-| word | promotable | `/apply-style` | `apply-style` | Word paragraph/style application | WordApi 1.1 | apply a built-in or known document style to an exact paragraph/range |
-| word | promotable | `/insert-content-control` | `insert-content-control` | Word content-control insertion | WordApi 1.1 | create a new plain, rich-text, or tagged content control at a resolved Word range |
-| word | promotable | `/insert-hyperlink` | `insert-hyperlink` | Word screened hyperlink | WordApi 1.4 | add or update a hyperlink on exact Word text after URL safety screening |
-| word | promotable | `/insert-table` | `insert-table` | Word native table insertion | WordApi 1.3 | insert a small grounded table into a Word document |
 
 ## Implemented live capabilities
 
 - **excel:** `add-comment`, `comment-reply`, `create-table`, `format-cells`, `format-conditional`, `insert-chart`, `write-cells`
 - **onenote:** `append-page`
-- **outlook:** `create-mail`, `reply-mail`
-- **powerpoint:** `insert-slide`, `set-shape-text`
+- **outlook:** `add-attachment`, `create-mail`, `reply-mail`, `set-body`, `set-recipients`, `set-subject`
+- **powerpoint:** `add-shape`, `add-table-slide`, `format-shape`, `insert-slide`, `set-shape-text`
 - **teams:** `post-message`
-- **word:** `add-comment`, `comment-reply`, `fill-content-control`, `insert-ooxml`, `insert-text`, `replace-selection`, `tracked-change`
+- **word:** `add-comment`, `apply-style`, `comment-reply`, `fill-content-control`, `find-replace`, `insert-content-control`, `insert-hyperlink`, `insert-ooxml`, `insert-table`, `insert-text`, `replace-selection`, `tracked-change`

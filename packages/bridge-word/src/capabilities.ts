@@ -71,5 +71,50 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['comment'],
     },
+    {
+      kind: 'apply-style',
+      surface: 'word',
+      title: 'Apply style',
+      description:
+        'Apply a built-in or known document style to the selected or matched range, capturing the prior style.',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
+      kind: 'insert-table',
+      surface: 'word',
+      title: 'Insert table',
+      description:
+        'Insert a small native table built from a value grid at the selection or after an anchor.',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
+      kind: 'insert-content-control',
+      surface: 'word',
+      title: 'Insert content control',
+      description:
+        'Wrap the selection or matched range in a new tagged content control, recording the minted control id.',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
+      kind: 'insert-hyperlink',
+      surface: 'word',
+      title: 'Insert hyperlink',
+      description:
+        'Point a screened http(s) hyperlink at the selection or matched text, capturing the prior link.',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
+      kind: 'find-replace',
+      surface: 'word',
+      title: 'Find & replace',
+      description:
+        'Replace every occurrence of exact text across the body, bounded and counted per change.',
+      reversible: true,
+      appliesTo: ['paragraph', 'document'],
+    },
   ],
 };

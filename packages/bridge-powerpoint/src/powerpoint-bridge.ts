@@ -49,6 +49,17 @@ export const MAX_READ_SLIDES = 60;
  *     `TextRange.text` (read/write) → PowerPointApi 1.4 (l.180262-180267).
  *   - `Slide.id` → 1.2 (l.186126), `Slide.index` → 1.8 (l.186133).
  *   - `SlideCollection.add()` → PowerPointApi 1.3 (l.187424); `insertSlidesFromBase64` → 1.2 (l.178812).
+ *   - `ShapeCollection.addTextBox` / `addGeometricShape` / `addLine` → PowerPointApi 1.4
+ *     (l.184213 / l.184146 / l.184178) with `ShapeAddOptions` geometry (l.181900).
+ *   - `Shape.fill` → 1.4 (l.186512; `ShapeFill.foregroundColor` l.182363), `Shape.lineFormat` → 1.4
+ *     (l.186527; `ShapeLineFormat.color` l.186392), `TextRange.font` (`ShapeFont`) → 1.4
+ *     (l.180230, class l.179862); `Shape.setZOrder` → PowerPointApi 1.8 (l.186782).
+ *   - `ShapeCollection.addTable(rowCount, columnCount, TableAddOptions)` → PowerPointApi 1.8
+ *     (l.184202; options l.184011); `Shape.getTable()` → 1.8 (l.186746); `Table.getCellOrNullObject`
+ *     → 1.8 (l.183654); `TableCell.text` (read/write) → 1.8 (l.182631).
+ *   - There is NO PowerPoint image-insertion API in this typings version (`addImage` exists only on
+ *     Excel's ShapeCollection, l.55471; PPT's `getImageAsBase64` is read-only), so `insert-image`
+ *     stays un-advertised for this surface.
  *   - PowerPoint exposes NO object-model selection/change event in this typings, so `watch` uses the
  *     Office-level `Office.EventType.DocumentSelectionChanged` (l.645) + `ActiveViewChanged` (l.582)
  *     with add/removeHandlerAsync (l.3875 / l.3965). Neither carries a coauthor source → origin 'local'.
@@ -58,7 +69,13 @@ export const MAX_READ_SLIDES = 60;
  * truth). `set-speaker-notes` is deliberately ABSENT — it had no working write path (always
  * degraded) and was un-advertised. The conformance test asserts this equals the manifest's kinds.
  */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['insert-slide', 'set-shape-text'];
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
+  'insert-slide',
+  'set-shape-text',
+  'add-shape',
+  'format-shape',
+  'add-table-slide',
+];
 
 export class PowerPointBridge implements DocBridge {
   readonly surface = 'powerpoint' as const;
@@ -231,6 +248,12 @@ export class PowerPointBridge implements DocBridge {
         return this.applyInsertSlide(req);
       case 'set-shape-text':
         return this.applySetShapeText(req);
+      case 'add-shape':
+        return this.applyAddShape(req);
+      case 'format-shape':
+        return this.applyFormatShape(req);
+      case 'add-table-slide':
+        return this.applyAddTableSlide(req);
       default:
         return {
           ok: false,
@@ -362,6 +385,266 @@ export class PowerPointBridge implements DocBridge {
     });
   }
 
+  private async applyAddShape(req: ActuationRequest): Promise<ActuationResult> {
+    const resolution = resolveAddShape(req);
+    if (!resolution.ok) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: resolution.code, message: resolution.message },
+      };
+    }
+    if (!isSet('PowerPointApi', '1.4')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'unsupported', message: 'PowerPointApi 1.4 is required to add shapes.' },
+      };
+    }
+    try {
+      return await PowerPoint.run(async (ctx) => {
+        const op = resolution.op;
+        const slide = ctx.presentation.slides.getItem(op.slideId);
+        const options: PowerPoint.ShapeAddOptions = {};
+        if (op.left !== undefined) options.left = op.left;
+        if (op.top !== undefined) options.top = op.top;
+        if (op.width !== undefined) options.width = op.width;
+        if (op.height !== undefined) options.height = op.height;
+        const added =
+          op.type === 'textBox'
+            ? slide.shapes.addTextBox(op.text, options)
+            : op.type === 'line'
+              ? slide.shapes.addLine(op.connector, options)
+              : slide.shapes.addGeometricShape(op.geometry, options);
+        if (op.fill !== undefined) added.fill.foregroundColor = op.fill;
+        added.load('id');
+        await ctx.sync();
+        const mintedId = added.id;
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: `shape:${op.slideId}:${mintedId}`,
+          inverse: { op: 'delete-object', objectType: 'shape', name: mintedId },
+        };
+      });
+    } catch {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'target_conflict',
+          message: 'The PowerPoint slide could not be read before adding the shape.',
+        },
+      };
+    }
+  }
+
+  private async applyFormatShape(req: ActuationRequest): Promise<ActuationResult> {
+    const slideId = req.params.target?.slideId;
+    const shapeId = req.params.target?.shapeId;
+    const format = req.params.shapeFormat;
+    if (!slideId || !shapeId) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_target',
+          message: 'format-shape needs target.slideId and target.shapeId',
+        },
+      };
+    }
+    if (!format) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_format', message: 'format-shape needs params.shapeFormat' },
+      };
+    }
+    if (!isSet('PowerPointApi', '1.4')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unsupported',
+          message: 'PowerPointApi 1.4 is required for shape formatting.',
+        },
+      };
+    }
+    if (format.zOrder !== undefined && !isSet('PowerPointApi', '1.8')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'unsupported', message: 'PowerPointApi 1.8 is required for shape z-order.' },
+      };
+    }
+
+    try {
+      return await PowerPoint.run(async (ctx) => {
+        const slide = ctx.presentation.slides.getItem(slideId);
+        const shape = slide.shapes.getItemOrNullObject(shapeId);
+        shape.load('isNullObject');
+        await ctx.sync();
+        if (shape.isNullObject) {
+          return {
+            ok: false,
+            changeId: req.changeId,
+            kind: req.kind,
+            degraded: true,
+            error: {
+              code: 'target_conflict',
+              message: 'The selected PowerPoint shape no longer exists.',
+            },
+          };
+        }
+        // Capture each prior value just before overwriting it so the recorded inverse holds only
+        // what THIS change mutated (restore-shape-format prior keys mirror the params fields).
+        const prior: Record<string, string> = {};
+        if (format.fill !== undefined) {
+          const fill = shape.fill;
+          fill.load('foregroundColor');
+          await ctx.sync();
+          prior['fill'] = String(fill.foregroundColor ?? '');
+          fill.foregroundColor = format.fill;
+        }
+        if (format.line !== undefined) {
+          const line = shape.lineFormat;
+          line.load('color');
+          await ctx.sync();
+          prior['line'] = String(line.color ?? '');
+          line.color = format.line;
+        }
+        if (format.font !== undefined) {
+          const font = shape.textFrame.textRange.font;
+          font.load('bold,italic,color,size,name,underline');
+          await ctx.sync();
+          const f = format.font;
+          if (f.bold !== undefined) {
+            prior['font.bold'] = String(font.bold ?? '');
+            font.bold = f.bold;
+          }
+          if (f.italic !== undefined) {
+            prior['font.italic'] = String(font.italic ?? '');
+            font.italic = f.italic;
+          }
+          if (f.underline !== undefined) {
+            prior['font.underline'] = String(font.underline ?? '');
+            font.underline = f.underline ? 'Single' : 'None';
+          }
+          if (f.color !== undefined) {
+            prior['font.color'] = String(font.color ?? '');
+            font.color = f.color;
+          }
+          if (f.size !== undefined) {
+            prior['font.size'] = String(font.size ?? '');
+            font.size = f.size;
+          }
+          if (f.name !== undefined) {
+            prior['font.name'] = String(font.name ?? '');
+            font.name = f.name;
+          }
+        }
+        if (format.zOrder !== undefined) shape.setZOrder(Z_ORDER[format.zOrder]);
+        await ctx.sync();
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: `shape:${slideId}:${shapeId}`,
+          inverse: { op: 'restore-shape-format', shapeId, prior },
+        };
+      });
+    } catch {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'target_conflict',
+          message: 'The PowerPoint shape could not be formatted.',
+        },
+      };
+    }
+  }
+
+  private async applyAddTableSlide(req: ActuationRequest): Promise<ActuationResult> {
+    const slideId = req.params.target?.slideId;
+    const grid = req.params.tableGrid;
+    if (!slideId) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_target', message: 'add-table-slide needs target.slideId' },
+      };
+    }
+    const columnCount = grid?.rows.reduce((max, row) => Math.max(max, row.length), 0) ?? 0;
+    if (!grid || grid.rows.length === 0 || columnCount === 0) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_table', message: 'add-table-slide needs a non-empty tableGrid.rows' },
+      };
+    }
+    if (!isSet('PowerPointApi', '1.8')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'unsupported', message: 'PowerPointApi 1.8 is required for slide tables.' },
+      };
+    }
+
+    try {
+      return await PowerPoint.run(async (ctx) => {
+        const slide = ctx.presentation.slides.getItem(slideId);
+        const options: PowerPoint.TableAddOptions = {};
+        if (grid.left !== undefined) options.left = grid.left;
+        if (grid.top !== undefined) options.top = grid.top;
+        if (grid.width !== undefined) options.width = grid.width;
+        if (grid.height !== undefined) options.height = grid.height;
+        const added = slide.shapes.addTable(grid.rows.length, columnCount, options);
+        const table = added.getTable();
+        grid.rows.forEach((row, r) => {
+          row.forEach((value, c) => {
+            table.getCellOrNullObject(r, c).text = value;
+          });
+        });
+        added.load('id');
+        await ctx.sync();
+        const mintedId = added.id;
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: `shape:${slideId}:${mintedId}`,
+          inverse: { op: 'delete-object', objectType: 'shape', name: mintedId },
+        };
+      });
+    } catch {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'target_conflict',
+          message: 'The PowerPoint slide could not be read before adding the table.',
+        },
+      };
+    }
+  }
+
   // NOTE: a `set-speaker-notes` actuation was handled here but ALWAYS degraded — this Office.js
   // typings version exposes no `Slide.notes`/notesSlide write path. Per ADR-0006 we removed the
   // phantom from the manifest AND its `actuate()` case (advertised==handled), rather than keep a
@@ -422,6 +705,117 @@ export class PowerPointBridge implements DocBridge {
       }
     };
   }
+}
+
+/**
+ * Geometric shapes {@link PowerPointBridge.actuate} `add-shape` accepts — typed against the
+ * literal-union overload of `ShapeCollection.addGeometricShape` (PowerPointApi 1.4, l.184157) so
+ * the whitelist doubles as the host parameter type (no casts, nothing outside this set is sent).
+ */
+const GEOMETRIC_SHAPES = [
+  'Rectangle',
+  'RoundRectangle',
+  'Ellipse',
+  'Triangle',
+  'Diamond',
+  'Pentagon',
+  'Hexagon',
+  'Octagon',
+  'Star5',
+  'Chevron',
+  'RightArrow',
+  'LeftRightArrow',
+  'Cloud',
+] as const;
+type GeometricShapeName = (typeof GEOMETRIC_SHAPES)[number];
+
+/** Contract connector names → the host's `ConnectorType` literals (`addLine`, PowerPointApi 1.4). */
+const CONNECTOR_TYPES: Record<'straight' | 'elbow' | 'curve', 'Straight' | 'Elbow' | 'Curve'> = {
+  straight: 'Straight',
+  elbow: 'Elbow',
+  curve: 'Curve',
+};
+
+/** Contract z-order names → the host's `ShapeZOrder` literals (`setZOrder`, PowerPointApi 1.8). */
+const Z_ORDER: Record<
+  'front' | 'back' | 'forward' | 'backward',
+  'BringToFront' | 'SendToBack' | 'BringForward' | 'SendBackward'
+> = {
+  front: 'BringToFront',
+  back: 'SendToBack',
+  forward: 'BringForward',
+  backward: 'SendBackward',
+};
+
+interface AddShapeGeometry {
+  slideId: string;
+  fill?: string;
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * The fully-resolved host plan for an `add-shape` actuation. The discriminated `type` carries the
+ * whitelisted geometry so every branch of the bridge's add call is exhaustively narrowed.
+ */
+type AddShapeOp =
+  | (AddShapeGeometry & { type: 'textBox'; text: string })
+  | (AddShapeGeometry & { type: 'line'; connector?: 'Straight' | 'Elbow' | 'Curve' })
+  | (AddShapeGeometry & { type: 'geometric'; geometry: GeometricShapeName });
+
+type AddShapeResolution =
+  | { ok: true; op: AddShapeOp }
+  | {
+      ok: false;
+      code: 'no_target' | 'no_shape' | 'unsupported';
+      message: string;
+    };
+
+/**
+ * Pure validation for `add-shape`: resolve `params.shape` + `params.target.slideId` into a typed
+ * host op, or a precise error code — before any host object is touched.
+ */
+function resolveAddShape(req: ActuationRequest): AddShapeResolution {
+  const slideId = req.params.target?.slideId;
+  if (!slideId) {
+    return { ok: false, code: 'no_target', message: 'add-shape needs target.slideId' };
+  }
+  const shape = req.params.shape;
+  if (!shape) {
+    return { ok: false, code: 'no_shape', message: 'add-shape needs params.shape' };
+  }
+  const base: AddShapeGeometry = {
+    slideId,
+    fill: shape.fill,
+    left: shape.left,
+    top: shape.top,
+    width: shape.width,
+    height: shape.height,
+  };
+  if (shape.shapeType === 'textBox') {
+    return { ok: true, op: { ...base, type: 'textBox', text: shape.text ?? '' } };
+  }
+  if (shape.shapeType === 'line') {
+    return {
+      ok: true,
+      op: {
+        ...base,
+        type: 'line',
+        connector: shape.connectorType ? CONNECTOR_TYPES[shape.connectorType] : undefined,
+      },
+    };
+  }
+  const geometry = GEOMETRIC_SHAPES.find((candidate) => candidate === shape.geometryType);
+  if (!geometry) {
+    return {
+      ok: false,
+      code: 'unsupported',
+      message: `add-shape geometry "${shape.geometryType ?? ''}" is not supported.`,
+    };
+  }
+  return { ok: true, op: { ...base, type: 'geometric', geometry } };
 }
 
 async function deckInsertOptions(

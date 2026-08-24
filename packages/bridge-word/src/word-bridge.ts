@@ -22,8 +22,13 @@ import {
   chooseAnchorIndex,
   formatSources,
   planAddComment,
+  planApplyStyle,
   planFillContentControl,
+  planFindReplace,
+  planInsertContentControl,
+  planInsertHyperlink,
   planInsertOoxml,
+  planInsertTable,
   planInsertText,
   planReplaceSelection,
   planTrackedChange,
@@ -35,6 +40,7 @@ import {
   originFromWordSource,
   selectionChangedEvent,
 } from './events.js';
+import { isSet } from './capabilities-runtime.js';
 import { canRevealWordContext, OfficeWordHost, type WordHost } from './host-port.js';
 
 /**
@@ -51,6 +57,11 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
   'fill-content-control',
   'add-comment',
   'comment-reply',
+  'apply-style',
+  'insert-table',
+  'insert-content-control',
+  'insert-hyperlink',
+  'find-replace',
 ];
 
 const MAX_LISTED_PARAGRAPHS = 12;
@@ -192,6 +203,16 @@ export class WordBridge implements DocBridge {
         return this.applyInsertOoxml(req);
       case 'fill-content-control':
         return this.applyFillContentControl(req);
+      case 'apply-style':
+        return this.applyApplyStyle(req);
+      case 'insert-table':
+        return this.applyInsertTable(req);
+      case 'insert-content-control':
+        return this.applyInsertContentControl(req);
+      case 'insert-hyperlink':
+        return this.applyInsertHyperlink(req);
+      case 'find-replace':
+        return this.applyFindReplace(req);
       default:
         return {
           ok: false,
@@ -540,6 +561,320 @@ export class WordBridge implements DocBridge {
         op: 'restore-content-control',
         contentControlId: plan.contentControlId,
         priorText: outcome.priorText,
+      },
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `apply-style`: set a named style on the resolved range. A built-in style writes the
+   * locale-portable `styleBuiltIn` (WordApi 1.3); otherwise the localized `style` name is written
+   * (WordApi 1.1) — gated per variant so an older host degrades rather than throws. Anchored like a
+   * tracked change (content anchor re-resolved at apply-time), and the PRIOR style is captured so
+   * the write is reversible via a `restore-style` inverse.
+   */
+  private async applyApplyStyle(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planApplyStyle(req);
+    if (!plan.hasStyle) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_style', message: 'apply-style needs params.style.name' },
+      };
+    }
+    const requiredSet = plan.builtIn ? '1.3' : '1.1';
+    if (!isSet('WordApi', requiredSet)) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported',
+          message: `This host cannot ${plan.builtIn ? 'apply built-in styles' : 'apply styles'} (WordApi < ${requiredSet}).`,
+        },
+      };
+    }
+    const outcome = await this.host.applyStyle(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.styleName,
+      plan.builtIn,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      inverse: { op: 'restore-style', anchor: outcome.location, priorStyle: outcome.priorStyle },
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `insert-table`: build a native table from the `tableGrid` value grid (`Range.insertTable`
+   * → WordApi 1.3). Anchored like insert-text (content anchor or selection); fails closed on an empty
+   * grid. The row/column counts derive from the grid itself — the host fills cells row-wise.
+   */
+  private async applyInsertTable(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertTable(req);
+    if (!plan.hasRows) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_table', message: 'insert-table needs params.tableGrid.rows' },
+      };
+    }
+    if (!isSet('WordApi', '1.3')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported',
+          message: 'This host cannot insert tables (WordApi < 1.3).',
+        },
+      };
+    }
+    const outcome = await this.host.insertTable(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.rows.length,
+      plan.rows[0]?.length ?? 0,
+      plan.rows,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    // TODO(ADR-0007 inverse): captured prior-state for the inverse — "delete the inserted table".
+    // Shape needed on InverseDescriptorSchema: delete-object(word-table) keyed by a DURABLE table
+    // handle read back post-sync (the ADR-0007 §inverse-identity rule forbids a re-resolvable label).
+    const insertedState = { rowCount: plan.rows.length, location: outcome.location };
+    void insertedState; // reported to central wiring; not yet on the schema (see summary).
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      inverse: {
+        op: 'not-reversible',
+        reason:
+          'Word insert-table currently records provenance but has no durable inserted-table handle.',
+      },
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `insert-content-control`: wrap the selection or anchored range in a NEW content control.
+   * Fails closed without the descriptor. The type parameter arrived in WordApi 1.5, so an explicit
+   * non-default type gates higher than the bare wrap (WordApi 1.1). SECURITY (ADR-0007 §inverse-
+   * identity): the recorded inverse deletes the id the host MINTED for THIS control (read back
+   * post-sync) — never a model-chosen tag/title.
+   */
+  private async applyInsertContentControl(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertContentControl(req);
+    if (!plan.hasControl) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_content_control',
+          message: 'insert-content-control needs params.contentControl',
+        },
+      };
+    }
+    const typed = plan.controlType !== undefined && plan.controlType !== 'richText';
+    const requiredSet = typed ? '1.5' : '1.1';
+    if (!isSet('WordApi', requiredSet)) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported',
+          message: `This host cannot insert that content-control type (WordApi < ${requiredSet}).`,
+        },
+      };
+    }
+    const outcome = await this.host.insertContentControl(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.controlType,
+      plan.tag,
+      plan.title,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      inverse: {
+        op: 'delete-object',
+        objectType: 'content-control',
+        name: outcome.contentControlId,
+      },
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `insert-hyperlink`: point the resolved range's hyperlink at `url`. The URL is untrusted
+   * (model/host-derived) and is screened to http(s) before preview — the same allowlist discipline as
+   * citation sources — so `javascript:`/`data:` schemes never reach the host. Gated on `Range.hyperlink`
+   * (registry/catalog: WordApi 1.4; one notch stricter than the typings' 1.3 — deliberately safe).
+   * Captures the prior address so the write is reversible. NOTE: `params.hyperlink.displayText`/
+   * `screenTip` are accepted by the schema but the web-safe API carries only the address; the display
+   * text stays the anchored/matched text.
+   */
+  private async applyInsertHyperlink(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertHyperlink(req);
+    if (!plan.hasUrl) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_hyperlink', message: 'insert-hyperlink needs params.hyperlink.url' },
+      };
+    }
+    if (!/^https?:\/\//i.test(plan.url.trim())) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unsafe_url',
+          message: 'insert-hyperlink only accepts screened http(s) URLs.',
+        },
+      };
+    }
+    if (!isSet('WordApi', '1.4')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported',
+          message: 'This host cannot set hyperlinks (WordApi < 1.4).',
+        },
+      };
+    }
+    const outcome = await this.host.insertHyperlink(
+      plan.anchored ? plan.matchText : undefined,
+      { matchCase: false },
+      plan.url,
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      };
+    }
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      inverse: { op: 'restore-text', anchor: outcome.location, priorText: outcome.priorHyperlink },
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * ADR-0007 `find-replace`: replace every occurrence of exact text across the body (`Body.search` +
+   * per-hit `insertText` replace → WordApi 1.1). Bounded at MAX_FIND_REPLACEMENTS hits per change —
+   * the registry's "too many hits" failure mode is enforced here, not negotiated. Zero hits degrades
+   * to a panel item (nothing was written); a bulk rewrite has no single prior-state descriptor, so it
+   * records WHY it is not mechanically reversible.
+   */
+  private async applyFindReplace(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planFindReplace(req);
+    if (!plan.hasFindReplace) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_find_replace',
+          message: 'find-replace needs params.findReplace.find (+ replace)',
+        },
+      };
+    }
+    if (!isSet('WordApi', '1.1')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported',
+          message: 'This host cannot search/replace (WordApi < 1.1).',
+        },
+      };
+    }
+    const outcome = await this.host.findReplace(plan.find, plan.replace, {
+      matchCase: plan.matchCase,
+      matchWholeWord: plan.matchWholeWord,
+    });
+    if (outcome.status === 'none') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: { code: 'no_hits', message: `No occurrences of "${plan.find}" were found.` },
+      };
+    }
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: `find-replace:${outcome.replacedCount}`,
+      inverse: {
+        op: 'not-reversible',
+        reason: `Bulk replacement across ${outcome.replacedCount} hit(s) has no single prior-state descriptor.`,
       },
       ...provFlags(req, dropped),
     };

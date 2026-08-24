@@ -1,14 +1,19 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { asChangeId, type ActuationRequest, type ContextRef } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { WordBridge } from './word-bridge.js';
 import { DocStateSnapshotSchema } from '@ge/contracts';
 import type { WordSearchHit } from './capture.js';
 import type {
+  ApplyStyleOutcome,
   ChooseHit,
   CommentReplyOutcome,
   FillContentControlOutcome,
+  FindReplaceOutcome,
+  InsertContentControlOutcome,
+  InsertHyperlinkOutcome,
   InsertOutcome,
+  InsertTableOutcome,
   ReplaceSelectionOutcome,
   TrackedChangeOutcome,
   WordHandlers,
@@ -34,6 +39,16 @@ class FakeWordHost implements WordHost {
   comments = new Set<string>();
   /** Content controls that currently exist: id → current text. */
   contentControls = new Map<string, string>();
+  /** Selection's current style / prior style read back per anchored apply-style hit. */
+  selectionStyle = '';
+  stylesByQuery = new Map<string, string>();
+  /** Selection's current hyperlink / prior address per anchored insert-hyperlink hit. */
+  selectionHyperlink = '';
+  hyperlinksByQuery = new Map<string, string>();
+  /** Host-minted content-control ids for insert-content-control (monotonic). */
+  nextControlId = 7;
+  /** Hit counts the body search would report for find-replace: query → hit count. */
+  findReplaceCounts = new Map<string, number>();
 
   // Recorded effects, for assertions.
   readonly inserts: Array<{ query: string; matchCase: boolean; text: string; chosen: string }> = [];
@@ -50,6 +65,44 @@ class FakeWordHost implements WordHost {
   readonly selectionReplaces: Array<{ text: string; priorText: string }> = [];
   /** fill-content-control writes (ADR-0007), for assertions. */
   readonly filledControls: Array<{ id: string; text: string; priorText: string }> = [];
+  /** apply-style writes (ADR-0007), for assertions. */
+  readonly styledRanges: Array<{
+    query?: string;
+    styleName: string;
+    builtIn: boolean;
+    chosen?: string;
+  }> = [];
+  /** insert-table writes (ADR-0007), for assertions. */
+  readonly insertedTables: Array<{
+    query?: string;
+    rowCount: number;
+    columnCount: number;
+    values?: readonly (readonly string[])[];
+    chosen?: string;
+  }> = [];
+  /** insert-content-control writes (ADR-0007), for assertions. */
+  readonly insertedControls: Array<{
+    query?: string;
+    controlType?: string;
+    tag?: string;
+    title?: string;
+    chosen?: string;
+    mintedId: string;
+  }> = [];
+  /** insert-hyperlink writes (ADR-0007), for assertions. */
+  readonly insertedHyperlinks: Array<{
+    query?: string;
+    url: string;
+    chosen?: string;
+  }> = [];
+  /** find-replace writes (ADR-0007), for assertions. */
+  readonly bulkReplaces: Array<{
+    find: string;
+    replace: string;
+    matchCase: boolean;
+    matchWholeWord: boolean;
+    replacedCount: number;
+  }> = [];
   /** Durable provenance XML parts persisted via the port (BUILD-PLAN 1.6). */
   readonly persistedProvenance: string[] = [];
   readonly revealedContext: ContextRef[] = [];
@@ -169,6 +222,112 @@ class FakeWordHost implements WordHost {
     });
   }
 
+  applyStyle(
+    query: string | undefined,
+    _opts: { matchCase: boolean },
+    styleName: string,
+    builtIn: boolean,
+    choose: ChooseHit,
+  ): Promise<ApplyStyleOutcome> {
+    if (query === undefined) {
+      const priorStyle = this.selectionStyle;
+      this.styledRanges.push({ styleName, builtIn });
+      this.selectionStyle = styleName;
+      return Promise.resolve({ status: 'applied', location: 'selection', priorStyle });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    const priorStyle = this.stylesByQuery.get(chosen) ?? '';
+    this.styledRanges.push({ query, styleName, builtIn, chosen });
+    return Promise.resolve({ status: 'applied', location: 'apply-style', priorStyle });
+  }
+
+  insertTable(
+    query: string | undefined,
+    _opts: { matchCase: boolean },
+    rowCount: number,
+    columnCount: number,
+    values: readonly (readonly string[])[],
+    choose: ChooseHit,
+  ): Promise<InsertTableOutcome> {
+    if (query === undefined) {
+      this.insertedTables.push({ rowCount, columnCount, values });
+      return Promise.resolve({ status: 'applied', location: 'selection' });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    this.insertedTables.push({ query, rowCount, columnCount, values, chosen });
+    return Promise.resolve({ status: 'applied', location: 'insert-table' });
+  }
+
+  insertContentControl(
+    query: string | undefined,
+    _opts: { matchCase: boolean },
+    controlType: string | undefined,
+    tag: string | undefined,
+    title: string | undefined,
+    choose: ChooseHit,
+  ): Promise<InsertContentControlOutcome> {
+    const mint = (): string => String(this.nextControlId++);
+    if (query === undefined) {
+      const mintedId = mint();
+      this.insertedControls.push({ controlType, tag, title, mintedId });
+      return Promise.resolve({
+        status: 'applied',
+        location: `content-control:${mintedId}`,
+        contentControlId: mintedId,
+      });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    const mintedId = mint();
+    this.insertedControls.push({ query, controlType, tag, title, chosen, mintedId });
+    return Promise.resolve({
+      status: 'applied',
+      location: `content-control:${mintedId}`,
+      contentControlId: mintedId,
+    });
+  }
+
+  insertHyperlink(
+    query: string | undefined,
+    _opts: { matchCase: boolean },
+    url: string,
+    choose: ChooseHit,
+  ): Promise<InsertHyperlinkOutcome> {
+    if (query === undefined) {
+      const priorHyperlink = this.selectionHyperlink;
+      this.insertedHyperlinks.push({ url });
+      this.selectionHyperlink = url;
+      return Promise.resolve({ status: 'applied', location: 'selection', priorHyperlink });
+    }
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    const priorHyperlink = this.hyperlinksByQuery.get(chosen) ?? '';
+    this.insertedHyperlinks.push({ query, url, chosen });
+    return Promise.resolve({ status: 'applied', location: 'insert-hyperlink', priorHyperlink });
+  }
+
+  findReplace(
+    find: string,
+    replace: string,
+    opts: { readonly matchCase: boolean; readonly matchWholeWord: boolean },
+  ): Promise<FindReplaceOutcome> {
+    // Mirrors the port's hard bound: at most 100 hits replaced per change.
+    const replacedCount = Math.min(this.findReplaceCounts.get(find) ?? 0, 100);
+    if (replacedCount === 0) return Promise.resolve({ status: 'none' });
+    this.bulkReplaces.push({ find, replace, ...opts, replacedCount });
+    return Promise.resolve({ status: 'applied', replacedCount });
+  }
+
   registerHandlers(handlers: WordHandlers): () => void {
     this.lastHandlers = handlers;
     return () => {
@@ -199,6 +358,50 @@ function insertOoxmlReq(params: ActuationRequest['params'], id = 'c1'): Actuatio
 
 function fillCcReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'fill-content-control', surface: 'word', params };
+}
+
+function applyStyleReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'apply-style', surface: 'word', params };
+}
+
+function insertTableReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-table', surface: 'word', params };
+}
+
+function insertContentControlReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-content-control', surface: 'word', params };
+}
+
+function insertHyperlinkReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-hyperlink', surface: 'word', params };
+}
+
+function findReplaceReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'find-replace', surface: 'word', params };
+}
+
+/**
+ * Install a fake `globalThis.Office` requirements bag so the bridge's `isSet('WordApi','1.x')`
+ * gates resolve against `apiVersion` (the highest supported WordApi minor, e.g. `3` ⇒ `1.3`),
+ * mirroring the Excel harness. Without an installation (Office absent) every gate reads as
+ * unsupported — which is exactly what the older-host/unsupported tests exercise.
+ */
+function installWordRequirements(apiVersion = 13): () => void {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const prevOffice = g.Office;
+  g.Office = {
+    context: {
+      requirements: {
+        isSetSupported(name: string, version?: string): boolean {
+          if (name !== 'WordApi' || !version) return false;
+          return parseFloat(version.split('.')[1] ?? '0') <= apiVersion;
+        },
+      },
+    },
+  };
+  return () => {
+    g.Office = prevOffice;
+  };
 }
 
 const PROVENANCE: ActuationRequest['provenance'] = {
@@ -893,6 +1096,395 @@ describe('WordBridge orchestration (against a fake host)', () => {
       );
       expect(res).toMatchObject({ ok: false, error: { code: 'no_text' } });
       expect(host.filledControls).toHaveLength(0);
+    });
+  });
+
+  describe('actuate apply-style (ADR-0007)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements();
+    });
+    afterEach(() => restore());
+
+    it('applies a built-in style on an anchored hit and records a restore-style inverse', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('Executive summary', ['Executive summary paragraph']);
+      host.stylesByQuery.set('Executive summary paragraph', 'Normal');
+      const res = await new WordBridge(host).actuate(
+        applyStyleReq(
+          {
+            style: { name: 'Heading 2', builtIn: true },
+            target: { matchText: 'Executive summary' },
+          },
+          'chg-s',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-s'),
+        kind: 'apply-style',
+        location: 'apply-style',
+        inverse: { op: 'restore-style', anchor: 'apply-style', priorStyle: 'Normal' },
+        provenanceMissing: true,
+      });
+      expect(host.styledRanges).toEqual([
+        {
+          query: 'Executive summary',
+          styleName: 'Heading 2',
+          builtIn: true,
+          chosen: 'Executive summary paragraph',
+        },
+      ]);
+    });
+
+    it('fails closed on a missing style name before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'applyStyle');
+      const res = await new WordBridge(host).actuate(applyStyleReq({ style: { name: '' } }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_style' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('gates per variant: custom styles work at 1.2 while built-in styles degrade (unsupported)', async () => {
+      const restoreLow = installWordRequirements(2); // highest supported set: WordApi 1.2
+      try {
+        const host = new FakeWordHost();
+        host.searchHits.set('Summary', ['Summary section']);
+        const bridge = new WordBridge(host);
+
+        const custom = await bridge.actuate(
+          applyStyleReq({ style: { name: 'Contoso Body' }, target: { matchText: 'Summary' } }),
+        );
+        expect(custom.ok).toBe(true);
+        expect(host.styledRanges[0]?.builtIn).toBe(false);
+
+        const builtIn = await bridge.actuate(
+          applyStyleReq({
+            style: { name: 'Heading 1', builtIn: true },
+            target: { matchText: 'Summary' },
+          }),
+        );
+        expect(builtIn).toMatchObject({
+          ok: false,
+          degraded: true,
+          error: { code: 'unsupported' },
+        });
+        expect(host.styledRanges).toHaveLength(1); // only the custom write landed
+      } finally {
+        restoreLow();
+      }
+    });
+  });
+
+  describe('actuate insert-table (ADR-0007)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements();
+    });
+    afterEach(() => restore());
+
+    it('builds a native table from the grid after an anchored hit', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('Appendix', ['Appendix A']);
+      const rows = [
+        ['Metric', 'Value'],
+        ['Revenue', '100'],
+      ];
+      const res = await new WordBridge(host).actuate(
+        insertTableReq(
+          { tableGrid: { rows, hasHeaders: false }, target: { matchText: 'Appendix' } },
+          'chg-t',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-t'),
+        kind: 'insert-table',
+        location: 'insert-table',
+        inverse: {
+          op: 'not-reversible',
+          reason:
+            'Word insert-table currently records provenance but has no durable inserted-table handle.',
+        },
+        provenanceMissing: true,
+      });
+      // Row/column counts derive from the grid itself.
+      expect(host.insertedTables).toEqual([
+        { query: 'Appendix', rowCount: 2, columnCount: 2, values: rows, chosen: 'Appendix A' },
+      ]);
+    });
+
+    it('fails closed without params.tableGrid.rows before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'insertTable');
+      const res = await new WordBridge(host).actuate(insertTableReq({}));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_table' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('degrades (unsupported) on a host below WordApi 1.3 without touching the host', async () => {
+      const restoreLow = installWordRequirements(2);
+      try {
+        const host = new FakeWordHost();
+        const spy = vi.spyOn(host, 'insertTable');
+        const res = await new WordBridge(host).actuate(
+          insertTableReq({ tableGrid: { rows: [['a']], hasHeaders: false } }),
+        );
+        expect(res).toMatchObject({
+          ok: false,
+          degraded: true,
+          error: { code: 'unsupported' },
+        });
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        restoreLow();
+      }
+    });
+  });
+
+  describe('actuate insert-content-control (ADR-0007)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements();
+    });
+    afterEach(() => restore());
+
+    it('wraps an anchored range and records the MINTED control id for the inverse', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('Customer:', ['Customer: ___']);
+      const res = await new WordBridge(host).actuate(
+        insertContentControlReq(
+          {
+            contentControl: { type: 'richText', tag: 'CustomerName', title: 'Customer name' },
+            target: { matchText: 'Customer:' },
+          },
+          'chg-cc',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-cc'),
+        kind: 'insert-content-control',
+        location: 'content-control:7',
+        inverse: { op: 'delete-object', objectType: 'content-control', name: '7' },
+        provenanceMissing: true,
+      });
+      expect(host.insertedControls).toEqual([
+        {
+          query: 'Customer:',
+          controlType: 'richText',
+          tag: 'CustomerName',
+          title: 'Customer name',
+          chosen: 'Customer: ___',
+          mintedId: '7',
+        },
+      ]);
+    });
+
+    it('fails closed without params.contentControl before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'insertContentControl');
+      const res = await new WordBridge(host).actuate(insertContentControlReq({}));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_content_control' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('allows the default wrap at WordApi 1.1 but gates explicit types to WordApi 1.5', async () => {
+      const restoreOld = installWordRequirements(1); // highest supported set: WordApi 1.1
+      try {
+        const host = new FakeWordHost();
+        const bridge = new WordBridge(host);
+        const plain = await bridge.actuate(
+          insertContentControlReq({ contentControl: { type: 'richText' } }),
+        );
+        expect(plain.ok).toBe(true);
+        expect(host.insertedControls[0]?.controlType).toBe('richText');
+
+        const typed = await bridge.actuate(
+          insertContentControlReq({ contentControl: { type: 'checkBox' } }),
+        );
+        expect(typed).toMatchObject({
+          ok: false,
+          degraded: true,
+          error: { code: 'unsupported' },
+        });
+        expect(host.insertedControls).toHaveLength(1);
+      } finally {
+        restoreOld();
+      }
+    });
+  });
+
+  describe('actuate insert-hyperlink (ADR-0007)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements();
+    });
+    afterEach(() => restore());
+
+    it('links an anchored range and captures the prior address for the inverse', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('release notes', ['the release notes section']);
+      host.hyperlinksByQuery.set('the release notes section', 'https://old.example/');
+      const res = await new WordBridge(host).actuate(
+        insertHyperlinkReq(
+          {
+            hyperlink: { url: 'https://contoso.example/release' },
+            target: { matchText: 'release notes' },
+          },
+          'chg-h',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-h'),
+        kind: 'insert-hyperlink',
+        location: 'insert-hyperlink',
+        inverse: {
+          op: 'restore-text',
+          anchor: 'insert-hyperlink',
+          priorText: 'https://old.example/',
+        },
+        provenanceMissing: true,
+      });
+      expect(host.insertedHyperlinks).toEqual([
+        {
+          query: 'release notes',
+          url: 'https://contoso.example/release',
+          chosen: 'the release notes section',
+        },
+      ]);
+    });
+
+    it('rejects a non-http(s) URL (unsafe_url) before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'insertHyperlink');
+      const res = await new WordBridge(host).actuate(
+        insertHyperlinkReq({ hyperlink: { url: 'javascript:alert(1)' } }),
+      );
+      expect(res).toMatchObject({ ok: false, error: { code: 'unsafe_url' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('fails closed without params.hyperlink before touching the host', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(insertHyperlinkReq({ text: 'x' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_hyperlink' } });
+      expect(host.insertedHyperlinks).toHaveLength(0);
+    });
+
+    it('degrades (unsupported) when the host is below the hyperlink requirement set', async () => {
+      const restoreNone = installWordRequirements(0); // no WordApi minor supported
+      try {
+        const host = new FakeWordHost();
+        const res = await new WordBridge(host).actuate(
+          insertHyperlinkReq({ hyperlink: { url: 'https://contoso.example/' } }),
+        );
+        expect(res).toMatchObject({
+          ok: false,
+          degraded: true,
+          error: { code: 'unsupported' },
+        });
+        expect(host.insertedHyperlinks).toHaveLength(0);
+      } finally {
+        restoreNone();
+      }
+    });
+  });
+
+  describe('actuate find-replace (ADR-0007)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements();
+    });
+    afterEach(() => restore());
+
+    it('replaces every bounded occurrence and reports the count in the location', async () => {
+      const host = new FakeWordHost();
+      host.findReplaceCounts.set('99.5%', 3);
+      const res = await new WordBridge(host).actuate(
+        findReplaceReq(
+          { findReplace: { find: '99.5%', replace: '99.9%', matchWholeWord: true } },
+          'chg-fr',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-fr'),
+        kind: 'find-replace',
+        location: 'find-replace:3',
+        inverse: {
+          op: 'not-reversible',
+          reason: 'Bulk replacement across 3 hit(s) has no single prior-state descriptor.',
+        },
+        provenanceMissing: true,
+      });
+      expect(host.bulkReplaces).toEqual([
+        {
+          find: '99.5%',
+          replace: '99.9%',
+          matchCase: false,
+          matchWholeWord: true,
+          replacedCount: 3,
+        },
+      ]);
+    });
+
+    it('caps the blast radius at 100 replacements per change', async () => {
+      const host = new FakeWordHost();
+      host.findReplaceCounts.set('the', 250);
+      const res = await new WordBridge(host).actuate(
+        findReplaceReq({ findReplace: { find: 'the', replace: 'a' } }),
+      );
+      expect(res.ok).toBe(true);
+      expect(res.location).toBe('find-replace:100');
+      expect(host.bulkReplaces[0]?.replacedCount).toBe(100);
+    });
+
+    it('degrades (no_hits) when nothing matched, writing nothing', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(
+        findReplaceReq({ findReplace: { find: 'absent', replace: 'x' } }),
+      );
+      expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'no_hits' } });
+      expect(host.bulkReplaces).toHaveLength(0);
+    });
+
+    it('allows an empty replacement (delete all hits)', async () => {
+      const host = new FakeWordHost();
+      host.findReplaceCounts.set('ACME Pty Ltd', 4);
+      const res = await new WordBridge(host).actuate(
+        findReplaceReq({ findReplace: { find: 'ACME Pty Ltd', replace: '' } }),
+      );
+      expect(res.ok).toBe(true);
+      expect(res.location).toBe('find-replace:4');
+      expect(host.bulkReplaces[0]?.replace).toBe('');
+    });
+
+    it('fails closed without params.findReplace before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'findReplace');
+      const res = await new WordBridge(host).actuate(findReplaceReq({ text: 'x' }));
+      expect(res).toMatchObject({ ok: false, error: { code: 'no_find_replace' } });
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('degrades (unsupported) on a host below WordApi 1.1', async () => {
+      const restoreNone = installWordRequirements(0);
+      try {
+        const host = new FakeWordHost();
+        const res = await new WordBridge(host).actuate(
+          findReplaceReq({ findReplace: { find: 'x', replace: 'y' } }),
+        );
+        expect(res).toMatchObject({
+          ok: false,
+          degraded: true,
+          error: { code: 'unsupported' },
+        });
+        expect(host.bulkReplaces).toHaveLength(0);
+      } finally {
+        restoreNone();
+      }
     });
   });
 

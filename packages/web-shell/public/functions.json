@@ -1,0 +1,37 @@
+{
+  "allowCustomDataForDataTypeAny": false,
+  "allowErrorForDataTypeAny": true,
+  "functions": [
+    {
+      "id": "GE.ASK",
+      "name": "GE.ASK",
+      "description": "Streams a grounded Gemini Enterprise answer into the cell, grounded on the given range's values. Runs as the signed-in user.",
+      "helpUrl": "https://example.com/ge-ask",
+      "parameters": [
+        {
+          "name": "prompt",
+          "description": "What to ask about the range, e.g. \"which region grew fastest?\"",
+          "type": "string",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "values",
+          "description": "The range to ground on; its values are sent as data only.",
+          "type": "string",
+          "dimensionality": "matrix"
+        }
+      ],
+      "result": {
+        "type": "string",
+        "dimensionality": "scalar",
+        "cancelable": false
+      },
+      "options": {
+        "stream": true,
+        "cancelable": false,
+        "requiresAddress": false,
+        "requiresParameterTypeConversion": false
+      }
+    }
+  ]
+}

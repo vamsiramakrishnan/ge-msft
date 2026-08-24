@@ -674,6 +674,31 @@ export function taskPaneXmlManifest(cfg, surface) {
   const id = idBySurface[surface];
   if (!host || !title || !id) throw new Error(`Unsupported task pane XML surface: ${surface}`);
 
+  // Excel only: wire the =GE.ASK streaming custom function. The root-level ExtendedOverrides
+  // points Excel at the functions metadata; the VersionOverrides FunctionFile names the runtime
+  // page that calls CustomFunctions.associate('GE.ASK', …).
+  const customFunctionBlocks =
+    surface === 'excel'
+      ? `
+  <ExtendedOverrides Url="${esc(origin)}/functions.json" />
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+                    xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+                    xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <FunctionFile resid="Functions.Url" />
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Urls>
+        <bt:Url id="Functions.Url" DefaultValue="${esc(origin)}/functions.html" />
+      </bt:Urls>
+    </Resources>
+  </VersionOverrides>`
+      : '';
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- Development ${esc(title)} XML manifest for Office web Upload Add-in testing. -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
@@ -697,7 +722,7 @@ export function taskPaneXmlManifest(cfg, surface) {
   <DefaultSettings>
     <SourceLocation DefaultValue="${esc(origin)}/taskpane.html?host=${esc(surface)}" />
   </DefaultSettings>
-  <Permissions>ReadWriteDocument</Permissions>
+  <Permissions>ReadWriteDocument</Permissions>${customFunctionBlocks}
 </OfficeApp>
 `;
 }

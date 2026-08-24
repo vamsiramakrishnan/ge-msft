@@ -51,6 +51,7 @@ export default defineConfig(({ mode }) => {
         input: {
           taskpane: resolve(__dirname, 'taskpane.html'),
           commands: resolve(__dirname, 'commands.html'),
+          functions: resolve(__dirname, 'functions.html'),
           authRedirect: resolve(__dirname, 'auth-redirect.html'),
         },
       },

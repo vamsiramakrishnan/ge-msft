@@ -360,7 +360,7 @@ class TestBatchSkillUpdater(unittest.TestCase):
             assignments["VITE_GE_COMMAND_PLANNER_SKILL"],
             "m365-command-planner=projects/123/locations/global/collections/default_collection/engines/e/assistants/default_assistant/agents/176",
         )
-        self.assertEqual(assignments["VITE_GE_COMMAND_PLANNER_SKILL_VERSION"], "1.1")
+        self.assertEqual(assignments["VITE_GE_COMMAND_PLANNER_SKILL_VERSION"], "1.2")
         self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256"], r"^[a-f0-9]{64}$")
         self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SHA256"], r"^[a-f0-9]{64}$")
         self.assertRegex(assignments["VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256"], r"^[a-f0-9]{64}$")

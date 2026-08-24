@@ -22,6 +22,8 @@
     "manifests:validate": "bun tools/release/manifests-validate.mjs",
     "package:dev": "bun tools/release/package-dev.mjs",
     "package:alpha": "bun tools/release/package-alpha.mjs",
+    "release:web": "bun scripts/release-web.mjs",
+    "deploy:web": "bun run release:web && firebase deploy --only hosting",
     "release:check": "bun tools/release/release-check.mjs",
     "release:secret-scan": "bun tools/release/secret-scan.mjs",
     "release:checksums": "bun tools/release/checksums.mjs --verify",

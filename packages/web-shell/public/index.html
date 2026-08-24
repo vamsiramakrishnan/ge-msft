@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gemini Enterprise for Microsoft 365</title>
+    <style>
+      :root {
+        --accent: #5b5fc7;
+        --ink: #1f2328;
+        --muted: #57606a;
+        --bg: #ffffff;
+        --line: #e4e7eb;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          16px/1.6 system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        padding: 24px;
+      }
+      main {
+        max-width: 34rem;
+      }
+      h1 {
+        font-size: 1.375rem;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+        margin: 0 0 4px;
+      }
+      p.lede {
+        color: var(--muted);
+        margin: 0 0 28px;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      a.surface {
+        display: inline-block;
+        padding: 9px 18px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        text-decoration: none;
+        color: var(--ink);
+        font-weight: 550;
+        transition:
+          border-color 120ms ease-out,
+          background-color 120ms ease-out;
+      }
+      a.surface:hover {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 6%, white);
+      }
+      footer {
+        margin-top: 32px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.8125rem;
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        main {
+          animation: fade-in 240ms ease-out;
+        }
+        @keyframes fade-in {
+          from {
+            opacity: 0;
+          }
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Gemini Enterprise for Microsoft 365</h1>
+      <p class="lede">
+        Grounded Gemini Enterprise agents inside Word, Excel, PowerPoint, OneNote, Outlook, and
+        Teams — scoped to your identity, every change reviewable.
+      </p>
+      <nav aria-label="Open a surface">
+        <a class="surface" href="/taskpane.html?host=word">Word</a>
+        <a class="surface" href="/taskpane.html?host=excel">Excel</a>
+        <a class="surface" href="/taskpane.html?host=powerpoint">PowerPoint</a>
+        <a class="surface" href="/taskpane.html?host=onenote">OneNote</a>
+        <a class="surface" href="/taskpane.html?host=outlook">Outlook</a>
+        <a class="surface" href="/taskpane.html?host=teams">Teams</a>
+      </nav>
+      <footer>
+        The add-in normally runs inside an Office host's task pane. These links open it standalone
+        for smoke-testing; sideload the package to use it in documents.
+      </footer>
+    </main>
+  </body>
+</html>

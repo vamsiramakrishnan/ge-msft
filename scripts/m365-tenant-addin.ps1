@@ -4,7 +4,8 @@
 
 .DESCRIPTION
   This script wraps Microsoft's tenant Office Add-in deployment cmdlets for the generated
-  add-in-only XML manifests in dist/package/<profile>/xml.
+  add-in-only XML manifests in dist/package/<profile>/centralized. The default lane contains
+  one multi-host Word/Excel/PowerPoint manifest and one separate Outlook manifest.
 
   The script can use either ExchangeOnlineManagement or O365CentralizedAddInDeployment, but it
   selects by cmdlet availability instead of module name. Some current ExchangeOnlineManagement
@@ -180,7 +181,7 @@ function Resolve-ManifestPaths {
 
   $dir = $ManifestDir
   if (-not $dir) {
-    $dir = Join-Path $RepoRoot "dist/package/$Profile/xml"
+    $dir = Join-Path $RepoRoot "dist/package/$Profile/centralized"
   }
   if (-not (Test-Path $dir)) {
     throw "Manifest directory does not exist: $dir. Run bun run package:dev first."

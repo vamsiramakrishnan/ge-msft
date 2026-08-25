@@ -317,12 +317,8 @@ describe('buildStreamAssistRequest', () => {
         ],
       }),
     );
-    expect(body.skillsSpec).toEqual({
-      skills: [
-        {
-          name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/m365-surface-commander',
-        },
-      ],
+    expect(body.agentsSpec).toEqual({
+      agentSpecs: [{ agentId: 'm365-surface-commander' }],
     });
   });
 
@@ -340,10 +336,8 @@ describe('buildStreamAssistRequest', () => {
       'command',
     );
     const text = (body.query as { text: string }).text;
-    expect(body.skillsSpec).toEqual({
-      skills: [
-        { name: 'projects/proj/locations/eu/collections/c/engines/e/assistants/a/agents/2' },
-      ],
+    expect(body.agentsSpec).toEqual({
+      agentSpecs: [{ agentId: '2' }],
     });
     expect(text).toContain('[m365-surface-commander](mention://?uri=2)');
     expect(text).not.toContain('m365-command-planner');
@@ -411,12 +405,8 @@ describe('buildStreamAssistRequest', () => {
         'command',
       );
       const text = (body.query as { text: string }).text;
-      expect(body.skillsSpec).toEqual({
-        skills: [
-          {
-            name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/assistants/default_assistant/agents/7404511736383961129',
-          },
-        ],
+      expect(body.agentsSpec).toEqual({
+        agentSpecs: [{ agentId: '7404511736383961129' }],
       });
       expect(text).toContain('[m365-surface-commander](mention://?uri=7404511736383961129)');
     },

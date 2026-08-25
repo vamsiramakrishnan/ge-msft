@@ -245,6 +245,30 @@ class TestBatchSkillUpdater(unittest.TestCase):
                 update_skills.main(["--live"])
             self.assertIn("--upload-existing", str(cm.exception))
 
+    def test_batch_public_upload_existing_skips_create_and_delete(self):
+        bundle = update_skills._select(["m365-command-planner"])[0]
+        with mock.patch.dict("os.environ", self.ENV, clear=True):
+            with mock.patch.object(create_skill, "session", return_value=_RecordingSession()):
+                with mock.patch.object(create_skill, "create_shell") as create_shell:
+                    with mock.patch.object(
+                        create_skill, "stamped_skill_zip", return_value=bundle.zip_path
+                    ):
+                        with mock.patch.object(create_skill, "upload_zip", return_value={}) as upload:
+                            with mock.patch.object(create_skill, "show", return_value={}):
+                                code = update_skills.main(
+                                    [
+                                        "--api-mode",
+                                        "public",
+                                        "--live",
+                                        "--upload-existing",
+                                        "--only",
+                                        "m365-command-planner",
+                                    ]
+                                )
+        self.assertEqual(code, 0)
+        create_shell.assert_not_called()
+        upload.assert_called_once()
+
     def test_batch_widget_list_live_uses_widget_catalog(self):
         with mock.patch.dict("os.environ", self.ENV, clear=True):
             with mock.patch.object(create_skill, "session") as sess_factory:
@@ -360,7 +384,7 @@ class TestBatchSkillUpdater(unittest.TestCase):
             assignments["VITE_GE_COMMAND_PLANNER_SKILL"],
             "m365-command-planner=projects/123/locations/global/collections/default_collection/engines/e/assistants/default_assistant/agents/176",
         )
-        self.assertEqual(assignments["VITE_GE_COMMAND_PLANNER_SKILL_VERSION"], "1.1")
+        self.assertEqual(assignments["VITE_GE_COMMAND_PLANNER_SKILL_VERSION"], "1.4")
         self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SOURCE_SHA256"], r"^[a-f0-9]{64}$")
         self.assertRegex(assignments["VITE_GE_COMMAND_PLANNER_SKILL_SHA256"], r"^[a-f0-9]{64}$")
         self.assertRegex(assignments["VITE_GE_SKILL_SOURCE_BUNDLE_SET_SHA256"], r"^[a-f0-9]{64}$")

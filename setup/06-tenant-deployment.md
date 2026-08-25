@@ -12,20 +12,23 @@ scripts/m365-tenant-addin.sh
 scripts/m365-tenant-addin.ps1
 ```
 
-The wrapper targets the add-in-only XML manifests generated into:
+By default, the wrapper targets the Claude-style add-in-only XML pair generated into:
 
 ```text
-dist/package/<profile>/xml/
+dist/package/<profile>/centralized/
 ```
 
 For development this is usually:
 
 ```text
-dist/package/development/xml/excel.manifest.xml
-dist/package/development/xml/outlook.manifest.xml
-dist/package/development/xml/powerpoint.manifest.xml
-dist/package/development/xml/word.manifest.xml
+dist/package/development/centralized/office.manifest.xml
+dist/package/development/centralized/outlook.manifest.xml
 ```
+
+`office.manifest.xml` uses one stable add-in identity for Word, Excel, and PowerPoint and declares
+host-specific Home-ribbon commands. Outlook remains separate because Microsoft uses the `MailApp`
+schema for it. The host-specific manifests under `dist/package/development/xml/` remain available
+for manual/web diagnostics but aren't deployed by default, which avoids duplicate ribbon entries.
 
 ## Requirements
 
@@ -213,6 +216,13 @@ ephemeral, and every hostname change requires:
 Use quick tunnels for dev sideloading. Use a stable HTTPS origin for tenant rollout.
 See [Hosting origin and release flow](./08-hosting-origin-and-release.md) for the exact Office load
 model and the tradeoffs between GCS/CDN, App Engine, and Cloud Run.
+
+The development central lane also requires stable, distinct public GUIDs:
+
+```bash
+GE_DEV_OFFICE_XML_APP_ID='<stable-guid-for-word-excel-powerpoint>'
+GE_DEV_OUTLOOK_APP_ID='<stable-guid-for-outlook>'
+```
 
 ## Entra SPA Redirect Sync
 

@@ -24,6 +24,23 @@ import { MAX_READ_SLIDES, PowerPointBridge } from './powerpoint-bridge.js';
 
 interface ShapeSeed {
   text: string;
+  /** Simulated ShapeFill.foregroundColor (undefined until first set). */
+  fillColor?: string;
+  /** Simulated ShapeLineFormat.color (undefined until first set). */
+  lineColor?: string;
+  /** Simulated ShapeFont fields on the shape's text range. */
+  font?: {
+    bold?: boolean | null;
+    italic?: boolean | null;
+    underline?: string | null;
+    color?: string | null;
+    size?: number | null;
+    name?: string | null;
+  };
+  /** Simulated native table grid backing `Shape.getTable()` (table shapes only). */
+  tableGrid?: string[][];
+  /** Recorded setZOrder positions applied to this shape. */
+  zOrderCalls?: string[];
 }
 interface SlideSeed {
   id: string;
@@ -36,10 +53,91 @@ interface DeckSeed {
   selectedShapeIds: string[];
   insertedDecks: string[];
   insertedDeckOptions: PowerPoint.InsertSlideOptions[];
+  addedShapes: Array<{
+    slideId: string;
+    kind: 'textBox' | 'geometric' | 'line' | 'table';
+    detail: string;
+    options: PowerPoint.ShapeAddOptions | PowerPoint.TableAddOptions | undefined;
+  }>;
+}
+
+/** A cell whose text reads/writes one slot of the backing {@link ShapeSeed.tableGrid}. */
+class FakeTableCell {
+  constructor(
+    private readonly grid: string[][],
+    private readonly rowIndex: number,
+    private readonly columnIndex: number,
+  ) {}
+  get text(): string {
+    return this.grid[this.rowIndex]?.[this.columnIndex] ?? '';
+  }
+  set text(value: string) {
+    const row = this.grid[this.rowIndex];
+    if (row && this.columnIndex < row.length) row[this.columnIndex] = value;
+  }
+}
+
+/** A simulated native table whose storage is the owning shape's `tableGrid` seed. */
+class FakeTable {
+  constructor(private readonly shape: ShapeSeed) {}
+  getCellOrNullObject(rowIndex: number, columnIndex: number): FakeTableCell {
+    const grid = (this.shape.tableGrid ??= []);
+    while (grid.length <= rowIndex) grid.push([]);
+    const row = grid[rowIndex];
+    if (row) while (row.length <= columnIndex) row.push('');
+    return new FakeTableCell(grid, rowIndex, columnIndex);
+  }
+}
+
+class FakeFont {
+  constructor(private readonly font: NonNullable<ShapeSeed['font']>) {}
+  load(_p?: string): this {
+    return this;
+  }
+  get bold(): boolean | null {
+    return this.font.bold ?? null;
+  }
+  set bold(v: boolean) {
+    this.font.bold = v;
+  }
+  get italic(): boolean | null {
+    return this.font.italic ?? null;
+  }
+  set italic(v: boolean) {
+    this.font.italic = v;
+  }
+  get underline(): string | null {
+    return this.font.underline ?? null;
+  }
+  set underline(v: 'None' | 'Single') {
+    this.font.underline = v;
+  }
+  get color(): string | null {
+    return this.font.color ?? null;
+  }
+  set color(v: string) {
+    this.font.color = v;
+  }
+  get size(): number | null {
+    return this.font.size ?? null;
+  }
+  set size(v: number) {
+    this.font.size = v;
+  }
+  get name(): string | null {
+    return this.font.name ?? null;
+  }
+  set name(v: string) {
+    this.font.name = v;
+  }
 }
 
 class FakeTextRange {
-  constructor(private readonly shape: ShapeSeed) {}
+  readonly font: FakeFont;
+  constructor(private readonly shape: ShapeSeed) {
+    this.shape.font ??= {};
+    this.font = new FakeFont(this.shape.font);
+  }
   get text(): string {
     return this.shape.text;
   }
@@ -51,17 +149,53 @@ class FakeTextRange {
   }
 }
 
+class FakeShapeFill {
+  constructor(private readonly shape: ShapeSeed) {}
+  load(_p?: string): this {
+    return this;
+  }
+  get foregroundColor(): string {
+    return this.shape.fillColor ?? '';
+  }
+  set foregroundColor(v: string) {
+    this.shape.fillColor = v;
+  }
+}
+
+class FakeShapeLineFormat {
+  constructor(private readonly shape: ShapeSeed) {}
+  load(_p?: string): this {
+    return this;
+  }
+  get color(): string {
+    return this.shape.lineColor ?? '';
+  }
+  set color(v: string) {
+    this.shape.lineColor = v;
+  }
+}
+
 class FakeShape {
   readonly textFrame: { textRange: FakeTextRange };
+  readonly fill: FakeShapeFill;
+  readonly lineFormat: FakeShapeLineFormat;
   constructor(
     readonly shape: ShapeSeed,
     readonly id: string,
     readonly isNullObject = false,
   ) {
     this.textFrame = { textRange: new FakeTextRange(shape) };
+    this.fill = new FakeShapeFill(shape);
+    this.lineFormat = new FakeShapeLineFormat(shape);
   }
   load(_p?: string): this {
     return this;
+  }
+  setZOrder(position: string): void {
+    (this.shape.zOrderCalls ??= []).push(position);
+  }
+  getTable(): FakeTable {
+    return new FakeTable(this.shape);
   }
 }
 
@@ -69,6 +203,7 @@ class FakeShapeCollection {
   items: FakeShape[];
   constructor(
     private readonly slide: SlideSeed,
+    private readonly deck: DeckSeed,
     private readonly slideId: string,
   ) {
     this.items = slide.shapes.map((s, i) => new FakeShape(s, `${slide.id}-shape-${i}`));
@@ -80,7 +215,63 @@ class FakeShapeCollection {
     const index = this.items.findIndex((shape) => shape.id === id);
     const existing = this.items[index];
     if (existing) return existing;
-    return new FakeShape({ text: '' }, id || `${this.slideId}-missing-shape`, true);
+    return new FakeShape(
+      { text: '', zOrderCalls: [] },
+      id || `${this.slideId}-missing-shape`,
+      true,
+    );
+  }
+
+  /** Append a simulated shape to the host model and the live collection, then return it. */
+  private append(seed: ShapeSeed): FakeShape {
+    const id = `${this.slideId}-shape-${this.items.length}`;
+    this.slide.shapes.push(seed);
+    const shape = new FakeShape(seed, id);
+    this.items.push(shape);
+    return shape;
+  }
+
+  addTextBox(text: string, options?: PowerPoint.ShapeAddOptions): FakeShape {
+    this.deck.addedShapes.push({
+      slideId: this.slideId,
+      kind: 'textBox',
+      detail: text,
+      options,
+    });
+    return this.append({ text, zOrderCalls: [] });
+  }
+
+  addGeometricShape(geometryType: string, options?: PowerPoint.ShapeAddOptions): FakeShape {
+    this.deck.addedShapes.push({
+      slideId: this.slideId,
+      kind: 'geometric',
+      detail: geometryType,
+      options,
+    });
+    return this.append({ text: '', zOrderCalls: [] });
+  }
+
+  addLine(connectorType?: string, options?: PowerPoint.ShapeAddOptions): FakeShape {
+    this.deck.addedShapes.push({
+      slideId: this.slideId,
+      kind: 'line',
+      detail: connectorType ?? 'Straight',
+      options,
+    });
+    return this.append({ text: '', zOrderCalls: [] });
+  }
+
+  addTable(rowCount: number, columnCount: number, options?: PowerPoint.TableAddOptions): FakeShape {
+    this.deck.addedShapes.push({
+      slideId: this.slideId,
+      kind: 'table',
+      detail: `${rowCount}x${columnCount}`,
+      options,
+    });
+    const grid: string[][] = Array.from({ length: rowCount }, () =>
+      Array.from({ length: columnCount }, () => ''),
+    );
+    return this.append({ text: '', tableGrid: grid, zOrderCalls: [] });
   }
 }
 
@@ -97,7 +288,7 @@ class FakeSlide {
     return this;
   }
   get shapes(): FakeShapeCollection {
-    return new FakeShapeCollection(this.slide, this.slide.id);
+    return new FakeShapeCollection(this.slide, this.seed, this.slide.id);
   }
   setSelectedShapes(shapeIds: string[]): void {
     this.seed.selectedIndices = [this.index];
@@ -122,7 +313,10 @@ class FakeSlideCollection {
     this.addCalls += 1;
     this.seed.slides.push({
       id: `sim-slide-${this.seed.slides.length + 1}`,
-      shapes: [{ text: '' }, { text: '' }],
+      shapes: [
+        { text: '', zOrderCalls: [] },
+        { text: '', zOrderCalls: [] },
+      ],
     });
     this.items = this.seed.slides.map((s, i) => new FakeSlide(s, i, this.seed));
   }
@@ -264,13 +458,22 @@ afterEach(() => {
 
 function deck(slides: SlideSeed[], selectedIndices: number[] = []): DeckSeed {
   // Deep-copy so shared fixtures (SAMPLE_SLIDES) aren't mutated by write paths across tests.
-  const copy = slides.map((s) => ({ id: s.id, shapes: s.shapes.map((sh) => ({ text: sh.text })) }));
+  const copy = slides.map((s) => ({
+    id: s.id,
+    shapes: s.shapes.map((sh) => ({
+      ...sh,
+      font: sh.font ? { ...sh.font } : undefined,
+      tableGrid: sh.tableGrid?.map((row) => [...row]),
+      zOrderCalls: [...(sh.zOrderCalls ?? [])],
+    })),
+  }));
   return {
     slides: copy,
     selectedIndices,
     selectedShapeIds: [],
     insertedDecks: [],
     insertedDeckOptions: [],
+    addedShapes: [],
   };
 }
 
@@ -293,9 +496,27 @@ function setShapeText(
 }
 
 const SAMPLE_SLIDES: SlideSeed[] = [
-  { id: 's1', shapes: [{ text: 'SLA Terms' }, { text: '99.5% contracted\nMonthly window' }] },
-  { id: 's2', shapes: [{ text: 'Roster' }, { text: 'Pat, Sam' }] },
-  { id: 's3', shapes: [{ text: 'Risk Summary' }, { text: 'SLA gap flagged' }] },
+  {
+    id: 's1',
+    shapes: [
+      { text: 'SLA Terms', zOrderCalls: [] },
+      { text: '99.5% contracted\nMonthly window', zOrderCalls: [] },
+    ],
+  },
+  {
+    id: 's2',
+    shapes: [
+      { text: 'Roster', zOrderCalls: [] },
+      { text: 'Pat, Sam', zOrderCalls: [] },
+    ],
+  },
+  {
+    id: 's3',
+    shapes: [
+      { text: 'Risk Summary', zOrderCalls: [] },
+      { text: 'SLA gap flagged', zOrderCalls: [] },
+    ],
+  },
 ];
 
 /* ───────────────────────────── getCapabilities ───────────────────────────── */
@@ -796,6 +1017,394 @@ describe('PowerPointBridge.actuate set-shape-text', () => {
       kind: 'set-shape-text',
       error: { code: 'unsupported' },
     });
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+});
+
+/* ───────────────────────────── actuate: add-shape ───────────────────────────── */
+
+function addShape(params: ActuationRequest['params'], id = 'add-shape-1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'add-shape', surface: 'powerpoint', params };
+}
+
+describe('PowerPointBridge.actuate add-shape', () => {
+  it('adds a text box to the addressed slide, recording the minted shape id as delete-object inverse', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      addShape(
+        {
+          target: { slideId: 's2' },
+          shape: {
+            shapeType: 'textBox',
+            text: 'Key risk',
+            left: 72,
+            top: 96,
+            width: 280,
+            height: 80,
+          },
+        },
+        'chg-add-textbox',
+      ),
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      changeId: asChangeId('chg-add-textbox'),
+      kind: 'add-shape',
+      location: 'shape:s2:s2-shape-2',
+      inverse: { op: 'delete-object', objectType: 'shape', name: 's2-shape-2' },
+    });
+    // The text box landed on slide s2 with its text and explicit geometry.
+    expect(d.addedShapes).toEqual([
+      {
+        slideId: 's2',
+        kind: 'textBox',
+        detail: 'Key risk',
+        options: { left: 72, top: 96, width: 280, height: 80 },
+      },
+    ]);
+    expect(d.slides[1]?.shapes).toHaveLength(3);
+    expect(d.slides[1]?.shapes[2]?.text).toBe('Key risk');
+  });
+
+  it('adds a filled geometric shape with a whitelisted geometry literal', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      addShape({
+        target: { slideId: 's1' },
+        shape: { shapeType: 'geometric', geometryType: 'Rectangle', fill: '#0F6CBD', width: 120 },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.location).toBe('shape:s1:s1-shape-2');
+    expect(d.addedShapes[0]).toMatchObject({ kind: 'geometric', detail: 'Rectangle' });
+    expect(d.slides[0]?.shapes[2]?.fillColor).toBe('#0F6CBD');
+  });
+
+  it('maps the contract connector name onto the host ConnectorType for lines', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      addShape({ target: { slideId: 's3' }, shape: { shapeType: 'line', connectorType: 'elbow' } }),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(d.addedShapes).toHaveLength(1);
+    expect(d.addedShapes[0]).toMatchObject({ kind: 'line', detail: 'Elbow' });
+  });
+
+  it('fails closed without touching the host when the target or shape params are missing', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const bridge = new PowerPointBridge();
+
+    const noSlide = await bridge.actuate(addShape({ shape: { shapeType: 'textBox', text: 'x' } }));
+    expect(noSlide).toMatchObject({ ok: false, error: { code: 'no_target' } });
+
+    const noShape = await bridge.actuate(addShape({ target: { slideId: 's2' } }));
+    expect(noShape).toMatchObject({ ok: false, error: { code: 'no_shape' } });
+
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+
+  it('rejects a non-whitelisted geometric geometry as unsupported before touching the host', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const res = await new PowerPointBridge().actuate(
+      addShape({
+        target: { slideId: 's2' },
+        shape: { shapeType: 'geometric', geometryType: 'PortalGun' },
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+
+  it('degrades to unsupported on a pre-1.4 host without touching the host', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]), { requirements: { PowerPointApi: 1.3 } });
+    const res = await new PowerPointBridge().actuate(
+      addShape({ target: { slideId: 's2' }, shape: { shapeType: 'textBox', text: 'x' } }),
+    );
+
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.error?.message).toContain('PowerPointApi 1.4');
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+});
+
+/* ───────────────────────────── actuate: format-shape ───────────────────────────── */
+
+function formatShape(params: ActuationRequest['params'], id = 'format-shape-1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'format-shape', surface: 'powerpoint', params };
+}
+
+function styledDeck(): DeckSeed {
+  return deck([
+    {
+      id: 's2',
+      shapes: [
+        { text: 'Roster', zOrderCalls: [] },
+        {
+          text: 'Pat, Sam',
+          zOrderCalls: [],
+          fillColor: '#FFFFFF',
+          lineColor: '#000000',
+          font: {
+            bold: false,
+            italic: false,
+            underline: 'None',
+            color: '#111111',
+            size: 18,
+            name: 'Arial',
+          },
+        },
+      ],
+    },
+  ]);
+}
+
+describe('PowerPointBridge.actuate format-shape', () => {
+  it('applies fill/line/font deltas and records only the touched prior fields as inverse', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      formatShape(
+        {
+          target: { slideId: 's2', shapeId: 's2-shape-1' },
+          shapeFormat: {
+            fill: '#0F6CBD',
+            line: '#FF0000',
+            font: { bold: true, italic: true, color: '#222222', size: 24, name: 'Verdana' },
+          },
+        },
+        'chg-format',
+      ),
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      changeId: asChangeId('chg-format'),
+      kind: 'format-shape',
+      location: 'shape:s2:s2-shape-1',
+      inverse: {
+        op: 'restore-shape-format',
+        shapeId: 's2-shape-1',
+        prior: {
+          fill: '#FFFFFF',
+          line: '#000000',
+          'font.bold': 'false',
+          'font.italic': 'false',
+          'font.color': '#111111',
+          'font.size': '18',
+          'font.name': 'Arial',
+        },
+      },
+    });
+    const shape = d.slides[0]?.shapes[1];
+    expect(shape?.fillColor).toBe('#0F6CBD');
+    expect(shape?.lineColor).toBe('#FF0000');
+    expect(shape?.font).toMatchObject({
+      bold: true,
+      italic: true,
+      color: '#222222',
+      size: 24,
+      name: 'Verdana',
+      underline: 'None', // untouched
+    });
+  });
+
+  it('maps the boolean underline onto the host Single/None style literals', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    await new PowerPointBridge().actuate(
+      formatShape({
+        target: { slideId: 's2', shapeId: 's2-shape-1' },
+        shapeFormat: { font: { underline: true } },
+      }),
+    );
+    expect(d.slides[0]?.shapes[1]?.font?.underline).toBe('Single');
+  });
+
+  it('moves the shape in z-order on a 1.8 host', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      formatShape({
+        target: { slideId: 's2', shapeId: 's2-shape-1' },
+        shapeFormat: { zOrder: 'front' },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.inverse).toMatchObject({ op: 'restore-shape-format', prior: {} });
+    expect(d.slides[0]?.shapes[1]?.zOrderCalls).toEqual(['BringToFront']);
+  });
+
+  it('rejects z-order on a pre-1.8 host without touching the host', async () => {
+    installed = install(styledDeck(), { requirements: { PowerPointApi: 1.7 } });
+    const res = await new PowerPointBridge().actuate(
+      formatShape({
+        target: { slideId: 's2', shapeId: 's2-shape-1' },
+        shapeFormat: { zOrder: 'back' },
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.error?.message).toContain('PowerPointApi 1.8');
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+
+  it('fails closed when the addressed shape or formatting params are missing', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+
+    const noTarget = await bridge.actuate(formatShape({ shapeFormat: { fill: '#000000' } }));
+    expect(noTarget).toMatchObject({ ok: false, error: { code: 'no_target' } });
+
+    const noFormat = await bridge.actuate(
+      formatShape({ target: { slideId: 's2', shapeId: 's2-shape-1' } }),
+    );
+    expect(noFormat).toMatchObject({ ok: false, error: { code: 'no_format' } });
+
+    // Both param failures rejected the request before any host object was touched.
+    expect(installed.ctxRef.ctx).toBeUndefined();
+
+    // A stale shape id degrades instead of formatting some other shape.
+    const stale = await bridge.actuate(
+      formatShape({
+        target: { slideId: 's2', shapeId: 's2-shape-99' },
+        shapeFormat: { fill: '#000000' },
+      }),
+    );
+    expect(stale).toMatchObject({
+      ok: false,
+      degraded: true,
+      error: { code: 'target_conflict' },
+    });
+    expect(d.slides[0]?.shapes[1]?.fillColor).toBe('#FFFFFF');
+  });
+
+  it('degrades to unsupported on a pre-1.4 host without touching the host', async () => {
+    installed = install(styledDeck(), { requirements: { PowerPointApi: 1.3 } });
+    const res = await new PowerPointBridge().actuate(
+      formatShape({
+        target: { slideId: 's2', shapeId: 's2-shape-1' },
+        shapeFormat: { fill: '#000000' },
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.error?.message).toContain('PowerPointApi 1.4');
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+});
+
+/* ───────────────────────────── actuate: add-table-slide ───────────────────────────── */
+
+function addTableSlide(params: ActuationRequest['params'], id = 'add-table-1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'add-table-slide', surface: 'powerpoint', params };
+}
+
+describe('PowerPointBridge.actuate add-table-slide', () => {
+  it('seeds a native table from the value grid and records the minted shape id as inverse', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      addTableSlide(
+        {
+          target: { slideId: 's3' },
+          tableGrid: {
+            hasHeaders: true,
+            rows: [
+              ['Metric', 'Value'],
+              ['ARR', '$12M'],
+            ],
+            left: 72,
+            top: 120,
+            width: 560,
+            height: 260,
+          },
+        },
+        'chg-table',
+      ),
+    );
+
+    expect(res).toEqual({
+      ok: true,
+      changeId: asChangeId('chg-table'),
+      kind: 'add-table-slide',
+      location: 'shape:s3:s3-shape-2',
+      inverse: { op: 'delete-object', objectType: 'shape', name: 's3-shape-2' },
+    });
+    expect(d.addedShapes).toEqual([
+      {
+        slideId: 's3',
+        kind: 'table',
+        detail: '2x2',
+        options: { left: 72, top: 120, width: 560, height: 260 },
+      },
+    ]);
+    expect(d.slides[2]?.shapes[2]?.tableGrid).toEqual([
+      ['Metric', 'Value'],
+      ['ARR', '$12M'],
+    ]);
+  });
+
+  it('pads ragged rows out to the widest row length', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(
+      addTableSlide({
+        target: { slideId: 's1' },
+        tableGrid: { hasHeaders: false, rows: [['Only'], ['B', 'C']] },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+    expect(res.location).toBe('shape:s1:s1-shape-2');
+    expect(d.addedShapes[0]).toMatchObject({ kind: 'table', detail: '2x2' });
+    expect(d.slides[0]?.shapes[2]?.tableGrid).toEqual([
+      ['Only', ''],
+      ['B', 'C'],
+    ]);
+  });
+
+  it('fails closed without touching the host when the target or grid is missing/empty', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const bridge = new PowerPointBridge();
+
+    const noSlide = await bridge.actuate(
+      addTableSlide({ tableGrid: { hasHeaders: false, rows: [['a']] } }),
+    );
+    expect(noSlide).toMatchObject({ ok: false, error: { code: 'no_target' } });
+
+    const noGrid = await bridge.actuate(addTableSlide({ target: { slideId: 's1' } }));
+    expect(noGrid).toMatchObject({ ok: false, error: { code: 'no_table' } });
+
+    const emptyGrid = await bridge.actuate(
+      addTableSlide({ target: { slideId: 's1' }, tableGrid: { hasHeaders: false, rows: [] } }),
+    );
+    expect(emptyGrid).toMatchObject({ ok: false, error: { code: 'no_table' } });
+
+    const emptyRow = await bridge.actuate(
+      addTableSlide({ target: { slideId: 's1' }, tableGrid: { hasHeaders: false, rows: [[]] } }),
+    );
+    expect(emptyRow).toMatchObject({ ok: false, error: { code: 'no_table' } });
+
+    expect(installed.ctxRef.ctx).toBeUndefined();
+  });
+
+  it('degrades to unsupported below PowerPointApi 1.8 without touching the host', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]), { requirements: { PowerPointApi: 1.4 } });
+    const res = await new PowerPointBridge().actuate(
+      addTableSlide({ target: { slideId: 's1' }, tableGrid: { hasHeaders: false, rows: [['a']] } }),
+    );
+
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.error?.message).toContain('PowerPointApi 1.8');
     expect(installed.ctxRef.ctx).toBeUndefined();
   });
 });

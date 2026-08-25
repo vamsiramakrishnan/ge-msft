@@ -143,14 +143,15 @@ The human-facing layer over the capability stack, and how the grammar reaches th
     multi-surface live/offline test harness.
   - **`m365-command-planner`** (planner) — turns a free-text `/verb @mentions …` request into a
     confirmable ` ```plan ` block; ships with `parse_plan.py`.
-  - Both are created as `agents`/`skillAgentDefinition` and **mounted per-turn via `skillsSpec`**
+  - Both are created as `agents`/`skillAgentDefinition` and **mounted per-turn via
+    `agentsSpec.agentSpecs`**
     (verified on a live engine — `docs/api/discoveryengine/skills-and-agents.md`).
 - **Skill ↔ workspace parity.** `parse_commands.py` ⇄ the runtime command parser, **`parse_plan.py`
   ⇄ the `CommandPlan` schema (now built + tested)**, `capability-map.md` ⇄ the `CapabilityManifest`
   (must render exact per-verb usage), `de_stub.read_response` ⇄ the `gemini-client` streamAssist
   reader. The TypeScript side is authoritative; parity is tracked, not yet build-enforced.
 - **Quick actions — built + tested.** The prebuilt-button catalog (`QUICK_ACTIONS` /
-  `QuickActionSchema`, 33 actions) lives in `@ge/contracts`, **closure-filtered per surface**
+  `QuickActionSchema`, 35 actions) lives in `@ge/contracts`, **closure-filtered per surface**
   (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
   `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
   seed). **Typed parameters (H):** an action whose prompt carries `{{name}}` slots declares them as
@@ -160,8 +161,9 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   fail-closes dispatch, so a literal `{{…}}` can never reach the model. Unit + full-stack interplay tested.
 - **Context menus — built (manifests + handler), real-host-unverified.** Right-click items are wired
   into **both manifests** (unified `extensions.contextMenus`, bumped to schema v1.23; legacy
-  `ExtensionPoint`). The `askSelection` function command reads the host selection, hands a hardened
-  one-shot seed (enum `kind` + `hasSelection` only — never the raw text or a free query) to the pane
+  `ExtensionPoint`). The `summarizeSelection` and `explainSelection` function commands read the host
+  selection, hand a hardened one-shot seed (enum `kind` + `mode` + `hasSelection` only — never the
+  raw text or a free query) to the pane
   over `localStorage`; the pane validates + clears it on boot and starts a fixed `@this` turn.
   Seeding-from-untrusted-selection passed `security-reviewer`. Not yet sideloaded in a live host.
 

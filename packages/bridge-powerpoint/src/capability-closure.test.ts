@@ -6,8 +6,10 @@ import { HANDLED_ACTUATIONS, PowerPointBridge } from './powerpoint-bridge.js';
 
 /**
  * ADR-0006 capability closure — PowerPoint. Self-contained. `set-speaker-notes` was un-advertised
- * (it always degraded), so advertised==handled=={insert-slide}; and PowerPoint now declares the
- * `outline`/`read`/`search` read verbs, each backed by a real bridge port (Team READS / ADR-0006).
+ * (it always degraded), and `insert-image` is likewise un-advertised (no image-insertion write
+ * path in the pinned Office.js typings), so advertised==handled=={insert-slide, set-shape-text,
+ * add-shape, format-shape, add-table-slide}; and PowerPoint declares the `outline`/`read`/`search`
+ * read verbs, each backed by a real bridge port (Team READS / ADR-0006).
  */
 describe('PowerPoint capability closure', () => {
   it('advertised actuation kinds === handled actuation kinds', () => {
@@ -24,6 +26,10 @@ describe('PowerPoint capability closure', () => {
     expect(POWERPOINT_CAPABILITIES.actuations.map((a) => a.kind)).not.toContain(
       'set-speaker-notes',
     );
+  });
+
+  it('does NOT advertise insert-image (no typed host write path in the pinned typings)', () => {
+    expect(POWERPOINT_CAPABILITIES.actuations.map((a) => a.kind)).not.toContain('insert-image');
   });
 
   it('advertised reads match the implemented read ports', () => {

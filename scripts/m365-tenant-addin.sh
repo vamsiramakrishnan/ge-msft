@@ -35,7 +35,7 @@ Environment:
 
 Notes:
   - Uses backend auto-detection by default and selects the module exposing New-OrganizationAddIn.
-  - Targets add-in-only XML manifests in dist/package/<profile>/xml by default.
+  - Targets the central XML pair in dist/package/<profile>/centralized by default.
   - Unified Microsoft 365 manifests still require the Integrated Apps portal.
 EOF
 }

@@ -14,7 +14,7 @@ Usage:
   scripts/m365-app-catalog.sh <status|login|list|add|update|upsert|remove> [--dry-run]
 
 Environment:
-  M365_APP_PACKAGE=dist/release/development-m365-v0.1.0.zip
+  M365_APP_PACKAGE=dist/release/development-m365-v<version>.zip
   M365_APP_PROFILE=development       Package profile when M365_APP_PACKAGE is not set.
   M365_CLI_INSTALL=1              Install @pnp/cli-microsoft365 with Bun if m365 is missing.
   M365_CLI_LOGIN=1                Run m365 login before the action.

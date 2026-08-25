@@ -71,7 +71,15 @@ const ACTION_PRIORITY: Record<Surface, string[]> = {
   ],
   powerpoint: ['draft-slide', 'draft-section', 'redesign', 'speaker-notes', 'summarize-deck'],
   onenote: ['synthesize-page', 'discover-sources', 'audio-overview', 'add-sources-to-unit'],
-  outlook: ['draft-reply', 'catch-up', 'extract-actions', 'summarize-email', 'draft-new-email'],
+  outlook: [
+    'recent-mail-briefing',
+    'prepare-next-meeting',
+    'draft-reply',
+    'catch-up',
+    'extract-actions',
+    'summarize-email',
+    'draft-new-email',
+  ],
   teams: ['live-notes', 'action-items', 'catch-up-teams'],
 };
 
@@ -125,57 +133,6 @@ export function SurfaceCommandCenter({
           <span className="surface-state" data-state={state} aria-label={statusLabel}>
             {status}
           </span>
-
-          <div className="detail-hover surface-actions">
-            <button
-              type="button"
-              className="surface-actions-trigger"
-              aria-describedby="surface-actions-pop"
-            >
-              <span>Actions</span>
-              <span className="surface-actions-count" aria-hidden="true">
-                {actions.length}
-              </span>
-              <span className="tw-caret" aria-hidden="true">
-                +
-              </span>
-            </button>
-            <div
-              id="surface-actions-pop"
-              className="detail-popover surface-actions-popover"
-              role="group"
-              aria-label={`Primary actions for ${copy.title}`}
-            >
-              <div className="surface-primary-actions">
-                {actions.map((action) => (
-                  <button
-                    key={action.id}
-                    type="button"
-                    className="surface-action"
-                    data-action-id={action.id}
-                    data-output={action.output}
-                    data-intent={action.intent}
-                    disabled={busy || hasGate}
-                    onClick={() => onAction(action)}
-                  >
-                    <span
-                      className="surface-action-mode"
-                      data-output={action.output}
-                      aria-hidden="true"
-                    >
-                      {shortMode(action)}
-                    </span>
-                    <span className="surface-action-body">
-                      <span className="surface-action-label">{action.label}</span>
-                      <span className="surface-action-meta">
-                        {action.intent} · {action.scope.kind} · {actionMode(action)}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
 
           <div className="detail-hover surface-details">
             <button
@@ -232,6 +189,31 @@ export function SurfaceCommandCenter({
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="surface-primary-actions" aria-label={`Suggested actions for ${copy.title}`}>
+        {actions.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            className="surface-action"
+            data-action-id={action.id}
+            data-output={action.output}
+            data-intent={action.intent}
+            disabled={busy || hasGate}
+            onClick={() => onAction(action)}
+          >
+            <span className="surface-action-mode" data-output={action.output} aria-hidden="true">
+              {shortMode(action)}
+            </span>
+            <span className="surface-action-body">
+              <span className="surface-action-label">{action.label}</span>
+              <span className="surface-action-meta">
+                {action.scope.kind} · {actionMode(action)}
+              </span>
+            </span>
+          </button>
+        ))}
       </div>
     </section>
   );

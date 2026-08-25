@@ -157,6 +157,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   streaming?: boolean;
+  /** Latest transient StreamAssist activity; never appended to answer text or provenance. */
+  activity?: string;
   sources?: SourceRef[];
   error?: string;
   /** The turn was cancelled by the user mid-stream (distinct from a stream `error`). */
@@ -605,7 +607,7 @@ export class PanelController {
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: q };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.beginTurn({ messages: [...this.state.messages, userMsg, reply] });
+    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
 
     const controller = new AbortController();
     this.inflight = controller;
@@ -620,9 +622,10 @@ export class PanelController {
         switch (ev.type) {
           case 'token':
             replyText += ev.text;
-            this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text }));
+            this.patchMessage(reply.id, (m) => ({ text: m.text + ev.text, activity: undefined }));
             break;
           case 'activity':
+            this.patchMessage(reply.id, () => ({ activity: ev.text }));
             this.addStep('activity', ev.text);
             break;
           case 'citation':
@@ -635,7 +638,7 @@ export class PanelController {
             this.currentTurnProvenance = ev.payload;
             break;
           case 'error':
-            this.patchMessage(reply.id, () => ({ error: ev.message }));
+            this.patchMessage(reply.id, () => ({ error: ev.message, activity: undefined }));
             break;
           default:
             break;
@@ -662,7 +665,7 @@ export class PanelController {
       // Clear the stored controller so a later cancel() after settle is a clean no-op (only if it is
       // still ours — a queued turn that already replaced it must keep its own controller).
       if (this.inflight === controller) this.inflight = undefined;
-      this.patchMessage(reply.id, () => ({ streaming: false }));
+      this.patchMessage(reply.id, () => ({ streaming: false, activity: undefined }));
       this.set({ busy: false });
       if (recoverAsCommandTask) {
         await this.runCommands(recoverAsCommandTask, grounding, 'Continue in Office command route');
@@ -980,7 +983,7 @@ export class PanelController {
   ): void {
     switch (ev.type) {
       case 'token':
-        this.patchMessage(replyId, (m) => ({ text: m.text + ev.text }));
+        this.patchMessage(replyId, (m) => ({ text: m.text + ev.text, activity: undefined }));
         return;
       case 'citation':
         sources.push(ev.source);
@@ -993,7 +996,7 @@ export class PanelController {
       case 'error':
         // `SseEvent` error (stream-level): the CommandLoopEvent union has no `error` variant, so
         // this narrows to the SSE shape with `code`/`message`.
-        this.patchMessage(replyId, () => ({ error: ev.message }));
+        this.patchMessage(replyId, () => ({ error: ev.message, activity: undefined }));
         this.addStep('error', ev.message);
         return;
       case 'code-execution':
@@ -1003,6 +1006,7 @@ export class PanelController {
         this.addStep('code-execution', codeExecutionResultText(ev));
         return;
       case 'activity':
+        this.patchMessage(replyId, () => ({ activity: ev.text }));
         this.addStep('activity', ev.text);
         return;
       case 'turn-start':

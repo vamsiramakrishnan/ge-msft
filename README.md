@@ -192,17 +192,19 @@ All four compile to the same path; nothing bypasses the gate.
   actuating verb → the fail-closed `runCommands` plan gate.
 - **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
   `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
-- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (33 actions, `quickActionsForSurface()`
-  closure-filtered) render as the `QuickActionBar`; a `chat` action seeds `send`, a `write`/
+- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (35 actions, `quickActionsForSurface()`
+  closure-filtered) render in the always-visible per-app primary row and the `QuickActionBar`; a
+  `chat` action seeds `send`, a `write`/
   `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc. An action
   with `{{name}}` slots declares typed `parameters` and collects them in a fill form before dispatch —
   a literal placeholder never reaches the model.
-- **Context menus** — a right-click "Ask Gemini about this" (`extensions.contextMenus` in the unified
-  manifest, `ExtensionPoint` in the OneNote XML) reads the selection and seeds the open pane with it
-  as `@this`. The selection rides as data, never instructions; the handoff seed carries no raw text.
+- **Context menus** — right-click **Summarize** and **Explain** commands
+  (`extensions.contextMenus` in the unified manifest) read the live Word/Excel/PowerPoint selection
+  and seed the open pane as `@this`. The OneNote XML retains its single host menu entry. Selection
+  rides as data, never instructions; the handoff seed carries no raw text.
 
 The grammar is also carried into Gemini Enterprise as two **skills** (`skill/`), mounted per turn via
-`skillsSpec` (`docs/api/discoveryengine/skills-and-agents.md`):
+the public `agentsSpec.agentSpecs` request field (`docs/api/discoveryengine/skills-and-agents.md`):
 
 - **`m365-command-planner`** — the front door: turns a free-text `/verb @mentions …` request into a
   structured, confirmable ` ```plan ` block (intent · scope · steps · exclusions · grounding). Its
@@ -341,6 +343,8 @@ dist/package/development/xml/word.manifest.xml
 dist/package/development/xml/excel.manifest.xml
 dist/package/development/xml/powerpoint.manifest.xml
 dist/package/development/xml/outlook.manifest.xml
+dist/package/development/centralized/office.manifest.xml
+dist/package/development/centralized/outlook.manifest.xml
 dist/package/development/onenote/onenote.manifest.xml
 dist/release/development-m365-v<version>.zip
 dist/release/internal-alpha-word-excel-v<version>.zip
@@ -414,7 +418,8 @@ Verification baseline: `bun run typecheck` clean · **2038 tests across 160 file
   unattributed. Security-reviewed three times over its build-out.
 - **The `/` + `@` command surface** — `QUICK_ACTIONS` + `CommandPaletteSpec` + `CommandPlan` in
   `contracts`; the `QuickActionBar` and the `Composer` `/`-verb / `@`-mention palettes in `web-shell`;
-  right-click context menus in both manifests with a hardened `askSelection` → pane seed. Unit +
+  right-click context menus in both manifests with hardened `summarizeSelection` / `explainSelection`
+  → pane seeds. Unit +
   full-stack interplay tested; `security-reviewer` run on the selection-seed flow.
 
 **Partial / deferred** (called out honestly): durable host-metadata provenance writes are wired for

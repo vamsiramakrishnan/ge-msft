@@ -182,12 +182,13 @@ export function releaseConfig(profile, env = process.env) {
     return {
       profile,
       appId: devEnv.GE_DEV_APP_ID ?? '11111111-1111-4111-8111-111111111111',
+      officeXmlAppId: devEnv.GE_DEV_OFFICE_XML_APP_ID ?? '44444444-4444-4444-8444-444444444444',
+      outlookAppId: devEnv.GE_DEV_OUTLOOK_APP_ID ?? '88888888-8888-4888-8888-888888888888',
       oneNoteAppId: devEnv.GE_DEV_ONENOTE_APP_ID ?? '33333333-3333-4333-8333-333333333333',
       entraClientId:
         devEnv.GE_DEV_ENTRA_CLIENT_ID ??
         devEnv.VITE_ENTRA_CLIENT_ID ??
         '22222222-2222-4222-8222-222222222222',
-      botId: devEnv.GE_DEV_BOT_ID ?? '44444444-4444-4444-8444-444444444444',
       webDomain: devEnv.GE_DEV_WEB_DOMAIN ?? webUrl.hostname,
       webOrigin,
       developerName: devEnv.GE_DEV_DEVELOPER_NAME ?? 'Gemini Enterprise Dev',
@@ -275,7 +276,7 @@ export function packageZip(profile) {
 }
 
 function ribbonIcons(origin, extension = 'png') {
-  return [16, 32, 64].map((size) => ({
+  return [16, 32, 80].map((size) => ({
     size,
     url: `${origin}/icon-${size}.${extension}`,
   }));
@@ -286,6 +287,7 @@ function supertip(title, description) {
 }
 
 function askSelectionMenu(origin, entryPoint, suffix, description) {
+  const target = entryPoint === 'cell' ? 'range' : 'selection';
   return {
     entryPoint,
     controls: [
@@ -297,11 +299,24 @@ function askSelectionMenu(origin, entryPoint, suffix, description) {
         supertip: supertip('Gemini Enterprise', description),
         items: [
           {
-            id: `geminiAsk${suffix}`,
+            id: `geminiSummarize${suffix}`,
             type: 'menuItem',
-            label: 'Ask Gemini about this',
-            supertip: supertip('Ask Gemini', description),
-            actionId: 'askSelection',
+            label: `Summarize ${target}`,
+            supertip: supertip(
+              `Summarize ${target}`,
+              `Summarize the current ${target} in the Gemini pane.`,
+            ),
+            actionId: 'summarizeSelection',
+          },
+          {
+            id: `geminiExplain${suffix}`,
+            type: 'menuItem',
+            label: `Explain ${target}`,
+            supertip: supertip(
+              `Explain ${target}`,
+              `Explain the current ${target} in the Gemini pane.`,
+            ),
+            actionId: 'explainSelection',
           },
         ],
       },
@@ -353,12 +368,14 @@ export function alphaManifest(cfg) {
             type: 'general',
             code: {
               page: `${origin}/commands.html`,
-              script: `${origin}/assets/commands.js`,
+              script: `${origin}/assets/commands.js?v=${rootVersion()}`,
             },
             lifetime: 'short',
             actions: [
               { id: 'openGemini', type: 'executeFunction' },
               { id: 'askSelection', type: 'executeFunction' },
+              { id: 'summarizeSelection', type: 'executeFunction' },
+              { id: 'explainSelection', type: 'executeFunction' },
             ],
           },
         ],
@@ -372,6 +389,7 @@ export function alphaManifest(cfg) {
                   {
                     id: 'geminiGroup',
                     label: 'Gemini Enterprise',
+                    icons: ribbonIcons(origin),
                     controls: [
                       {
                         id: 'openGeminiBtn',
@@ -412,8 +430,8 @@ export function developmentManifest(cfg) {
     version: rootVersion(),
     name: { short: 'Gemini Enterprise Dev', full: 'Gemini Enterprise for Microsoft 365 Dev' },
     description: {
-      short: 'Development package for Gemini Enterprise across Microsoft 365.',
-      full: 'Development sideload package for Word, Excel, PowerPoint, Outlook, and Teams. Not a production release artifact.',
+      short: 'Development package for Gemini Enterprise across Microsoft Office.',
+      full: 'Development sideload package for Word, Excel, PowerPoint, and Outlook. Not a production release artifact.',
     },
     developer: {
       name: cfg.developerName,
@@ -427,44 +445,7 @@ export function developmentManifest(cfg) {
       id: cfg.entraClientId,
       resource: `api://${domain}/${cfg.entraClientId}`,
     },
-    authorization: {
-      permissions: {
-        resourceSpecific: [{ name: 'OnlineMeetingTranscript.Read.Chat', type: 'Application' }],
-      },
-    },
     validDomains: [domain, 'login.microsoftonline.com'],
-    staticTabs: [
-      {
-        entityId: 'gemini-tab',
-        name: 'Gemini',
-        contentUrl: `${origin}/?host=teams`,
-        scopes: ['personal'],
-      },
-    ],
-    bots: [
-      {
-        botId: cfg.botId,
-        scopes: ['personal', 'team', 'groupChat'],
-        supportsCalling: false,
-        supportsVideo: false,
-        commandLists: [],
-      },
-    ],
-    composeExtensions: [
-      {
-        botId: cfg.botId,
-        commands: [
-          {
-            id: 'groundOnUnit',
-            type: 'query',
-            title: 'Ground on the unit',
-            description: 'Ask Gemini about this, grounded on your research unit.',
-            initialRun: false,
-            parameters: [{ name: 'q', title: 'Question', description: 'What to ask' }],
-          },
-        ],
-      },
-    ],
     extensions: [
       {
         requirements: {
@@ -483,13 +464,15 @@ export function developmentManifest(cfg) {
             type: 'general',
             code: {
               page: `${origin}/commands.html`,
-              script: `${origin}/assets/commands.js`,
+              script: `${origin}/assets/commands.js?v=${rootVersion()}`,
             },
             lifetime: 'short',
             actions: [
               { id: 'openGemini', type: 'executeFunction' },
               { id: 'onMessageSend', type: 'executeFunction' },
               { id: 'askSelection', type: 'executeFunction' },
+              { id: 'summarizeSelection', type: 'executeFunction' },
+              { id: 'explainSelection', type: 'executeFunction' },
             ],
           },
         ],
@@ -503,6 +486,7 @@ export function developmentManifest(cfg) {
                   {
                     id: 'geminiGroup',
                     label: 'Gemini Enterprise',
+                    icons: ribbonIcons(origin),
                     controls: [
                       {
                         id: 'openGeminiBtn',
@@ -674,10 +658,29 @@ export function taskPaneXmlManifest(cfg, surface) {
   const id = idBySurface[surface];
   if (!host || !title || !id) throw new Error(`Unsupported task pane XML surface: ${surface}`);
 
+  // Excel only: point Office at the =GE.ASK streaming custom-function metadata. The
+  // FunctionFile in VersionOverrides names the page that associates the implementation.
+  const customFunctionsExtendedOverrides =
+    surface === 'excel'
+      ? `
+  <ExtendedOverrides Url="${esc(origin)}/functions.json" />`
+      : '';
+  const functionFile =
+    surface === 'excel'
+      ? `
+          <FunctionFile resid="Functions.Url" />`
+      : '';
+  const functionUrl =
+    surface === 'excel'
+      ? `
+        <bt:Url id="Functions.Url" DefaultValue="${esc(origin)}/functions.html" />`
+      : '';
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!-- Development ${esc(title)} XML manifest for Office web Upload Add-in testing. -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xsi:type="TaskPaneApp">
   <Id>${esc(id)}</Id>
   <Version>${esc(officeXmlVersion())}</Version>
@@ -698,6 +701,170 @@ export function taskPaneXmlManifest(cfg, surface) {
     <SourceLocation DefaultValue="${esc(origin)}/taskpane.html?host=${esc(surface)}" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="${esc(host)}">
+        <DesktopFormFactor>${functionFile}
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="geminiGroup">
+                <Label resid="Gemini.Group" />
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16" />
+                  <bt:Image size="32" resid="Icon.32" />
+                  <bt:Image size="80" resid="Icon.80" />
+                </Icon>
+                <Control xsi:type="Button" id="openGeminiBtn">
+                  <Label resid="Gemini.Open" />
+                  <Supertip>
+                    <Title resid="Gemini.Open" />
+                    <Description resid="Gemini.Desc" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16" />
+                    <bt:Image size="32" resid="Icon.32" />
+                    <bt:Image size="80" resid="Icon.80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>GeminiPane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="${esc(origin)}/icon-16.png" />
+        <bt:Image id="Icon.32" DefaultValue="${esc(origin)}/icon-32.png" />
+        <bt:Image id="Icon.80" DefaultValue="${esc(origin)}/icon-80.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="${esc(origin)}/taskpane.html?host=${esc(surface)}" />${functionUrl}
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
+        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Gemini.Desc" DefaultValue="Open the Gemini Enterprise task pane." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>${customFunctionsExtendedOverrides}
+</OfficeApp>
+`;
+}
+
+export function multiHostOfficeXmlManifest(cfg) {
+  const origin = cfg.webOrigin;
+  const esc = xmlEscape;
+  const id = cfg.officeXmlAppId ?? '44444444-4444-4444-8444-444444444444';
+
+  const hostBlock = (host, buttonId, functionUrlId = 'Commands.Url') => `
+      <Host xsi:type="${esc(host)}">
+        <DesktopFormFactor>
+          <FunctionFile resid="${esc(functionUrlId)}" />
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="geminiGroup">
+                <Label resid="Gemini.Group" />
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16" />
+                  <bt:Image size="32" resid="Icon.32" />
+                  <bt:Image size="80" resid="Icon.80" />
+                </Icon>
+                <Control xsi:type="Button" id="${esc(buttonId)}">
+                  <Label resid="Gemini.Open" />
+                  <Supertip>
+                    <Title resid="Gemini.Open" />
+                    <Description resid="Gemini.Desc" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16" />
+                    <bt:Image size="32" resid="Icon.32" />
+                    <bt:Image size="80" resid="Icon.80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>GeminiPane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Centralized deployment manifest for Word, Excel, and PowerPoint. -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xsi:type="TaskPaneApp">
+  <Id>${esc(id)}</Id>
+  <Version>${esc(officeXmlVersion())}</Version>
+  <ProviderName>${esc(cfg.developerName)}</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Gemini Enterprise Dev" />
+  <Description DefaultValue="Gemini Enterprise for Word, Excel, and PowerPoint." />
+  <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
+  <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
+  <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
+  <AppDomains>
+    <AppDomain>${esc(origin)}</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Document" />
+    <Host Name="Workbook" />
+    <Host Name="Presentation" />
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="${esc(origin)}/taskpane.html" />
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+    <Hosts>${hostBlock('Document', 'openGeminiWordBtn')}${hostBlock(
+      'Workbook',
+      'openGeminiExcelBtn',
+      'Functions.Url',
+    )}${hostBlock('Presentation', 'openGeminiPowerPointBtn')}
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="${esc(origin)}/icon-16.png" />
+        <bt:Image id="Icon.32" DefaultValue="${esc(origin)}/icon-32.png" />
+        <bt:Image id="Icon.80" DefaultValue="${esc(origin)}/icon-80.png" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="${esc(origin)}/taskpane.html" />
+        <bt:Url id="Commands.Url" DefaultValue="${esc(origin)}/commands.html" />
+        <bt:Url id="Functions.Url" DefaultValue="${esc(origin)}/functions.html" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
+        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Gemini.Desc" DefaultValue="Open the Gemini Enterprise task pane." />
+      </bt:LongStrings>
+    </Resources>
+    <WebApplicationInfo>
+      <Id>${esc(cfg.entraClientId)}</Id>
+      <Resource>api://${esc(cfg.webDomain)}/${esc(cfg.entraClientId)}</Resource>
+      <Scopes>
+        <Scope>Files.Read.All</Scope>
+        <Scope>offline_access</Scope>
+        <Scope>openid</Scope>
+        <Scope>profile</Scope>
+      </Scopes>
+    </WebApplicationInfo>
+  </VersionOverrides>
+  <ExtendedOverrides Url="${esc(origin)}/functions.json" />
 </OfficeApp>
 `;
 }
@@ -806,7 +973,7 @@ export function outlookXmlManifest(cfg) {
       <bt:Images>
         <bt:Image id="Icon.16" DefaultValue="${esc(origin)}/icon-16.png" />
         <bt:Image id="Icon.32" DefaultValue="${esc(origin)}/icon-32.png" />
-        <bt:Image id="Icon.80" DefaultValue="${esc(origin)}/icon-64.png" />
+        <bt:Image id="Icon.80" DefaultValue="${esc(origin)}/icon-80.png" />
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Taskpane.Url" DefaultValue="${esc(origin)}/taskpane.html?host=outlook" />
@@ -869,6 +1036,13 @@ export function validateGeneratedManifest(manifest, profile) {
         `manifest version ${manifest.version} does not match package version ${rootVersion()}`,
       );
     }
+  } else if (
+    manifest.authorization ||
+    manifest.bots ||
+    manifest.composeExtensions ||
+    manifest.staticTabs
+  ) {
+    errors.push('development Office manifest includes Teams-only top-level blocks');
   }
   return errors;
 }

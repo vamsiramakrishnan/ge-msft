@@ -5,8 +5,9 @@ import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import { HANDLED_ACTUATIONS, OutlookBridge } from './outlook-bridge.js';
 
 /**
- * ADR-0006 capability closure — Outlook. Self-contained. Both `reply-mail` (reviewable reply form)
- * and `create-mail` (new draft via `displayNewMessageForm`) are advertised AND handled, so
+ * ADR-0006 capability closure — Outlook. Self-contained. `reply-mail` (reviewable reply form),
+ * `create-mail` (new draft via `displayNewMessageForm`), and the four in-place draft edits
+ * (`set-recipients`, `add-attachment`, `set-body`, `set-subject`) are advertised AND handled, so
  * advertised==handled; and Outlook declares whole-item `read` + `search`, each backed by a real
  * bridge port (Team READS): `read` → `captureDocState` (a mail item has no addressable sub-range),
  * `search` → `searchDocument`. No `outline` (a mail has no headings).
@@ -22,10 +23,14 @@ describe('Outlook capability closure', () => {
     expect(advertised).toEqual(new Set(implementedRegistryKindsForSurface('outlook')));
   });
 
-  it('advertises both reply-mail and create-mail (each backed by a real actuate case)', () => {
+  it('advertises reply-mail, create-mail, and the four draft edits (each backed by a real actuate case)', () => {
     expect(OUTLOOK_CAPABILITIES.actuations.map((a) => a.kind).sort()).toEqual([
+      'add-attachment',
       'create-mail',
       'reply-mail',
+      'set-body',
+      'set-recipients',
+      'set-subject',
     ]);
   });
 

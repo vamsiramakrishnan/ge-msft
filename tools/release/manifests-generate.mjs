@@ -6,6 +6,7 @@ import {
   generatedManifestPath,
   generatedOneNoteManifestPath,
   generatedOfficeXmlManifestPath,
+  multiHostOfficeXmlManifest,
   oneNoteManifest,
   outlookXmlManifest,
   profileFromArgs,
@@ -38,6 +39,9 @@ try {
       writeFileSync(xmlOut, taskPaneXmlManifest(cfg, surface));
       console.log(`generated ${xmlOut}`);
     }
+    const officeOut = generatedOfficeXmlManifestPath(profile, 'office');
+    writeFileSync(officeOut, multiHostOfficeXmlManifest(cfg));
+    console.log(`generated ${officeOut}`);
     const outlookOut = generatedOfficeXmlManifestPath(profile, 'outlook');
     writeFileSync(outlookOut, outlookXmlManifest(cfg));
     console.log(`generated ${outlookOut}`);

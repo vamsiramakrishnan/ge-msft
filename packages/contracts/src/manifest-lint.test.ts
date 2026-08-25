@@ -41,6 +41,23 @@ describe('unified manifest (negative cases)', () => {
     expect(fs.some((f) => f.code === 'unwired-action')).toBe(true);
   });
 
+  it('flags a ribbon control missing the Mac-required 80px icon', () => {
+    const m = JSON.parse(unified());
+    m.extensions[0].ribbons[0].tabs[0].groups[0].controls[0].icons = [
+      { size: 16, url: 'icon-16.png' },
+      { size: 32, url: 'icon-32.png' },
+    ];
+    const fs = lintUnifiedManifest(JSON.stringify(m));
+    expect(fs.some((f) => f.code === 'missing-ribbon-icon')).toBe(true);
+  });
+
+  it('flags a ribbon group missing the Mac-required icons', () => {
+    const m = JSON.parse(unified());
+    m.extensions[0].ribbons[0].tabs[0].groups[0].icons = [];
+    const fs = lintUnifiedManifest(JSON.stringify(m));
+    expect(fs.some((f) => f.code === 'missing-ribbon-group-icon')).toBe(true);
+  });
+
   it('flags an on-send event that is not a softBlock gate', () => {
     const m = JSON.parse(unified());
     m.extensions[0].autoRunEvents[0].events[0].options.sendMode = 'promptUser';

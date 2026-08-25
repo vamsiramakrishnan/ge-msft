@@ -779,6 +779,12 @@ function Message({
               insertArtifactDisabledReason={insertArtifactDisabledReason}
             />
           )}
+          {message.streaming && message.activity ? (
+            <span className="message-activity" role="status" aria-live="polite">
+              <span className="message-activity-dot" aria-hidden="true" />
+              <span>{message.activity}</span>
+            </span>
+          ) : null}
           {message.streaming && <span className="caret" aria-label="streaming" />}
         </div>
         {message.error && (

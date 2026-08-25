@@ -180,3 +180,132 @@ export function planFillContentControl(req: ActuationRequest): FillContentContro
     hasText: text.length > 0,
   };
 }
+
+/**
+ * Pure plan for an `apply-style` actuation: set a named style on the resolved range. A built-in
+ * style writes `styleBuiltIn` (portable across locales, WordApi 1.3); otherwise the localized
+ * `style` name is written (WordApi 1.1). Anchoring mirrors {@link InsertTextPlan}.
+ */
+export interface ApplyStylePlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  styleName: string;
+  builtIn: boolean;
+  hasStyle: boolean;
+}
+
+export function planApplyStyle(req: ActuationRequest): ApplyStylePlan {
+  const p = req.params;
+  const styleName = p.style?.name ?? '';
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    styleName,
+    builtIn: p.style?.builtIn ?? false,
+    hasStyle: styleName.length > 0,
+  };
+}
+
+/**
+ * Pure plan for an `insert-table` actuation: build a native table from the `tableGrid` value grid
+ * at the selection or after an anchor. `hasRows` fails closed on an empty/ragged-empty grid before
+ * touching the host; the row/column counts derive from the grid itself.
+ */
+export interface InsertTablePlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  rows: string[][];
+  hasRows: boolean;
+}
+
+export function planInsertTable(req: ActuationRequest): InsertTablePlan {
+  const p = req.params;
+  const rows = p.tableGrid?.rows ?? [];
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    rows,
+    hasRows: rows.length > 0 && (rows[0]?.length ?? 0) > 0,
+  };
+}
+
+/**
+ * Pure plan for an `insert-content-control` actuation: wrap the selection or anchored range in a NEW
+ * content control with an optional type/tag/title. The descriptor itself is required (the bridge
+ * fails closed without it); every field inside it is host-applied verbatim.
+ */
+export interface InsertContentControlPlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  controlType?: string;
+  tag?: string;
+  title?: string;
+  hasControl: boolean;
+}
+
+export function planInsertContentControl(req: ActuationRequest): InsertContentControlPlan {
+  const p = req.params;
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    ...(p.contentControl?.type ? { controlType: p.contentControl.type } : {}),
+    ...(p.contentControl?.tag ? { tag: p.contentControl.tag } : {}),
+    ...(p.contentControl?.title ? { title: p.contentControl.title } : {}),
+    hasControl: p.contentControl !== undefined,
+  };
+}
+
+/**
+ * Pure plan for an `insert-hyperlink` actuation: point the resolved range's hyperlink at `url`.
+ * NOTE: the URL is model/host-derived → untrusted; the bridge screens it against http(s) (the same
+ * allowlist discipline as {@link formatSources}) before it ever reaches the host.
+ */
+export interface InsertHyperlinkPlan {
+  matchText?: string;
+  contextHint?: string;
+  anchored: boolean;
+  url: string;
+  hasUrl: boolean;
+}
+
+export function planInsertHyperlink(req: ActuationRequest): InsertHyperlinkPlan {
+  const p = req.params;
+  const url = p.hyperlink?.url ?? '';
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    anchored: Boolean(p.target?.matchText),
+    url,
+    hasUrl: url.length > 0,
+  };
+}
+
+/**
+ * Pure plan for a `find-replace` actuation: replace every occurrence of exact text across the body.
+ * `replace` MAY be empty (deleting all hits); only an absent descriptor or empty `find` fails
+ * closed. Case/whole-word options pass through to `body.search` verbatim.
+ */
+export interface FindReplacePlan {
+  find: string;
+  replace: string;
+  matchCase: boolean;
+  matchWholeWord: boolean;
+  hasFindReplace: boolean;
+}
+
+export function planFindReplace(req: ActuationRequest): FindReplacePlan {
+  const p = req.params;
+  return {
+    find: p.findReplace?.find ?? '',
+    replace: p.findReplace?.replace ?? '',
+    matchCase: p.findReplace?.matchCase ?? false,
+    matchWholeWord: p.findReplace?.matchWholeWord ?? false,
+    hasFindReplace: p.findReplace !== undefined && (p.findReplace.find ?? '').trim().length > 0,
+  };
+}

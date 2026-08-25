@@ -22,6 +22,13 @@ import type { WordSearchHit } from './capture.js';
 /** Cap lazy `search_document` reads so a frequent term can't blow the per-turn budget. */
 const MAX_SEARCH_HITS = 8;
 
+/**
+ * Cap a bulk find/replace so one request can't rewrite an unbounded share of the document (the
+ * registry's failure mode "too many hits" — the preview asks for clarification above the policy
+ * limit; apply-time enforces the hard bound).
+ */
+export const MAX_FIND_REPLACEMENTS = 100;
+
 /** A paragraph read from the document body (text + the built-in style name for heading level). */
 export interface WordParagraph {
   readonly text: string;
@@ -81,6 +88,50 @@ export type ReplaceSelectionOutcome =
 export type FillContentControlOutcome =
   | { readonly status: 'applied'; readonly location: string; readonly priorText: string }
   | { readonly status: 'gone' };
+
+/**
+ * The outcome of an `apply-style` (ADR-0007). On success it carries the range's PRIOR style name so
+ * the write is reversible via a `restore-style` inverse. `drift` degrades a stale content anchor to
+ * a panel item, exactly like {@link TrackedChangeOutcome}.
+ */
+export type ApplyStyleOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly priorStyle: string }
+  | { readonly status: 'drift' };
+
+/**
+ * The outcome of an `insert-table` (ADR-0007): where the native table landed. An insertion has no
+ * prior content, so reversibility is "delete the inserted table" — recorded as non-reversible
+ * until a durable table handle is captured. `drift` is the usual stale-anchor degrade.
+ */
+export type InsertTableOutcome =
+  | { readonly status: 'applied'; readonly location: string }
+  | { readonly status: 'drift' };
+
+/**
+ * The outcome of an `insert-content-control` (ADR-0007). On success it carries the host-MINTED
+ * control id (`cc.id`, read back post-sync) so the inverse deletes exactly THIS control — never a
+ * re-resolved arbitrary one (the ADR-0007 §inverse-identity rule).
+ */
+export type InsertContentControlOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly contentControlId: string }
+  | { readonly status: 'drift' };
+
+/**
+ * The outcome of an `insert-hyperlink` (ADR-0007). On success it carries the range's PRIOR
+ * hyperlink address so the write is reversible by restoring it. `drift` is the usual degrade.
+ */
+export type InsertHyperlinkOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly priorHyperlink: string }
+  | { readonly status: 'drift' };
+
+/**
+ * The outcome of a `find-replace` (ADR-0007): how many bounded hits were actually replaced. The
+ * caller previews hit counts before writing; at apply-time the replacement is CAPPED at
+ * {@link MAX_FIND_REPLACEMENTS} so a frequent term can't blow the blast radius.
+ */
+export type FindReplaceOutcome =
+  | { readonly status: 'applied'; readonly replacedCount: number }
+  | { readonly status: 'none' }; // search found nothing — nothing was written
 
 /** Raw paragraph-edit handler args at the host boundary (coauthor source is untrusted). */
 export interface WordEditArgs {
@@ -179,6 +230,70 @@ export interface WordHost {
    * its prior text first so the fill is reversible. `gone` when no control with that id exists.
    */
   fillContentControl(contentControlId: string, text: string): Promise<FillContentControlOutcome>;
+
+  /**
+   * ADR-0007 `apply-style`: set `styleName` on the resolved range — as a built-in style
+   * (`styleBuiltIn`, WordApi 1.3) when `builtIn`, else the localized name (`style`, WordApi 1.1).
+   * Anchored exactly like {@link insertText} (content anchor + `choose`, else the selection) and
+   * CAPTURES the prior style first so the write is reversible.
+   */
+  applyStyle(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    styleName: string,
+    builtIn: boolean,
+    choose: ChooseHit,
+  ): Promise<ApplyStyleOutcome>;
+
+  /**
+   * ADR-0007 `insert-table`: build a native table from a rectangular value grid at the selection or,
+   * when `query` is given, after the chosen content-anchored hit (drift degrades). Anchored exactly
+   * like {@link insertText}.
+   */
+  insertTable(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    rowCount: number,
+    columnCount: number,
+    values: readonly (readonly string[])[],
+    choose: ChooseHit,
+  ): Promise<InsertTableOutcome>;
+
+  /**
+   * ADR-0007 `insert-content-control`: wrap the selection or anchored range in a NEW content control
+   * with an optional type/tag/title, and read back the host-MINTED control id for the inverse.
+   */
+  insertContentControl(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    controlType: string | undefined,
+    tag: string | undefined,
+    title: string | undefined,
+    choose: ChooseHit,
+  ): Promise<InsertContentControlOutcome>;
+
+  /**
+   * ADR-0007 `insert-hyperlink`: set the hyperlink on the selection or anchored range, CAPTURING the
+   * prior address first so it is reversible. The URL is untrusted — the bridge screens it; this port
+   * passes it to `range.hyperlink` as data.
+   */
+  insertHyperlink(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    url: string,
+    choose: ChooseHit,
+  ): Promise<InsertHyperlinkOutcome>;
+
+  /**
+   * ADR-0007 `find-replace`: replace every occurrence of `find` across the body with `replace`,
+   * bounded at {@link MAX_FIND_REPLACEMENTS} hits. Returns how many hits were replaced; `none`
+   * signals zero hits (nothing was written).
+   */
+  findReplace(
+    find: string,
+    replace: string,
+    opts: { readonly matchCase: boolean; readonly matchWholeWord: boolean },
+  ): Promise<FindReplaceOutcome>;
 
   /**
    * Attach a Word comment carrying `text` to the range matching `query` (re-resolved at
@@ -531,6 +646,174 @@ export class OfficeWordHost implements WordHost {
       cc.insertText(text, Word.InsertLocation.replace);
       await ctx.sync();
       return { status: 'applied', location: `content-control:${contentControlId}`, priorText };
+    });
+  }
+
+  async applyStyle(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    styleName: string,
+    builtIn: boolean,
+    choose: ChooseHit,
+  ): Promise<ApplyStyleOutcome> {
+    return Word.run(async (ctx) => {
+      // `styleBuiltIn` is the locale-portable name but needs WordApi 1.3; the localized `style`
+      // is WordApi 1.1 — the bridge gates per variant, this batch writes whichever was planned.
+      const writeStyle = (target: Word.Range): void => {
+        if (builtIn) target.styleBuiltIn = styleName as Word.BuiltInStyleName;
+        else target.style = styleName;
+      };
+      if (query === undefined) {
+        const sel = ctx.document.getSelection();
+        sel.load('style');
+        await ctx.sync();
+        const priorStyle = sel.style;
+        writeStyle(sel);
+        await ctx.sync();
+        return { status: 'applied', location: 'selection', priorStyle };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      // Read-then-write: re-resolve the anchor before styling so a drifted finding degrades.
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      range.load('style');
+      await ctx.sync();
+      const priorStyle = range.style;
+      writeStyle(range);
+      await ctx.sync();
+      return { status: 'applied', location: 'apply-style', priorStyle };
+    });
+  }
+
+  async insertTable(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    rowCount: number,
+    columnCount: number,
+    values: readonly (readonly string[])[],
+    choose: ChooseHit,
+  ): Promise<InsertTableOutcome> {
+    return Word.run(async (ctx) => {
+      if (query === undefined) {
+        const sel = ctx.document.getSelection();
+        sel.insertTable(rowCount, columnCount, Word.InsertLocation.after, values as string[][]);
+        await ctx.sync();
+        return { status: 'applied', location: 'selection' };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      range.insertTable(rowCount, columnCount, Word.InsertLocation.after, values as string[][]);
+      await ctx.sync();
+      return { status: 'applied', location: 'insert-table' };
+    });
+  }
+
+  async insertContentControl(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    controlType: string | undefined,
+    tag: string | undefined,
+    title: string | undefined,
+    choose: ChooseHit,
+  ): Promise<InsertContentControlOutcome> {
+    return Word.run(async (ctx) => {
+      // The `contentControlType` parameter itself arrived in WordApi 1.5 — omit it entirely on the
+      // default rich-text path so a 1.1 host still gets a control. tag/title setters are WordApi 1.1.
+      const controlTypeArg =
+        controlType === undefined ? undefined : (controlType as Word.ContentControlType.richText);
+      const wrap = (target: Word.Range): Word.ContentControl => {
+        const cc = target.insertContentControl(controlTypeArg);
+        if (tag !== undefined) cc.tag = tag;
+        if (title !== undefined) cc.title = title;
+        return cc;
+      };
+      if (query === undefined) {
+        const sel = ctx.document.getSelection();
+        const cc = wrap(sel);
+        // Read back the MINTED id post-sync: the inverse deletes exactly THIS control.
+        cc.load('id');
+        await ctx.sync();
+        return {
+          status: 'applied',
+          location: `content-control:${cc.id}`,
+          contentControlId: String(cc.id),
+        };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      const cc = wrap(range);
+      cc.load('id');
+      await ctx.sync();
+      return {
+        status: 'applied',
+        location: `content-control:${cc.id}`,
+        contentControlId: String(cc.id),
+      };
+    });
+  }
+
+  async insertHyperlink(
+    query: string | undefined,
+    opts: { readonly matchCase: boolean },
+    url: string,
+    choose: ChooseHit,
+  ): Promise<InsertHyperlinkOutcome> {
+    return Word.run(async (ctx) => {
+      if (query === undefined) {
+        const sel = ctx.document.getSelection();
+        sel.load('hyperlink');
+        await ctx.sync();
+        const priorHyperlink = sel.hyperlink;
+        sel.hyperlink = url;
+        await ctx.sync();
+        return { status: 'applied', location: 'selection', priorHyperlink };
+      }
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      await ctx.sync();
+      const idx = choose(results.items.map((r) => r.text));
+      const range = idx >= 0 ? results.items[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      range.load('hyperlink');
+      await ctx.sync();
+      const priorHyperlink = range.hyperlink;
+      range.hyperlink = url;
+      await ctx.sync();
+      return { status: 'applied', location: 'insert-hyperlink', priorHyperlink };
+    });
+  }
+
+  async findReplace(
+    find: string,
+    replace: string,
+    opts: { readonly matchCase: boolean; readonly matchWholeWord: boolean },
+  ): Promise<FindReplaceOutcome> {
+    return Word.run(async (ctx) => {
+      const results = ctx.document.body.search(find, {
+        matchCase: opts.matchCase,
+        matchWholeWord: opts.matchWholeWord,
+      });
+      results.load('items/text');
+      await ctx.sync();
+      // Hard blast-radius bound: replace at most MAX_FIND_REPLACEMENTS hits per change.
+      const targets = results.items.slice(0, MAX_FIND_REPLACEMENTS);
+      for (const hit of targets) {
+        hit.insertText(replace, Word.InsertLocation.replace);
+      }
+      await ctx.sync();
+      if (targets.length === 0) return { status: 'none' };
+      return { status: 'applied', replacedCount: targets.length };
     });
   }
 

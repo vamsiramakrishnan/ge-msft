@@ -96,6 +96,15 @@ describe('QuickActionBar', () => {
     expect(chips().every((c) => c.getAttribute('data-output') === 'chat')).toBe(true);
   });
 
+  it('shows the full active group when embedded in the scrollable tasks modal', () => {
+    render({ surface: 'word', allowedIntents: ['ask', 'summarize', 'explain'], embedded: true });
+    const expected = quickActionsForSurface('word', ['ask', 'summarize', 'explain']).map(
+      (action) => action.label,
+    );
+    expect(chipLabels()).toEqual(expected);
+    expect(container.querySelector('.action-more')).toBeNull();
+  });
+
   it('tags each chip with its output and intent so the parent can route the gate', () => {
     render({ surface: 'word' });
     const byLabel = (label: string): HTMLButtonElement =>
@@ -128,5 +137,15 @@ describe('QuickActionBar', () => {
     expect(chipLabels()).not.toContain('Summarize this range');
     clickTab('Review');
     expect(chipLabels()).toContain('Find anomalies / outliers');
+  });
+
+  it('advertises host context commands only on supported document surfaces', () => {
+    render({ surface: 'word', allowedIntents: ['summarize', 'explain'] });
+    expect(container.textContent).toContain('Also available from the host context menu.');
+  });
+
+  it('does not promise a host context command in Outlook', () => {
+    render({ surface: 'outlook' });
+    expect(container.textContent).not.toContain('Also available from the host context menu.');
   });
 });

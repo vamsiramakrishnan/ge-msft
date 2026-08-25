@@ -22,9 +22,10 @@ import type { TokenSource } from './stream-assist.js';
  * - `SKILL.md` uploaded in a bundle MUST start with YAML frontmatter (`--- name/description ---`),
  *   else the server returns 400 "Missing YAML frontmatter start delimiter".
  * - Skill agents need NO `:deploy` (that's for managed/app agents only).
- * - Invocation is a separate concern: mount a skill on a turn with the
- *   `mention://?uri=<agentId>` marker in the query (see `stream-assist.ts`) — `skillsSpec`,
- *   `agentsConfig`, and `agentsSpec` do NOT route skill agents on the public endpoint.
+ * - Invocation is a separate concern: supply the terminal agent id through the public
+ *   `agentsSpec.agentSpecs` request field and retain the `mention://?uri=<agentId>` marker as an
+ *   explicit model-selection hint (see `stream-assist.ts`). This route was re-verified live with
+ *   user WIF in 2026-08; skill loading remains conditional when the base prompt is sufficient.
  */
 
 export const SkillSubfileSchema = z.object({

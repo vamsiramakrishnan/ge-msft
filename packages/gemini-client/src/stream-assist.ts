@@ -473,7 +473,9 @@ export function buildStreamAssistRequest(
   if (session) out.session = session;
   if (cfg.modelId) out.generationSpec = { modelId: cfg.modelId };
   if (skillSet.resources.length) {
-    out.skillsSpec = { skills: skillSet.resources.map((name) => ({ name })) };
+    out.agentsSpec = {
+      agentSpecs: skillSet.resources.map((name) => ({ agentId: skillAgentId(name) })),
+    };
   }
   const filter = unitFilter(req);
   const dataStoreSpecs = [
@@ -490,6 +492,11 @@ export function buildStreamAssistRequest(
   }
   if (grounding?.fileIds?.length) out.fileIds = [...grounding.fileIds];
   return out;
+}
+
+/** The public StreamAssist AgentSpec takes the terminal agent id, not its resource name. */
+function skillAgentId(resource: string): string {
+  return resource.split('/').at(-1) ?? resource;
 }
 
 /**

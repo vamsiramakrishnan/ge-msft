@@ -84,7 +84,7 @@ describe('language manifest (ADR-0008 single source)', () => {
           surface: 'powerpoint',
           kind: 'format-shape',
           command: '/format-shape',
-          status: 'promotable',
+          status: 'implemented',
         }),
       ]),
     );

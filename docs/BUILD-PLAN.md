@@ -52,14 +52,20 @@ The goal of P0 is the slice-1 spine: a signed-in user, federated to Google, gets
 
 > **Bridge status:** both the Excel bridge (range capture + `write-cells`/`format-cells` + `readRange`
 > + `watch()`) and the PowerPoint bridge (slide capture + deck compose + `watch()`) are **built and
-> tested against fakes**. Note the mechanism changed from the original `=GE.ASK` streaming custom
-> function / linked-entity cells to the **CLI command + composable-plan** model (`ADR-0004`/`ADR-0005`):
-> the model reads ranges and writes formula-first cells through the gated plan, rather than via a
-> custom function. Real-host validation pending.
+> tested against fakes**. The `=GE.ASK` streaming custom function is now ALSO implemented
+> client-direct (`packages/web-shell/src/functions/`, wired via `functions.json` + the Excel XML
+> manifest's `FunctionFile`/`ExtendedOverrides`) — real-host activation still pending. PowerPoint
+> speaker-note generation stays out of the bridge: Office.js ships no notes write path (see 2.3).
+> Real-host validation pending.
 
-- [ ] **2.1 Excel streaming function.** `packages/bridge-excel`: `=GE.ASK(prompt, range)` as a `@streaming` custom function calling `/assist` and streaming into the cell. *AC: a cell streams a grounded answer.*
+- [~] **2.1 Excel streaming function.** `=GE.ASK(prompt, range)` as a streaming custom function,
+  client-direct: `packages/web-shell/src/functions/` (budgeted untrusted-data framing +
+  `CustomFunctions.associate` seam + SSE→cell streaming adapter), `public/functions.json`
+  metadata, vite `functions.html` entry, and the Excel dev XML manifest FunctionFile +
+  ExtendedOverrides. *AC: a cell streams a grounded answer — code complete and unit-tested;
+  REMAINING: activate against a real Excel host + engine.*
 - [ ] **2.2 Excel entity cells.** Linked-entity load service backed by the gateway/Gemini retrieval; vendor cells expand into agent-enriched cards. *AC: an entity cell loads on demand and expands; nothing large is stored in the workbook.*
-- [ ] **2.3 PowerPoint composer.** `packages/bridge-powerpoint`: intent `draft-slides` streams generated slides into the deck (`insertSlidesFromBase64`/shapes), each with provenance; speaker-notes generation; a redesign suggestion. *AC: "draft the risk section" adds source-backed slides matching `docs/mockups/3-powerpoint.html`.*
+- [~] **2.3 PowerPoint composer.** Deck compose + shape-text writes landed; provenance via the shared store. **Speaker notes remain platform-blocked**: no Office.js write path exists (PowerPointApi through 1.10; OfficeDev/office-js#3269 open) — the bridge deliberately advertises nothing it cannot actuate (ADR-0006). *AC: slides portion matches `docs/mockups/3-powerpoint.html`; notes portion waits on the host API.*
 - [ ] **2.4 P2 exit gate.** An Excel analyst flow and a PowerPoint deck flow both ground on the *same* unit a Word user assembled. *AC: unit continuity demonstrated across three surfaces.*
 
 ## Phase 3 — OneNote + Teams (divergent client models)
@@ -71,7 +77,10 @@ The goal of P0 is the slice-1 spine: a signed-in user, federated to Google, gets
 > validation pending.
 
 - [ ] **3.1 OneNote package.** `packages/bridge-onenote` with its own legacy XML manifest (`manifests/onenote.manifest.xml`); `OneNote.run` page synthesis. *AC: the add-in loads in OneNote on the web.*
-- [ ] **3.2 OneNote research capture.** Intent `synthesize`: write a citation-tagged summary of the notebook unit onto the page; wire NotebookLM overview (audio/video) calls scoped to the notebook. *AC: synthesis + a generated overview match `docs/mockups/4-onenote.html`.*
+- [~] **3.2 OneNote research capture.** Citation-tagged page synthesis is landed in
+  `packages/bridge-onenote`. **NotebookLM audio/video overview remains blocked: NotebookLM exposes
+  no public API** to call from the add-in; keep this `[~]` until one exists or a supported export
+  path is chosen. *AC: synthesis portion done in-bridge; overview waits on an API.*
 - [ ] **3.3 Teams meeting app.** `packages/teams`: host the web-shell as a meeting side panel via TeamsJS; ground on the unit + live transcript (RSC consent); intent `meeting-notes` → live notes + grounded action items. *AC: live notes + action items appear in a Teams meeting.*
 - [ ] **3.4 Teams bot + message extension.** Bot Framework bot for "ask the agent" rendering Adaptive Cards; a message extension to ground a message on the unit. *AC: the bot answers grounded; the message extension returns a grounded result; recap card posts to a channel.*
 - [ ] **3.5 P3 exit gate.** The cross-surface flow (OneNote → Word → Excel → PowerPoint → Teams) runs unbroken across at least three surfaces with one unit + one identity. *AC: continuity demo recorded.*

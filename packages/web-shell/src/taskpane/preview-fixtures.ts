@@ -86,6 +86,7 @@ export const FIXTURE_MESSAGES: ChatMessage[] = [
     role: 'assistant',
     text: 'Comparing the renewal terms against your data-residency policy now',
     streaming: true,
+    activity: 'Checking the selected policy and live document context',
   },
 ];
 

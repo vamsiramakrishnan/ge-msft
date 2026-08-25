@@ -2,7 +2,7 @@
   "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.23/MicrosoftTeams.schema.json",
   "manifestVersion": "1.23",
   "id": "REPLACE_WITH_APP_GUID",
-  "version": "0.1.0",
+  "version": "1.0.3",
   "name": { "short": "Gemini Enterprise", "full": "Gemini Enterprise for Microsoft 365" },
   "description": {
     "short": "Grounded Gemini Enterprise agents across Office and Teams.",
@@ -86,13 +86,15 @@
           "type": "general",
           "code": {
             "page": "https://REPLACE_WEB_SHELL_DOMAIN/commands.html",
-            "script": "https://REPLACE_WEB_SHELL_DOMAIN/assets/commands.js"
+            "script": "https://REPLACE_WEB_SHELL_DOMAIN/assets/commands.js?v=1.0.3"
           },
           "lifetime": "short",
           "actions": [
             { "id": "openGemini", "type": "executeFunction" },
             { "id": "onMessageSend", "type": "executeFunction" },
-            { "id": "askSelection", "type": "executeFunction" }
+            { "id": "askSelection", "type": "executeFunction" },
+            { "id": "summarizeSelection", "type": "executeFunction" },
+            { "id": "explainSelection", "type": "executeFunction" }
           ]
         }
       ],
@@ -106,6 +108,11 @@
                 {
                   "id": "geminiGroup",
                   "label": "Gemini Enterprise",
+                  "icons": [
+                    { "size": 16, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-16.png" },
+                    { "size": 32, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-32.png" },
+                    { "size": 80, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-80.png" }
+                  ],
                   "controls": [
                     {
                       "id": "openGeminiBtn",
@@ -113,8 +120,9 @@
                       "label": "Open Gemini",
                       "actionId": "openPanel",
                       "icons": [
-                        { "size": 16, "url": "icon-16.png" },
-                        { "size": 32, "url": "icon-32.png" }
+                        { "size": 16, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-16.png" },
+                        { "size": 32, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-32.png" },
+                        { "size": 80, "url": "https://REPLACE_WEB_SHELL_DOMAIN/icon-80.png" }
                       ]
                     }
                   ]
@@ -129,14 +137,24 @@
           "requirements": { "scopes": ["document", "workbook", "presentation"] },
           "menus": [
             {
-              "id": "geminiAskMenu",
+              "id": "geminiSummarizeSelection",
               "type": "menuItem",
-              "label": "Ask Gemini about this",
+              "label": "Summarize selection",
               "supertip": {
-                "title": "Ask Gemini",
-                "description": "Summarize or review the current selection in the Gemini pane."
+                "title": "Summarize selection",
+                "description": "Summarize the current selection in the Gemini pane."
               },
-              "actionId": "askSelection"
+              "actionId": "summarizeSelection"
+            },
+            {
+              "id": "geminiExplainSelection",
+              "type": "menuItem",
+              "label": "Explain selection",
+              "supertip": {
+                "title": "Explain selection",
+                "description": "Explain the current selection in the Gemini pane."
+              },
+              "actionId": "explainSelection"
             }
           ]
         }

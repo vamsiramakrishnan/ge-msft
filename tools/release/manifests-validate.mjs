@@ -87,6 +87,30 @@ if (profile === 'development') {
       ],
     })),
     {
+      path: generatedOfficeXmlManifestPath(profile, 'office'),
+      checks: [
+        { text: '<Host Name="Document"', message: 'does not declare the Document host' },
+        { text: '<Host Name="Workbook"', message: 'does not declare the Workbook host' },
+        { text: '<Host Name="Presentation"', message: 'does not declare the Presentation host' },
+        {
+          text: '<Control xsi:type="Button" id="openGeminiWordBtn">',
+          message: 'does not declare the Word ribbon command',
+        },
+        {
+          text: '<Control xsi:type="Button" id="openGeminiExcelBtn">',
+          message: 'does not declare the Excel ribbon command',
+        },
+        {
+          text: '<Control xsi:type="Button" id="openGeminiPowerPointBtn">',
+          message: 'does not declare the PowerPoint ribbon command',
+        },
+        {
+          text: '<WebApplicationInfo>',
+          message: 'does not declare the Entra web application identity',
+        },
+      ],
+    },
+    {
       path: generatedOfficeXmlManifestPath(profile, 'outlook'),
       checks: [
         { text: '<Host Name="Mailbox"', message: 'does not declare the Mailbox host' },

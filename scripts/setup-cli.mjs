@@ -663,7 +663,8 @@ function collectChecks() {
   const widgetConfigured = Boolean(envValue("VITE_GE_WIDGET_CONFIG_ID") || process.env.GE_WIDGET_CONFIG_ID);
   checks.push(check("Google/Gemini", "widget config", widgetConfigured ? "ok" : "warn", widgetConfigured ? "configured" : "needed for widget skill flows"));
   checks.push(check("Dev server", "cloudflared", cloudflared ? "ok" : "warn", cloudflared || "needed for remote Office web dev"));
-  checks.push(check("Artifacts", "development package", exists("dist/release/development-m365-v0.1.0.zip") ? "ok" : "warn", exists("dist/release/development-m365-v0.1.0.zip") ? "present" : "run bun run setup:package"));
+  const developmentPackage = path.relative(rootDir, m365PackageForProfile("development"));
+  checks.push(check("Artifacts", "development package", exists(developmentPackage) ? "ok" : "warn", exists(developmentPackage) ? "present" : "run bun run setup:package"));
   checks.push(check("Artifacts", "XML manifests", exists("dist/package/development/xml/excel.manifest.xml") ? "ok" : "warn", exists("dist/package/development/xml/excel.manifest.xml") ? "present" : "run bun run setup:package"));
   checks.push(
     check(

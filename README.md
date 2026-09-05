@@ -1,24 +1,14 @@
 # Gemini Enterprise for Microsoft 365
 
-Bring **Gemini Enterprise** into **Word, Excel, PowerPoint, OneNote, Outlook, and Teams** as one
-multi-surface Microsoft 365 add-in. The add-in is **client-direct**: it federates the signed-in
-user's Entra identity to Google (Workforce Identity Federation, in the browser) and calls Gemini
-Enterprise (Discovery Engine `v1alpha`) directly — **no gateway holds credentials, no Google secret
-ever reaches a client**. The agent grounds on a composable **research unit** (a NotebookLM notebook
-+ federated SharePoint/OneDrive sources + the working document), and every change it makes is
-**traceable and reversible** — tracked changes in Word, address-anchored cells in Excel,
-citation-tagged blocks elsewhere, each carrying agent id, sources, identity, timestamp, and a
-content hash. A surface-agnostic core is written once and reused across thin per-surface bridges.
+A Microsoft 365 add-in that exposes Gemini Enterprise inside Word, Excel, PowerPoint, OneNote, Outlook, and Teams.
 
-> **Source of truth.** `CLAUDE.md` is the repo constitution; the **ADRs** (`docs/ADR-000X-*.md`) are
-> the current architecture and supersede the older gateway-framed design docs. `docs/STATUS.md` is
-> the honest "what's built" inventory. See the [docs index](#docs-index) below.
+The browser add-in exchanges the signed-in user's Entra token for a short-lived Google token through Workforce Identity Federation, then calls Gemini Enterprise / Discovery Engine as that user. The current architecture is client-direct; there is no credential-holding application gateway in the normal request path.
 
----
+Document changes go through surface-specific bridges so the runtime can attach provenance and use each host's native mutation model.
 
-## Start Here
+## Start locally
 
-Use Bun for repo operations. The short version:
+Use Bun for repository tasks:
 
 ```bash
 bun install
@@ -26,470 +16,227 @@ bun run setup:doctor
 bun run --filter @ge/web-shell preview
 ```
 
-Pick the lane you need:
+The preview renders the task pane without requiring an Office host.
 
-| Goal | Command | Deeper doc |
-| --- | --- | --- |
-| See the sidepane without Office | `bun run --filter @ge/web-shell preview` | [Web-shell UI notes](packages/web-shell/UI.md) |
-| Check workstation readiness | `bun run setup:doctor` | [Readiness guide](setup/00-readiness.md) |
-| Guided setup/login/package flow | `bun run setup:guide` | [Setup guide](setup/README.md) |
-| Start dev tunnel and sync Entra redirect | `bun run ge:dev:tunnel` | [Dev server and tunnel](setup/02-dev-server-and-tunnel.md) |
-| Build/package only | `bun run setup:package` | [Manifests and packages](setup/03-manifests-and-packages.md) |
-| Automated developer sideload of unified package | `bun run sideload` | [Sideloading](setup/04-sideloading.md) |
-| Safe dev bootstrap, no tenant/catalog mutation | `bun run bootstrap:dev` | [Readiness bootstrap](setup/00-readiness.md#one-shot-bootstrap) |
-| Release dry-run with stable profile validation | `bun run bootstrap:release:dry-run` | [Deployment matrix](setup/07-deployment-methods-matrix.md#one-shot-bootstrap) |
-| Release/catalog upsert | `bun run bootstrap:release` | [Tenant deployment](setup/06-tenant-deployment.md) |
-| Sync Entra SPA redirect only | `bun run entra:sync:release` | [Entra SPA redirect sync](setup/06-tenant-deployment.md#entra-spa-redirect-sync) |
-| Manage Gemini Enterprise skills | `bun run ge:skills` | [Skill tooling](skill/README.md) |
+Useful setup and release commands:
 
-Current release naming:
+| Task | Command |
+| --- | --- |
+| Check workstation dependencies | `bun run setup:doctor` |
+| Guided setup | `bun run setup:guide` |
+| Start the development tunnel | `bun run ge:dev:tunnel` |
+| Build the Office package | `bun run setup:package` |
+| Sideload for the current developer | `bun run sideload` |
+| Local development bootstrap | `bun run bootstrap:dev` |
+| Validate a release without publishing | `bun run bootstrap:release:dry-run` |
+| Publish the configured release | `bun run bootstrap:release` |
+| Manage Gemini Enterprise skills | `bun run ge:skills` |
 
-- `bootstrap:dev` uses the `development` profile and does **not** upload to tenant/catalog.
-- `bootstrap:dev:sideload` builds the development unified package and installs it for the current
-  developer with Agents Toolkit.
-- `bootstrap:release` / `bootstrap:prod` use the current production-like profile:
-  `internal-alpha-word-excel`.
-- Release profile generation requires stable `GE_ALPHA_*` values. It intentionally rejects
-  placeholder IDs, localhost, and example domains.
+`bootstrap:dev` does not upload to the tenant catalog. Release tasks use the configured production-like profile and reject placeholder identifiers, localhost origins, and example domains where the release configuration requires stable values.
 
-The hosted origin is just where Office downloads the web app from. It is not a new backend unless we
-choose to add server endpoints:
+## Request path
 
 ```text
-Office manifest/package
-  -> loads https://<host>/taskpane.html inside Office WebView
-  -> taskpane calls Office.js for document actions
-  -> taskpane calls Gemini Enterprise StreamAssist over HTTPS
+Microsoft 365 host
+      │
+      ▼
+Office / Teams webview
+      │
+      ├── Office.js / TeamsJS ──► document or host state
+      │
+      ├── Entra token
+      │       │
+      │       ▼
+      │   Google STS / WIF
+      │       │ short-lived Google token
+      │       ▼
+      └─────────────────────────► Gemini Enterprise / Discovery Engine
 ```
 
-For the hosting decision, read [Hosting origin and release flow](setup/08-hosting-origin-and-release.md).
+The hosted origin serves the web application. It is not automatically an application backend.
 
----
+An optional transparent proxy can be configured for tenants whose browser policy prevents direct calls to the Discovery Engine endpoint. That proxy is a deployment choice, not the default identity architecture.
 
-## Sidepane demos
+## Package architecture
 
-These GIFs are generated from the real taskpane preview harness, not separate marketing mocks. Run
-`bun run docs:gifs` after UI changes to refresh every surface. On a fresh Linux workstation, run
-`bun run docs:gifs:install` once if Playwright reports missing browser dependencies.
-
-| Word | Excel | PowerPoint |
-| --- | --- | --- |
-| ![Word Gemini Enterprise sidepane](docs/assets/readme/sidepanes/word.gif) | ![Excel Gemini Enterprise sidepane](docs/assets/readme/sidepanes/excel.gif) | ![PowerPoint Gemini Enterprise sidepane](docs/assets/readme/sidepanes/powerpoint.gif) |
-| Outlook | OneNote | Teams |
-| ![Outlook Gemini Enterprise sidepane](docs/assets/readme/sidepanes/outlook.gif) | ![OneNote Gemini Enterprise sidepane](docs/assets/readme/sidepanes/onenote.gif) | ![Teams Gemini Enterprise sidepane](docs/assets/readme/sidepanes/teams.gif) |
-
----
-
-## Architecture
-
-### The layered stack
-
-A surface-agnostic core sits beneath six thin bridges. The core never touches Office.js / TeamsJS /
-Graph; the bridges are the only code that does.
-
-```
-                         ┌──────────────────────────────────────────────┐
-   bridges (host-only)   │ word  excel  powerpoint  onenote  outlook  teams │
-                         └───────────────────────┬──────────────────────┘
-                                                 │  DocBridge interface
-   app core (surface-     ┌───────────────────────┴──────────────────────┐
-   agnostic)             │  runtime          web-shell                   │
-                         │  AssistSession    NaaAuthClient · composeSession│
-                         │  ContextModel     PanelController · React panel │
-                         │  Orchestrator     ProvenanceStore · preview     │
-                         └───────────────────────┬──────────────────────┘
-   capability + I/O       ┌──────────┬───────────┼───────────┬──────────┐
-   packages              │ content  │ gemini-    │ graph-    │ triggers │
-                         │ blocks/  │ client     │ client    │ events + │
-                         │ doc_state│ WIF+assist │ estate    │ the gate │
-                         └──────────┴───────────┬┴───────────┴──────────┘
-   the boundary                       ┌─────────┴─────────┐
-                                      │     contracts     │  types + Zod
-                                      │  the grammar, the │  the single
-                                      │  manifests, closure│  source of truth
-                                      └───────────────────┘
+```text
+surface bridges
+  word · excel · powerpoint · onenote · outlook · teams
+                  │
+                  ▼
+             DocBridge
+                  │
+                  ▼
+      runtime + web-shell
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+     content   gemini-    graph-
+               client     client
+        │         │         │
+        └─────────┼─────────┘
+                  ▼
+              contracts
 ```
 
-- **`contracts`** — the boundary. Types + Zod schemas for the unit descriptor, findings, SSE events,
-  provenance, the **capability manifest**, the **CLI command grammar**, the **composition expression
-  grammar**, the **skill grammar**, and the **capability-closure** helper. Everything else implements
-  against this.
-- **`content`** — native-first processing: Office object model → typed `Block`s with host locators →
-  token-budgeted, section-aware chunks → the untrusted-wrapped `<doc_state>` snapshot.
-- **`gemini-client`** — client-direct Discovery Engine: `WifTokenClient` (Entra→Google token
-  exchange), `streamAssist`, `search`, `completeQuery`, `checkGrounding`, `rank`, `SessionContext`.
-- **`graph-client`** — Microsoft Graph reader (the estate plane), delegated, as the signed-in user.
-- **`triggers`** — the event-driven layer: `HostEvent` lifecycle, `TriggerRegistry`, debounce, and
-  the **fail-closed actuation gate**.
-- **`runtime`** — the assist loop: `AssistSession` (command loop + composition evaluator + plan
-  executor), `ContextModel`, `Orchestrator`, the command compiler.
-- **`web-shell`** — the app core plus the React/Vite task pane: `NaaAuthClient` (NAA),
-  `composeSession`, `PanelController`, `ProvenanceStore`, host detection, the panel components, and a
-  standalone **preview** harness.
-- **`bridge-*` / `teams`** — the six surface bridges; each implements one `DocBridge`
-  (`getCapabilities` / `listContext` / `resolveContext` / `actuate` / read ports / `watch`).
+The main packages have separate responsibilities:
 
-### Client-direct identity federation (ADR-0001)
+| Package | Responsibility |
+| --- | --- |
+| `contracts` | Shared TypeScript types and Zod schemas for document state, commands, plans, capabilities, provenance, and actuation |
+| `content` | Converts host document state into typed blocks and bounded context |
+| `gemini-client` | Workforce Identity Federation and Gemini Enterprise / Discovery Engine requests |
+| `graph-client` | Delegated Microsoft Graph reads |
+| `triggers` | Host events, debounce, and the actuation gate |
+| `runtime` | Assist session, command parsing, composition, planning, and execution |
+| `web-shell` | Authentication wiring, task-pane state, React UI, and standalone preview |
+| `bridge-*` / `teams` | Host-specific implementations of `DocBridge` |
 
+The architecture decisions under `docs/ADR-*.md` describe the current design. [`docs/STATUS.md`](docs/STATUS.md) records what is implemented now. Older design notes may describe superseded gateway-based approaches.
+
+## Document context
+
+The runtime treats the active Office document as an addressable environment rather than serializing the entire file into every model request.
+
+A bounded document snapshot carries current structure. The model can request narrower reads such as search, outline, or addressed content through the bridge.
+
+Host content is wrapped as untrusted data before it is added to model context. The surrounding application still depends on Gemini Enterprise engine configuration and its configured controls; wrapping content is not a complete prompt-injection defense by itself.
+
+## Command protocol
+
+Discovery Engine `streamAssist` does not expose the same native function-calling contract as a standard tool-calling model. This project therefore uses a small command language for host operations.
+
+The model emits command or plan blocks. The runtime parses and validates them, then compiles actuating commands into typed `ActuationRequest` values.
+
+```text
+model output
+    │
+    ▼
+command / plan parser
+    │
+    ▼
+typed values and ActuationRequest
+    │
+    ▼
+dry run / approval
+    │
+    ▼
+DocBridge.actuate(...)
 ```
-  Add-in (browser)        Office host         Google STS            Discovery Engine
-      │                       │                   │                       │
-      │ acquireTokenSilent    │  broker token     │                       │
-      ├──────────────────────►│  (Entra OIDC)     │                       │
-      │◄──────────────────────┤                   │                       │
-      │  STS token exchange (RFC 8693, Entra OIDC → Google access token)  │
-      ├──────────────────────────────────────────►│                       │
-      │◄──────────────────────────────────────────┤  short-lived token    │
-      │  :streamAssist  (Bearer Google token, as the signed-in user)      │
-      ├──────────────────────────────────────────────────────────────────►│
-      │◄═══════════════ SSE: tokens + citations + provenance ═════════════┤
+
+Pure transformations and host mutations are kept separate. Reads and transformations can be evaluated during a dry run. Effects are collected for approval before execution.
+
+## Capability closure
+
+Each Office surface supports a different set of reads and mutations.
+
+The contracts package compares the declared capability manifest with implemented bridge handlers, read ports, and command verbs. Conformance tests fail when a surface advertises a capability that its implementation does not handle.
+
+This check covers the capabilities represented by those registries and tests. It is not a proof that arbitrary host behavior cannot diverge outside the checked surface.
+
+## User interaction
+
+The task pane accepts:
+
+- `/` commands;
+- `@` references to document or enterprise context;
+- prebuilt quick actions;
+- supported host context-menu actions.
+
+These inputs compile into the same runtime command/plan path. The host bridge remains the mutation boundary.
+
+Gemini Enterprise skills under [`skill/`](skill/) teach the model the command grammar and planning format used by this runtime.
+
+## Actuation and provenance
+
+Writes pass through the actuation gate.
+
+For plans, the runtime evaluates reads and pure transformations first, resolves the pending effects, and presents that effect set for approval before mutation.
+
+Provenance records include the acting agent, source references, identity, timestamp, and content hash. Persistence differs by Office surface. Word and Excel have host-backed provenance storage in the current implementation; other surfaces have different or incomplete persistence paths. Check [`docs/STATUS.md`](docs/STATUS.md) before depending on a particular host's persistence behavior.
+
+Excel formula writes also pass through the project's formula-safety check before actuation.
+
+Word writes can use content anchors and re-resolve the target before applying a change. When the anchor no longer resolves, the bridge can refuse or degrade the action rather than writing to the stale position.
+
+## Identity boundary
+
+The normal browser path holds the user's short-lived Entra token and the Google token derived from it in memory.
+
+No long-lived Google service-account secret is shipped to the add-in.
+
+This design still depends on correct Entra configuration, Workforce Identity Federation policy, browser token handling, and Gemini Enterprise IAM. Client-direct does not remove those controls; it changes where credential exchange and API calls occur.
+
+## Research context
+
+The application can compose context from the working document, federated Microsoft 365 sources, and configured research/notebook material. Each source type has its own retrieval and authorization path.
+
+Do not treat the phrase "research unit" as an authorization boundary. Access is determined by the underlying Microsoft and Google identity/configuration paths.
+
+## Side-pane previews
+
+The checked-in GIFs are generated from the task-pane preview harness:
+
+```bash
+bun run docs:gifs
 ```
 
-The only optional server piece is a transparent CORS/audit **proxy** (`proxyUrl`) for tenants that
-block browser CORS to `discoveryengine.googleapis.com` — a deploy artifact, not a workspace package.
-Model Armor, agent routing, and grounding stores are Gemini Enterprise **engine config**, not our
-code. The client only ever holds the user's short-lived Entra token and the Google token derived
-from it, in memory.
+On a new Linux workstation, install the Playwright browser dependencies once with:
 
-### The capability arc
-
-The product's depth is a four-step arc, each ADR building on the last:
-
-1. **Doc-as-environment (ADR-0003).** The active document is an addressable environment, not a
-   payload. An ambient `<doc_state>` snapshot carries structure every turn; the model reads the rest
-   **lazily** through narrow, bounded host-read ports (`read`, `search`, `outline`) instead of
-   pre-serialising the whole file.
-2. **CLI command protocol (ADR-0004).** `streamAssist` has no native function-calling, so the model
-   drives the read/write loop by emitting **flat command lines** in a fenced ` ```cmd ` block. The
-   runtime parses → validates → **compiles each line into a typed `ActuationRequest`** and runs the
-   existing machinery. The command line is the source language; `ActuationRequest` is the IR. A flat
-   command verb has no JSON envelope to drift from — empirically more reliable than JSON tool-calls.
-3. **Composable algebra + plans + skills (ADR-0005).** A typed **value layer** sits between reads and
-   actuations: reads produce `Table`/`Number`/`Text`; pure transforms (`filter`, `select`, `sum`, …)
-   compose freely via pipes and `let` bindings; only typed **`Effect`** terminals actuate. *Pure
-   composes freely; effects gate* — that single split is both the composition mechanism and the
-   safety boundary. The model emits a **plan**, the runtime type-checks it against the manifest,
-   **dry-runs** it (reads + pure, zero actuation), previews the effect-set for **one plan-level
-   approval**, then executes — each effect gated. **Skills** are named, parameterized compositions:
-   the org's capability set grows without shipping code. *(Phases 1–3 implemented;
-   `for`/`each` iteration and cross-surface plans deferred — see STATUS.)*
-4. **Capability closure (ADR-0006).** A model that composes capabilities over a non-closed set
-   composes phantoms. `checkCapabilityClosure` computes `declared manifest ∩ handled kinds ∩ read
-   ports ∩ CLI verbs`; per-surface **conformance tests fail the build** on a phantom (an advertised
-   capability the bridge can't do). Gaps (handled but not yet reachable by a verb) are tracked on an
-   allow-list, not fatal.
-
-### The command surface — `/` verbs and `@` mentions
-
-A surface-agnostic command pane sits on top of the capability stack. The user acts three ways — a
-`/` verb, an `@` mention, a prebuilt button — and a right-click does the same from inside the host.
-All four compile to the same path; nothing bypasses the gate.
-
-- **`/` verb → an Intent**, scoped per surface by the `CapabilityManifest` (`commandPaletteFor()` in
-  `contracts`: `/assist`, `/review`, `/resolve`, `/rewrite`, `/draft`, `/synthesize`, `/notes`). The
-  `Composer` opens the verb palette on `/` and the mention picker on `@`, and `parseComposerInput`
-  turns a submit into a typed `ComposerInvocation`. A bare question or `/assist` → `send`; any
-  actuating verb → the fail-closed `runCommands` plan gate.
-- **`@` mention → grounding**, mapped to real `streamAssist` fields — `query.parts[]` (docs/people),
-  `toolsSpec.dataStoreSpecs` (connectors), `fileIds` (uploads). Each becomes a removable unit chip.
-- **Prebuilt buttons** — `QUICK_ACTIONS` in `contracts` (35 actions, `quickActionsForSurface()`
-  closure-filtered) render in the always-visible per-app primary row and the `QuickActionBar`; a
-  `chat` action seeds `send`, a `write`/
-  `annotation` action seeds the gate. "Summarize this email", "Review against policy", etc. An action
-  with `{{name}}` slots declares typed `parameters` and collects them in a fill form before dispatch —
-  a literal placeholder never reaches the model.
-- **Context menus** — right-click **Summarize** and **Explain** commands
-  (`extensions.contextMenus` in the unified manifest) read the live Word/Excel/PowerPoint selection
-  and seed the open pane as `@this`. The OneNote XML retains its single host menu entry. Selection
-  rides as data, never instructions; the handoff seed carries no raw text.
-
-The grammar is also carried into Gemini Enterprise as two **skills** (`skill/`), mounted per turn via
-the public `agentsSpec.agentSpecs` request field (`docs/api/discoveryengine/skills-and-agents.md`):
-
-- **`m365-command-planner`** — the front door: turns a free-text `/verb @mentions …` request into a
-  structured, confirmable ` ```plan ` block (intent · scope · steps · exclusions · grounding). Its
-  `parse_plan.py` is mirrored by `parsePlanBlock()` / `CommandPlan` in `contracts`.
-- **`m365-surface-commander`** — the executor: takes the confirmed plan + a live `<doc_state>` and
-  emits the ADR-0004 ` ```cmd ` algebra → gate → tracked change / cell / staged draft.
-
-The interaction is mocked in `docs/mockups/6-command-pane.html` (rendered under
-`docs/mockups/screenshots/`); the competitive baseline vs Microsoft Copilot is in
-`docs/COMPETITIVE-COPILOT.md`.
-
-### The safety spine
-
-Held identically on every surface, enforced at the boundary:
-
-- **Fail-closed actuation gate** — no write executes without explicit approval; `triggers.gate()`
-  blocks if no approver is wired. Plans get **one plan-level approval** over a dry-run preview;
-  standalone effects get per-write approval.
-- **Dry-run before approval** — a plan executes its reads + pure transforms and resolves every effect
-  to a Zod-validated `ActuationRequest` **with zero actuation**, so the approval previews exactly what
-  will change.
-- **Durable provenance** — every actuation carries agent id, sources, identity, timestamp, and a
-  content hash. **Word** stamps it into a custom XML part and **Excel** into the workbook settings bag
-  (survives save/reopen); the client `ProvenanceStore` view-model lists changes for undo. *(The
-  host-metadata write is wired for Word + Excel only; PowerPoint/OneNote/Outlook/Teams persist is not
-  yet — see STATUS.)*
-- **Untrusted-content boundary** — host document/transcript content is data, never instructions.
-  `<doc_state>` and read results are wrapped and framed as data; Model Armor screens at the engine.
-  Validated against planted injections in the live-engine probes (ADR-0004 Validation table).
-- **`isUnsafeFormula`** — Excel formula writes pass a guard before the gate, so a composed formula
-  can't smuggle a dangerous construct into a cell.
-- **Content-anchored Word writes** — findings anchor by content (`body.search`), re-resolve at
-  apply-time, and degrade to a panel item on drift rather than rendering a broken annotation.
-
----
-
-## Repo layout
-
+```bash
+bun run docs:gifs:install
 ```
+
+The preview harness verifies the UI path it exercises. It does not substitute for testing inside every Office host.
+
+## Repository layout
+
+```text
 packages/
-  contracts/        Shared types + Zod schemas — the boundary (unit, finding, SSE, provenance,
-                    capability manifest, command/expr/skill grammars, closure helper)
-  content/          Native-first content: object model → blocks → budgeted chunks → <doc_state>
-  gemini-client/    Client-direct Discovery Engine: WIF exchange, streamAssist, search/rank/grounding
-  graph-client/     Microsoft Graph reader (the estate plane), delegated, client-direct
-  triggers/         Event layer: HostEvent lifecycle, TriggerRegistry, debounce, the actuation gate
-  runtime/          Surface-agnostic core: AssistSession, ContextModel, Orchestrator, command compiler
-  web-shell/        App core + React/Vite task pane: NaaAuthClient, composeSession, PanelController,
-                    ProvenanceStore, the panel components, and the standalone preview harness
-  bridge-word/      Word: native capture + content-anchored tracked changes + watch()
-  bridge-excel/     Excel: range capture + address-anchored write-cells + readRange + watch()
-  bridge-powerpoint/PowerPoint: slide capture + deck compose + watch()
-  bridge-onenote/   OneNote: page synthesis + inline citation tags (web-only, legacy manifest)
-  bridge-outlook/   Outlook: mail capture + reviewable reply + the on-send gate
-  teams/            Teams: transcript capture + reviewable post-message + meeting events
-manifests/          m365-unified.manifest.json (Package A) + onenote.manifest.xml (Package B)
-skill/              Gemini Enterprise skill bundles + create/test tooling — the / + @ command
-                    surface, carried into the engine: m365-surface-commander (executor) and
-                    m365-command-planner (free-text planner)
-docs/               ADRs (current architecture), design/contracts/conventions, status, capability
-                    map, the API knowledge base, the mockups + rendered screenshots
+  contracts/       shared schemas, command grammar, plans, capabilities
+  content/         host document normalization and chunking
+  gemini-client/   WIF + Discovery Engine client
+  graph-client/    delegated Microsoft Graph reads
+  triggers/        host events and mutation gate
+  runtime/         assist loop, command compiler, plan executor
+  web-shell/       React task pane and standalone preview
+  bridge-*/        Office host adapters
+
+skill/             Gemini Enterprise skills
+setup/             workstation, sideload, release and hosting guides
+docs/              ADRs, API notes, mockups, status and architecture docs
 ```
 
-`web-shell` and `runtime` are the bulk of the client and are **surface-agnostic** — they must not
-contain Word/Excel/etc.-specific code. Surface specifics live only in `bridge-*` and `teams`.
+## Read next
 
----
+- [`docs/STATUS.md`](docs/STATUS.md): implemented surface and known gaps
+- [`setup/README.md`](setup/README.md): setup path
+- [`setup/07-deployment-methods-matrix.md`](setup/07-deployment-methods-matrix.md): deployment choices
+- [`setup/08-hosting-origin-and-release.md`](setup/08-hosting-origin-and-release.md): hosting boundary
+- `docs/ADR-0001-*`: identity architecture
+- `docs/ADR-0003-*`: document-as-environment model
+- `docs/ADR-0004-*`: command protocol
+- `docs/ADR-0005-*`: composition, plans, and skills
+- `docs/ADR-0006-*`: capability closure
 
-## Commands
+## Boundaries
+
+- Direct browser calls do not remove the need for IAM, tenant policy, and token-handling controls.
+- A declared capability is only valid for a surface when the bridge implements and passes its conformance checks.
+- A dry run prevents host mutation during that phase; it cannot predict unrelated changes another user or process makes before approval.
+- Provenance persistence is surface-specific. Check current status before assuming a record survives save/reopen on every host.
+- Host content is untrusted input. Wrapping and engine-side screening reduce exposure but do not establish that prompt injection is impossible.
+
+## Development
 
 ```bash
-bun install                              # install all workspaces
-bun run --filter @ge/web-shell dev       # run the task-pane dev server (HTTPS; needs a host to sideload)
-bun run --filter @ge/web-shell preview   # see the panel in a plain browser, NO Office host (scripted fixtures)
-bun run docs:gifs:install                # first-time browser/dependency install for README GIF capture
-bun run docs:gifs                        # render README GIFs for Word/Excel/PPT/Outlook/OneNote/Teams
-bun run build                            # build all workspaces
-bun run typecheck                        # tsc -b across workspaces
-bun run test                             # vitest across workspaces
-bun run lint                             # eslint + prettier check
+bun install
+bun run setup:doctor
+bun test
 ```
 
-`bun run preview` is the fastest way to *see* the product: it mounts the real `<App/>` over a fake
-`PanelController` driven by scripted fixtures, with a toolbar to switch surface and toggle every
-state (streamed message, citations, context chips, suggestions, run-steps, pending plan, pending
-write, proposals, error, busy) — no network, no host, fully clickable.
+Use the ADRs for architecture decisions and `docs/STATUS.md` for the current implementation boundary.
 
-Copy `.env.example` to `.env` for the engine/tenant config before running against a live engine.
-For tenant setup, manifest generation, packaging, Cloudflare dev tunnels, stable hosting origins,
-and sideloading choices across web/desktop hosts, use the [setup guide](setup/README.md).
+## License
 
-### Dev, Sideload, Release
-
-Development tunnel and Entra redirect sync:
-
-```bash
-bun run ge:dev:tunnel
-```
-
-Safe dev bootstrap:
-
-```bash
-bun run bootstrap:dev
-```
-
-Automated developer sideload of the unified package:
-
-```bash
-bun run sideload
-bun run sideload:status
-bun run sideload:uninstall
-```
-
-Release dry-run and release/catalog upsert:
-
-```bash
-bun run bootstrap:release:dry-run
-bun run bootstrap:release
-```
-
-Release wiring is profile-aware:
-
-```text
-GE_ALPHA_* release config
-  -> build web shell
-  -> generate + validate release manifest
-  -> package dist/release/internal-alpha-word-excel-v<version>.zip
-  -> sync https://GE_ALPHA_WEB_DOMAIN/auth-redirect.html into Entra SPA redirects
-  -> upsert the profile-specific zip through the Microsoft 365 catalog lane
-```
-
-Manual artifact paths, when needed:
-
-```text
-dist/package/development/xml/word.manifest.xml
-dist/package/development/xml/excel.manifest.xml
-dist/package/development/xml/powerpoint.manifest.xml
-dist/package/development/xml/outlook.manifest.xml
-dist/package/development/centralized/office.manifest.xml
-dist/package/development/centralized/outlook.manifest.xml
-dist/package/development/onenote/onenote.manifest.xml
-dist/release/development-m365-v<version>.zip
-dist/release/internal-alpha-word-excel-v<version>.zip
-```
-
-Read [Sideloading](setup/04-sideloading.md), [Tenant deployment automation](setup/06-tenant-deployment.md),
-and [Deployment methods matrix](setup/07-deployment-methods-matrix.md) before changing rollout lanes.
-
-### Live StreamAssist Tests
-
-To cross-check current Gemini Enterprise skill wiring against the live StreamAssist widget API,
-refresh `/tmp/ge-widget.env` from a browser-authenticated GE session and run:
-
-```bash
-bun run test:streamassist:live
-```
-
-Or let the test preflight guide the browser login/request-capture refresh first:
-
-```bash
-bun run test:streamassist:live:login
-```
-
-See [live StreamAssist integration tests](docs/api/discoveryengine/live-streamassist-tests.md).
-
-### Task pane UX direction
-
-The task pane has been tuned toward an Office-native command surface rather than a persistent
-AI-chat dashboard. The important changes are:
-
-- Catalog/skill routing is no longer always-on chrome; it opens from the header settings control
-  while staying mounted so default Gemini Enterprise routing still loads.
-- Surface quick actions collapse behind a compact hover/focus flyout so the conversation and
-  approval rail get the vertical space.
-- Markdown responses render with stronger readable prose styling, tighter table handling, and a
-  darker muted-text ramp for better small-text contrast.
-- `packages/web-shell/PRODUCT.md` and `packages/web-shell/DESIGN.md` document the product register,
-  host-native design principles, tokens, responsive behavior, and accessibility baseline.
-
----
-
-## Status — what's built
-
-Verification baseline: `bun run typecheck` clean · **2038 tests across 160 files green** (Vitest) ·
-`bun run lint` clean.
-
-- **All six surface bridges built and tested** — Word, Excel, PowerPoint, OneNote, Outlook, Teams —
-  each with an advertised-equals-handled capability set, conformance-enforced per ADR-0006.
-- **Client-direct identity** — `NaaAuthClient` (NAA → Entra id + delegated Graph token) and
-  `WifTokenClient` (Entra→Google STS exchange, cached, single-flight, epoch-safe). No Google
-  credential ever in a client.
-- **The capability stack** — doc-as-environment context construction, the CLI command protocol, the
-  composable algebra (pure value layer + pipes/bindings, plans + dry-run + plan approval, named
-  skills), and capability closure + conformance — all implemented per ADR-0003→0006.
-- **Foundational retrieval** — `streamAssist` (grounded, SSE), `search`, `completeQuery`,
-  `checkGrounding`, `rank`; the estate read/search path via `graph-client`.
-- **The event engine** — per-bridge `watch()` → `HostEvent` → `Orchestrator`, with the fail-closed
-  gate handling the rare protective moments (on-send veto, pre-actuation veto).
-- **The React/Vite task pane** — the panel components (`App`, `ContextTray`, `MessageThread`,
-  `Composer`, `QuickActionBar`, `PlanApprovalCard`, `WriteApprovalCard`, `ShareApprovalCard`,
-  `ProposalCard`, `ProvenanceDetail`, `RunSteps`, `SkillsPanel`), MSAL bootstrap, and the standalone
-  preview harness.
-- **The `/shared` cross-surface handoff store** — a `share <name> = <source>` command (identical
-  source grammar to `save`) persists a bounded, size-capped artifact to the signed-in user's own
-  Microsoft Graph app folder (`Files.ReadWrite.AppFolder`, the narrowest available Graph write
-  scope), readable back by name from any other surface's session. Fail-closed by construction: gated
-  by the active `ReleaseProfile.estateWrites` policy AND a dedicated per-share `ShareApprovalCard`
-  that discloses the full write size (never just its own preview), independent of the in-document
-  write/plan gates since it never touches `bridge.actuate()`. Never silently overwrites, bounded
-  per-task (not per-turn), and every share lands on the panel's own audit ledger, flagged if
-  unattributed. Security-reviewed three times over its build-out.
-- **The `/` + `@` command surface** — `QUICK_ACTIONS` + `CommandPaletteSpec` + `CommandPlan` in
-  `contracts`; the `QuickActionBar` and the `Composer` `/`-verb / `@`-mention palettes in `web-shell`;
-  right-click context menus in both manifests with hardened `summarizeSelection` / `explainSelection`
-  → pane seeds. Unit +
-  full-stack interplay tested; `security-reviewer` run on the selection-seed flow.
-
-**Partial / deferred** (called out honestly): durable host-metadata provenance writes are wired for
-**Word + Excel** but not yet for PowerPoint/OneNote/Outlook/Teams, and the observability/audit sink
-over them is undecided; `for`/`each` iteration and cross-surface plans
-(ADR-0005 Phase 4); broader CLI verb parity for `slide`/`page`/`mail`/`post` (tracked closure gaps);
-estate **writes** — the first one (`share`/`/shared`, above) is live; the rest (send mail, create
-event, upload/checkout) remain modeled only; per-capability runtime
-detection; the `addContextFile` code-execution upload and the A2UI renderer; **real-host
-validation** (the bridges are tested against fakes, not yet sideloaded in a live Office host).
-
-See `docs/STATUS.md` and `docs/CAPABILITY-MAP.md` for the full inventory.
-
----
-
-## ADR index
-
-The ADRs are the current architecture, in order - each builds on the last.
-
-| ADR | Title | Status | One line |
-|---|---|---|---|
-| [0001](docs/ADR-0001-client-direct-architecture.md) | Client-direct add-in (no gateway by default) | Accepted | Federate the user's Entra identity to Google (WIF) in the browser and call Discovery Engine directly; no gateway holds credentials. |
-| [0002](docs/ADR-0002-capability-model.md) | The capability model (context capture + actuation) | Accepted | Build foundational capabilities — read host objects → context, write actuation ← agent — as the stable layer; experiences compose on top. |
-| [0003](docs/ADR-0003-context-construction.md) | Document-as-environment context construction | Accepted | Treat the active doc as a lazily-read, auditably-written environment: an ambient `<doc_state>` + narrow host-read ports, not eager pre-chunking. |
-| [0004](docs/ADR-0004-command-protocol-actuation.md) | A command-line protocol for the assist loop | Proposed | The model drives reads/writes via flat CLI command lines; the runtime compiles each to a typed `ActuationRequest`. CLI beats JSON (no envelope drift). |
-| [0005](docs/ADR-0005-composable-capabilities.md) | A composable capability algebra | Accepted (Ph 1–3 built) | A typed value layer between reads and effects: pure composes freely, effects gate; plans + dry-run + one approval; skills as saved compositions. |
-| [0006](docs/ADR-0006-capability-closure.md) | Capability closure: truthful manifests | Accepted | Compute the closed, executable capability set and enforce it with conformance tests that fail the build on phantom capabilities. |
-| [0007](docs/ADR-0007-host-native-write-kinds.md) | Host-native write kinds | Proposed | Generalize writes into per-kind strategies with explicit anchor, inverse, provenance, and preview rather than one tracked-change-shaped template. |
-| [0008](docs/ADR-0008-surface-commander-algebra.md) | Surface Commander algebra | Accepted | Keep one algebraic Surface Commander skill, make runtime signatures authoritative, and keep effects terminal while `surface-cli` remains a pure checker. |
-| [0009](docs/ADR-0009-tenant-config-bootstrap.md) | Tenant bootstrap, ring configuration, and bounded deployment envelopes | Proposed | Treat manifest scopes as the bounded ceiling; tenant config may select/disable within it, while SharePoint Selected permissions plus WIF/IAM enforce access. |
-
----
-
-## Docs index
-
-- **Architecture (current):** the ADRs above - start there.
-- **Operator setup and release:**
-  - [Setup guide](setup/README.md) — the top-level runbook.
-  - [Readiness and guided setup](setup/00-readiness.md) — doctor, prereqs, login, bootstrap lanes.
-  - [Prerequisites and config](setup/01-prerequisites-and-config.md) — Entra, WIF, environment keys.
-  - [Development server and Cloudflare tunnel](setup/02-dev-server-and-tunnel.md) — local Vite,
-    tunnel, manifest regeneration, Entra redirect sync.
-  - [Manifest generation and packages](setup/03-manifests-and-packages.md) — development and release
-    artifacts.
-  - [Sideloading](setup/04-sideloading.md) — XML sideload, unified package sideload, Agents Toolkit
-    install/uninstall.
-  - [Debugging](setup/05-debugging.md) — auth, host, tunnel, and Office cache issues.
-  - [Tenant deployment automation](setup/06-tenant-deployment.md) — Centralized Deployment,
-    catalog upload, Entra SPA redirect sync.
-  - [Deployment methods matrix](setup/07-deployment-methods-matrix.md) — XML vs unified package vs
-    catalog vs sideload.
-  - [Hosting origin and release flow](setup/08-hosting-origin-and-release.md) — Cloudflare, GCS/CDN,
-    App Engine, Cloud Run, and why Office needs a stable HTTPS origin.
-- `docs/bootstrap-live-validation.md` — first live slice for SharePoint-backed tenant config.
-- `docs/wif-iam-scoping.md` — WIF provider and Google IAM scoping guardrails for tenant config.
-- `docs/STATUS.md` — the honest "what's built / what's deferred" inventory.
-- `docs/CAPABILITY-MAP.md` — the per-capability read/write/do inventory across the two planes.
-- `docs/CONTRACTS.md` — the authoritative API schemas, the command/expr/skill grammars, closure.
-- `docs/CONVENTIONS.md` — stack, code style, testing, security standards.
-- `docs/MICROSOFT-ADDIN-CAPABILITIES.md` — the Microsoft 365 add-in platform surface we build on.
-- `docs/CONTENT-PROCESSING.md` — the native-first content pipeline in detail.
-- `docs/BUILD-PLAN.md` — the original executable checklist *(partly superseded; see its banner)*.
-- **Design (legacy, reconciled):** `docs/00-surfaces-plan.md`, `docs/01-architecture.md`,
-  `docs/02-design.md`, `docs/03-implementation.md` — the original vision and phasing. These predate
-  ADR-0001 and carry **"Superseded / updated by ADR-000X"** banners; read them for the *why*, the
-  ADRs for the *what now*.
-- `docs/mockups/*.html` — the clickable UX spec, one per surface, plus `6-command-pane.html`
-  (the `/` + `@` design); rendered to PNGs under `docs/mockups/screenshots/`.
-- `docs/api/discoveryengine/` — the vendored Discovery Engine / Gemini Enterprise API knowledge
-  base, including `skills-and-agents.md` (the verified skill create/mount lifecycle).
-- `skill/` — the two Gemini Enterprise skill bundles (`m365-surface-commander`,
-  `m365-command-planner`) and the create/test tooling, with their own `README.md`.
-- `CLAUDE.md` — the repo constitution and how to work here.
+See [LICENSE](LICENSE).

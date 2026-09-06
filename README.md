@@ -1,10 +1,26 @@
 # Gemini Enterprise for Microsoft 365
 
+**Use Gemini Enterprise from the Microsoft 365 document or conversation you are already working in.**
+
 A Microsoft 365 add-in that exposes Gemini Enterprise inside Word, Excel, PowerPoint, OneNote, Outlook, and Teams.
 
 The browser add-in exchanges the signed-in user's Entra token for a short-lived Google token through Workforce Identity Federation, then calls Gemini Enterprise / Discovery Engine as that user. The current architecture is client-direct; there is no credential-holding application gateway in the normal request path.
 
 Document changes go through surface-specific bridges so the runtime can attach provenance and use each host's native mutation model.
+
+## Choose the environment you want to test
+
+| Goal | Start here | Successful result |
+|---|---|---|
+| Inspect the task pane | [Local preview](#start-locally) | The UI runs without an Office host |
+| Exercise a real Office surface | [Setup guide](setup/README.md) | The add-in is sideloaded and configured for that host |
+| Depend on a particular read or write | [Current status](docs/STATUS.md) | The bridge implements the capability and its persistence behavior |
+| Prepare a tenant release | [Deployment choices](setup/07-deployment-methods-matrix.md) | An explicit hosting and distribution path |
+
+Previewing the pane, authenticating to Gemini Enterprise, and changing an Office
+document are separate checks. Start with the surface you need; support and
+provenance persistence differ between hosts.
+
 
 ## Start locally
 

@@ -105,36 +105,30 @@ describe('<App/> render smoke', () => {
     expect(contextButton?.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('renders a surface-aware command center above the workstream', () => {
+  it('opens the searchable action library and disables execution at the approval gate', () => {
     render();
-    const actionsButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label="Actions"]',
+    act(() =>
+      container.querySelector<HTMLButtonElement>('.tw-icon[aria-label="Actions"]')?.click(),
     );
-    act(() => actionsButton?.click());
-    expect(container.querySelector('.tw-modal-title')?.textContent).toContain('Quick tasks');
-    const center = container.querySelector(
-      '.surface-center[aria-label="Word workspace command center"]',
+    expect(container.querySelector('.tw-modal-title')?.textContent).toContain(
+      'Find your next action',
     );
-    expect(center).not.toBeNull();
-    expect(center?.querySelector('.surface-title')?.textContent).toBe('Word workspace');
-    expect(center?.querySelectorAll('.surface-action').length).toBe(3);
-    expect(center?.textContent).toContain('Gate');
-    expect(container.querySelector('.action-drawer--embedded .action-drawer-list')).not.toBeNull();
+    expect(container.querySelector('.action-library input[type="search"]')).not.toBeNull();
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('.library-run')];
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
   });
 
-  it('renders surface-specific primary actions and keeps the secondary row deduplicated', () => {
+  it('offers each available action once in the library for Excel', () => {
     render('excel');
-    const actionsButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label="Actions"]',
+    act(() =>
+      container.querySelector<HTMLButtonElement>('.tw-icon[aria-label="Actions"]')?.click(),
     );
-    act(() => actionsButton?.click());
-    const center = container.querySelector(
-      '.surface-center[aria-label="Excel workspace command center"]',
-    );
-    expect(center?.querySelector('[data-action-id="create-chart"]')).not.toBeNull();
-    expect(center?.querySelector('[data-action-id="summarize-range"]')).not.toBeNull();
-    expect(center?.querySelector('[data-action-id="find-anomalies"]')).not.toBeNull();
-    expect(container.querySelector('.quick-actions [data-action-id="create-chart"]')).toBeNull();
+    for (const id of ['create-chart', 'summarize-range', 'find-anomalies', 'excel-reconcile']) {
+      expect(container.querySelectorAll(`.action-library [data-action-id="${id}"]`)).toHaveLength(
+        1,
+      );
+    }
   });
 
   it('renders suggestions', () => {

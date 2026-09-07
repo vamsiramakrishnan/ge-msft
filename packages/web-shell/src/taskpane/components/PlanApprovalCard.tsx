@@ -53,6 +53,7 @@ function EffectRow({
   const command = renderCommandLine(effect.request);
   const target = effectTarget(effect);
   const dry = effect.dryRun;
+  const description = effectTarget(effect) ?? effectKindLabel(effect.request.kind);
   const detailsId = `plan-effect-${effect.request.changeId}`;
   return (
     <li className="plan-effect">
@@ -64,6 +65,7 @@ function EffectRow({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="plan-effect-kind eyebrow">{effectKindLabel(effect.request.kind)}</span>
+        <span className="effect-target-summary">{description}</span>
         <pre className="cmd" aria-label={`Effect ${index} command, shown verbatim`}>
           {command}
         </pre>
@@ -140,6 +142,7 @@ export function PlanApprovalCard({
   onReject,
 }: PlanApprovalCardProps): JSX.Element | null {
   if (!plan) return null;
+  const targetCount = new Set(plan.effects.map(effectTarget).filter(Boolean)).size;
   return (
     <section
       className="card status-pending approval plan-approval"
@@ -154,6 +157,16 @@ export function PlanApprovalCard({
           <span className="pin">{plan.summary}</span>
           <span>to review before anything runs</span>
         </div>
+        <div className="plan-impact" aria-label="Change summary">
+          <span>
+            <strong>{plan.effects.length}</strong>{' '}
+            {plan.effects.length === 1 ? 'change' : 'changes'}
+          </span>
+          <span>
+            <strong>{targetCount}</strong> identified {targetCount === 1 ? 'target' : 'targets'}
+          </span>
+          <span>Awaiting your approval</span>
+        </div>
         <ol className="plan-effects" aria-label={`Effects in this plan: ${plan.summary}`}>
           {plan.effects.map((effect, i) => (
             <EffectRow
@@ -165,8 +178,8 @@ export function PlanApprovalCard({
           ))}
         </ol>
         <div className="w">
-          Approving runs this whole plan as reversible, provenanced changes — each effect still
-          gated and recorded one-by-one. Rejecting blocks the entire plan; nothing runs.
+          Approve to apply these changes in order. Reject to leave the document unchanged. If an
+          effect fails, earlier effects may already have applied.
         </div>
         <div className="act">
           <button type="button" className="btn pr" onClick={onApprove}>

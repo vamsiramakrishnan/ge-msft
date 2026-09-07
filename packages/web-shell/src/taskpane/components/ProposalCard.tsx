@@ -5,6 +5,7 @@ import { ProvenanceDetail } from './ProvenanceDetail.js';
 
 export interface ProposalCardProps {
   proposals: Proposal[];
+  disabled?: boolean;
   onApply: (changeId: ChangeId) => void;
 }
 
@@ -87,9 +88,11 @@ function EntityCardView({ card }: { card: NonNullable<Proposal['entityCard']> })
 
 function ProposalItem({
   proposal,
+  disabled,
   onApply,
 }: {
   proposal: Proposal;
+  disabled: boolean;
   onApply: (changeId: ChangeId) => void;
 }): JSX.Element {
   const [showProvenance, setShowProvenance] = useState(false);
@@ -134,7 +137,12 @@ function ProposalItem({
         )}
         {proposal.status === 'pending' && (
           <div className="act">
-            <button type="button" className="btn pr" onClick={() => onApply(proposal.changeId)}>
+            <button
+              type="button"
+              className="btn pr"
+              disabled={disabled}
+              onClick={() => onApply(proposal.changeId)}
+            >
               Accept change
             </button>
           </div>
@@ -158,12 +166,16 @@ function ProposalItem({
  * host's durable metadata. Nothing is written silently. The body is rendered surface-faithfully
  * (Excel formula-first, Word redline) and an applied write can drill into its provenance.
  */
-export function ProposalCard({ proposals, onApply }: ProposalCardProps): JSX.Element | null {
+export function ProposalCard({
+  proposals,
+  onApply,
+  disabled = false,
+}: ProposalCardProps): JSX.Element | null {
   if (proposals.length === 0) return null;
   return (
     <section className="proposals" aria-label="Proposed changes">
       {proposals.map((p) => (
-        <ProposalItem key={p.changeId} proposal={p} onApply={onApply} />
+        <ProposalItem disabled={disabled} key={p.changeId} proposal={p} onApply={onApply} />
       ))}
     </section>
   );

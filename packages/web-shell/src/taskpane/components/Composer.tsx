@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ComposerSources, mentionKey, mentionLabel } from './ComposerSources.js';
+import { extractDirectCommandProgram } from '../direct-command.js';
 import type { Surface, Intent, CommandScope, GroundSource } from '@ge/contracts';
 import {
   commandPaletteFor,
@@ -30,10 +32,12 @@ export interface ComposerInvocation {
   instruction: string;
   /** The raw, verbatim input — what the user actually typed. */
   raw: string;
+  responseOptions?: { format?: string; style?: string };
 }
 
 export interface ComposerProps {
   busy: boolean;
+  draft?: { id: number; text: string };
   disabled?: boolean;
   /** The current surface — scopes the `/` palette verbs offered (capability closure, ADR-0006). */
   surface?: Surface;
@@ -88,7 +92,7 @@ export function parseComposerInput(
   // `@kind` alone, or `@kind:ref` for an addressable kind picked from the refinement list (the `ref`
   // is the id `mentionToSelection` needs to resolve — see `mentionOptions` on `ComposerProps`).
   const mentions: ComposerMention[] = [];
-  for (const m of trimmed.matchAll(/@(\w+)(?::(\S+))?/g)) {
+  for (const m of trimmed.matchAll(/(?:^|\s)@(\w+)(?::(\S+))?/g)) {
     const kind = m[1]?.toLowerCase();
     if (kind === undefined || !GROUND_KINDS.has(kind)) continue;
     mentions.push({ kind: kind as GroundSource, ...(m[2] ? { ref: m[2] } : {}) });
@@ -142,6 +146,7 @@ function offeredElsewhere(verb: string, spec?: CommandPaletteSpec): boolean {
  */
 export function Composer({
   busy,
+  draft,
   disabled = false,
   surface,
   allowedIntents,
@@ -152,6 +157,28 @@ export function Composer({
   mentionOptions,
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [intentChoice, setIntentChoice] = useState<Intent | ''>('');
+  const [sourcePicks, setSourcePicks] = useState<ComposerMention[]>([]);
+  const [format, setFormat] = useState('');
+  const [tone, setTone] = useState('');
+  useEffect(() => {
+    if (draft) {
+      setValue(draft.text);
+      setIntentChoice('');
+      setSourcePicks([]);
+      setFormat('');
+      setTone('');
+      textareaRef.current?.focus();
+    }
+  }, [draft]);
+  useEffect(() => {
+    setScopeIdx(0);
+    setIntentChoice('');
+    setSourcePicks([]);
+    setFormat('');
+    setTone('');
+  }, [surface]);
 
   const palette = useMemo(
     () => (surface ? commandPaletteFor(surface, allowedIntents) : undefined),
@@ -235,14 +262,47 @@ export function Composer({
 
   /** Replace the open trailing `/`/`@` token with the picked verb/mention and keep typing. */
   const complete = (token: string): void => {
-    setValue((prev) => prev.replace(/([/@]\S*)$/, `${token} `));
+    const kind = token.replace(/^@/, '') as GroundSource;
+    const needsRefinement = token.startsWith('@') && (mentionOptions?.[kind]?.length ?? 0) > 0;
+    setValue((prev) => prev.replace(/([/@]\S*)$/, needsRefinement ? `${token}:` : `${token} `));
+    textareaRef.current?.focus();
   };
+
+  const parsed = parseComposerInput(value, scope, palette);
+  const directProgram = Boolean(extractDirectCommandProgram(value));
+  const pickedIntent = palette?.verbs.some((verb) => verb.intent === intentChoice)
+    ? intentChoice || undefined
+    : undefined;
+  const activeIntent = parsed.intent ?? pickedIntent;
+  const typedSourceKeys = new Set(parsed.mentions.map(mentionKey));
+  const allSources = [
+    ...parsed.mentions,
+    ...sourcePicks.filter((mention) => !typedSourceKeys.has(mentionKey(mention))),
+  ];
 
   const submit = (): void => {
     const q = value.trim();
     if (!q || disabled || busy) return;
-    if (onInvoke) onInvoke(parseComposerInput(q, scope, palette));
-    else onSend(q);
+    const extra = directProgram
+      ? ''
+      : [format && `Output format: ${format}.`, tone && `Writing style: ${tone}.`]
+          .filter(Boolean)
+          .join(' ');
+    const invocation = parseComposerInput(q, scope, palette);
+    // A typed /verb is authoritative. An unsupported slash command must never inherit a picked intent.
+    const intent = directProgram || q.startsWith('/') ? invocation.intent : activeIntent;
+    const result = {
+      ...invocation,
+      intent,
+      instruction: invocation.instruction,
+      mentions: directProgram ? invocation.mentions : allSources,
+      ...(!directProgram && (format || tone)
+        ? { responseOptions: { ...(format ? { format } : {}), ...(tone ? { style: tone } : {}) } }
+        : {}),
+    };
+    if (onInvoke) onInvoke(result);
+    else onSend([q, extra].filter(Boolean).join('\n\n'));
+    setSourcePicks([]);
     setValue('');
   };
 
@@ -254,6 +314,32 @@ export function Composer({
         submit();
       }}
     >
+      <div className="composer-intent-row">
+        <label className="composer-intent">
+          <span className="visually-hidden">Task intent</span>
+          <select
+            aria-label="Task intent"
+            disabled={busy || disabled || directProgram || value.trim().startsWith('/')}
+            value={parsed.intent ?? intentChoice}
+            onChange={(event) => setIntentChoice(event.target.value as Intent | '')}
+          >
+            <option value="">Auto</option>
+            {palette?.verbs.map((verb) => (
+              <option key={verb.intent} value={verb.intent}>
+                {verb.intent[0]?.toUpperCase()}
+                {verb.intent.slice(1)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="composer-intent-hint">
+          {directProgram
+            ? 'Command program'
+            : activeIntent && !['ask', 'summarize', 'explain'].includes(activeIntent)
+              ? 'Preview before applying'
+              : 'Grounded answer'}
+        </span>
+      </div>
       {scopeOptions.length > 1 && (
         <div
           className="comp-scope"
@@ -280,6 +366,7 @@ export function Composer({
       )}
       {showVerbs && verbMatches.length > 0 && (
         <ul
+          id="composer-options"
           className="palette palette-verbs"
           role="listbox"
           aria-label="Commands"
@@ -309,6 +396,7 @@ export function Composer({
       )}
       {showMentions && mentionMatches.length > 0 && (
         <ul
+          id="composer-options"
           className="palette palette-mentions"
           role="listbox"
           aria-label="Mentions"
@@ -332,6 +420,7 @@ export function Composer({
       )}
       {showRefine && refineMatches.length > 0 && (
         <ul
+          id="composer-options"
           className="palette palette-mention-refine"
           role="listbox"
           aria-label={`Pick a ${typedKind}`}
@@ -353,15 +442,58 @@ export function Composer({
           ))}
         </ul>
       )}
+      {allSources.length > 0 && !directProgram && (
+        <div className="smart-chips composer-picked" aria-label="Request source chips">
+          {allSources.map((mention, index) => (
+            <span
+              className="smart-chip"
+              data-attached="true"
+              key={`${mentionKey(mention)}-${index}`}
+            >
+              <span className="smart-chip-title">{mentionLabel(mention, mentionOptions)}</span>
+              <button
+                type="button"
+                className="smart-chip-remove"
+                disabled={busy || disabled}
+                aria-label={`Remove ${mentionLabel(mention, mentionOptions)} from request`}
+                onClick={() => {
+                  setSourcePicks((prev) =>
+                    prev.filter((item) => mentionKey(item) !== mentionKey(mention)),
+                  );
+                  setValue((prev) =>
+                    prev.replace(
+                      /(^|\s)@(\w+)(?::(\S+))?/g,
+                      (token, prefix: string, kind: string, ref: string | undefined) =>
+                        mentionKey({
+                          kind: kind.toLowerCase() as GroundSource,
+                          ...(ref ? { ref } : {}),
+                        }) === mentionKey(mention)
+                          ? prefix
+                          : token,
+                    ),
+                  );
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="cb">
         <label className="visually-hidden" htmlFor="ask">
           Ask Gemini
         </label>
         <textarea
+          ref={textareaRef}
           id="ask"
+          aria-describedby="composer-help"
+          aria-controls={paletteOpen ? 'composer-options' : undefined}
+          aria-activedescendant={paletteOpen ? optionId(clampedActive) : undefined}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
             if (paletteOpen) {
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -426,6 +558,49 @@ export function Composer({
             </svg>
           </button>
         )}
+      </div>
+      <div className="composer-tools">
+        <ComposerSources
+          selected={sourcePicks}
+          options={mentionOptions}
+          disabled={busy || disabled || directProgram}
+          onChange={setSourcePicks}
+        />
+        <details className="composer-options">
+          <summary>Response{format || tone ? ' •' : ''}</summary>
+          <div className="composer-options-popover">
+            <label>
+              Format
+              <select
+                aria-label="Response format"
+                disabled={busy || disabled || directProgram}
+                value={format}
+                onChange={(event) => setFormat(event.target.value)}
+              >
+                <option value="">Let Gemini choose</option>
+                <option>Concise bullets</option>
+                <option>Comparison table</option>
+                <option>Decision brief</option>
+                <option>Checklist with owners</option>
+              </select>
+            </label>
+            <label>
+              Style
+              <select
+                aria-label="Writing style"
+                disabled={busy || disabled || directProgram}
+                value={tone}
+                onChange={(event) => setTone(event.target.value)}
+              >
+                <option value="">Default</option>
+                <option>Plain language</option>
+                <option>Executive</option>
+                <option>Technical</option>
+              </select>
+            </label>
+          </div>
+        </details>
+        <span id="composer-help">Enter to send · Shift + Enter for a new line</span>
       </div>
     </form>
   );

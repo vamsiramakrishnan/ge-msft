@@ -9,12 +9,24 @@ import react from '@vitejs/plugin-react';
  */
 export default defineConfig({
   root: __dirname,
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'preview-entry',
+      configureServer(server) {
+        server.middlewares.use((request, _response, next) => {
+          if (request.url === '/' || request.url?.startsWith('/?'))
+            request.url = `/preview.html${request.url.slice(1)}`;
+          next();
+        });
+      },
+    },
+  ],
   server: {
     // ≥10000 so Cloud Workstation's browser port-proxy allows it (ports <10000 are blocked).
     port: 17100,
     strictPort: true,
     host: true,
-    open: '/preview.html',
+    allowedHosts: ['terminal.local'],
   },
 });

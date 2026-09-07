@@ -1,90 +1,60 @@
 # Task-pane UI
 
-The view layer of the surface-agnostic web-shell: the React task pane that renders over
-`PanelController` state. No Office.js / TeamsJS / Graph here — the bridges own host code, the
-controller owns all state, network and approval logic. This doc covers how to see the panel, what
-each component renders, and the design-token system. All paths are under `packages/web-shell`.
+The React view sits over `PanelController`. Host APIs stay in the bridges. Networking, streaming,
+conversation state, and approval decisions remain in the controller and runtime.
 
-## Running the preview
+## Running and inspecting
 
-```bash
-bun run --filter @ge/web-shell preview
-```
-
-This starts a plain-HTTP Vite dev server on **http://localhost:3100** and opens `preview.html` —
-no Office host, no TLS, no network. It mounts the **real** `<App/>` over a fake `PanelController`
-(`makeMockController`) driven by scripted fixtures, so the whole panel renders in any browser tab.
-Buttons log to the console instead of actuating.
-
-The left toolbar drives the panel:
-
-- **Surface** — switches `data-surface` (word / excel / powerpoint / outlook / teams), which swaps
-  the per-surface host accent (focus ring + links).
-- **Cards** — independent toggles for each state slice (Context, Thread, Suggestions, **Skills**,
-  Run steps, Plan, Write, Proposals, Error, Busy), plus **All on** / **Idle / empty** presets. The
-  **Skills** toggle shows/hides the `SkillsPanel` surface.
-
-The preview is view-only and never ships in the add-in bundle (`vite.preview.config.ts` is separate
-from `vite.config.ts`).
+`bun run dev` starts the standalone preview. Choose **Try interactive demo** to run the real
+controller over a scripted session. Switch surfaces and pane dimensions with the preview controls.
+Exit demo mode to inspect individual card fixtures. The preview is excluded from the production
+Vite entry points. Actual host testing follows the setup guides.
 
 ## Component map
 
-The panel hierarchy, top to bottom (`src/taskpane/components/`):
+| Component | Responsibility |
+| --- | --- |
+| `App` | Shared dispatch, grounding, planner routing, and busy/approval state wiring |
+| `Toolbar` | Context, actions, skills, history, and routing dialog; focus management; Ctrl/⌘K |
+| `ContextStrip` | Visible attached-context chips, nearby source discovery, detach and reveal |
+| `ContextTray` | Full context list in the toolbar dialog |
+| `WorkspaceHome` | Three host-specific starting actions, filtered by capability closure |
+| `ActionLibrary` | Search, output filters, and pinned catalog actions |
+| `Composer` | Intent, scope, text, keyboard submission, and typed invocation |
+| `ComposerSources` | Named source search and request-scoped structured source picks |
+| `QuickActionParamForm` | Required values and a preview of the resulting instructions |
+| `MessageThread` | Markdown, citations, host locations, completed-artifact insertion, copy and follow-up controls |
+| `CommandPlanCard` | Confirmation of the planner's proposed intent and steps |
+| `PlanApprovalCard` | Exact effect set, target counts, available before/after values, approval |
+| `WriteApprovalCard` / `ShareApprovalCard` | Existing separate approval authorities |
+| `ProposalCard` | Proposed/applied changes and provenance; acceptance locks during another turn |
+| `RunSteps` | Command execution activity, disclosed on demand |
 
-| Component               | Renders                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Controller methods                                                                       |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `App`                   | Panel shell: `data-surface`, `aria-busy`, header (agent identity), and the `<main>` thread region landmark. Wires every child to the controller.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `refreshContext`, `attach`, `detach` (via `onToggle`), `onAutomate`, `dismissSuggestion` |
-| `ContextTray`           | The research-unit grounding scope as chips, split into "Attached sources" / "Available to attach" `role=list` groups; each chip is an attach/detach `<button>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `refreshContext`, `attach`, `detach`                                                     |
-| suggestions `<section>` | Clickable suggestion cards (in `App`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `onAutomate`, `dismissSuggestion`                                                        |
-| `SkillsPanel`           | The in-session skills surface (ADR-0005 `def`), a `role=region` ("Skills") that lists each registered skill as a card: its `name(params)` signature, a "✓ registered" badge, the verbatim `def` line, bindable param `<input>`s (label-associated via `htmlFor`/`id`, prefilled from each param's example), and an "Invoke skill" `<button>`. Invoking does NOT actuate here — it routes through the agentic loop so the plan still lands on `PlanApprovalCard`. Renders nothing when no skills are registered.                                                                                                                  | `invokeSkill` (read-only view of `skills`)                                               |
-| `MessageThread`         | The grounded conversation (`role=log`, `aria-live=polite`): user/assistant bubbles, streaming caret, a "Sources" eyebrow + citation pills. Each citation pill is now a `<button>` (`aria-expanded`/`aria-controls`) that opens a **source-detail popover** (title + locator + http(s)-only link) so the source is inspectable without leaving the thread.                                                                                                                                                                                                                                                                        | — (read-only view of `messages`)                                                         |
-| `ProvenanceDetail`      | The provenance drill-down for an applied write, rendered as a `<dl>` (`aria-label="Change provenance"`): agent, signed-in identity, timestamp (`<time>`), grounding sources (http(s)-only links), and content hash. Presentational only.                                                                                                                                                                                                                                                                                                                                                                                         | — (read-only view of `Proposal.provenance`)                                              |
-| `RunSteps`              | The command-loop transcript: an "Activity" section with an ordered, polite live region of run steps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | — (read-only view of `steps`)                                                            |
-| `PlanApprovalCard`      | Fail-closed plan-level gate (ADR-0005): a `role=region`/`aria-live` card listing each effect's **verbatim** command line via `renderCommandLine`, with Approve / Reject. Each effect row is now an **expandable** `<button>` (`aria-expanded`/`aria-controls`) that reveals the dry-run review — the resolved target, the value it resolves to, and a before→after preview — so the whole plan is reviewable before it runs.                                                                                                                                                                                                     | `approvePlan`, `rejectPlan`                                                              |
-| `WriteApprovalCard`     | Fail-closed per-write gate (ADR-0004): a `role=region`/`aria-live` card showing the **verbatim** `pending.command`, with Approve / Reject.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `approvePendingWrite`, `rejectPendingWrite`                                              |
-| `ProposalCard`          | The reversible-write review: one card per staged proposal in its status; pending exposes an "Accept change" `<button>`. The body is now rendered **surface-faithfully** — Excel `write-cells` shows the value formula-first against its range target (with an optional `◆` linked-entity card: gradient header, key/value rows, "loaded from the unit · not stored in the workbook" footnote), Word `tracked-change` shows the redline as struck old text + inserted new text. An applied write can **drill into its provenance** via a "Show provenance" toggle (`aria-expanded`/`aria-controls`) rendering `ProvenanceDetail`. | `applyProposal`                                                                          |
-| error banner            | A `role=alert` panel-error (in `App`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                        |
-| `Composer`              | The ask box: keyboard-submit input with a label, a grounded/agentic mode toggle, and a send button that flips to Cancel while busy.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `send`, `runCommands`, `cancel`                                                          |
+`SurfaceCommandCenter` and `QuickActionBar` remain exported components with their existing tests;
+the main pane uses `WorkspaceHome` and `ActionLibrary` for discovery.
 
-Approvals are **fail-closed in the wiring**: nothing actuates until the user clicks Approve, and the
-verbatim command line shown is the same `ActuationRequest` that executes — no render-benign /
-execute-malicious divergence. The view never reaches the host directly.
+## Data paths
 
-## Design tokens — the Starlight / Ramsian language
+Every action and composer invocation reaches `App.dispatch`. Intent controls and response options
+are encoded by `invocationToSeed`; typed source picks are separately resolved by
+`invocationToGrounding`. Data-store chips pass resource IDs, never their display labels.
 
-`src/taskpane/styles.css` is one token system in `:root`; the reference is the Starlight component
-spec (Dieter Rams principles). The rules of the language, in order of importance:
+Persistent context chips call controller attach/detach/reveal. Request source chips only modify
+the next invocation. Only pinned catalog IDs are stored in local storage. No prompt, document
+content, source name, or transcript is persisted by these UI components.
 
-1. **Ground is warm paper** (`--paper #fcf9f8`); raised surfaces are plain white (`--surface`) —
-   never translucent, blurred, or shadowed. Structure is drawn with **0.5px hairlines**
-   (`--hairline`, ink at 40%) and 1–2px ink rules (`--rule`), not tinted boxes.
-2. **One functional blue** (`--blue #0057b8`, hover `#00408b`, active `#00336f`) marks the single
-   primary action per view, links, and focus. **Red** (`--red #bc000c`) means stop or destroy —
-   never emphasis. Everything else is ink (`--ink #1b1c1c`, `--ink-2`, `--ink-3`) on paper.
-3. **Status is a lamp plus a word**, never color alone: `--lamp-on` (blue), `--lamp-hold` (gray
-   `#c2c6d4`), `--lamp-err` (red). See `.surface-state`, `.status-line`, `.chip .dot`, `.cat`.
-4. **Type**: `--sans` (Hanken Grotesk; loaded in `taskpane.html`/`preview.html`, system fallbacks)
-   for prose; `--mono` (JetBrains Mono) for data — commands, counts, hashes, provenance. Numerals
-   tabular. Micro-labels (`.eyebrow`) are 11px and lowercase.
-5. **States shift tone only** — no size change, no shadow, no movement. The single animation is
-   the `lampPulse` (busy/streaming), disabled under `prefers-reduced-motion`. Collapse marks are
-   − / + set in mono; no rotating chevrons.
-6. **Radii**: `--r` (4px) for cards/buttons, `--r-chip` (2px) for chips/tags; knobs (send, stop,
-   settings) are circles. Verbatim commands (`.cmd`, `.md-code`) render on the ink plate
-   (`--plate` / `--plate-ink`). Inputs are rules, not boxes: bottom hairline, blue only on focus.
+Busy and pending-approval state disables mutation and context controls. The controller also refuses
+proposal acceptance while another turn or approval is active. Streaming, failed, and cancelled
+artifacts expose no insert control. Output format/style preferences never alter a pasted command
+program. Follow-up buttons fill an editable request rather than automatically dispatching.
 
-The per-surface `data-surface` attribute remains (behavioral hooks + tests), but the accent no
-longer forks per host — `--host`/`--link` resolve to the one blue on every surface; the surface
-identity is carried by the ink glyph plate and mono labels. Floating layers (popovers, palettes)
-use a solid surface with a 1px ink border instead of elevation. Class names
-(`panel/ph/pht/pn/pss/unit/chip/card/btn/…`) are unchanged from the feature-wave components.
+## Style and accessibility
 
-## Guardrails
+`styles.css` defines the existing paper/ink/blue palette and base components. `workspace.css` extends
+that system for chips, the action library, the start view, and the composer. It is imported after
+the base sheet by both production and preview entries. `preview.css` only styles the test harness.
 
-The smoke test `src/taskpane/app-render.test.ts` (jsdom, 17 cases) mounts the real `<App/>` over the
-`src/taskpane/preview-fixtures.ts` fixtures and asserts every card renders — including the verbatim
-plan/write command lines. The fixtures are shared with the preview harness, so the preview and the
-test guard the same UI surface. The six newest cases cover: the **skills surface** (signature, `def`
-confirmation, prefilled param input, invoke action), an **expanded plan effect** (its target +
-dry-run before→after preview), the **citation source-detail popover**, the **Excel formula-first +
-entity-card** proposal body, the **Word redline** proposal body, and the **provenance drill-down**.
+Controls use labels, pressed/expanded states, visible focus, and native input/select elements.
+The action dialog traps focus and restores its trigger on close. Hover is supplementary. Context
+chips wrap, long labels truncate visually, and the full label remains in the accessible name.
+The composer stays reachable while the conversation and decision regions scroll independently.

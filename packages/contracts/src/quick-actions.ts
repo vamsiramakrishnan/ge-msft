@@ -564,6 +564,191 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     ground: ['this'],
     contextMenu: false,
   }),
+  // Outcome-oriented workflows; every mutation still uses capability closure and the existing gate.
+  surfaceAction({
+    id: 'word-decision-review',
+    label: 'Review the decision',
+    surfaces: ['word'],
+    intent: 'review',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Review the document for the decision requested, alternatives considered, evidence, assumptions, trade-offs, and unresolved questions. Read the relevant sections before adding anchored comments. Cite attached evidence; distinguish missing evidence from contradictions. Do not rewrite the document.',
+    ground: ['this', 'unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'word-adapt-audience',
+    label: 'Adapt for an audience',
+    surfaces: ['word'],
+    intent: 'rewrite',
+    scope: {
+      kind: 'selection',
+    },
+    prompt:
+      'Rewrite the selected text for {{audience}} as a tracked change. Preserve names, numbers, citations, and substantive qualifications. Make the decision or requested action explicit without adding unsupported claims.',
+    ground: ['this'],
+    contextMenu: false,
+    parameters: [
+      {
+        name: 'audience',
+        label: 'Audience',
+        hint: 'e.g. the investment committee',
+      },
+    ],
+  }),
+  surfaceAction({
+    id: 'excel-reconcile',
+    label: 'Reconcile actuals and forecast',
+    surfaces: ['excel'],
+    intent: 'review',
+    scope: {
+      kind: 'selection',
+    },
+    prompt:
+      'Read the selected range and identify actuals, forecast, units, and reporting periods. Calculate absolute and percentage variances, handle zero denominators explicitly, and annotate material discrepancies. Distinguish missing values from zero. Ask for clarification when columns or thresholds are ambiguous.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'excel-chart-brief',
+    label: 'Build a chart and analysis',
+    surfaces: ['excel'],
+    intent: 'visualize',
+    scope: {
+      kind: 'range',
+    },
+    prompt:
+      'Read the selected range, check data types and missing values, and choose a chart that answers {{question}}. If needed, stage a small summary table in an empty destination without overwriting the input. Create a native chart with meaningful labels, then explain the finding, caveats, and exact source range. Ask before guessing an ambiguous metric.',
+    ground: ['this'],
+    contextMenu: false,
+    parameters: [
+      {
+        name: 'question',
+        label: 'Question',
+        hint: 'e.g. what explains the margin change?',
+      },
+    ],
+  }),
+  surfaceAction({
+    id: 'ppt-evidence-review',
+    label: 'Check claims against evidence',
+    surfaces: ['powerpoint'],
+    intent: 'review',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Read the deck and attached sources. Identify unsupported claims, inconsistent figures, missing citations, and conclusions that exceed the evidence. Stage anchored review comments where supported. Report gaps with slide locations; never invent a source.',
+    ground: ['this', 'unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'ppt-decision-deck',
+    label: 'Build a decision brief',
+    surfaces: ['powerpoint'],
+    intent: 'draft',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Create a concise slide section for the decision: {{decision}}. Use the attached sources. Cover recommendation, supporting evidence, options and trade-offs, risks, and next steps. Reuse the deck context and distinguish unknowns from facts. Preview the generated slides before insertion.',
+    ground: ['this', 'unit'],
+    contextMenu: false,
+    parameters: [
+      {
+        name: 'decision',
+        label: 'Decision',
+        hint: 'e.g. approve the regional rollout',
+      },
+    ],
+  }),
+  surfaceAction({
+    id: 'onenote-evidence-matrix',
+    label: 'Compare the sources',
+    surfaces: ['onenote'],
+    intent: 'ask',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Compare the attached sources in a table: claim or question, evidence, source citation, agreement or conflict, and what remains unknown. Keep conflicting accounts separate. Finish with the three most useful follow-up questions.',
+    ground: ['unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'onenote-research-brief',
+    label: 'Write a research brief',
+    surfaces: ['onenote'],
+    intent: 'draft',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Synthesize the attached sources into a cited research brief on {{question}} on this page. Include findings, conflicting evidence, open questions, and next research steps. Mark unsupported conclusions as hypotheses. Preserve existing page content.',
+    ground: ['unit'],
+    contextMenu: false,
+    parameters: [
+      {
+        name: 'question',
+        label: 'Question',
+        hint: 'e.g. what explains the margin change?',
+      },
+    ],
+  }),
+  surfaceAction({
+    id: 'outlook-commitments',
+    label: 'Track commitments in this thread',
+    surfaces: ['outlook'],
+    intent: 'ask',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Read the available thread and return a table of commitments: action, stated owner, stated due date, status, and source message. Distinguish requests from accepted commitments. Keep unstated dates or owners blank and identify open questions. Do not send or create messages.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'outlook-resolve-reply',
+    label: 'Draft a reply that closes the loop',
+    surfaces: ['outlook'],
+    intent: 'draft',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Read the available thread, identify unanswered questions and commitments, and draft a reply with the decision, answers supported by attached sources, and explicit next steps. Flag unknowns for review rather than inventing an answer. Leave the reply as a draft; do not send it.',
+    ground: ['this', 'unit'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'teams-decision-log',
+    label: 'Build a decision log',
+    surfaces: ['teams'],
+    intent: 'notes',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'Read the available transcript and stage meeting notes separating decisions, proposals still under discussion, open questions, and action items. Include the stated owner and due date only when present, plus transcript references. Do not treat a suggestion as agreement. Preview before posting.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
+  surfaceAction({
+    id: 'teams-dissent',
+    label: 'Find unresolved disagreements',
+    surfaces: ['teams'],
+    intent: 'ask',
+    scope: {
+      kind: 'document',
+    },
+    prompt:
+      'From the available transcript, identify disagreements that remain unresolved. Show the competing positions, evidence cited, decision needed, and who volunteered to follow up. Distinguish an explicit decision from silence or a topic change. Include transcript references.',
+    ground: ['this'],
+    contextMenu: false,
+  }),
 ];
 
 /**

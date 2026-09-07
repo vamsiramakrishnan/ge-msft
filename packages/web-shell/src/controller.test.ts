@@ -557,6 +557,22 @@ describe('PanelController — ask / stream', () => {
 });
 
 describe('PanelController — actuation review', () => {
+  it('keeps a pending proposal unapplied while a different turn is streaming', async () => {
+    const assist = new FakeAssist();
+    const c = new PanelController(assist, lister([]));
+    const proposal = c.propose('tracked-change', { text: 'Replacement' }, 'Earlier proposal');
+    const release = assist.hold();
+    const turn = c.send('Read the document');
+    expect(c.getState().busy).toBe(true);
+    await c.applyProposal(proposal.changeId);
+    expect(assist.applied).toHaveLength(0);
+    expect(c.getState().proposals[0]?.status).toBe('pending');
+    release();
+    await turn;
+    await c.applyProposal(proposal.changeId);
+    expect(assist.applied).toHaveLength(1);
+  });
+
   it('applies a proposal and records the change', async () => {
     const assist = new FakeAssist();
     const c = new PanelController(assist, lister([]));

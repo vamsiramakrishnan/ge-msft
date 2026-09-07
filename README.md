@@ -32,7 +32,7 @@ bun run setup:doctor
 bun run --filter @ge/web-shell preview
 ```
 
-The preview renders the task pane without requiring an Office host.
+The preview renders the task pane without requiring an Office host. `bun run dev` opens the same preview server. Choose **Try interactive demo** to exercise source attachment, answers, and approval decisions with scripted sample data. Width and height controls reproduce narrow Office panes. No model calls or Office writes occur in the demo.
 
 Useful setup and release commands:
 
@@ -150,18 +150,25 @@ The contracts package compares the declared capability manifest with implemented
 
 This check covers the capabilities represented by those registries and tests. It is not a proof that arbitrary host behavior cannot diverge outside the checked surface.
 
-## User interaction
+## Work from the task pane
 
-The task pane accepts:
+Start with the current document. Attach the sources that matter. Choose a task or describe the result you need.
 
-- `/` commands;
-- `@` references to document or enterprise context;
-- prebuilt quick actions;
-- supported host context-menu actions.
+| Control | What it does |
+| --- | --- |
+| Context chips | Attach, remove, and locate host content without opening a dialog. The controller owns the attachment state. |
+| Action library | Search 47 actions across six surfaces. Filter by Ask, Review, or Change; pin the ones you use. Only supported actions appear. |
+| Task intent and scope | Choose what to do and where to do it. Slash commands remain available. |
+| Request sources | Pick connected data stores by name. Their resource IDs become structured Gemini grounding for this request. |
+| Response controls | Request a comparison table, decision brief, checklist, or concise bullets; choose a writing style. |
+| Answer controls | Copy a completed answer or prepare an evidence check, decision brief, or action checklist as an editable follow-up. |
+| Change review | Inspect the number of changes, affected targets, exact commands, and available before/after values before approving. |
 
-These inputs compile into the same runtime command/plan path. The host bridge remains the mutation boundary.
+Open **Actions** with **Ctrl+K / ⌘K**. **Enter** submits; **Shift+Enter** adds a line. Input-method composition does not accidentally submit.
 
-Gemini Enterprise skills under [`skill/`](skill/) teach the model the command grammar and planning format used by this runtime.
+The catalog includes workflows for decision reviews in Word, reconciliation and chart analysis in Excel, evidence checks and decision decks in PowerPoint, research briefs in OneNote, commitments and reply drafts in Outlook, and decision logs in Teams. These workflows use the existing bridges and approval path. They do not add permissions or claim host capabilities that are unavailable.
+
+See the [workspace guide](docs/WORKSPACE.md) for the complete interaction flow and limits. Gemini Enterprise [skills](skill/) carry the underlying command grammar.
 
 ## Actuation and provenance
 

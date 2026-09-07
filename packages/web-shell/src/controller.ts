@@ -1153,6 +1153,14 @@ export class PanelController {
 
   /** Apply a staged proposal through the session (gate → bridge), recording the outcome. */
   async applyProposal(changeId: ChangeId): Promise<void> {
+    if (
+      this.state.busy ||
+      this.state.pendingPlan ||
+      this.state.pendingWrite ||
+      this.state.pendingShare ||
+      this.state.pendingCommandPlan
+    )
+      return;
     const proposal = this.state.proposals.find((p) => p.changeId === changeId);
     if (!proposal || proposal.status !== 'pending') return;
 

@@ -148,3 +148,24 @@ body {
   max-height: none;
   box-shadow: 0 18px 52px rgba(27, 28, 28, 0.18);
 }
+
+.preview [hidden] {
+  display: none !important;
+}
+.preview-mode .preview-btn {
+  width: 100%;
+}
+.preview-label select {
+  float: right;
+  font: inherit;
+  padding: 2px 4px;
+}
+.preview-mode .preview-note {
+  border: 0;
+  padding: 6px 0 0;
+}
+
+/* Fixed dialogs must stay inside the simulated Office viewport, as in the real host. */
+.preview-frame {
+  contain: layout paint;
+}

@@ -151,7 +151,7 @@ The human-facing layer over the capability stack, and how the grammar reaches th
   (must render exact per-verb usage), `de_stub.read_response` ⇄ the `gemini-client` streamAssist
   reader. The TypeScript side is authoritative; parity is tracked, not yet build-enforced.
 - **Quick actions — built + tested.** The prebuilt-button catalog (`QUICK_ACTIONS` /
-  `QuickActionSchema`, 35 actions) lives in `@ge/contracts`, **closure-filtered per surface**
+  `QuickActionSchema`, 47 actions) lives in `@ge/contracts`, **closure-filtered per surface**
   (`quickActionsForSurface`). The `QuickActionBar` renders them; a `chat` action routes to `send`, a
   `write`/`annotation` action to the `runCommands` gate (`quick-action-seed` builds the `@`-grounded
   seed). **Typed parameters (H):** an action whose prompt carries `{{name}}` slots declares them as
@@ -215,3 +215,20 @@ chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration
 
 See `MICROSOFT-ADDIN-CAPABILITIES.md` for the Microsoft 365 add-in surface we build on, and
 `CAPABILITY-MAP.md` for the per-capability read/write inventory.
+
+## Workspace interaction upgrade (September 2026)
+
+The task pane now exposes context chips above the conversation, a searchable and pinnable action
+library, explicit intent controls, request-scoped data-store chips, response format/style controls,
+and editable answer follow-ups. Twelve outcome workflows extend the catalog to 47 actions, filtered
+by each host's capability manifest. Plan review shows change/target counts alongside exact commands.
+
+Request source selections reach `ResolvedGrounding.dataStoreSpecs`; display labels are never used as
+resource identifiers. The source picker offers connected, addressable sources only. Document content
+is attached through Context; ambient document capture remains the session's responsibility. Pins
+persist only catalog IDs in browser storage. Request text and selected sources stay in memory.
+
+Insertion controls are absent from streaming, failed, or cancelled answers. Other action and context
+controls lock during a turn or approval. Pending proposal application also checks this state at the
+controller boundary. The interactive preview runs the real `PanelController` over an explicitly
+scripted session. It validates UI behavior, not live Gemini quality or Office-host compatibility.

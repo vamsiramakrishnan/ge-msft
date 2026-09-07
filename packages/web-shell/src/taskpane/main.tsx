@@ -40,6 +40,7 @@ import {
   type RawEnv,
 } from './config.js';
 import './styles.css';
+import './workspace.css';
 
 /**
  * Task-pane entry point. The Office bootstrap, and the ONLY place the surface-agnostic shell wires

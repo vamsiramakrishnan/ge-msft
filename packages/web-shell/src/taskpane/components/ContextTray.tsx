@@ -2,6 +2,7 @@ import type { ContextChip } from '../../controller.js';
 
 export interface ContextTrayProps {
   chips: ContextChip[];
+  disabled?: boolean;
   onToggle: (id: string, attach: boolean) => void;
   onReveal: (id: string) => void;
   onRefresh: () => void;
@@ -21,10 +22,12 @@ export interface ContextTrayProps {
  */
 function Chip({
   chip,
+  disabled,
   onToggle,
   onReveal,
 }: {
   chip: ContextChip;
+  disabled: boolean;
   onToggle: (id: string, attach: boolean) => void;
   onReveal: (id: string) => void;
 }): JSX.Element {
@@ -41,6 +44,7 @@ function Chip({
         {!chip.attached ? (
           <button
             type="button"
+            disabled={disabled}
             className="chip-label"
             onClick={() => onToggle(chip.id, true)}
             aria-label={`Attach ${chip.title}`}
@@ -53,6 +57,7 @@ function Chip({
         {chip.attached && (
           <button
             type="button"
+            disabled={disabled}
             className="x"
             onClick={() => onToggle(chip.id, false)}
             aria-label={`Detach ${chip.title}`}
@@ -63,6 +68,7 @@ function Chip({
         {chip.revealable && (
           <button
             type="button"
+            disabled={disabled}
             className="open-host"
             onClick={() => onReveal(chip.id)}
             aria-label={revealLabel}
@@ -88,6 +94,7 @@ export function ContextTray({
   onReveal,
   onRefresh,
   embedded = false,
+  disabled = false,
 }: ContextTrayProps): JSX.Element {
   // Read-only view shaping: surface attached sources first so the active grounding scope reads
   // top-to-bottom. The controller still owns the flat `chips` list and the `attached` flag.
@@ -106,6 +113,7 @@ export function ContextTray({
         </span>
         <button
           type="button"
+          disabled={disabled}
           className="link"
           onClick={onRefresh}
           aria-label="Refresh attachable context"
@@ -121,7 +129,7 @@ export function ContextTray({
           <div className="chips-group" role="list" aria-label="Attached sources">
             {attached.map((chip) => (
               <span role="listitem" key={chip.id} style={{ display: 'contents' }}>
-                <Chip chip={chip} onToggle={onToggle} onReveal={onReveal} />
+                <Chip disabled={disabled} chip={chip} onToggle={onToggle} onReveal={onReveal} />
               </span>
             ))}
           </div>
@@ -133,7 +141,7 @@ export function ContextTray({
           <div className="chips-group" role="list" aria-label="Available to attach">
             {available.map((chip) => (
               <span role="listitem" key={chip.id} style={{ display: 'contents' }}>
-                <Chip chip={chip} onToggle={onToggle} onReveal={onReveal} />
+                <Chip disabled={disabled} chip={chip} onToggle={onToggle} onReveal={onReveal} />
               </span>
             ))}
           </div>

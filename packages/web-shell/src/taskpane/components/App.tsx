@@ -33,6 +33,8 @@ import { CommandPlanCard } from './CommandPlanCard.js';
 import { PlanClarificationCard } from './PlanClarificationCard.js';
 import { GeminiCatalogPanel } from './GeminiCatalogPanel.js';
 import { surfacePrimaryActions } from './SurfaceCommandCenter.js';
+import { ContextStrip } from './ContextStrip.js';
+import { WorkspaceHome } from './WorkspaceHome.js';
 import { Toolbar } from './Toolbar.js';
 import { extractDirectCommandProgram } from '../direct-command.js';
 import { buildInsertArtifactProgram, type InsertableArtifact } from '../insert-artifact.js';
@@ -243,6 +245,7 @@ export function App({
   onCatalogRouting,
 }: AppProps): JSX.Element {
   const state = usePanelState(controller);
+  const [composerDraft, setComposerDraft] = useState<{ id: number; text: string }>();
   // The parameterized action awaiting its `{{name}}` fill values (Workstream H), or undefined.
   const [paramFill, setParamFill] = useState<QuickAction | undefined>(undefined);
   const hasBlockingGate = Boolean(
@@ -273,6 +276,7 @@ export function App({
   }, [controller]);
 
   const onToggle = (id: string, attach: boolean): void => {
+    if (actionBlocked) return;
     if (attach) void controller.attach(id);
     else controller.detach(id);
   };
@@ -284,6 +288,7 @@ export function App({
   // `invocationToGrounding` → `resolveGrounding`, and passed as the turn's grounding — never discarded
   // nor forwarded only as raw text. No new gate is introduced; grounding only scopes the existing route.
   const dispatch = (inv: ComposerInvocation): void => {
+    if (actionBlocked) return;
     const clarificationAnswer = inv.raw.trim();
     if (
       state.pendingPlanClarification &&
@@ -334,6 +339,7 @@ export function App({
   // parameterized action (Workstream H) opens the fill form FIRST instead of dispatching, so its
   // `{{name}}` slots are collected before the typed invocation is built.
   const onQuickAction = (action: QuickAction): void => {
+    if (actionBlocked) return;
     if (actionParameters(action).length > 0) setParamFill(action);
     else dispatch(quickActionToInvocation(action));
   };
@@ -350,6 +356,7 @@ export function App({
   const onInvoke = (inv: ComposerInvocation): void => dispatch(inv);
 
   const onInsertArtifact = (artifact: InsertableArtifact): void => {
+    if (insertArtifactDisabledReason) return;
     const built = buildInsertArtifactProgram(surface, artifact, { excelRange: insertExcelRange });
     if (!built.ok) return;
     void controller.runDirectCommands(built.program);
@@ -390,6 +397,14 @@ export function App({
         onQuickAction={onQuickAction}
       />
 
+      <ContextStrip
+        chips={state.chips}
+        disabled={actionBlocked}
+        onToggle={onToggle}
+        onReveal={(id) => void controller.reveal(id)}
+        onRefresh={() => void controller.refreshContext()}
+      />
+
       {state.suggestions.length > 0 && (
         <section className="suggestions" aria-label="Suggestions">
           {state.suggestions.map((s) => (
@@ -411,8 +426,21 @@ export function App({
       )}
 
       <main className="thread-region" aria-label="Conversation and activity">
+        {state.messages.length === 0 && (
+          <WorkspaceHome
+            surface={surface}
+            actions={primaryActions}
+            disabled={actionBlocked}
+            onAction={onQuickAction}
+          />
+        )}
         <MessageThread
           messages={state.messages}
+          showEmpty={false}
+          disabled={actionBlocked}
+          onFollowUp={(text) =>
+            setComposerDraft((previous) => ({ id: (previous?.id ?? 0) + 1, text }))
+          }
           surface={surface}
           onInsertArtifact={onInsertArtifact}
           onRevealLocation={(target) => void controller.revealLocation(surface, target)}
@@ -429,7 +457,10 @@ export function App({
 
         <ProposalCard
           proposals={state.proposals}
-          onApply={(id: ChangeId) => void controller.applyProposal(id)}
+          disabled={actionBlocked}
+          onApply={(id: ChangeId) => {
+            if (!actionBlocked) void controller.applyProposal(id);
+          }}
         />
 
         {state.error && (
@@ -471,11 +502,14 @@ export function App({
       <QuickActionParamForm
         key={paramFill?.id}
         action={paramFill}
+        disabled={actionBlocked}
         onSubmit={onParamFillSubmit}
         onCancel={() => setParamFill(undefined)}
       />
 
       <Composer
+        key={surface}
+        draft={composerDraft}
         busy={state.busy}
         disabled={hasBlockingGate}
         surface={surface}
@@ -498,8 +532,8 @@ export function App({
       />
 
       <footer className="pf" aria-label="Provenance">
-        <span>gemini enterprise · {surface} · client-direct</span>
-        <span className="pf-lamp">grounded · reversible</span>
+        <span>Gemini Enterprise</span>
+        <span className="pf-lamp">Review changes before applying</span>
       </footer>
     </div>
   );

@@ -35,11 +35,19 @@ function renderMentions(mentions: readonly ComposerMention[]): string {
 export function invocationToSeed(inv: ComposerInvocation): string {
   const body =
     inv.raw.trim().length > 0
-      ? inv.raw.trim()
+      ? [inv.intent && !inv.raw.trim().startsWith('/') ? `/${inv.intent}` : '', inv.raw.trim()]
+          .filter(Boolean)
+          .join(' ')
       : [inv.intent ? `/${inv.intent}` : '', renderMentions(inv.mentions), inv.instruction.trim()]
           .filter((p) => p.length > 0)
           .join(' ');
-  return [body, scopeToken(inv.scope)].filter((p) => p.length > 0).join(' ');
+  const preferences = [
+    inv.responseOptions?.format ? `Output format: ${inv.responseOptions.format}.` : '',
+    inv.responseOptions?.style ? `Writing style: ${inv.responseOptions.style}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return [body, preferences, scopeToken(inv.scope)].filter((p) => p.length > 0).join(' ');
 }
 
 /** Render a scope as a `scope:` token, omitting the live `selection` default (it is implicit). */

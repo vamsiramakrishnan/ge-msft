@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { actionParameters, type QuickAction } from '@ge/contracts';
+import { actionParameters, fillPrompt, type QuickAction } from '@ge/contracts';
 import { modeCta } from './mode-labels.js';
 
 export interface QuickActionParamFormProps {
   /** The action whose `{{name}}` slots need values, or undefined when nothing is being collected. */
   action: QuickAction | undefined;
+  disabled?: boolean;
   /** Dispatch with the collected values (keyed by parameter name). */
   onSubmit: (action: QuickAction, values: Record<string, string>) => void;
   onCancel: () => void;
@@ -19,6 +20,7 @@ export interface QuickActionParamFormProps {
  */
 export function QuickActionParamForm({
   action,
+  disabled = false,
   onSubmit,
   onCancel,
 }: QuickActionParamFormProps): JSX.Element | null {
@@ -33,7 +35,7 @@ export function QuickActionParamForm({
   const complete = params.every((p) => (values[p.name] ?? '').trim().length > 0);
 
   const submit = (): void => {
-    if (!complete) return;
+    if (!complete || disabled) return;
     const trimmed: Record<string, string> = {};
     for (const p of params) trimmed[p.name] = (values[p.name] ?? '').trim();
     onSubmit(action, trimmed);
@@ -68,10 +70,20 @@ export function QuickActionParamForm({
             value={values[p.name] ?? ''}
             placeholder={p.hint ?? ''}
             autoComplete="off"
+            disabled={disabled}
             onChange={(e) => setValues((prev) => ({ ...prev, [p.name]: e.target.value }))}
           />
         </label>
       ))}
+      <details className="qa-prompt-preview">
+        <summary>Preview instructions</summary>
+        <p>{fillPrompt(action.prompt, values)}</p>
+        <span>
+          {action.output === 'chat'
+            ? 'Answer in the conversation'
+            : 'Changes will be staged for review'}
+        </span>
+      </details>
       <div className="qa-param-actions">
         <button type="button" className="qa-param-cancel" onClick={cancel}>
           Cancel
@@ -80,7 +92,7 @@ export function QuickActionParamForm({
           type="submit"
           className="qa-param-submit"
           data-testid="quick-action-param-submit"
-          disabled={!complete}
+          disabled={!complete || disabled}
         >
           {ctaLabel(action)}
         </button>

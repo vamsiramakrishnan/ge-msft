@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "bun run --workspaces --if-present build",
-    "dev": "echo \"Run a specific workspace, e.g. bun run --filter @ge/web-shell dev\"",
+    "dev": "vite --config packages/web-shell/vite.preview.config.ts",
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . && prettier --check .",

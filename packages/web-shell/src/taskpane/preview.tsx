@@ -1,7 +1,8 @@
-import { StrictMode, useMemo, useState } from 'react';
+import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Surface, ChangeId } from '@ge/contracts';
 import type { PanelController, PanelState } from '../controller.js';
+import { makeDemoController } from './preview-interactive.js';
 import { App } from './components/App.js';
 import {
   FIXTURE_CHIPS,
@@ -17,6 +18,7 @@ import {
   PREVIEW_SURFACES,
 } from './preview-fixtures.js';
 import './styles.css';
+import './workspace.css';
 import './preview.css';
 
 /**
@@ -133,6 +135,16 @@ export function makeMockController(state: PanelState): PanelController {
       log('invokeSkill')(name, args),
     refreshConversations: async () => log('refreshConversations')(),
     resumeConversation: (name: string) => log('resumeConversation')(name),
+    reveal: async (id: string) => log('reveal')(id),
+    revealLocation: async (surface: Surface, target: string) =>
+      log('revealLocation')(surface, target),
+    proposePlan: async (task: string) => log('proposePlan')(task),
+    runDirectCommands: async (program: string) => log('runDirectCommands')(program),
+    answerPlanClarification: (answer: string) => log('answerPlanClarification')(answer),
+    confirmCommandPlan: () => log('confirmCommandPlan')(),
+    cancelCommandPlan: () => log('cancelCommandPlan')(),
+    approvePendingShare: () => log('approvePendingShare')(),
+    rejectPendingShare: () => log('rejectPendingShare')(),
     onContext: () => undefined,
     onSuggest: () => undefined,
   };
@@ -156,16 +168,27 @@ function Preview(): JSX.Element {
   const params = useMemo(() => previewParams(), []);
   const captureMode = params.get('capture') === '1';
   const [surface, setSurface] = useState<Surface>(() => surfaceFromParams(params));
+  const [interactive, setInteractive] = useState(() => params.get('demo') === '1');
+  const [frameWidth, setFrameWidth] = useState(360);
+  const [frameHeight, setFrameHeight] = useState(760);
   const [toggles, setToggles] = useState<Toggles>(() => (captureMode ? README_CAPTURE : ALL_ON));
 
   // A fresh mock per (surface, toggles) so `getState` reflects the toolbar. `App` re-renders on its
   // own prop change; the mock's `subscribe` is a no-op because the harness is the source of truth.
-  const controller = useMemo(() => makeMockController(buildState(toggles)), [toggles]);
+  const controller = useMemo(
+    () => (interactive ? makeDemoController(surface) : makeMockController(buildState(toggles))),
+    [toggles, surface, interactive],
+  );
+  useEffect(() => () => controller.cancel(), [controller]);
 
   const panel = (
     <div className="preview-stage">
-      <div className="preview-frame" data-surface={surface}>
-        <App controller={controller} surface={surface} />
+      <div
+        className="preview-frame"
+        data-surface={surface}
+        style={{ width: frameWidth, height: frameHeight }}
+      >
+        <App key={`${surface}-${interactive}`} controller={controller} surface={surface} />
       </div>
     </div>
   );
@@ -182,6 +205,43 @@ function Preview(): JSX.Element {
     <div className="preview" data-capture="false">
       <aside className="preview-toolbar" aria-label="Preview controls">
         <h1 className="preview-title">Task-pane preview</h1>
+        <div className="preview-group preview-mode">
+          <button
+            type="button"
+            className="preview-btn"
+            aria-pressed={interactive}
+            onClick={() => setInteractive(!interactive)}
+          >
+            {interactive ? 'Scripted demo active' : 'Try interactive demo'}
+          </button>
+          <p className="preview-note">Scripted sample data. No model calls or Office writes.</p>
+        </div>
+        <div className="preview-group">
+          <label className="preview-label">
+            Pane width{' '}
+            <select
+              aria-label="Pane width"
+              value={frameWidth}
+              onChange={(e) => setFrameWidth(Number(e.target.value))}
+            >
+              <option value={320}>320 px</option>
+              <option value={360}>360 px</option>
+              <option value={480}>480 px</option>
+            </select>
+          </label>
+          <label className="preview-label">
+            Pane height{' '}
+            <select
+              aria-label="Pane height"
+              value={frameHeight}
+              onChange={(e) => setFrameHeight(Number(e.target.value))}
+            >
+              <option value={480}>480 px</option>
+              <option value={600}>600 px</option>
+              <option value={760}>760 px</option>
+            </select>
+          </label>
+        </div>
         <div className="preview-group">
           <span className="preview-label">Surface</span>
           <div className="preview-surfaces">
@@ -198,7 +258,7 @@ function Preview(): JSX.Element {
             ))}
           </div>
         </div>
-        <div className="preview-group">
+        <div className="preview-group" hidden={interactive}>
           <span className="preview-label">Cards</span>
           <div className="preview-toggles">
             {TOGGLE_LABELS.map(([key, label]) => (
@@ -213,7 +273,7 @@ function Preview(): JSX.Element {
             ))}
           </div>
         </div>
-        <div className="preview-group preview-actions">
+        <div className="preview-group preview-actions" hidden={interactive}>
           <button type="button" className="preview-btn" onClick={() => setToggles(ALL_ON)}>
             All on
           </button>
@@ -239,7 +299,8 @@ function Preview(): JSX.Element {
           </button>
         </div>
         <p className="preview-note">
-          A fake controller renders the real panel with no Office host. Buttons log to the console.
+          The demo uses the real panel controller with scripted responses. Card fixtures remain
+          available for inspecting every state.
         </p>
       </aside>
       {panel}

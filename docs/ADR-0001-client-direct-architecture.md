@@ -2,6 +2,10 @@
 
 **Status:** Accepted (2026-06-21) · supersedes the gateway-centric framing in `01-architecture.md`/`BUILD-PLAN.md` Phase 0.
 
+The API observations below record the June decision. Current public/widget skill routing and
+request construction live in `packages/gemini-client`; later route-specific skill support does not
+change this client-direct decision. See [the current contract map](CONTRACTS.md).
+
 ## Context
 
 The original design put a stateless **Surface Gateway** (Cloud Run) between the add-in and
@@ -44,7 +48,7 @@ are out of scope for this repo (the admin's responsibility).
 - **`services/gateway` becomes optional** (the CORS/audit proxy), not the centerpiece. Phase 0
   tasks 0.3–0.9 are reframed: federation + relay move client-side into `@ge/gemini-client`;
   Model Armor/provenance-signing are Google-side or client-side metadata writes.
-- **No Google credentials in any client** still holds — the client only ever holds the user's
+- **No long-lived Google secrets in any client** — the client only ever holds the user's
   short-lived Entra token and the federated Google access token derived from it, in memory.
 - **Packaging** targets the **unified Microsoft 365 manifest** (the modern successor to the
   standalone add-in manifest): one app package spanning Word/Excel/PowerPoint/**Outlook** task

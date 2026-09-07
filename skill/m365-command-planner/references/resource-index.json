@@ -51,6 +51,6 @@
     "surface": "",
     "workflow": "",
     "topics": "[plan-block, keywords, cross-surface, clarification]",
-    "load_when": "Exact plan keyword rules, cross-surface fields, or parser-compatible examples are needed."
+    "load_when": "Exact supported plan keywords, cross-surface scope boundaries, or parser-compatible examples are needed."
   }
 ]

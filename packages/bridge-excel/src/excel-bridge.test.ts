@@ -1219,7 +1219,7 @@ describe('ExcelBridge.actuate write-cells (reversible, address-anchored)', () =>
     const res = await new ExcelBridge().actuate(
       writeCells({ target: { range: 'Sales!A2' }, cells: [['legacy']], cellValues: [] }),
     );
-    expect(res).toMatchObject({ ok: false, error: { code: 'no_cells' } });
+    expect(res).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
     expect(active.seed.sheets).toEqual(before);
     expect(active.workbook()).toBeUndefined();
   });

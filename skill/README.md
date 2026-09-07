@@ -23,7 +23,7 @@ ge-skill-tooling/
 ## Runtime skills and developer skill
 
 The command surface (`/` verbs + `@` mentions in the add-in) is carried into Gemini Enterprise as
-**two skills, mounted per-turn via `skillsSpec`**:
+**two skills, selected per turn with `agentsSpec` and explicit mention markers**:
 
 - **`m365-command-planner`** — the **front door**. Turns a free-text `/verb @mentions …` request
   into a structured, parseable ` ```plan ` block (intent · scope · ordered steps · exclusions ·
@@ -335,3 +335,23 @@ block: `cmd_blocks`, `errors`, `prose_only`, `grounding_leak`, `done`.
 - The stub (`de_stub.py`) reproduces the real wire complications — token-streamed text, thoughts,
   `textGroundingMetadata` citations, `inlineData` suggestions, and split code fences — so the reader
   is exercised against them offline.
+
+## Generated compiler and archive contract
+
+`bun run skills:generate` emits command vocabulary, planner vocabulary, advisory approval metadata,
+and the shared standalone manifest reader from TypeScript contracts. Runtime schemas remain the
+authority; Python performs dependency-free preflight. Missing, malformed or incompatible generated
+files stop preflight with a rebuild error. There is no permissive fallback language.
+
+`bun run skills:check` checks every emitted file and resource index without rewriting the checkout.
+`build_zip.sh <skill-name>` delegates to `bundle.py`: sorted files, fixed timestamps and normalized
+permissions make identical source contents produce identical archives.
+`python3 skill/validate_skill_bundles.py --check-zip` requires each selected archive and compares its
+file inventory and contents with current source. Build all three default bundles before that check.
+
+`python3 skill/test_manifest_contract.py` tests standalone missing/corrupt manifests, generated
+authority and read-phase classification, and archive reproducibility/source parity. The TypeScript
+preflight tests also run every bundled planner example through the production parser and Python.
+A plan for another app uses supported `step`/`clarify` lines; it does not gain a new workflow keyword
+or permission to execute in that app. Structural parsing still has language-specific implementations;
+shared metadata and behavioral tests define their compatibility boundary.

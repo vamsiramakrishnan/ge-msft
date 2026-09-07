@@ -1,3 +1,4 @@
+import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import { describe, expect, it } from 'vitest';
 import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
@@ -62,5 +63,33 @@ describe('Excel read budget (pure) — bound checked before .values is materiali
     expect(withinReadBudget(MAX_READ_CELLS + 1, 1)).toBe(false);
     expect(withinReadBudget(0, 0)).toBe(false); // empty / unresolved
     expect(withinReadBudget(undefined, undefined)).toBe(false);
+  });
+});
+
+describe('ExcelBridge dispatch admission', () => {
+  it('rejects another surface before reaching a host handler', async () => {
+    const request: ActuationRequest = {
+      changeId: asChangeId('wrong-surface'),
+      kind: 'write-cells',
+      surface: 'word',
+      params: {},
+    };
+    expect(await new ExcelBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'surface_mismatch' },
+    });
+  });
+
+  it('rejects malformed parameters before reaching a host handler', async () => {
+    const request = {
+      changeId: asChangeId('invalid-params'),
+      kind: 'write-cells',
+      surface: 'excel',
+      params: { text: 42 },
+    } as unknown as ActuationRequest;
+    expect(await new ExcelBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_request' },
+    });
   });
 });

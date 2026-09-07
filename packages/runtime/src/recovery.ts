@@ -8,6 +8,8 @@ import {
   gridForRequest,
   rangeForGrid,
   sourceVersion,
+  assessActuationResult,
+  validateActuationResult,
   type ActuationRequest,
   type ActuationResult,
   type CellSnapshot,
@@ -209,7 +211,8 @@ export class RecoveryCoordinator {
     actuate: () => Promise<ActuationResult>,
   ): Promise<ActuationResult> {
     const before = this.prepared.get(request.changeId);
-    if (request.kind !== 'write-cells' || !before) return actuate();
+    if (request.kind !== 'write-cells' || !before)
+      return validateActuationResult(request, await actuate());
     return this.locked(async () => {
       await this.load();
       if (this.records.some((r) => r.id === request.changeId))
@@ -250,7 +253,7 @@ export class RecoveryCoordinator {
       }
       let result: ActuationResult;
       try {
-        result = await actuate();
+        result = validateActuationResult(request, await actuate());
       } catch {
         // Office can reject a batch after a write landed. Do not turn this into retry authority.
         record.state = 'uncertain';
@@ -269,15 +272,12 @@ export class RecoveryCoordinator {
           error: { code: 'outcome_unknown', message: record.message },
         };
       }
+      const outcome = assessActuationResult(result);
       record.state =
-        result.recoveryPending ||
-        result.error?.code === 'outcome_unknown' ||
-        (result.verification && result.verification.status !== 'verified')
-          ? 'uncertain'
-          : result.ok
-            ? result.verification?.status === 'verified'
-              ? 'applied'
-              : 'uncertain'
+        outcome === 'verified'
+          ? 'applied'
+          : outcome === 'uncertain' || outcome === 'unverified'
+            ? 'uncertain'
             : 'not-applied';
       record.afterHash =
         result.verification?.status === 'verified' ? result.verification.afterHash : undefined;

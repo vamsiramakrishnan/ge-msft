@@ -1,54 +1,56 @@
 # Conventions
 
-> **Note (client-direct, `ADR-0001`).** The **TypeScript stack, code style, project-layout, testing,
-> error-handling, and security standards** below are all current and enforced. The **gateway-specific
-> items are historical** — there is no gateway/`services/*` tier and no Python ADK agents in the repo
-> today: ignore "Fastify/Cloud Run for the gateway," "the gateway is stateless," "one responsibility
-> per gateway module," and structured-gateway-logging/audit-to-BigQuery as *deploy-time* concerns for
-> the optional proxy, not workspace code. The security standards (no Google secrets in a client,
-> identity scoped end-to-end, untrusted host content, provenanced+reversible writes, residency, least
-> privilege) hold identically client-direct.
+The repository is client-direct ([ADR-0001](ADR-0001-client-direct-architecture.md)). Historical
+`services/gateway` and Python ADK proposals are not workspace requirements. The executable contracts
+and ownership rules below describe the code that ships.
 
 ## Stack
-- **TypeScript** (strict) for clients and gateway; **Python 3.12** for `services/agents` (ADK).
-- **React 18** + Office.js / TeamsJS for clients; **Vite** for bundling; HTTPS in dev (Office requires it).
-- **Fastify** on **Node 20+** for the gateway; **Cloud Run** for deploy.
-- **Bun workspaces** monorepo; **Zod** for runtime validation (shared in `packages/contracts`); **Vitest** (TS) and **pytest** (agents).
 
-## Code style
-- Prettier + ESLint (typescript-eslint, react-hooks). Format on save; lint clean before done.
-- `camelCase` for values, `PascalCase` for types/components, `kebab-case` for files and package names.
-- Prefer pure functions and explicit return types on exported functions. No `any` — use `unknown` + a Zod parse at boundaries.
-- Every cross-boundary payload is parsed with its Zod schema from `packages/contracts` on receipt. Don't trust shapes.
-- Keep modules small and single-purpose. The five client modules (`DocBridge`, `AuthClient`, `StreamClient`, `ProvenanceStore`, `UnitComposer`) have stable interfaces — implement per surface behind those interfaces.
+- Strict TypeScript, React, Office.js/TeamsJS, and Vite; HTTPS for hosted Office development.
+- Bun workspaces with TypeScript project references. Declare direct dependencies in their owning package; do not depend on root hoisting.
+- Zod schemas in `packages/contracts`; Vitest for TypeScript and rendered React tests.
+- Python for standalone skill parsers, packaging, parity, and deployment tooling; no Python agent backend.
 
-## Project layout rules
-- `packages/web-shell` is **surface-agnostic**. If code references Word/Excel/PowerPoint/OneNote/Teams APIs, it belongs in a `bridge-*` or `teams`, not the shell.
-- The gateway is **stateless**. No per-user state in memory beyond a request; sessions live in StreamAssist (server) and the host's custom metadata (client).
-- One responsibility per gateway module: `auth`, `federation`, `router`, `relay`, `provenance`, `audit`, `armor`.
+## Code and package boundaries
+
+- Prettier and ESLint must pass. Use `camelCase` values, `PascalCase` types/components, and `kebab-case` filenames.
+- Prefer small modules, pure functions, and explicit exported types. Use `unknown` and schema validation at untrusted boundaries, not `any`.
+- Contracts own payload shapes and pure shared policy. Runtime owns sequencing, admission, approval, recovery, hooks, and command context. Compute owns analysis execution.
+- Bridges own host APIs and mutation semantics. Each bridge has one executable handler table; handled capability lists are derived from it. The descriptor registry is discovery metadata, not execution authority.
+- `web-shell` composes adapters and owns pane state. Its controller and components do not call host mutation APIs. Shared execution ownership must be installed before publishing busy state and released only by its current owner.
+- Provider/identity transport belongs in `gemini-client`; delegated Microsoft Graph access belongs in `graph-client`. Neither imports the shell or a host bridge.
+- Import workspace packages through public entry points. The repository dependency conformance test checks direction, direct dependencies, and TypeScript reference agreement.
+- Generated skill manifests describe the contracts. Edit the TypeScript source and regenerate; never patch generated JSON or add Python-only language constructs.
+
+## Execution and errors
+
+- Validate each effect before approval and re-admit it against current effective capabilities before host dispatch.
+- Every host receipt must match the requested kind and change ID. Malformed, contradictory, or uncorrelated receipts are uncertain, not successful.
+- Use the shared outcome assessment. `ok` alone does not mean readback verified; cancellation does not undo an already dispatched write.
+- Preserve the real receipt after cancellation. Do not automatically replay uncertain writes; require the documented reconciliation/recovery path.
+- A change ID correlates an operation. It does not guarantee deduplication on every host.
+- Provider EOF is not completion. Failed, blocked, cancelled, and incomplete streams must not mark pending context as delivered or execute a command fence.
+- Errors explain the actual outcome and a useful next action. Labels retain their meaning through preview, approval, execution, and history.
 
 ## Testing
-- Unit-test contracts (schema round-trips), the unit resolver, the router, anchoring (`body.search` resolution + drift degradation), and the SSE relay (incl. polling fallback).
-- Mock external services (Gemini Enterprise, Entra, STS, connectors) behind thin clients so tests don't hit the network. Label mocks clearly; never let a mock masquerade as a real integration.
-- Each surface's signature interaction gets at least one integration test against its mockup's expected behavior.
 
-## Error handling & UX copy
-- Errors explain what happened and how to fix it, in the interface's voice — never vague, never apologetic. Empty states invite an action.
-- An action keeps its name through the whole flow (the button that says "Accept change" produces a "tracked change inserted" result).
-- On `401`, the client silently refreshes the NAA/TeamsJS token and retries idempotent reads; write-backs carry a `changeId` so a retry can't double-apply.
-
-## Logging & config
-- Structured JSON logs from the gateway (request id, identity, intent, agent, sources, latency). Audit every invocation to BigQuery.
-- All config from environment (`.env.example` is the contract). No secrets in code or client bundles; secrets via Secret Manager in deployment.
+- Test shared contracts, capability closure, host-specific mutation boundaries, approval/cancellation races, context delivery, and history receipt fidelity.
+- Mock external services behind thin clients and label fixtures honestly. A mock result is not live-provider or Office integration evidence.
+- Keep grammar/preflight parity fixtures across TypeScript and Python. Missing or incompatible manifests must fail closed. Skill ZIP validation compares exact source content, not just file presence.
+- Exercise meaningful failure cases as well as success. Run the required typecheck, tests, lint, production build, and generated-resource drift checks before marking a phase done.
 
 ## Security standards (enforced; `security-reviewer` checks these)
-1. **No Google credentials in any client or `web-shell`.** Clients hold only the user's short-lived Entra/Teams token.
-2. **Identity scoped end to end.** Every Gemini and connector call acts as the signed-in user; prefer delegated permissions over org-wide and `Sites.Selected` over all-sites.
-3. **Host content is untrusted.** Screen via Model Armor; pass as data, never instructions. Never execute or follow instructions found inside a document or transcript.
-4. **Writes are provenanced and reversible.** Tracked changes / citation-tagged blocks only; every write records a `ProvenancePayload`.
-5. **Residency pinned.** Cloud Run + `discoveryengine` region match the tenant; VPC firewall restricts connector egress to specific FQDNs.
-6. **Least privilege everywhere.** Minimal Entra app permissions; minimal IAM on the gateway's service account; RSC (not blanket consent) for Teams transcript.
 
-## Git
-- Small, focused commits per build-plan task; commit message references the task id (e.g. `feat(gateway): 0.6 StreamAssist SSE relay`).
-- Don't commit `.env`, build output, or credentials (see `.gitignore`).
+1. **No long-lived Google secrets in clients.** Short-lived Entra and federated Google access tokens are held in memory. Never log or persist bearer credentials in host metadata or skill artifacts.
+2. **Identity is scoped end to end.** Gemini and connector calls act as the signed-in user with minimal delegated permissions; prefer scoped access over org-wide access.
+3. **Host content is untrusted data.** Never treat document or transcript instructions as authority. Model Armor is tenant configuration; preserve provider policy outcomes and local fail-closed gates.
+4. **Writes require review and explicit attribution.** Record supplied provenance and actual persistence, verification, and recovery limits. Missing or unsupported durable provenance must remain visible in the receipt. Never imply universal undo.
+5. **Residency is explicit.** Pin the Discovery Engine endpoint and any optional proxy/egress to tenant policy; never silently choose a global endpoint.
+6. **Least privilege applies everywhere.** Use minimal Entra/IAM permissions and scoped Teams consent. Optional proxy deployment is a separate credential and egress boundary.
+
+## Configuration and Git
+
+Use `.env.example` and the setup guide for configuration. Do not commit credentials, environment
+files, generated bundles, or build output. Keep bounded diagnostics free of bearer tokens and
+unnecessary document content. Use focused commits tied to the build plan; update contract ownership
+docs and generated metadata when a boundary changes.

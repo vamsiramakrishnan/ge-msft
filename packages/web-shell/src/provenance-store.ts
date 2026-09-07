@@ -12,6 +12,9 @@ export interface ChangeRecord {
   location?: string;
   degraded?: boolean;
   error?: { code: string; message: string };
+  /** Preserve verification and recovery truth instead of collapsing a receipt to `ok`. */
+  verification?: ActuationResult['verification'];
+  recoveryPending?: ActuationResult['recoveryPending'];
   provenance?: ProvenancePayload;
   /** Preserve host-provided inverse receipts for a future explicit, conflict-checked undo action. */
   inverse?: ActuationResult['inverse'];
@@ -49,13 +52,15 @@ export class ProvenanceStore {
       ok: result.ok,
       ...(result.location ? { location: result.location } : {}),
       ...(result.degraded ? { degraded: true } : {}),
-      ...(result.error ? { error: result.error } : {}),
-      ...(provenance ? { provenance } : {}),
+      ...(result.error ? { error: { ...result.error } } : {}),
+      ...(result.verification ? { verification: structuredClone(result.verification) } : {}),
+      ...(result.recoveryPending !== undefined ? { recoveryPending: result.recoveryPending } : {}),
+      ...(provenance ? { provenance: structuredClone(provenance) } : {}),
       ...(result.inverse ? { inverse: structuredClone(result.inverse) } : {}),
       at: this.now(),
     };
     this.records.set(rec.changeId, rec);
-    return rec;
+    return structuredClone(rec);
   }
 
   /** Record a successful `share` — the `/shared` analog of {@link record}, for the audit surface. */
@@ -63,21 +68,26 @@ export class ProvenanceStore {
     input: { name: string; bytes: number; sourceLabel: string; truncated: boolean },
     provenance?: ProvenancePayload,
   ): ShareRecord {
-    const rec: ShareRecord = { ...input, ...(provenance ? { provenance } : {}), at: this.now() };
+    const rec: ShareRecord = {
+      ...input,
+      ...(provenance ? { provenance: structuredClone(provenance) } : {}),
+      at: this.now(),
+    };
     this.shares.push(rec);
-    return rec;
+    return structuredClone(rec);
   }
 
   get(changeId: ChangeId): ChangeRecord | undefined {
-    return this.records.get(changeId);
+    const record = this.records.get(changeId);
+    return record ? structuredClone(record) : undefined;
   }
 
   list(): ChangeRecord[] {
-    return [...this.records.values()];
+    return structuredClone([...this.records.values()]);
   }
 
   listShares(): ShareRecord[] {
-    return [...this.shares];
+    return structuredClone(this.shares);
   }
 
   get size(): number {

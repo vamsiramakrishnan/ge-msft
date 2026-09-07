@@ -3,8 +3,8 @@ into focused modules: types (range algebra), generated_language (manifest-source
 checker (analyze), normalizer, budget. The runnable CLI entry is ../surface_cli.py.
 
 It is a PURE compiler tool: it NEVER calls Office.js or Graph, acquires tokens, discovers
-capabilities, executes code, or mutates anything. It reuses the manifest-wired parser so it can never
-disagree with the runtime on the verb set."""
+capabilities, executes code, or mutates anything. It loads generated vocabulary and advisory metadata; structural parser behavior is
+checked against the production contracts by executable parity fixtures."""
 
 from .checker import analyze
 from .normalizer import normalize, _phase_of

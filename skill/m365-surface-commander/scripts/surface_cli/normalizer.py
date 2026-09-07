@@ -5,12 +5,9 @@ import json
 
 from .parser import _is_expr_line, parse_line, extract_command_block_meta, verified_frame_error
 
-_READ_PHASE_VERBS = {
-    "outline", "read", "search", "list", "inspect", "properties", "comments", "attachments",
-    "tables", "slides", "neighbors", "context", "open",
-    "workspace", "save", "cat", "grep",
-}
+from .generated_language import PREFLIGHT
 
+_READ_PHASE_VERBS = set(PREFLIGHT["readPhaseVerbs"])
 
 def _phase_of(line: str) -> str:
     """Classify a program line into its canonical phase: OBSERVE / DERIVE / EFFECT / CONTROL."""

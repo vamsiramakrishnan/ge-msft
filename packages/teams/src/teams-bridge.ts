@@ -1,3 +1,4 @@
+import { createBridgeDispatch } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -33,13 +34,17 @@ import { meetingEndedEvent, sessionEndEvent, sessionStartEvent } from './events.
  * directly (mirroring web-shell's `MsalLike`), so the core stays unit-testable and dep-light; the
  * app wires a real TeamsJS module (which satisfies this shape) at startup.
  */
-/**
- * The exact `ActuationKind`s {@link TeamsBridge.actuate} handles (ADR-0006 closure source of
- * truth). The conformance test asserts this equals the advertised manifest's actuation kinds.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['post-message'];
 
 export class TeamsBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<TeamsBridge>(
+    'teams',
+    {
+      'post-message': (host, request) => host.applyPostMessage(request),
+    },
+    { provenance: 'unsupported' },
+  );
+  static readonly handledActuations = TeamsBridge.dispatcher.handledActuations;
+
   readonly surface = 'teams' as const;
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
@@ -144,17 +149,7 @@ export class TeamsBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    switch (req.kind) {
-      case 'post-message':
-        return this.applyPostMessage(req);
-      default:
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          error: { code: 'unsupported', message: `Teams bridge cannot ${req.kind}` },
-        };
-    }
+    return TeamsBridge.dispatcher.dispatch(this, req);
   }
 
   /**
@@ -343,3 +338,6 @@ function errorMessage(err: unknown): string {
   if (typeof err === 'string') return err;
   return 'Teams compose failed';
 }
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = TeamsBridge.handledActuations;

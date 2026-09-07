@@ -638,12 +638,31 @@ describe('OutlookBridge.actuate set-recipients (in-place draft edit)', () => {
     expect(active.recipientWrites).toHaveLength(0);
   });
 
-  it('surfaces a host write failure as write_failed', async () => {
+  it('keeps a partial multi-field recipient update uncertain when a later field fails', async () => {
+    const seed = draftMail({ recipientsFailsOn: 'cc' });
+    active = installOutlook(seed);
+    const result = await new OutlookBridge().actuate(
+      act('set-recipients', { mail: { to: ['first@acme.com'], cc: ['second@acme.com'] } }),
+    );
+    expect(seed.draft?.to).toEqual(['first@acme.com']);
+    expect(seed.draft?.cc).not.toEqual(['second@acme.com']);
+    expect(result).toMatchObject({
+      ok: false,
+      recoveryPending: true,
+      error: { code: 'outcome_unknown' },
+    });
+  });
+
+  it('preserves uncertainty after a dispatched host write fails', async () => {
     active = installOutlook(draftMail({ recipientsFailsOn: 'bcc' }));
     const res = await new OutlookBridge().actuate(
       act('set-recipients', { mail: { bcc: ['x@acme.com'] } }),
     );
-    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+    expect(res).toMatchObject({
+      ok: false,
+      recoveryPending: true,
+      error: { code: 'outcome_unknown' },
+    });
   });
 
   it('rejects with no_item when there is no active item at all', async () => {
@@ -757,12 +776,16 @@ describe('OutlookBridge.actuate add-attachment (in-place draft edit)', () => {
     expect(active.attachmentsAdded).toHaveLength(0);
   });
 
-  it('surfaces a host upload failure as write_failed', async () => {
+  it('preserves uncertainty after a dispatched attachment upload fails', async () => {
     active = installOutlook(draftMail({ attachmentAddFails: true }));
     const res = await new OutlookBridge().actuate(
       act('add-attachment', { attachment: { name: 'brief.txt', base64: 'aGVsbG8=' } }),
     );
-    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+    expect(res).toMatchObject({
+      ok: false,
+      recoveryPending: true,
+      error: { code: 'outcome_unknown' },
+    });
   });
 
   it('rejects with no_compose on a read-mode item', async () => {
@@ -807,10 +830,14 @@ describe('OutlookBridge.actuate set-body (in-place draft edit)', () => {
     expect(active.bodySets).toHaveLength(0);
   });
 
-  it('surfaces a host write failure as write_failed', async () => {
+  it('preserves uncertainty after a dispatched host write fails', async () => {
     active = installOutlook(draftMail({ bodySetFails: true }));
     const res = await new OutlookBridge().actuate(act('set-body', { mail: { body: '<p>x</p>' } }));
-    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+    expect(res).toMatchObject({
+      ok: false,
+      recoveryPending: true,
+      error: { code: 'outcome_unknown' },
+    });
   });
 });
 
@@ -838,10 +865,14 @@ describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
     expect(active.subjectSets).toHaveLength(0);
   });
 
-  it('surfaces a host write failure as write_failed', async () => {
+  it('preserves uncertainty after a dispatched host write fails', async () => {
     active = installOutlook(draftMail({ subjectSetFails: true }));
     const res = await new OutlookBridge().actuate(act('set-subject', { mail: { subject: 'x' } }));
-    expect(res).toMatchObject({ ok: false, error: { code: 'write_failed' } });
+    expect(res).toMatchObject({
+      ok: false,
+      recoveryPending: true,
+      error: { code: 'outcome_unknown' },
+    });
   });
 });
 

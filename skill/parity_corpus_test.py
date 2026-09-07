@@ -192,13 +192,11 @@ def _documented_verbs() -> set:
 def _check_manifest_parity() -> list:
     """ADR-0008 §4: the generated language manifest is the SINGLE SOURCE. Assert it agrees with
     BOTH the Python parser (which loads from it) and the capability-map doc — so the TS grammar →
-    manifest → parser/doc chain has no drift at any hop. Skipped (with a note) if the manifest is
-    absent (a stripped sandbox running on the hardcoded fallback)."""
+    manifest → parser/doc chain has no drift at any hop. A missing manifest is a packaging failure, never a fallback mode."""
     failures = []
     manifest_path = parse_commands._MANIFEST_PATH
     if not manifest_path.exists():
-        print("  [manifest] note: bundled manifest absent — parser on hardcoded fallback")
-        return failures
+        return ["  [manifest] missing generated language manifest"]
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_all = (
         set(data["verbs"]["read"])
@@ -208,7 +206,7 @@ def _check_manifest_parity() -> list:
     )
     manifest_write = set(data["verbs"]["write"])
 
-    # 1. parser ≡ manifest (guards the loader + that the fallback never silently diverges).
+    # 1. parser ≡ manifest (guards the loader and generated lookup metadata).
     if set(ALL_VERBS) != manifest_all:
         failures.append(f"  [manifest] parser ALL_VERBS != manifest verbs: "
                         f"parser-only {sorted(set(ALL_VERBS) - manifest_all)}, "

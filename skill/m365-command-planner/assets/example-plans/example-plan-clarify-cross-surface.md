@@ -20,8 +20,6 @@ Planner output:
 intent   draft
 surface  excel
 scope    selection
-workflow cross-surface
-source   excel selection
 context  inline-preferred
 clarify  Which target should receive the client update: PowerPoint deck, Word memo, Outlook draft, or Teams post?
 clarify  "send it around" would be externally visible; should I only prepare a draft for review?

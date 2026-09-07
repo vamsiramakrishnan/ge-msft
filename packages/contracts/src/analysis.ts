@@ -15,6 +15,7 @@ export const CellGridSchema = z
   .max(MAX_SNAPSHOT_CELLS)
   .refine(
     (rows) =>
+      rows.length > 0 &&
       rows[0]!.length > 0 &&
       rows.every((r) => r.length === rows[0]!.length) &&
       rows.length * rows[0]!.length <= MAX_SNAPSHOT_CELLS,
@@ -35,7 +36,8 @@ export const CellSnapshotSchema = SourceVersionSchema.extend({
 }).refine(
   (s) =>
     !s.formulas ||
-    (s.formulas.length === s.values.length &&
+    (s.values.length > 0 &&
+      s.formulas.length === s.values.length &&
       s.formulas.every((r) => r.length === s.values[0]!.length)),
   'Formula dimensions must match values',
 );

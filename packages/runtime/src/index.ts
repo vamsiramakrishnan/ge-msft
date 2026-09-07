@@ -53,6 +53,7 @@ export { analyseEffectDependencies, propagateFailure, effectResources } from './
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
 export * from './docfs/index.js';
 export * from './workflow-recipes.js';
+export * from './bridge-dispatch.js';
 export * from './execution-state.js';
 export {
   CommandCapsule,

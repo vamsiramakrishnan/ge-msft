@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isAnalysisBindingKind } from './analysis-actions.js';
 import { ActuationKindSchema, type ActuationKind, type CapabilityManifest } from './capability.js';
 import {
   ParsedExprSchema,
@@ -1438,13 +1439,7 @@ export interface ParsedVerifiedFinish {
   kind: 'verified-finish';
 }
 
-export const ANALYSIS_BINDING_KINDS = [
-  'capture',
-  'query',
-  'reconcile',
-  'filter',
-  'inspect',
-] as const;
+export { ANALYSIS_BINDING_KINDS } from './analysis-actions.js';
 
 export function isProgramAnalysisBinding(entry: ProgramEntry): entry is ParsedAnalysisBinding {
   return 'kind' in entry && entry.kind === 'analysis-binding';
@@ -1467,7 +1462,7 @@ function parseAnalysisBinding(line: string): ParsedAnalysisBinding | CommandPars
   if (isCommandParseError(command)) return command;
   if (command.verb !== 'analyze') return { error: 'analysis binding requires a JSON action' };
   const action = JSON.parse(command.request) as Record<string, unknown>;
-  if (!(ANALYSIS_BINDING_KINDS as readonly unknown[]).includes(action['kind']))
+  if (!isAnalysisBindingKind(action['kind']))
     return {
       error:
         'analysis bindings require capture, query, reconcile, filter, or inspect; effects and recovery cannot bind artifacts',

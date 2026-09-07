@@ -1,34 +1,14 @@
-import { z } from 'zod';
 import { validateQuery } from '@ge/compute';
-import { AnalysisActionSchema, type AnalysisAction } from './analysis-workspace.js';
+import {
+  AnalysisActionSchema,
+  AnalysisProgramSchema,
+  ANALYSIS_BINDING_NAME_PATTERN,
+  isAnalysisBindingKind,
+  type AnalysisAction,
+  type AnalysisProgram,
+} from '@ge/contracts';
 
-const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const PRODUCES_ARTIFACT = new Set(['capture', 'query', 'reconcile', 'filter', 'inspect']);
-export const AnalysisProgramSchema = z
-  .object({
-    version: z.literal(1),
-    steps: z
-      .array(
-        z.discriminatedUnion('op', [
-          z.object({
-            op: z.literal('bind'),
-            name: z.string().max(64).regex(NAME),
-            action: AnalysisActionSchema,
-          }),
-          z.object({
-            op: z.literal('materialize'),
-            id: z.string().min(1),
-            destination: z.string().min(1),
-            whenNonEmpty: z.boolean().optional(),
-          }),
-        ]),
-      )
-      .min(1)
-      .max(31),
-    completion: z.literal('verified').default('verified'),
-  })
-  .strict();
-export type AnalysisProgram = z.input<typeof AnalysisProgramSchema>;
+export { AnalysisProgramSchema, type AnalysisProgram } from '@ge/contracts';
 
 /** Task-local, typed references. A name never substitutes into targets, literals or arbitrary JSON. */
 export class AnalysisBindings {
@@ -43,7 +23,8 @@ export class AnalysisBindings {
     return [...this.values.entries()].map(([name, id]) => [name, id] as const);
   }
   bind(name: string, id: string): void {
-    if (!NAME.test(name) || name.length > 64) throw new Error('Invalid analysis binding name.');
+    if (!ANALYSIS_BINDING_NAME_PATTERN.test(name) || name.length > 64)
+      throw new Error('Invalid analysis binding name.');
     if (!/^a_[a-f0-9]{24}$/.test(id)) throw new Error('Only artifact handles may be bound.');
     if (this.values.has(name))
       throw new Error(`Binding $${name} already exists. Choose a new name.`);
@@ -139,7 +120,7 @@ export function compileAnalysisProgram(raw: AnalysisProgram): string {
             destination: step.destination,
             ...(step.whenNonEmpty !== undefined ? { whenNonEmpty: step.whenNonEmpty } : {}),
           };
-    if (step.op === 'bind' && !PRODUCES_ARTIFACT.has(action.kind))
+    if (step.op === 'bind' && !isAnalysisBindingKind(action.kind))
       throw new Error('Only artifact-producing actions can be bound.');
     if (step.op === 'bind' && names.has(step.name))
       throw new Error(`Duplicate binding $${step.name}.`);

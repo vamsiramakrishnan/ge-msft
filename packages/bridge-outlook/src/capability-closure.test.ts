@@ -1,3 +1,4 @@
+import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import { describe, expect, it } from 'vitest';
 import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import type { DocBridge } from '@ge/runtime';
@@ -49,5 +50,33 @@ describe('Outlook capability closure', () => {
 
   it('does NOT advertise outline (a mail item has no heading structure)', () => {
     expect(OUTLOOK_CAPABILITIES.reads ?? []).not.toContain('outline');
+  });
+});
+
+describe('OutlookBridge dispatch admission', () => {
+  it('rejects another surface before reaching a host handler', async () => {
+    const request: ActuationRequest = {
+      changeId: asChangeId('wrong-surface'),
+      kind: 'reply-mail',
+      surface: 'excel',
+      params: {},
+    };
+    expect(await new OutlookBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'surface_mismatch' },
+    });
+  });
+
+  it('rejects malformed parameters before reaching a host handler', async () => {
+    const request = {
+      changeId: asChangeId('invalid-params'),
+      kind: 'reply-mail',
+      surface: 'outlook',
+      params: { text: 42 },
+    } as unknown as ActuationRequest;
+    expect(await new OutlookBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_request' },
+    });
   });
 });

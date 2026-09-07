@@ -1,3 +1,5 @@
+import { unknownActuationResult } from '@ge/contracts';
+import { createBridgeDispatch } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -64,20 +66,21 @@ export const MAX_READ_SLIDES = 60;
  *     Office-level `Office.EventType.DocumentSelectionChanged` (l.645) + `ActiveViewChanged` (l.582)
  *     with add/removeHandlerAsync (l.3875 / l.3965). Neither carries a coauthor source → origin 'local'.
  */
-/**
- * The exact `ActuationKind`s {@link PowerPointBridge.actuate} handles (ADR-0006 closure source of
- * truth). `set-speaker-notes` is deliberately ABSENT — it had no working write path (always
- * degraded) and was un-advertised. The conformance test asserts this equals the manifest's kinds.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
-  'insert-slide',
-  'set-shape-text',
-  'add-shape',
-  'format-shape',
-  'add-table-slide',
-];
 
 export class PowerPointBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<PowerPointBridge>(
+    'powerpoint',
+    {
+      'insert-slide': (host, request) => host.applyInsertSlide(request),
+      'set-shape-text': (host, request) => host.applySetShapeText(request),
+      'add-shape': (host, request) => host.applyAddShape(request),
+      'format-shape': (host, request) => host.applyFormatShape(request),
+      'add-table-slide': (host, request) => host.applyAddTableSlide(request),
+    },
+    { provenance: 'unsupported' },
+  );
+  static readonly handledActuations = PowerPointBridge.dispatcher.handledActuations;
+
   readonly surface = 'powerpoint' as const;
 
   getCapabilities(): CapabilityManifest {
@@ -243,25 +246,7 @@ export class PowerPointBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    switch (req.kind) {
-      case 'insert-slide':
-        return this.applyInsertSlide(req);
-      case 'set-shape-text':
-        return this.applySetShapeText(req);
-      case 'add-shape':
-        return this.applyAddShape(req);
-      case 'format-shape':
-        return this.applyFormatShape(req);
-      case 'add-table-slide':
-        return this.applyAddTableSlide(req);
-      default:
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          error: { code: 'unsupported', message: `PowerPoint bridge cannot ${req.kind}` },
-        };
-    }
+    return PowerPointBridge.dispatcher.dispatch(this, req);
   }
 
   private async applySetShapeText(req: ActuationRequest): Promise<ActuationResult> {
@@ -296,6 +281,7 @@ export class PowerPointBridge implements DocBridge {
       };
     }
 
+    let mutationQueued = false;
     try {
       return await PowerPoint.run(async (ctx) => {
         const slide = ctx.presentation.slides.getItem(slideId);
@@ -318,6 +304,7 @@ export class PowerPointBridge implements DocBridge {
         range.load('text');
         await ctx.sync();
         const priorText = range.text ?? '';
+        mutationQueued = true;
         range.text = text;
         await ctx.sync();
         return {
@@ -329,6 +316,11 @@ export class PowerPointBridge implements DocBridge {
         };
       });
     } catch {
+      if (mutationQueued)
+        return unknownActuationResult(
+          req,
+          'PowerPoint did not confirm the dispatched change. Inspect the slide before trying again.',
+        );
       return {
         ok: false,
         changeId: req.changeId,
@@ -403,6 +395,7 @@ export class PowerPointBridge implements DocBridge {
         error: { code: 'unsupported', message: 'PowerPointApi 1.4 is required to add shapes.' },
       };
     }
+    let mutationQueued = false;
     try {
       return await PowerPoint.run(async (ctx) => {
         const op = resolution.op;
@@ -412,6 +405,7 @@ export class PowerPointBridge implements DocBridge {
         if (op.top !== undefined) options.top = op.top;
         if (op.width !== undefined) options.width = op.width;
         if (op.height !== undefined) options.height = op.height;
+        mutationQueued = true;
         const added =
           op.type === 'textBox'
             ? slide.shapes.addTextBox(op.text, options)
@@ -431,6 +425,11 @@ export class PowerPointBridge implements DocBridge {
         };
       });
     } catch {
+      if (mutationQueued)
+        return unknownActuationResult(
+          req,
+          'PowerPoint did not confirm the dispatched change. Inspect the slide before trying again.',
+        );
       return {
         ok: false,
         changeId: req.changeId,
@@ -487,6 +486,7 @@ export class PowerPointBridge implements DocBridge {
       };
     }
 
+    let mutationQueued = false;
     try {
       return await PowerPoint.run(async (ctx) => {
         const slide = ctx.presentation.slides.getItem(slideId);
@@ -513,6 +513,7 @@ export class PowerPointBridge implements DocBridge {
           fill.load('foregroundColor');
           await ctx.sync();
           prior['fill'] = String(fill.foregroundColor ?? '');
+          mutationQueued = true;
           fill.foregroundColor = format.fill;
         }
         if (format.line !== undefined) {
@@ -520,6 +521,7 @@ export class PowerPointBridge implements DocBridge {
           line.load('color');
           await ctx.sync();
           prior['line'] = String(line.color ?? '');
+          mutationQueued = true;
           line.color = format.line;
         }
         if (format.font !== undefined) {
@@ -529,30 +531,39 @@ export class PowerPointBridge implements DocBridge {
           const f = format.font;
           if (f.bold !== undefined) {
             prior['font.bold'] = String(font.bold ?? '');
+            mutationQueued = true;
             font.bold = f.bold;
           }
           if (f.italic !== undefined) {
             prior['font.italic'] = String(font.italic ?? '');
+            mutationQueued = true;
             font.italic = f.italic;
           }
           if (f.underline !== undefined) {
             prior['font.underline'] = String(font.underline ?? '');
+            mutationQueued = true;
             font.underline = f.underline ? 'Single' : 'None';
           }
           if (f.color !== undefined) {
             prior['font.color'] = String(font.color ?? '');
+            mutationQueued = true;
             font.color = f.color;
           }
           if (f.size !== undefined) {
             prior['font.size'] = String(font.size ?? '');
+            mutationQueued = true;
             font.size = f.size;
           }
           if (f.name !== undefined) {
             prior['font.name'] = String(font.name ?? '');
+            mutationQueued = true;
             font.name = f.name;
           }
         }
-        if (format.zOrder !== undefined) shape.setZOrder(Z_ORDER[format.zOrder]);
+        if (format.zOrder !== undefined) {
+          mutationQueued = true;
+          shape.setZOrder(Z_ORDER[format.zOrder]);
+        }
         await ctx.sync();
         return {
           ok: true,
@@ -563,6 +574,11 @@ export class PowerPointBridge implements DocBridge {
         };
       });
     } catch {
+      if (mutationQueued)
+        return unknownActuationResult(
+          req,
+          'PowerPoint did not confirm the dispatched change. Inspect the slide before trying again.',
+        );
       return {
         ok: false,
         changeId: req.changeId,
@@ -605,6 +621,7 @@ export class PowerPointBridge implements DocBridge {
       };
     }
 
+    let mutationQueued = false;
     try {
       return await PowerPoint.run(async (ctx) => {
         const slide = ctx.presentation.slides.getItem(slideId);
@@ -613,6 +630,7 @@ export class PowerPointBridge implements DocBridge {
         if (grid.top !== undefined) options.top = grid.top;
         if (grid.width !== undefined) options.width = grid.width;
         if (grid.height !== undefined) options.height = grid.height;
+        mutationQueued = true;
         const added = slide.shapes.addTable(grid.rows.length, columnCount, options);
         const table = added.getTable();
         grid.rows.forEach((row, r) => {
@@ -632,6 +650,11 @@ export class PowerPointBridge implements DocBridge {
         };
       });
     } catch {
+      if (mutationQueued)
+        return unknownActuationResult(
+          req,
+          'PowerPoint did not confirm the dispatched change. Inspect the slide before trying again.',
+        );
       return {
         ok: false,
         changeId: req.changeId,
@@ -950,3 +973,6 @@ function writeSlideText(
     bodyShape.textFrame.textRange.text = bullets.join('\n');
   }
 }
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = PowerPointBridge.handledActuations;

@@ -19,8 +19,8 @@ roles.
 - Echo the active `surface`.
 - Name the intended `scope`, grounded sources, context hints, ordered `step` lines, and `exclude`
   carve-outs.
-- For cross-product work, add `workflow cross-surface`, `source`, `target`, `phase`, and `handoff`
-  lines. The first phase starts on the active `surface`; later phases resume in the target app.
+- For cross-product work, describe the active-app preparation and later user-resumed handoff in
+  `step` lines. Keep `surface` as the active app; another app needs its own session and approval.
 - Use `clarify` when the user has not specified a material choice.
 - Never emit `cmd`, never invent read results, never choose exact host anchors.
 
@@ -36,7 +36,7 @@ roles.
   sequence; a planner step like "materialize one rectangular grid" should compile to the bulk grid
   path when available, not many per-cell approvals.
 - Respect every `exclude` line as a hard boundary.
-- For cross-surface plans, execute only the phase whose surface matches the active host. The output
+- For cross-surface plans, perform only work available in the active host. The output
   of a source phase is a handoff packet, not a write into another Office app.
 
 ## Host orchestration
@@ -51,9 +51,9 @@ Preferred sequence:
 5. If the plan is single-surface, call **m365-surface-commander** with the approved plan, fresh
    `<doc_state>`, available CLI capabilities, and any structured `@` grounding/file ids the host
    already resolved.
-6. If the plan is cross-surface, call commander for the active `surface` phase only. Persist the
-   resulting handoff packet with source refs, generated draft/summary, constraints, provenance, and
-   next target surface. Resume the packet only when the user opens the target app.
+6. If steps describe another app, prepare a reviewable summary with source refs, constraints and
+   provenance in the active app. The user resumes that summary in the target app. These steps do
+   not imply automatic orchestration or a shared approval.
 7. Commander runs the normal command loop: parse -> validate -> dry-run -> preview -> approval ->
    gate -> bridge actuation -> provenance.
 
@@ -86,12 +86,9 @@ APPROVED_PLAN
 intent: draft
 surface: excel
 scope: document
-workflow: cross-surface
-source: excel document
-target: powerpoint deck
-phase: excel analyze workbook and create a slide-ready handoff packet
-phase: powerpoint create an executive deck from the approved handoff packet
-handoff: chart-ready table, slide outline, source refs, constraints, provenance
+step: prepare a slide-ready summary with chart-ready data, source refs, exclusions and provenance
+step: ask the user to open PowerPoint and review the summary before creating a deck
+exclude: do not mutate PowerPoint from Excel
 ```
 
 The Excel commander run may create/read a workbook summary or produce a handoff packet. It must not

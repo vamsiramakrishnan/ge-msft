@@ -1,3 +1,4 @@
+import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import { describe, expect, it } from 'vitest';
 import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import { WORD_CAPABILITIES } from './capabilities.js';
@@ -52,5 +53,33 @@ describe('Word capability closure', () => {
         expect(typeof bridge.captureDocState).toBe('function');
       if (read === 'search') expect(typeof bridge.searchDocument).toBe('function');
     }
+  });
+});
+
+describe('WordBridge dispatch admission', () => {
+  it('rejects another surface before reaching a host handler', async () => {
+    const request: ActuationRequest = {
+      changeId: asChangeId('wrong-surface'),
+      kind: 'insert-text',
+      surface: 'excel',
+      params: {},
+    };
+    expect(await new WordBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'surface_mismatch' },
+    });
+  });
+
+  it('rejects malformed parameters before reaching a host handler', async () => {
+    const request = {
+      changeId: asChangeId('invalid-params'),
+      kind: 'insert-text',
+      surface: 'word',
+      params: { text: 42 },
+    } as unknown as ActuationRequest;
+    expect(await new WordBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_request' },
+    });
   });
 });

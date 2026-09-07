@@ -89,6 +89,10 @@ An optional transparent proxy can be configured for tenants whose browser policy
 
 ## Package architecture
 
+Shared contracts, bridge dispatch, execution ownership, and generated CLI/skill metadata now have
+explicit owners. See [the contract map](docs/CONTRACTS.md) and
+[architecture unification](docs/ADR-0015-architecture-unification.md) before extending a boundary.
+
 ```text
 surface bridges
   word · excel · powerpoint · onenote · outlook · teams

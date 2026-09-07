@@ -42,6 +42,9 @@
     },
     {
       "path": "../compute"
+    },
+    {
+      "path": "../graph-client"
     }
   ]
 }

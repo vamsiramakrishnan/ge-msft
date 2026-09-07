@@ -1,3 +1,5 @@
+import { unknownActuationResult } from '@ge/contracts';
+import { createBridgeDispatch } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -36,23 +38,22 @@ import { composeEvent, receivedEvent } from './events.js';
  * nothing ever sends. Pure mapping lives in `capture.ts` / `actuate-plan.ts`; this file is the
  * host wiring.
  */
-/**
- * The exact `ActuationKind`s {@link OutlookBridge.actuate} handles (ADR-0006 closure source of
- * truth). `reply-mail` opens a reviewable reply form; `create-mail` opens a fresh draft via
- * `displayNewMessageForm`; `set-recipients` / `add-attachment` / `set-body` / `set-subject` edit
- * the OPEN DRAFT in place (compose mode) — all reviewable, none ever sends. The conformance test
- * asserts this equals the manifest's advertised kinds.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
-  'reply-mail',
-  'create-mail',
-  'set-recipients',
-  'add-attachment',
-  'set-body',
-  'set-subject',
-];
 
 export class OutlookBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<OutlookBridge>(
+    'outlook',
+    {
+      'reply-mail': (host, request) => host.applyReply(request),
+      'create-mail': (host, request) => host.applyCompose(request),
+      'set-recipients': (host, request) => host.applyRecipients(request),
+      'add-attachment': (host, request) => host.applyAttachment(request),
+      'set-body': (host, request) => host.applyBody(request),
+      'set-subject': (host, request) => host.applySubject(request),
+    },
+    { provenance: 'unsupported' },
+  );
+  static readonly handledActuations = OutlookBridge.dispatcher.handledActuations;
+
   readonly surface = 'outlook' as const;
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
@@ -157,27 +158,7 @@ export class OutlookBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    switch (req.kind) {
-      case 'reply-mail':
-        return this.applyReply(req);
-      case 'create-mail':
-        return this.applyCompose(req);
-      case 'set-recipients':
-        return this.applyRecipients(req);
-      case 'add-attachment':
-        return this.applyAttachment(req);
-      case 'set-body':
-        return this.applyBody(req);
-      case 'set-subject':
-        return this.applySubject(req);
-      default:
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          error: { code: 'unsupported', message: `Outlook bridge cannot ${req.kind}` },
-        };
-    }
+    return OutlookBridge.dispatcher.dispatch(this, req);
   }
 
   /**
@@ -337,10 +318,9 @@ export class OutlookBridge implements DocBridge {
         );
       }
     } catch (err) {
-      return actuationError(
+      return unknownActuationResult(
         req,
-        'write_failed',
-        err instanceof Error ? err.message : 'Recipient write failed.',
+        `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
     return {
@@ -385,10 +365,9 @@ export class OutlookBridge implements DocBridge {
         location: id ? `draft-attachment:${id}` : 'draft-attachment',
       };
     } catch (err) {
-      return actuationError(
+      return unknownActuationResult(
         req,
-        'write_failed',
-        err instanceof Error ? err.message : 'Attachment write failed.',
+        `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
   }
@@ -416,10 +395,9 @@ export class OutlookBridge implements DocBridge {
         ),
       );
     } catch (err) {
-      return actuationError(
+      return unknownActuationResult(
         req,
-        'write_failed',
-        err instanceof Error ? err.message : 'Body write failed.',
+        `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
     return { ok: true, changeId: req.changeId, kind: req.kind, location: 'draft-body' };
@@ -439,10 +417,9 @@ export class OutlookBridge implements DocBridge {
     try {
       await getAsync<void>((cb) => resolved.draft.subject.setAsync(subject, cb));
     } catch (err) {
-      return actuationError(
+      return unknownActuationResult(
         req,
-        'write_failed',
-        err instanceof Error ? err.message : 'Subject write failed.',
+        `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
     return { ok: true, changeId: req.changeId, kind: req.kind, location: 'draft-subject' };
@@ -593,3 +570,6 @@ const ATTACHMENT_ERROR_MESSAGES: Record<
   attachment_too_large: 'add-attachment base64 payload exceeds the 3 MB ceiling',
   invalid_attachment: 'add-attachment payload is not valid base64, or its uri is not an https link',
 };
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = OutlookBridge.handledActuations;

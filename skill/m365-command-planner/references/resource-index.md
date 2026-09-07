@@ -17,4 +17,4 @@ Generated from resource frontmatter. Load the listed file only when its `load_wh
 | [assets/example-plans/example-plan-excel-to-powerpoint.md](../assets/example-plans/example-plan-excel-to-powerpoint.md) | example | excel | cross-surface | A user asks to create a PowerPoint deck from an Excel workbook or range. |
 | [assets/example-plans/example-plan-word-rewrite.md](../assets/example-plans/example-plan-word-rewrite.md) | example | word | single-surface | A user asks for a single-surface Word rewrite or tracked change. |
 | [references/handoff-contract.md](../references/handoff-contract.md) | reference | - | - | Explaining or constructing the approved-plan handoff from planner to surface commander. |
-| [references/plan-grammar.md](../references/plan-grammar.md) | reference | - | - | Exact plan keyword rules, cross-surface fields, or parser-compatible examples are needed. |
+| [references/plan-grammar.md](../references/plan-grammar.md) | reference | - | - | Exact supported plan keywords, cross-surface scope boundaries, or parser-compatible examples are needed. |

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { buildPreflightMetadata } from './preflight-metadata.js';
 import { ActuationKindSchema } from './capability.js';
 import {
   CapabilityRegistryEntrySchema,
@@ -18,15 +19,15 @@ import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
  * `m365-cli` language, emitted from `@ge/contracts` (the one source of truth) so that the skill's
  * Python preflight (`surface-cli`, which runs in a Python/Bash sandbox) can be **generated** from it
  * rather than hand-mirrored. This kills the grammar-drift trap (ADR-0008 §4): the TS grammar, the TS
- * runtime parser, and the generated Python tables all derive from this one object, and the parity
- * corpus proves `generated-python ≡ TS-grammar` on every release.
+ * runtime parser, and Python lookup tables share these definitions. Structural parsing remains
+ * implemented in both languages; executable parity fixtures cover their supported behavior.
  *
  * This manifest describes the LANGUAGE (the verbs, value types, pure transforms, effect terminals,
  * and verb→kind map) — NOT the per-turn *capabilities*. Which verbs are live on a given turn still
  * comes from the injected capability signature (`grammarFor`), scoped to a surface's advertised
  * `ActuationKind`s. The language is stable; the per-turn capability slice is dynamic.
  *
- * It deliberately omits prose (usage/hint strings stay in `grammarFor` for the live UI) and policy
+ * It includes targeted help and advisory compiler metadata, but omits per-run policy
  * limits (effect/cell budgets are a separate policy decision; ADR-0008 Phase 2/3). A bump to
  * {@link LANGUAGE_VERSION} is required whenever the verb set, transform set, value types, or
  * verb→kind map changes.
@@ -55,6 +56,26 @@ export type ValueType = (typeof VALUE_TYPES)[number];
 /** The serialized language manifest (the shape bundled as `m365-cli-<v>.json`). */
 export const LanguageManifestSchema = z.object({
   version: z.literal(LANGUAGE_VERSION),
+  preflight: z.object({
+    formatVersion: z.literal(1),
+    contextKinds: z.array(z.string()).min(1),
+    contextHints: z.array(z.string()).min(1),
+    analysisBindingKinds: z.array(z.string()).min(1),
+    readPhaseVerbs: z.array(z.string()).min(1),
+    approvalByKind: z.record(
+      z.object({
+        approvalClass: z.enum(['in-document', 'external', 'estate', 'irreversible']),
+        reversible: z.boolean(),
+      }),
+    ),
+    approvalByVerb: z.record(
+      z.object({
+        approvalClass: z.enum(['in-document', 'external', 'estate', 'irreversible']),
+        reversible: z.boolean(),
+      }),
+    ),
+    analysisGuards: z.record(z.record(z.record(z.unknown()))),
+  }),
   valueTypes: z.array(z.string()),
   verbs: z.object({
     read: z.array(z.string()), // pipeline/command sources (outline/read/search)
@@ -94,6 +115,7 @@ export type LanguageManifest = z.infer<typeof LanguageManifestSchema>;
 export function buildLanguageManifest(): LanguageManifest {
   return {
     version: LANGUAGE_VERSION,
+    preflight: buildPreflightMetadata(),
     valueTypes: [...VALUE_TYPES],
     verbs: {
       read: [...READ_VERBS],

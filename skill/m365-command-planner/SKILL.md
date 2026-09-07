@@ -71,11 +71,6 @@ surface    word|excel|powerpoint|onenote|outlook|teams
 scope      selection|document|range|section|comment|this-item [ref]
 ground     "exact title of a supplied pinned source"       # repeatable
 context    <strategy hint>                                  # repeatable
-workflow   cross-surface                                    # only if multiple apps
-source     <surface> <scope>                                 # cross-surface
-target     <surface> <scope>                                 # cross-surface
-phase      <surface> <bounded intention>                     # repeatable
-handoff    <artifact contents and constraints>               # repeatable
 step       <one ordered, reviewable intention>               # repeatable, at least one
 exclude    <hard carve-out>                                  # repeatable
 clarify    <material question that blocks dispatch>          # repeatable
@@ -112,11 +107,11 @@ These are hints, not actions. Never invent an upload id, run Python, or claim ho
 
 ## Cross-surface boundary
 
-Use `workflow cross-surface` only when the request explicitly spans apps. Include `source`,
-`target`, per-host `phase` lines, and a reviewable `handoff`. One Office host never gains authority
-to mutate another; the user resumes the approved handoff in the target app.
+For a request spanning apps, keep `surface` as the active app. Describe preparation and the later
+user-resumed handoff in ordered `step` lines; use `clarify` for an unknown destination. One Office
+host never gains authority to mutate another.
 
-For exact cross-surface fields and orchestration, load
+For cross-surface scope and review boundaries, load
 [references/handoff-contract.md](references/handoff-contract.md). For exact keyword rules, load
 [references/plan-grammar.md](references/plan-grammar.md).
 

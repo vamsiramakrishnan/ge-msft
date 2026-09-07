@@ -80,7 +80,8 @@ def _render(result, limits, show_budget=True, show_plan=True):
     ext = [f"e{i + 1}" for i, e in enumerate(result["effects"]) if e["external"]]
     out.append("Risk")
     out.append(f"  external effects: {', '.join(ext) if ext else 'none'}")
-    out.append("  irreversible effects: none")
+    irreversible = [f"e{i + 1}" for i, e in enumerate(result["effects"]) if not e.get("reversible", True)]
+    out.append("  irreversible effects: " + (", ".join(irreversible) if irreversible else "none"))
     return "\n".join(out)
 
 

@@ -158,7 +158,7 @@ describe('Excel typed write roundtrip (full-stack interplay: bridge-excel + runt
     // The run transcript narrates three APPLIED writes (not degraded / not failed).
     const steps = ui!.container.querySelector('.run-steps')?.textContent ?? '';
     expect(steps).toContain('applied');
-    expect(steps).not.toContain('actuate_failed');
+    expect(steps).not.toContain('prepare_failed');
   });
 
   it('an active-content formula is NEVER evaluated: the whole typed write degrades clean', async () => {
@@ -189,7 +189,9 @@ describe('Excel typed write roundtrip (full-stack interplay: bridge-excel + runt
     const out = sim.snapshot().sheets.find((s) => s.name === 'Out');
     expect(out?.values[1]?.[1] ?? '').toBe('');
     // No provenance for a degraded (non-landed) write.
-    expect(sim.office.settings.size).toBe(0);
+    expect(
+      [...sim.office.settings.keys()].filter((key) => !key.startsWith('ge:recovery:')),
+    ).toHaveLength(0);
     // The transcript narrates the refusal by its error code (`unsafe_formula`) — a reviewable,
     // non-silent outcome, NOT an applied write. (The result is `ok:false, degraded:true`; the run
     // step surfaces the error code for a non-ok result, which is the user-facing reason.)
@@ -236,7 +238,7 @@ describe('Excel typed write roundtrip (full-stack interplay: bridge-excel + runt
     // The conflict surfaced cleanly in the run transcript as `actuate_failed` — a reviewable
     // outcome, not an exception that tore down the loop.
     const steps = ui!.container.querySelector('.run-steps')?.textContent ?? '';
-    expect(steps).toContain('actuate_failed');
+    expect(steps).toContain('prepare_failed');
     // And the good write narrated as applied — the loop kept running past the conflict.
     expect(steps).toContain('applied');
   });

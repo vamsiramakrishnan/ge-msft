@@ -137,3 +137,23 @@ User-directed foundation work builds on the existing client-direct runtime and t
 - [x] Final verification: typecheck, 2,187 passing tests (10 skipped), lint, production build,
       and language/resource drift checks. Reviewed approval, cancellation, and provenance paths.
 - [ ] Live host validation against a configured Entra/Gemini tenant (separate release gate).
+
+## Bounded programs and isolated command execution — September 2026 (ADR-0013)
+
+- [x] Typed artifact bindings and a versioned SDK program compile through the existing command path.
+- [x] Macro-aware preflight budgets, complete framing and runtime-verified completion; failures and
+      cancellation never imply successful completion or trigger automatic replay.
+- [x] Compact command discovery, targeted help, shorter skill bootstrap and bounded result references
+      with projected inspection; TypeScript/Python parser and preflight parity maintained.
+- [x] Direct Discovery Engine v1alpha sessionless option, verified against the current API reference.
+      Command/planner requests use complete bounded context by default; normal chat remains stateful.
+- [x] Independent requests retain task/program/result continuity, fresh snapshots and active grounding.
+      Overflow and session-bound uploads stop explicitly. Adapter mutation cannot leak chat session
+      IDs into observers, writes or task state.
+- [x] Real DuckDB acceptance: four model calls become one (zero via typed SDK), with one approval.
+      Full/compact and conversation/sessionless controls distinguish round-trip savings from replay.
+- [x] Security review closed for completion, approval, macro expansion, result limits and session isolation.
+- [x] Final release checks: types, 2,408 passing tests (10 skipped), lint, production build and
+      language/resource drift checks.
+- [ ] Live tenant check: sessionless private-skill routing, saved conversation history, p50/p95 latency,
+      Office application/readback, and deployed worker/CSP behavior remain release gates.

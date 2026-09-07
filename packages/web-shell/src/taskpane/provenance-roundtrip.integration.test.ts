@@ -327,9 +327,13 @@ describe('provenance round-trip (Excel: workbook-settings durable metadata)', ()
     expect(summary?.values[1]?.[1]).toBe('42');
 
     // (2) Durable provenance landed in the workbook settings bag and was saved.
-    expect(excelSim.office.settings.size).toBe(1);
+    expect(
+      [...excelSim.office.settings.keys()].filter((k) => k.startsWith('ge:prov:')),
+    ).toHaveLength(1);
     expect(excelSim.office.settingsSaved).toBe(true);
-    const [key, durableJson] = [...excelSim.office.settings.entries()][0]!;
+    const [key, durableJson] = [...excelSim.office.settings.entries()].find(([k]) =>
+      k.startsWith('ge:prov:'),
+    )!;
     expect(key).toMatch(/^ge:prov:/);
 
     // (3) READ IT BACK from the settings JSON, re-validated against the contract schema.
@@ -381,7 +385,7 @@ describe('provenance round-trip (Excel: workbook-settings durable metadata)', ()
     await ui!.flush();
 
     const firstSession = sim as ExcelSimulator;
-    expect(firstSession.office.settings.size).toBe(1);
+    expect(firstSession.office.settings.size).toBe(2);
     // Capture the durable settings entries the workbook would persist on save.
     const persistedSettings = [...firstSession.office.settings.entries()];
 
@@ -396,8 +400,10 @@ describe('provenance round-trip (Excel: workbook-settings durable metadata)', ()
     for (const [k, v] of persistedSettings) reopened.office.settings.set(k, v);
 
     // The provenance still round-trips out of the reopened workbook's settings, identically.
-    expect(reopened.office.settings.size).toBe(1);
-    const survived = parseExcelProvenance(String([...reopened.office.settings.values()][0]));
+    expect(reopened.office.settings.size).toBe(2);
+    const survived = parseExcelProvenance(
+      String([...reopened.office.settings.entries()].find(([k]) => k.startsWith('ge:prov:'))?.[1]),
+    );
     expect(survived.identity).toBe('sim.user@acme');
     expect(survived.contentHash).toBe('sha256:persist-excel');
   });

@@ -82,6 +82,7 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
  * given a `sharedStore` for this session at all (Graph consent may not be granted).
  */
 export const WORKSPACE_VERBS = [
+  'analyze',
   'workspace',
   'save',
   'cat',
@@ -179,6 +180,7 @@ export type ParsedCommand =
   | { verb: 'neighbors'; selector?: string }
   | { verb: 'context'; hints: PlanContextHint[] }
   | { verb: 'open'; selector: string }
+  | { verb: 'analyze'; request: string }
   | { verb: 'workspace'; ref?: string }
   | { verb: 'save'; name: string; source: WorkspaceSource }
   | { verb: 'cat'; ref: string; head?: number }
@@ -245,6 +247,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('neighbors'), selector: z.string().optional() }),
   z.object({ verb: z.literal('context'), hints: z.array(PlanContextHintSchema) }),
   z.object({ verb: z.literal('open'), selector: z.string() }),
+  z.object({ verb: z.literal('analyze'), request: z.string().max(32768) }),
   z.object({ verb: z.literal('workspace'), ref: z.string().optional() }),
   z.object({
     verb: z.literal('save'),
@@ -540,6 +543,16 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return { verb: 'open', selector: stripWrappingQuotes(rest) };
     }
 
+    case 'analyze':
+      if (!rest || rest.length > 32768)
+        return { error: 'analyze requires a bounded JSON action object' };
+      try {
+        const value: unknown = JSON.parse(rest);
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+      } catch {
+        return { error: 'analyze requires a JSON action object' };
+      }
+      return { verb: 'analyze', request: rest };
     case 'workspace':
       return { verb: 'workspace', ...(rest ? { ref: stripWrappingQuotes(rest) } : {}) };
 
@@ -1407,9 +1420,60 @@ export function parseCommandBlock(modelText: string): {
 export type ProgramEntry =
   | ParsedCommand
   | ParsedExpr
+  | ParsedAnalysisBinding
+  | ParsedVerifiedFinish
   | ParsedSkillDef
   | ParsedSkillCall
   | CommandParseError;
+
+/** A runtime-owned artifact binding. The name excludes `$`, like expression bindings. */
+export interface ParsedAnalysisBinding {
+  kind: 'analysis-binding';
+  name: string;
+  request: string;
+}
+
+/** Requests completion only after the runtime verifies every effect; never grants approval. */
+export interface ParsedVerifiedFinish {
+  kind: 'verified-finish';
+}
+
+export const ANALYSIS_BINDING_KINDS = [
+  'capture',
+  'query',
+  'reconcile',
+  'filter',
+  'inspect',
+] as const;
+
+export function isProgramAnalysisBinding(entry: ProgramEntry): entry is ParsedAnalysisBinding {
+  return 'kind' in entry && entry.kind === 'analysis-binding';
+}
+
+export function isProgramVerifiedFinish(entry: ProgramEntry): entry is ParsedVerifiedFinish {
+  return 'kind' in entry && entry.kind === 'verified-finish';
+}
+
+/** Recognize analysis before the expression parser, including malformed binding names. */
+function parseAnalysisBinding(line: string): ParsedAnalysisBinding | CommandParseError | undefined {
+  const match = /^let\s+([^=]*)=\s*analyze(?:\s+(.*))?$/i.exec(line);
+  if (!match) return;
+  const name = match[1]!.trim();
+  if (!/^\$[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name))
+    return {
+      error: 'analysis binding needs a $-prefixed name — usage: let $name = analyze <JSON action>',
+    };
+  const command = parseCommandLine(`analyze ${match[2] ?? ''}`);
+  if (isCommandParseError(command)) return command;
+  if (command.verb !== 'analyze') return { error: 'analysis binding requires a JSON action' };
+  const action = JSON.parse(command.request) as Record<string, unknown>;
+  if (!(ANALYSIS_BINDING_KINDS as readonly unknown[]).includes(action['kind']))
+    return {
+      error:
+        'analysis bindings require capture, query, reconcile, filter, or inspect; effects and recovery cannot bind artifacts',
+    };
+  return { kind: 'analysis-binding', name: name.slice(1), request: command.request };
+}
 
 export function isProgramExpr(entry: ProgramEntry): entry is ParsedExpr {
   return 'kind' in entry && (entry.kind === 'pipeline' || entry.kind === 'let');
@@ -1438,6 +1502,12 @@ export function isProgramSkillCall(entry: ProgramEntry): entry is ParsedSkillCal
  * to an "unknown verb" error; a `def …`/`end` line is handled by the block grouper, not here.
  */
 function parseProgramLine(line: string, knownSkills: ReadonlySet<string>): ProgramEntry {
+  if (/^finish(?:\s|$)/i.test(line))
+    return /^finish\s+when=verified$/i.test(line)
+      ? { kind: 'verified-finish' }
+      : { error: 'finish requires exactly when=verified — usage: finish when=verified' };
+  const analysisBinding = parseAnalysisBinding(line);
+  if (analysisBinding) return analysisBinding;
   const firstSpace = line.search(/\s/);
   const head = firstSpace === -1 ? line : line.slice(0, firstSpace);
   if (knownSkills.has(head)) {
@@ -1464,6 +1534,7 @@ function parseProgramLine(line: string, knownSkills: ReadonlySet<string>): Progr
 export function parseProgramBlock(
   modelText: string,
   knownSkills: ReadonlySet<string> = new Set(),
+  options: { requireCompleteFrame?: boolean } = {},
 ): {
   found: boolean;
   entries: ProgramEntry[];
@@ -1474,10 +1545,15 @@ export function parseProgramBlock(
   const entries: ProgramEntry[] = [];
   const lines = block.split('\n');
   let i = 0;
+  let finished = false;
   while (i < lines.length) {
     const line = lines[i]!.trim();
     i++;
     if (line === '' || line.startsWith('#')) continue;
+    if (finished) {
+      entries.push({ error: 'finish when=verified must be the final program entry' });
+      break;
+    }
 
     if (isSkillEnd(line)) {
       // A stray `end` with no open `def` — corrective, not a silent drop.
@@ -1490,8 +1566,31 @@ export function parseProgramBlock(
       i = def.nextIndex;
       continue;
     }
-    entries.push(parseProgramLine(line, knownSkills));
+    const entry = parseProgramLine(line, knownSkills);
+    entries.push(entry);
+    finished = isProgramVerifiedFinish(entry);
   }
+  // Legacy programs retain recovery from a missing fence. Verified completion requires a
+  // complete response: a truncated stream must never be interpreted as a completion request.
+  // Inspect the complete response, including later blocks. Otherwise a first non-finish block
+  // could hide a completion request in a second block and retain its prefix effects.
+  const requestsFinish =
+    options.requireCompleteFrame ||
+    modelText.split('\n').some((line) => /^finish(?:\s|$)/i.test(line.trim()));
+  if (requestsFinish) {
+    const closed = /^```cmd[^\S\n]*\r?\n[\s\S]*?^```[^\S\n]*(?:\r?\n|$)/im.test(modelText);
+    const singleFrame = /^```cmd[^\S\n]*\r?\n([\s\S]*?)\r?\n```$/i.exec(modelText.trim());
+    if (!closed) entries.push({ error: 'finish when=verified requires a closed cmd fence' });
+    else if (!singleFrame || singleFrame[1]!.includes('```'))
+      entries.push({
+        error:
+          'finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences',
+      });
+  }
+  // Independent writes may survive ordinary corrective errors. A program requesting verified
+  // completion is atomic at the parse boundary: no prefix effect survives a malformed program.
+  const errors = entries.filter((entry): entry is CommandParseError => 'error' in entry);
+  if (requestsFinish && errors.length > 0) return { found: true, entries: errors };
   return { found: true, entries };
 }
 
@@ -1659,7 +1758,8 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
       specs.push(readSpecByVerb[verb]);
   }
 
-  for (const verb of WORKSPACE_VERBS) specs.push(workspaceVerbSpec(verb));
+  for (const verb of WORKSPACE_VERBS)
+    if (verb !== 'analyze' || manifest.surface === 'excel') specs.push(workspaceVerbSpec(verb));
 
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a
   // new (deferred) write verb only needs an entry there + its kind in the manifest.
@@ -1705,6 +1805,12 @@ function isRuntimeServedRead(verb: ReadVerb, manifest: CapabilityManifest): bool
 
 function workspaceVerbSpec(verb: WorkspaceVerb): VerbSpec {
   switch (verb) {
+    case 'analyze':
+      return {
+        verb,
+        usage: 'analyze <JSON action>',
+        hint: 'Capture versioned ranges, query input artifact IDs with SELECT, reconcile exact decimals, or materialize a result through approval. Use help analyze for the schema.',
+      };
     case 'workspace':
       return {
         verb,

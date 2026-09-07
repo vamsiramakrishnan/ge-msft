@@ -11,7 +11,11 @@ import type { RunOutcome, TaskMode } from './execution-ledger.js';
 
 /** Trusted, compiled extensions. Document text and model output can never register executable hooks. */
 export interface RuntimeHookPayloads {
-  'message:received': { mode: TaskMode; text: string };
+  'message:received': {
+    mode: TaskMode;
+    text: string;
+    dataStoreSpecs?: Array<{ dataStore: string; filter?: string }>;
+  };
   'model:request': { query: string; route: string };
   /** Delivered before the event reaches the panel or command parser. Earlier streamed tokens remain visible. */
   'model:event': { event: SseEvent };

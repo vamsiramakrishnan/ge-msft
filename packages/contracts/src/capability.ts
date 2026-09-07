@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SourceVersionSchema, VerificationSchema, CellGridSchema } from './analysis.js';
 import { ChangeIdSchema } from './brand.js';
 import { ContextKindSchema, SurfaceSchema, type Surface } from './context.js';
 import { SourceRefSchema } from './finding.js';
@@ -166,7 +167,21 @@ export const ActuationParamsSchema = z.object({
     .optional(),
   /** Shared insert position for structural inserts (Word breaks/paragraphs, OneNote/PPT inserts). */
   position: z.enum(['start', 'end', 'before', 'after', 'replace']).optional(),
-  cells: z.array(z.array(z.string())).optional(), // write-cells
+  cells: z.array(z.array(z.string())).optional(), // legacy command cells (may contain formulas)
+  cellValues: CellGridSchema.optional(), // typed literal cells; formula-looking strings stay data
+  cellFormulas: z
+    .array(
+      z
+        .array(
+          z
+            .string()
+            .max(32768)
+            .refine((v) => v === '' || v.startsWith('=')),
+        )
+        .max(256),
+    )
+    .max(100000)
+    .optional(), // explicit formula channel for restoring snapshots
   /** format-cells: host-native formatting applied to `target.range` (ADR-0004 `format` verb). */
   format: z
     .object({
@@ -585,13 +600,23 @@ export const ActuationParamsSchema = z.object({
 });
 export type ActuationParams = z.infer<typeof ActuationParamsSchema>;
 
-export const ActuationRequestSchema = z.object({
-  changeId: ChangeIdSchema, // client-generated; makes the write idempotent
-  kind: ActuationKindSchema,
-  surface: SurfaceSchema,
-  params: ActuationParamsSchema,
-  provenance: ProvenancePayloadSchema.optional(),
-});
+export const ActuationRequestSchema = z
+  .object({
+    changeId: ChangeIdSchema, // client-generated; makes the write idempotent
+    kind: ActuationKindSchema,
+    surface: SurfaceSchema,
+    params: ActuationParamsSchema,
+    provenance: ProvenancePayloadSchema.optional(),
+    preconditions: z.array(SourceVersionSchema).max(16).optional(),
+  })
+  .refine(
+    (r) =>
+      !r.params.cellFormulas ||
+      (r.params.cellValues &&
+        r.params.cellFormulas.length === r.params.cellValues.length &&
+        r.params.cellFormulas.every((row) => row.length === r.params.cellValues![0]!.length)),
+    'Explicit formula dimensions must match typed values',
+  );
 export type ActuationRequest = z.infer<typeof ActuationRequestSchema>;
 
 /**
@@ -644,6 +669,12 @@ export const InverseDescriptorSchema = z.discriminatedUnion('op', [
       'onenote-section', // OneNote (Plane B)
     ]),
     name: z.string(), // the host object name/id to delete
+  }),
+  z.object({
+    op: z.literal('restore-cells'),
+    range: z.string(),
+    values: z.array(z.array(z.union([z.string(), z.number().finite(), z.boolean(), z.null()]))),
+    formulas: z.array(z.array(z.string())).optional(),
   }),
   z.object({
     op: z.literal('restore-values'),
@@ -700,6 +731,8 @@ export const ActuationResultSchema = z.object({
   // How to reverse this write (ADR-0007). Populated by the bridge at apply-time once it knows the
   // minted object name / prior state; persisted with provenance so undo is recorded, not implicit.
   inverse: InverseDescriptorSchema.optional(),
+  verification: VerificationSchema.optional(),
+  recoveryPending: z.boolean().optional(),
   degraded: z.boolean().optional(), // e.g. anchor drifted → applied as a panel item
   // Observability: the reversible write LANDED but its durable provenance could not be persisted
   // (host metadata write failed / unavailable). The change is real but unprovenanced — surface it so

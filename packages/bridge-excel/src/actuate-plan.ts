@@ -15,7 +15,7 @@ export function planWriteCells(req: ActuationRequest): WriteCellsPlan {
   const p = req.params;
   return {
     ...(p.target?.range ? { address: p.target.range } : {}),
-    values: p.cells ?? [],
+    values: p.cells ?? p.cellValues?.map((r) => r.map((v) => String(v ?? ''))) ?? [],
   };
 }
 

@@ -153,10 +153,35 @@ function usedA1(sheet: SheetSeed): string {
 /* ───────────────────────────── fake range ──────────────────────────────── */
 
 class FakeRange {
+  getSpecialCellsOrNullObject() {
+    const span = parseA1(this.a1);
+    const items: Array<{ address: string }> = [];
+    for (let r = 0; r < span.rows; r++)
+      for (let c = 0; c < span.cols; c++)
+        if (
+          (this.pendingFormulas?.[r]?.[c] ||
+            (this.pendingValues?.[r]?.[c] === undefined ? this.formulas[r]?.[c] : '')) &&
+          String(this.formulas[r]?.[c]).startsWith('=')
+        )
+          items.push({
+            address: `${this.sheetName}!${indexToCol(span.startCol + c)}${span.startRow + r + 1}`,
+          });
+    return { isNullObject: items.length === 0, load() {}, areas: { items, load() {} } };
+  }
+
+  get worksheet(): FakeWorksheet {
+    return new FakeWorksheet(this.seed, this.sheetName);
+  }
   private loaded = new Set<string>();
   private requested = new Set<string>();
   private pendingValues?: string[][];
-  formulas: unknown[][] = [];
+  private pendingFormulas?: unknown[][];
+  get formulas(): unknown[][] {
+    return this.pendingFormulas ?? this.values;
+  }
+  set formulas(value: unknown[][]) {
+    this.pendingFormulas = value;
+  }
   numberFormat: unknown[][] = [];
   readonly format = {
     font: { bold: undefined as boolean | undefined, italic: undefined as boolean | undefined },
@@ -211,7 +236,9 @@ class FakeRange {
     return out;
   }
   set values(grid: unknown[][]) {
-    this.pendingValues = grid as string[][];
+    this.pendingValues = grid.map((row) =>
+      row.map((v) => (typeof v === 'string' && v.startsWith("'") ? v.slice(1) : v)),
+    ) as string[][];
   }
 
   load(props?: string): this {
@@ -261,7 +288,7 @@ class FakeRange {
     const o = parseA1(sheet.origin);
     for (let r = 0; r < span.rows; r++) {
       for (let c = 0; c < span.cols; c++) {
-        const formula = this.formulas[r]?.[c];
+        const formula = this.pendingFormulas?.[r]?.[c];
         const value = this.pendingValues?.[r]?.[c];
         const written =
           formula !== undefined && formula !== null && formula !== ''
@@ -496,6 +523,9 @@ class FakeNamedItem {
 }
 
 class FakeWorksheet {
+  get id(): string {
+    return `sheet:${this.name}`;
+  }
   constructor(
     private readonly seed: ExcelSeed,
     readonly name: string,

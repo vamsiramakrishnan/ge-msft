@@ -211,3 +211,10 @@ write already in flight may still land, and its returned receipt must be preserv
 host adapters. Orchestrator and panel integration tests cover live wiring, stop/restart, suggestions,
 and separate send-runtime registrations. Trigger hardening tests cover failed and hung gates.
 Live Office and configured Entra/Gemini tenant validation remains a release gate.
+
+## Analysis, evidence and recovery services
+
+`AssistSession.runAnalysis(action, options)` shares task ownership, hooks and plan approval with
+command execution. `message:received` also exposes the request's structured `dataStoreSpecs` to
+trusted evidence providers. See [COMPUTE-RECOVERY.md](COMPUTE-RECOVERY.md) for extension ports,
+source freshness, readback semantics, persistence and supported undo.

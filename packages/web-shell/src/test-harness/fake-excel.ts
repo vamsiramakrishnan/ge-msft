@@ -30,7 +30,7 @@
  *     by the runtime over the SEEDED values, not by Excel, so this does not affect those tests.
  */
 
-import { parseA1, addressOf, cellRef, type Grid } from './a1.js';
+import { parseA1, addressOf, cellRef, indexToCol, type Grid } from './a1.js';
 import { installGlobal, composeRestores } from './globals.js';
 import {
   makeFakeOffice,
@@ -134,6 +134,25 @@ export interface ExcelEvents {
 const RANGE_READ_PROPS = ['address', 'values', 'rowCount', 'columnCount', 'isNullObject'] as const;
 
 class FakeRange {
+  getSpecialCellsOrNullObject() {
+    const span = parseA1(this.rangeA1);
+    const items: Array<{ address: string }> = [];
+    for (let r = 0; r < span.rows; r++)
+      for (let c = 0; c < span.cols; c++)
+        if (
+          (this.pendingFormulas?.[r]?.[c] ||
+            (this._pendingValues?.[r]?.[c] === undefined ? this.formulas[r]?.[c] : '')) &&
+          String(this.formulas[r]?.[c]).startsWith('=')
+        )
+          items.push({
+            address: `${this.sheetName}!${indexToCol(span.startCol + c)}${span.startRow + r + 1}`,
+          });
+    return { isNullObject: items.length === 0, load() {}, areas: { items, load() {} } };
+  }
+
+  get worksheet(): FakeWorksheet {
+    return new FakeWorksheet(this.seed, this.sheetName);
+  }
   // Private backings (materialized eagerly from the seed); read access is gated through getters.
   private _isNullObject = false;
   private _address = '';
@@ -147,7 +166,13 @@ class FakeRange {
   /** Queued `.values` write (write side is NOT gated; Office writes don't require a prior load). */
   private _pendingValues: string[][] | undefined;
   // Write-only facets the bridge sets (never read back by the bridge), so left ungated.
-  formulas: unknown[][] = [];
+  private pendingFormulas?: unknown[][];
+  get formulas(): unknown[][] {
+    return this.pendingFormulas ?? this.values;
+  }
+  set formulas(value: unknown[][]) {
+    this.pendingFormulas = value;
+  }
   numberFormat: unknown[][] = [];
   readonly format = {
     font: { bold: undefined as boolean | undefined, italic: undefined as boolean | undefined },
@@ -217,7 +242,9 @@ class FakeRange {
     return this._pendingValues ?? (this._valuesCache ??= this.computeValues());
   }
   set values(grid: unknown[][]) {
-    this._pendingValues = grid as string[][];
+    this._pendingValues = grid.map((row) =>
+      row.map((v) => (typeof v === 'string' && v.startsWith("'") ? v.slice(1) : v)),
+    ) as string[][];
   }
 
   /** Queue a property (or comma-list, or all when omitted) for resolution at the next `sync()`. */
@@ -256,7 +283,7 @@ class FakeRange {
     // cells fall through to `.values`. We record the resolved string into the seed grid.
     for (let r = 0; r < span.rows; r++) {
       for (let c = 0; c < span.cols; c++) {
-        const formula = this.formulas[r]?.[c];
+        const formula = this.pendingFormulas?.[r]?.[c];
         const value = this._pendingValues?.[r]?.[c];
         const written =
           formula !== undefined && formula !== null && formula !== ''
@@ -329,6 +356,9 @@ class FakeTableCollection {
 }
 
 class FakeWorksheet {
+  get id(): string {
+    return `sheet:${this.name}`;
+  }
   constructor(
     private readonly seed: ExcelSeed,
     readonly name: string,

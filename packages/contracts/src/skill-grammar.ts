@@ -145,6 +145,7 @@ function normalizeParam(token: string): string | undefined {
  */
 export function shadowsBuiltin(name: string): boolean {
   return (
+    name.toLowerCase() === 'finish' ||
     (ALL_VERBS as readonly string[]).includes(name) ||
     (TRANSFORM_NAMES as readonly string[]).includes(name)
   );

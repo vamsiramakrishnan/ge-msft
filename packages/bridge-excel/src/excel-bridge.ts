@@ -1,3 +1,12 @@
+import {
+  cellsMatchRequest,
+  formulasForRequest,
+  hasFormulaErrors,
+  rangeForGrid,
+  type ActuationRequest as CellRequest,
+  type CellSnapshot,
+} from '@ge/contracts';
+import { excelDocumentId, excelRecoveryStorage, snapshotRange } from './cell-snapshot.js';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -56,6 +65,16 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
  */
 export class ExcelBridge implements DocBridge {
   readonly surface = 'excel' as const;
+  readonly recoveryStorage = excelRecoveryStorage;
+
+  async captureCells(selector: string): Promise<CellSnapshot> {
+    const documentId = await excelDocumentId();
+    return Excel.run(async (ctx) => {
+      const range = resolveReadRange(ctx, selector);
+      if (!range) throw new Error('The source range could not be resolved.');
+      return snapshotRange(range, ctx, documentId);
+    });
+  }
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
   private docStateVersion = 0;
@@ -465,11 +484,31 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'no_cells', message: 'write-cells needs params.cells' },
       };
     }
-    const target = plan.address;
+    const target = rangeForGrid(plan.address, plan.values.length, plan.values[0]!.length);
     // ADR-0003 element 3: route any `=`-prefixed cell into a formula grid so Excel evaluates an
     // inspectable, auditable formula rather than an opaque literal. Pure split (unit-tested);
     // the host write path is chosen from `hasFormulas` so non-formula writes are unchanged.
-    const grid = splitFormulaGrid(plan.values);
+    const explicit = req.params.cellValues;
+    const formulaCells = formulasForRequest(req);
+    const grid = explicit
+      ? splitFormulaGrid(
+          formulaCells.map((row, r) => row.map((f, c) => f || String(explicit[r]?.[c] ?? ''))),
+        )
+      : splitFormulaGrid(plan.values);
+    if (explicit) {
+      grid.formulas = formulaCells.map((row) => row.map((f) => (f.startsWith('=') ? f : null)));
+      grid.hasFormulas = formulaCells.some((row) => row.some((f) => f.startsWith('=')));
+      grid.rejected = splitFormulaGrid(formulaCells).rejected;
+      grid.values = explicit.map((row, r) =>
+        row.map((v, c) =>
+          formulaCells[r]?.[c]?.startsWith('=')
+            ? null
+            : typeof v === 'string' && v !== ''
+              ? `'${v}`
+              : (v ?? ''),
+        ),
+      );
+    }
     // Security gate (ADR-0003 §untrusted boundary): cell text is model/host-derived, so a
     // formula flagged as active-content (WEBSERVICE/DDE/external-ref/…) must never be evaluated.
     // Degrade the whole write rather than promote untrusted data into an executable instruction.
@@ -495,19 +534,73 @@ export class ExcelBridge implements DocBridge {
           ? ctx.workbook.worksheets.getItem(sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
-      // Single round-trip: queue the write and the address read together. The write doesn't
-      // depend on reading anything back first (the target address is supplied by the plan), so
-      // there's no read-before-write ordering constraint forcing a second sync.
+      const before = await snapshotRange(range, ctx, await excelDocumentId());
+      const pinned: CellRequest = {
+        ...req,
+        params: { ...req.params, target: { ...req.params.target, range: before.locator } },
+      };
+      const expected = req.preconditions?.find((p) => p.locator === before.locator);
+      if (
+        expected &&
+        (expected.surface !== 'excel' ||
+          expected.documentId !== before.documentId ||
+          expected.hash !== before.hash)
+      )
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: {
+            code: 'stale_target',
+            message: 'The destination changed after preview. Review a new plan.',
+          },
+        };
+      for (const condition of req.preconditions ?? []) {
+        if (condition.locator === before.locator) continue;
+        const source = resolveReadRange(ctx, condition.locator);
+        if (!source) throw new Error('A source is no longer available.');
+        const current = await snapshotRange(source, ctx, before.documentId);
+        if (
+          condition.surface !== 'excel' ||
+          current.documentId !== condition.documentId ||
+          current.hash !== condition.hash
+        )
+          return {
+            ok: false,
+            changeId: req.changeId,
+            kind: req.kind,
+            error: {
+              code: 'stale_source',
+              message: 'A source changed after analysis. Capture and analyze it again.',
+            },
+          };
+      }
       if (grid.hasFormulas) {
-        // Excel evaluates these; `null` cells in the formula grid are the literal cells, which
-        // we set via `values` so both grids land in one batch without overwriting each other.
         range.formulas = grid.formulas as unknown[][];
         range.values = grid.values as unknown[][];
-      } else {
-        range.values = plan.values as unknown[][];
-      }
+      } else range.values = (explicit ? grid.values : plan.values) as unknown[][];
       range.load('address');
       await ctx.sync();
+      // Keep a landed write successful even if readback fails. Verification is a separate outcome.
+      let verification: NonNullable<ActuationResult['verification']>;
+      try {
+        const after = await snapshotRange(range, ctx, before.documentId);
+        const ok = cellsMatchRequest(after, pinned) && !hasFormulaErrors(after);
+        verification = {
+          status: ok ? 'verified' : 'mismatch',
+          beforeHash: before.hash,
+          afterHash: after.hash,
+          ...(ok
+            ? {}
+            : { message: 'The cells do not match the reviewed write or contain formula errors.' }),
+        };
+      } catch {
+        verification = {
+          status: 'unknown',
+          beforeHash: before.hash,
+          message: 'The write landed, but readback could not complete.',
+        };
+      }
 
       // Best-effort source comment on the anchor (first) cell. Feature-detected on ExcelApi 1.10
       // (`CommentCollection.add(string, string)`); skipped silently on older hosts so it never
@@ -526,7 +619,19 @@ export class ExcelBridge implements DocBridge {
         }
       }
 
-      return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        verification,
+        inverse: {
+          op: 'restore-cells' as const,
+          range: before.locator,
+          values: before.values,
+          formulas: before.formulas,
+        },
+      };
     });
     // Durable provenance (BUILD-PLAN 1.6): persist the record after the reversible write lands.
     // Best-effort, feature-detected, never fails the write (mirrors the citation-comment path).

@@ -1,18 +1,47 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "composite": true, "rootDir": "src", "outDir": "dist" },
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
   "include": ["src"],
   "references": [
-    { "path": "../contracts" },
-    { "path": "../deck-compiler" },
-    { "path": "../gemini-client" },
-    { "path": "../runtime" },
-    { "path": "../triggers" },
-    { "path": "../bridge-word" },
-    { "path": "../bridge-excel" },
-    { "path": "../bridge-outlook" },
-    { "path": "../bridge-powerpoint" },
-    { "path": "../bridge-onenote" },
-    { "path": "../teams" }
+    {
+      "path": "../contracts"
+    },
+    {
+      "path": "../deck-compiler"
+    },
+    {
+      "path": "../gemini-client"
+    },
+    {
+      "path": "../runtime"
+    },
+    {
+      "path": "../triggers"
+    },
+    {
+      "path": "../bridge-word"
+    },
+    {
+      "path": "../bridge-excel"
+    },
+    {
+      "path": "../bridge-outlook"
+    },
+    {
+      "path": "../bridge-powerpoint"
+    },
+    {
+      "path": "../bridge-onenote"
+    },
+    {
+      "path": "../teams"
+    },
+    {
+      "path": "../compute"
+    }
   ]
 }

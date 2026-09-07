@@ -186,7 +186,7 @@
     "surface": "",
     "workflow": "",
     "topics": "[observe, derive, effect, verify, approval-boundaries]",
-    "load_when": "A task needs a multi-step program, effect grouping, or semantic turn boundaries."
+    "load_when": "A task needs bindings, multiple effects, or a decision about model-turn boundaries."
   },
   {
     "path": "references/powerpoint-semantics.md",
@@ -204,7 +204,7 @@
     "surface": "",
     "workflow": "",
     "topics": "[context, host-refs, inspect, full-file, handoff]",
-    "load_when": "Deciding how much host, connector, upload, or compute context to request before acting."
+    "load_when": "Choosing the smallest sufficient context or command help for the next decision."
   },
   {
     "path": "references/specialized-capabilities.md",

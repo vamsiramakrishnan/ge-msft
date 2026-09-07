@@ -1,4 +1,5 @@
 import type {
+  CellSnapshot,
   ActuationRequest,
   ActuationResult,
   CapabilityManifest,
@@ -19,6 +20,14 @@ import type { HostEvent, Unsubscribe } from '@ge/triggers';
  */
 export interface DocBridge {
   readonly surface: Surface;
+
+  /** Bounded, address-pinned values/formulas for analysis, verification and recovery. */
+  captureCells?(selector: string): Promise<CellSnapshot>;
+  /** Host-document persistence. No credentials or model conversation is stored here. */
+  recoveryStorage?: {
+    load(owner: string): Promise<unknown>;
+    save(owner: string, value: unknown): Promise<void>;
+  };
 
   /** What this surface can read + write *right now* (runtime capability detection). */
   getCapabilities(): CapabilityManifest | Promise<CapabilityManifest>;

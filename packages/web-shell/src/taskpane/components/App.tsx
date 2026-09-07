@@ -1,3 +1,5 @@
+import { AnalysisWorkbench } from './AnalysisWorkbench.js';
+import { EvidencePanel } from './EvidencePanel.js';
 import { useEffect, useMemo, useState } from 'react';
 import {
   deriveOutput,
@@ -426,6 +428,8 @@ export function App({
       )}
 
       <main className="thread-region" aria-label="Conversation and activity">
+        <AnalysisWorkbench state={state} controller={controller} disabled={actionBlocked} />
+        <EvidencePanel evidence={state.evidence} />
         {state.messages.length === 0 && (
           <WorkspaceHome
             surface={surface}

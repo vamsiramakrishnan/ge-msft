@@ -1,6 +1,7 @@
 """surface_cli.checker — analyze(): parse + capability-scope + type a program into a structured
 result (bindings, effects, reads, inferred dependencies). Pure; no rendering, no side effects."""
 
+import json
 import re
 
 from .parser import (
@@ -8,6 +9,8 @@ from .parser import (
     extract_command_block_meta,
     _is_expr_line,
     _infer_pipeline_type,
+    _analysis_refs,
+    verified_frame_error,
 )
 from .types import _parse_range, _overlap, _EXTERNAL, _EXTERNAL_KINDS
 from .generated_language import LANGUAGE_VERSION
@@ -22,21 +25,59 @@ _READ_PHASE_VERBS = {
 def analyze(program_text: str, capabilities=None):
     """Parse + scope + type a program. Returns a structured result (no rendering, no side effects)."""
     inner, closed = extract_command_block_meta(program_text)
+    # CLI input may be an unfenced program. Once a caller supplies a response frame, enforce the
+    # same whole-response boundary as the runtime rather than silently compiling its first block.
+    frame_error = verified_frame_error(program_text) if inner is not None else None
     if inner is None:
         inner, closed = program_text, True  # accept a bare program (no fence) for the CLI
 
     errors, bindings, effects, reads = [], [], [], []
+    if frame_error:
+        errors.append(frame_error)
+        inner = ''
     bound = set()
+    artifact_bound = set()
+    finish_requested = False
 
     for raw in inner.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        if finish_requested:
+            errors.append("finish when=verified must be the final program entry")
+            break
+
+        rec = parse_line(line)
+        if rec and "error" in rec:
+            errors.append(rec["error"])
+            continue
+        if rec and rec.get("kind") == "verified-finish":
+            finish_requested = True
+            if not closed:
+                errors.append("finish when=verified requires a closed cmd fence")
+            continue
+        if rec and rec.get("kind") == "analysis-binding":
+            action = json.loads(rec["request"])
+            if capabilities is not None and "analyze" not in capabilities:
+                errors.append('"analyze" is not in this turn\'s capabilities')
+            for ref in _analysis_refs(action):
+                if ref not in artifact_bound:
+                    errors.append(f"analysis references unbound artifact ${ref}")
+            name = rec["name"]
+            if name in bound:
+                errors.append(f"binding ${name} already exists")
+            bound.add(name)
+            artifact_bound.add(name)
+            reads.append(line)
+            bindings.append({"name": name, "type": "Artifact", "source": rec["request"]})
+            continue
 
         if _is_expr_line(line):
-            m = re.match(r"^let\s+\$(\w+)\s*=\s*(.+)$", line)
+            m = re.match(r"^let\s+\$(\w+)\s*=\s*(.+)$", line, re.IGNORECASE)
             if m:
                 name, rhs = m.group(1), m.group(2)
+                if name in artifact_bound:
+                    errors.append(f"cannot replace artifact binding ${name} with an expression value")
                 vtype, src, _names, unknown = _infer_pipeline_type(rhs)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}" in ${name}')
@@ -45,7 +86,10 @@ def analyze(program_text: str, capabilities=None):
                 for ref in re.findall(r"\$(\w+)", rhs):
                     if ref not in bound:
                         errors.append(f"${ref} used before it is bound")
+                    elif ref in artifact_bound:
+                        errors.append(f"${ref} is an artifact; use analyze to read it")
                 bound.add(name)
+                artifact_bound.discard(name)
                 bindings.append({"name": name, "type": vtype, "source": src})
             else:
                 vtype, src, _n, unknown = _infer_pipeline_type(line)
@@ -55,14 +99,34 @@ def analyze(program_text: str, capabilities=None):
                     reads.append(src)
             continue
 
-        rec = parse_line(line)
         if rec is None:
-            continue
-        if "error" in rec:
-            errors.append(rec["error"])
             continue
 
         verb = rec["verb"]
+        if verb == "analyze":
+            action = json.loads(rec["request"])
+            kind = action.get("kind")
+            if capabilities is not None and "analyze" not in capabilities:
+                errors.append('"analyze" is not in this turn\'s capabilities')
+            refs = _analysis_refs(action)
+            for ref in refs:
+                if ref not in artifact_bound:
+                    errors.append(f"analysis references unbound artifact ${ref}")
+            if kind == "materialize":
+                if capabilities is not None and not {"set", "grid", "spill", "write-cells"}.intersection(capabilities):
+                    errors.append("analysis materialization requires cell-write capability")
+                target = action.get("destination")
+                if not isinstance(target, str) or not _parse_range(target):
+                    errors.append("analysis materialization requires an explicit A1 destination")
+                    target = None
+                effects.append({"verb": "analyze:materialize", "target": target,
+                                "range": _parse_range(target) if target else None,
+                                "external": False, "refs": refs})
+            elif isinstance(kind, str) and kind in {"capture", "query", "reconcile", "inspect", "filter", "remove"}:
+                reads.append(line)
+            else:
+                errors.append("unsupported analysis action; recovery requires an explicit pane action")
+            continue
         if verb in _READ_PHASE_VERBS:
             reads.append(line)
             continue
@@ -95,6 +159,8 @@ def analyze(program_text: str, capabilities=None):
         for ref in eff["refs"]:
             if ref not in bound:
                 errors.append(f"spill references unbound ${ref}")
+            elif ref in artifact_bound:
+                errors.append(f"${ref} is an artifact; use analyze materialize to write it")
         effects.append(eff)
 
     # Effect→effect dependencies: a later effect whose range overlaps an earlier effect's range
@@ -114,4 +180,6 @@ def analyze(program_text: str, capabilities=None):
         "effects": effects,
         "reads": reads,
         "deps": deps,
+        # This is a requested runtime condition, never a proof of host-side verification.
+        "requestedCompletion": "verified" if finish_requested else None,
     }

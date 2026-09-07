@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Surface, ChangeId } from '@ge/contracts';
+import { intentsForManifest, type Surface, type ChangeId } from '@ge/contracts';
+import { POWERPOINT_CAPABILITIES } from '@ge/bridge-powerpoint';
 import type { PanelController, PanelState } from '../controller.js';
 import { makeDemoController } from './preview-interactive.js';
 import { App } from './components/App.js';
@@ -188,7 +189,14 @@ function Preview(): JSX.Element {
         data-surface={surface}
         style={{ width: frameWidth, height: frameHeight }}
       >
-        <App key={`${surface}-${interactive}`} controller={controller} surface={surface} />
+        <App
+          key={`${surface}-${interactive}`}
+          controller={controller}
+          surface={surface}
+          allowedIntents={
+            surface === 'powerpoint' ? intentsForManifest(POWERPOINT_CAPABILITIES) : undefined
+          }
+        />
       </div>
     </div>
   );

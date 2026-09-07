@@ -1,11 +1,26 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "composite": true, "rootDir": "src", "outDir": "dist" },
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
   "include": ["src"],
   "references": [
-    { "path": "../contracts" },
-    { "path": "../content" },
-    { "path": "../gemini-client" },
-    { "path": "../triggers" }
+    {
+      "path": "../contracts"
+    },
+    {
+      "path": "../content"
+    },
+    {
+      "path": "../gemini-client"
+    },
+    {
+      "path": "../triggers"
+    },
+    {
+      "path": "../compute"
+    }
   ]
 }

@@ -256,6 +256,45 @@ done
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
+    read = 'analyze {"kind":"capture","range":"S!A1:C2"}'
+    write = 'analyze {"kind":"materialize","id":"a_result","destination":"S!F1"}'
+    result = analyze(read + "\n" + write, capabilities=["analyze", "set"])
+    assert not result["errors"] and len(result["reads"]) == 1 and len(result["effects"]) == 1
+    assert analyze(write, capabilities=["analyze"])["errors"]
+    assert analyze('analyze {"kind":"undo","id":"receipt"}')["errors"]
+    assert analyze('analyze {"kind":[]}')["errors"]
+    lines, notes = normalize(write + "\n" + read)
+    assert lines[0] == read and notes
+    bound_read = 'let $source = analyze {"kind":"capture","range":"S!A1:C2"}'
+    bound_write = 'analyze {"kind":"materialize","id":"$source","destination":"S!F1"}'
+    program = bound_read + "\n" + bound_write + "\nfinish when=verified"
+    checked = analyze(program, capabilities=["analyze", "set"])
+    assert not checked["errors"] and checked["bindings"][0]["type"] == "Artifact"
+    assert checked["requestedCompletion"] == "verified" and checked["effects"][0]["refs"] == ["source"]
+    assert analyze(program, capabilities=["analyze"])["errors"]
+    assert analyze(bound_read, capabilities=[])["errors"]
+    assert analyze(bound_write)["errors"]
+    assert analyze('let $x = read S!A1:C2\nanalyze {"kind":"inspect","id":"$x"}')["errors"]
+    assert not analyze(bound_read + '\nanalyze {"kind":"query","inputs":["$source"],"sql":"SELECT \'$literal\' FROM table1"}')["errors"]
+    assert analyze(program + "\nread A1")["errors"]
+    assert analyze("```cmd\n" + program)["errors"]
+    assert analyze("finish when=applied")["errors"]
+    assert analyze('let $bad = analyze {"kind":"materialize"}')["errors"]
+    assert analyze(bound_read + "\n" + bound_read)["errors"]
+    assert analyze(bound_read + "\nlet $source = read S!A1:C2")["errors"]
+    assert analyze(bound_read + "\nlet $copy = $source")["errors"]
+    assert analyze(bound_read + "\nspill S!F1 = ($source)")["errors"]
+    assert not analyze("LET $value = read S!A1:C2")["errors"]
+    verified = "```cmd\n" + program + "\n```"
+    plain = "```cmd\nset A1 6\n```"
+    for response in (verified + "\n" + plain, plain + "\n" + verified,
+                     "Explanation\n" + verified, verified + "\nExplanation"):
+        invalid = analyze(response)
+        assert invalid["errors"] and not invalid["effects"]
+        lines, notes = normalize(response)
+        assert "\n".join(lines) == response and notes
+    lines, notes = normalize(bound_read + '\nanalyze {"kind":"inspect","id":"$source"}')
+    assert lines[0] == bound_read and notes
     print(
         "SURFACE-CLI SELF-TEST OK — check/budget/plan/normalize, capability scope, dep inference, risk"
     )

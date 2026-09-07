@@ -7,6 +7,11 @@ ADR-0004 (command protocol → actuation), ADR-0006 (capability closure), ADR-00
 write kinds), `docs/research/claude-office-addin-observations.md` (clean-room rationale + the
 sanctioned-engine deviation).
 
+Implementation update (2026-09-07): the Excel tabular snapshot/query/reconciliation slice is now
+implemented. [ADR-0012](ADR-0012-analysis-evidence-recovery.md) records its exact boundary and the
+separate durable recovery-journal exception. The broader tool registry and PowerPoint normalized
+workspace below remain planned; this ADR is not an implementation inventory.
+
 ## Context
 
 Competitive benchmarking of Anthropic's "Claude in Microsoft Office" (clean-room notes in

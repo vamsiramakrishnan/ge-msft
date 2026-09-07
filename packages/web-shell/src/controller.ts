@@ -1,3 +1,4 @@
+import type { AnalysisAction, AnalysisState, RecoverySummary, EvidenceState } from '@ge/runtime';
 import type {
   ActuationParams,
   ActuationRequest,
@@ -90,6 +91,13 @@ export type PlanRunCommandsOptions = RunCommandsOptions;
  * so the controller is unit-testable against a fake and carries no host/network dependency.
  */
 export interface AssistLike {
+  readonly analysis?: { state(): AnalysisState };
+  readonly recovery?: { durable: boolean; list(): RecoverySummary[] };
+  readonly evidence?: { state(): EvidenceState };
+  runAnalysis?(
+    action: AnalysisAction,
+    opts?: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
   readonly context: { size: number };
   attachRef(ref: ContextRef): Promise<void>;
   detach(id: string): void;
@@ -404,6 +412,9 @@ export interface RunStepArtifact {
 }
 
 export interface PanelState {
+  analysis?: AnalysisState;
+  recovery?: { durable: boolean; records: RecoverySummary[] };
+  evidence?: EvidenceState;
   messages: ChatMessage[];
   chips: ContextChip[];
   suggestions: Suggestion[];
@@ -470,7 +481,8 @@ const EMPTY_STATE: PanelState = {
  * straight in. No React, no Office.js here: those live one layer up.
  */
 export class PanelController {
-  private state: PanelState = EMPTY_STATE;
+  private state: PanelState = structuredClone(EMPTY_STATE);
+  private readonly attachmentVersions = new Map<string, number>();
   private readonly listeners = new Set<(state: PanelState) => void>();
   private readonly refs = new Map<string, ContextRef>();
   private seq = 0;
@@ -504,7 +516,9 @@ export class PanelController {
     private readonly session: AssistLike,
     private readonly lister: ContextLister,
     private readonly store: ProvenanceStore = new ProvenanceStore(),
-  ) {}
+  ) {
+    this.syncServices();
+  }
 
   getState(): PanelState {
     return this.state;
@@ -513,6 +527,56 @@ export class PanelController {
   subscribe(listener: (state: PanelState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  private syncServices(): void {
+    this.set({
+      ...(this.session.analysis ? { analysis: this.session.analysis.state() } : {}),
+      ...(this.session.recovery
+        ? {
+            recovery: {
+              durable: this.session.recovery.durable,
+              records: this.session.recovery.list(),
+            },
+          }
+        : {}),
+      ...(this.session.evidence ? { evidence: this.session.evidence.state() } : {}),
+    });
+  }
+
+  async runAnalysis(action: AnalysisAction): Promise<void> {
+    if (
+      !this.session.runAnalysis ||
+      this.state.busy ||
+      this.state.pendingCommandPlan ||
+      this.state.pendingPlan ||
+      this.state.pendingWrite ||
+      this.state.pendingShare
+    )
+      return;
+    this.beginTurn({ steps: [] });
+    const controller = new AbortController();
+    this.inflight = controller;
+    const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
+    try {
+      for await (const event of this.session.runAnalysis(action, {
+        signal: controller.signal,
+        approvePlan: (effects) =>
+          this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) }),
+      })) {
+        this.reduceLoopEvent(event, reply.id, []);
+        this.syncServices();
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !isAbortError(error)) this.set({ error: errorText(error) });
+      else this.addStep('activity', 'Analysis cancelled');
+    } finally {
+      this.approvals.releaseAll();
+      if (this.inflight === controller) this.inflight = undefined;
+      this.syncServices();
+      this.set({ busy: false });
+      this.drainPendingTurn();
+    }
   }
 
   // ---- context tray -------------------------------------------------------
@@ -560,8 +624,11 @@ export class PanelController {
   async attach(id: string): Promise<void> {
     const ref = this.refs.get(id);
     if (!ref) return;
+    const version = (this.attachmentVersions.get(id) ?? 0) + 1;
+    this.attachmentVersions.set(id, version);
     try {
       await this.session.attachRef(ref);
+      if (this.attachmentVersions.get(id) !== version) return;
       this.setChip(id, { attached: true });
     } catch (err) {
       this.set({ error: errorText(err) });
@@ -569,6 +636,7 @@ export class PanelController {
   }
 
   detach(id: string): void {
+    this.attachmentVersions.set(id, (this.attachmentVersions.get(id) ?? 0) + 1);
     this.session.detach(id);
     this.setChip(id, { attached: false });
   }
@@ -629,6 +697,7 @@ export class PanelController {
     const sources: SourceRef[] = [];
     let replyText = '';
     let recoverAsCommandTask: string | undefined;
+    let failed = false;
     try {
       for await (const ev of this.session.ask(q, {
         signal: controller.signal,
@@ -652,14 +721,24 @@ export class PanelController {
             // onto the proposal it creates. Cleared at the next turn boundary, never left ambient.
             this.currentTurnProvenance = ev.payload;
             break;
+          case 'policy':
+            if (ev.verdict === 'block') {
+              failed = true;
+              this.patchMessage(reply.id, () => ({
+                error: ev.reason ?? 'The response was blocked by policy.',
+                activity: undefined,
+              }));
+            }
+            break;
           case 'error':
+            failed = true;
             this.patchMessage(reply.id, () => ({ error: ev.message, activity: undefined }));
             break;
           default:
             break;
         }
       }
-      if (!controller.signal.aborted && extractCommandBlock(replyText) !== null) {
+      if (!failed && !controller.signal.aborted && extractCommandBlock(replyText) !== null) {
         recoverAsCommandTask = q;
         this.patchMessage(reply.id, () => ({
           text: 'Detected Office command output in a chat turn. Continuing through the Office command route so the add-in can read/apply changes safely.',
@@ -681,6 +760,7 @@ export class PanelController {
       // still ours — a queued turn that already replaced it must keep its own controller).
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false, activity: undefined }));
+      this.syncServices();
       this.set({ busy: false });
       if (recoverAsCommandTask) {
         await this.runCommands(recoverAsCommandTask, grounding, 'Continue in Office command route');
@@ -725,6 +805,7 @@ export class PanelController {
       if (controller.signal.aborted) return;
       if (!plan) {
         // No parseable plan → run the executor directly (it stages its own effect-level gate).
+        this.syncServices();
         this.set({ busy: false });
         void this.runCommands(t, grounding);
         return;
@@ -907,6 +988,7 @@ export class PanelController {
       this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
+      this.syncServices();
       this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
       this.drainPendingTurn();
     }
@@ -979,6 +1061,7 @@ export class PanelController {
       this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
       this.patchMessage(reply.id, () => ({ streaming: false }));
+      this.syncServices();
       this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
       this.drainPendingTurn();
     }
@@ -1003,6 +1086,15 @@ export class PanelController {
       case 'citation':
         sources.push(ev.source);
         this.patchMessage(replyId, () => ({ sources: [...sources] }));
+        return;
+      case 'policy':
+        if (ev.verdict === 'block') {
+          this.patchMessage(replyId, () => ({
+            error: ev.reason ?? 'The response was blocked by policy.',
+            activity: undefined,
+          }));
+          this.addStep('error', ev.reason ?? 'Blocked by policy');
+        }
         return;
       case 'provenance':
         // Finding #4: turn-scoped capture, threaded to writes by the runtime; cleared at turn end.
@@ -1087,7 +1179,6 @@ export class PanelController {
       case 'finding':
       case 'slide':
       case 'grounding-support':
-      case 'policy':
       case 'related-questions':
         return;
       default:
@@ -1376,7 +1467,13 @@ export class PanelController {
 
   private set(patch: Partial<PanelState>): void {
     this.state = { ...this.state, ...patch };
-    for (const listener of this.listeners) listener(this.state);
+    for (const listener of this.listeners) {
+      try {
+        listener(this.state);
+      } catch {
+        /* A view observer cannot interrupt state settlement. */
+      }
+    }
   }
 
   private setChip(id: string, patch: Partial<ContextChip>): void {
@@ -1618,7 +1715,9 @@ function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>):
       : r.provenanceDropped
         ? ' (⚠ provenance not recorded)'
         : '';
-  return `${r.kind} — ${outcome}${provenance}`;
+  const verification = r.verification ? ` · readback ${r.verification.status}` : '';
+  const recovery = r.recoveryPending ? ' · recovery checkpoint pending' : '';
+  return `${r.kind} — ${outcome}${verification}${recovery}${provenance}`;
 }
 
 /** A one-line label for Gemini Enterprise code execution telemetry. */

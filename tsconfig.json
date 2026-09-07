@@ -1,19 +1,50 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/contracts" },
-    { "path": "packages/content" },
-    { "path": "packages/graph-client" },
-    { "path": "packages/triggers" },
-    { "path": "packages/gemini-client" },
-    { "path": "packages/runtime" },
-    { "path": "packages/deck-compiler" },
-    { "path": "packages/web-shell" },
-    { "path": "packages/bridge-word" },
-    { "path": "packages/bridge-excel" },
-    { "path": "packages/bridge-outlook" },
-    { "path": "packages/bridge-powerpoint" },
-    { "path": "packages/bridge-onenote" },
-    { "path": "packages/teams" }
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/content"
+    },
+    {
+      "path": "packages/graph-client"
+    },
+    {
+      "path": "packages/triggers"
+    },
+    {
+      "path": "packages/gemini-client"
+    },
+    {
+      "path": "packages/runtime"
+    },
+    {
+      "path": "packages/deck-compiler"
+    },
+    {
+      "path": "packages/web-shell"
+    },
+    {
+      "path": "packages/bridge-word"
+    },
+    {
+      "path": "packages/bridge-excel"
+    },
+    {
+      "path": "packages/bridge-outlook"
+    },
+    {
+      "path": "packages/bridge-powerpoint"
+    },
+    {
+      "path": "packages/bridge-onenote"
+    },
+    {
+      "path": "packages/teams"
+    },
+    {
+      "path": "packages/compute"
+    }
   ]
 }

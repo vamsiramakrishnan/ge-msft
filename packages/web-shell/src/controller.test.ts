@@ -10,7 +10,7 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
-import type { CommandLoopEvent } from '@ge/runtime';
+import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
 import type {
   AgentView,
   ConversationSummary,
@@ -1452,5 +1452,70 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     // No plan card; the executor ran directly (its gate staged).
     expect(c.getState().pendingCommandPlan).toBeUndefined();
     expect(c.getState().pendingPlan).toBeDefined();
+  });
+});
+
+describe('workspace state regression bash', () => {
+  it('does not visually reattach after a detach wins the pending attachment', async () => {
+    const assist = new FakeAssist();
+    let release!: () => void;
+    assist.attachRef = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const controller = new PanelController(assist, lister([ref('r', 'Selection')]));
+    await controller.refreshContext();
+    const pending = controller.attach('r');
+    controller.detach('r');
+    release();
+    await pending;
+    expect(controller.getState().chips[0]?.attached).toBe(false);
+  });
+  it.each(['error', 'policy'] as const)(
+    'does not recover commands from a %s response',
+    async (kind) => {
+      const assist = new FakeAssist();
+      assist.script = [
+        { type: 'token', text: '```cmd\nset A1 99\n```' },
+        kind === 'error'
+          ? { type: 'error', code: 'failed', message: 'Failed' }
+          : { type: 'policy', verdict: 'block', reason: 'Blocked' },
+        { type: 'done' },
+      ];
+      const controller = new PanelController(assist, lister([]));
+      await controller.send('question');
+      expect(assist.runTasks).toHaveLength(0);
+      expect(controller.getState().messages[1]?.error).toBeDefined();
+      expect(controller.getState().busy).toBe(false);
+    },
+  );
+  it('settles a task even if a view subscriber throws', async () => {
+    const controller = new PanelController(new FakeAssist(), lister([]));
+    controller.subscribe(() => {
+      throw new Error('view failed');
+    });
+    await controller.send('question');
+    expect(controller.getState().busy).toBe(false);
+    expect(controller.getState().messages[1]?.streaming).toBe(false);
+  });
+  it('shares task ownership and cancels a pending analysis approval without actuating', async () => {
+    const assist = new FakeAssist();
+    let approved: boolean | undefined;
+    const session: AssistLike = Object.assign(assist, {
+      async *runAnalysis(_action: unknown, opts: RunCommandsOptions = {}) {
+        approved = await opts.approvePlan?.([planEffect('analysis-1')]);
+        yield { type: 'done' as const, turn: 1, answer: '' };
+      },
+    });
+    const controller = new PanelController(session, lister([]));
+    const pending = controller.runAnalysis({ kind: 'recovery' });
+    await Promise.resolve();
+    expect(controller.getState().pendingPlan).toBeDefined();
+    expect(controller.getState().busy).toBe(true);
+    controller.cancel();
+    await pending;
+    expect(approved).toBe(false);
+    expect(controller.getState().pendingPlan).toBeUndefined();
+    expect(controller.getState().busy).toBe(false);
   });
 });

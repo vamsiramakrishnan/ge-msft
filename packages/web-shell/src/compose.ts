@@ -8,6 +8,9 @@ import type {
 } from '@ge/gemini-client';
 import {
   StreamAssistClient,
+  SearchClient,
+  RankClient,
+  GroundingClient,
   WifTokenClient,
   ensureSkillAgent,
   listAvailableAgentViews,
@@ -19,7 +22,7 @@ import type {
   EnsureSkillInput,
   EnsureSkillResult,
 } from '@ge/gemini-client';
-import { AssistSession } from '@ge/runtime';
+import { AssistSession, EvidencePipeline } from '@ge/runtime';
 import type { AuthClient, DocBridge, RuntimeHooks } from '@ge/runtime';
 import { GraphClient, GraphSharedStore } from '@ge/graph-client';
 import type { TriggerRegistry } from '@ge/triggers';
@@ -206,6 +209,35 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
 
   const session = new AssistSession(bridge, client, {
     unit,
+    recoveryOwner: identity.oid ?? identity.username,
+    evidence: new EvidencePipeline({
+      search: new SearchClient(
+        tokens,
+        { assistant: config.assistant, ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}) },
+        opts.fetchImpl,
+      ),
+      rank: new RankClient(
+        tokens,
+        { assistant: config.assistant, ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}) },
+        opts.fetchImpl,
+      ),
+      grounding: new GroundingClient(
+        tokens,
+        { assistant: config.assistant, ...(config.proxyUrl ? { proxyUrl: config.proxyUrl } : {}) },
+        opts.fetchImpl,
+      ),
+    }),
+    ...(bridge.captureCells
+      ? {
+          compute: async () => {
+            const { createBrowserCompute } = await import('@ge/compute/browser');
+            return createBrowserCompute({
+              workerUrl: '/compute/duckdb-worker.js',
+              wasmUrl: '/compute/duckdb.wasm',
+            });
+          },
+        }
+      : {}),
     skillFiles: SKILL_FILES,
     ...(sharedStore ? { sharedStore } : {}),
     ...(estateWritesEnabled ? { estateWritesEnabled: true } : {}),

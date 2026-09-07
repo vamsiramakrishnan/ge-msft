@@ -1668,6 +1668,8 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
       unit,
       sharedStore,
       estateWritesEnabled: true,
+      // This test isolates the legacy share payload cap from the independent-request budget.
+      commandSessionMode: 'conversation',
     });
     let approveInput: { bytes: number; truncated: boolean } | undefined;
 
@@ -1880,7 +1882,10 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     // The re-prompt query nudges for a cmd block.
     expect(queries[1]).toContain('```cmd');
     expect(queries[1]).toContain('Do not emit prose');
-    expect(queries[1]).toContain('```python');
+    const observations = JSON.parse(
+      /<runtime_observations[^>]*>\n([\s\S]*?)\n<\/runtime_observations>/.exec(queries[1]!)![1]!,
+    ) as { turns: Array<{ correction: string }> };
+    expect(observations.turns[0]!.correction).toContain('```python');
     expect(bridge.applied).toHaveLength(1); // still completed the write
     expect(loop.at(-1)).toMatchObject({ type: 'done' });
   });

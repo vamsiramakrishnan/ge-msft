@@ -14,7 +14,7 @@ afterEach(() => {
   if (root) act(() => root.unmount());
   container?.remove();
 });
-async function setup(disabled = false) {
+async function setup(disabled = false, writable?: boolean) {
   const workspace = new AnalysisWorkspace(
     {
       surface: 'excel',
@@ -38,7 +38,11 @@ async function setup(disabled = false) {
   await workspace.execute({ kind: 'capture', range: 'Payments!A1:C2' });
   const controller = new PanelController({} as AssistLike, { listContext: async () => [] });
   const run = vi.spyOn(controller, 'runAnalysis').mockResolvedValue();
-  const state: PanelState = { ...controller.getState(), analysis: workspace.state() };
+  const state: PanelState = {
+    ...controller.getState(),
+    analysis: workspace.state(),
+    workflowWritesAvailable: writable,
+  };
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -74,8 +78,8 @@ describe('rendered data workbench', () => {
   it('disables every action during task ownership or approval', async () => {
     await setup(true);
     expect(
-      [...container.querySelectorAll('button,input,select,textarea')].every(
-        (el) => (el as HTMLButtonElement).disabled,
+      [...container.querySelectorAll('button,input,select,textarea')].every((el) =>
+        el.matches(':disabled'),
       ),
     ).toBe(true);
   });
@@ -88,6 +92,13 @@ describe('rendered data workbench', () => {
     fill('[aria-label="Reconciliation tolerance"]', '0.01');
     fill('[aria-label="Single currency"]', 'U');
     expect(reconcile.disabled).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+  it('allows inspecting results in a document without write capability', async () => {
+    const { run } = await setup(false, false);
+    expect(container.querySelector('.analysis-table-scroll')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Write destination"]')).toBeNull();
+    expect(container.textContent).toContain('Writing is unavailable in this document');
     expect(run).not.toHaveBeenCalled();
   });
 });

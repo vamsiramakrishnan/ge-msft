@@ -26,13 +26,16 @@ def _analysis_refs(action):
     kind = action.get("kind")
     values = []
     if kind == "query" and isinstance(action.get("inputs"), list):
-        values = action["inputs"]
+        values = list(action["inputs"])
+        if isinstance(action.get("requiredColumns"), list):
+            values.extend(entry.get("input") for entry in action["requiredColumns"]
+                          if isinstance(entry, dict))
     elif kind == "reconcile" and isinstance(action.get("spec"), dict):
         values = [action["spec"].get("left"), action["spec"].get("right")]
     elif kind in ("inspect", "filter", "materialize", "remove"):
         values = [action.get("id")]
-    return [value[1:] for value in values
-            if isinstance(value, str) and re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", value)]
+    return list(dict.fromkeys(value[1:] for value in values
+                             if isinstance(value, str) and re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", value)))
 
 
 def _is_expr_line(line: str) -> bool:

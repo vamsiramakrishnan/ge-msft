@@ -46,11 +46,59 @@ export interface RecoverySummary {
   columns: number;
   canUndo: boolean;
   canResume: boolean;
+  canForget?: boolean;
   message?: string;
 }
 const HistorySchema = z.array(RecordSchema).max(32);
 const now = (): string => new Date().toISOString();
 const queues = new Map<string, Promise<unknown>>();
+function isUnresolved(record: RecoveryRecord): boolean {
+  return (
+    record.state === 'applying' ||
+    record.state === 'uncertain' ||
+    // A verified write edited later has stale undo authority, but its original outcome is known.
+    (record.state === 'conflict' && !record.afterHash)
+  );
+}
+
+/** Worksheet IDs survive renames; host-captured locators supply canonical cell coordinates. */
+function overlaps(left: CellSnapshot, right: CellSnapshot): boolean {
+  if (left.surface !== right.surface || left.documentId !== right.documentId) return false;
+  if (left.objectId && right.objectId && left.objectId !== right.objectId) return false;
+  const sheet = (locator: string): string | undefined => {
+    const bang = locator.lastIndexOf('!');
+    if (bang < 0) return undefined;
+    return locator
+      .slice(0, bang)
+      .replace(/^'(.*)'$/, '$1')
+      .replace(/''/g, "'")
+      .toLowerCase();
+  };
+  if (!left.objectId || !right.objectId) {
+    const a = sheet(left.locator);
+    const b = sheet(right.locator);
+    if (a && b && a !== b) return false;
+  }
+  const bounds = (snapshot: CellSnapshot) => {
+    const address = snapshot.locator.slice(snapshot.locator.lastIndexOf('!') + 1);
+    const match = /^\$?([a-z]{1,3})\$?([1-9]\d*)(?::\$?([a-z]{1,3})\$?([1-9]\d*))?$/i.exec(address);
+    if (!match) return undefined;
+    const column = (value: string): number =>
+      [...value.toUpperCase()].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+    const x = column(match[1]!);
+    const y = Number(match[2]);
+    return {
+      x,
+      y,
+      endX: Math.max(match[3] ? column(match[3]) : x, x + snapshot.values[0]!.length - 1),
+      endY: Math.max(match[4] ? Number(match[4]) : y, y + snapshot.values.length - 1),
+    };
+  };
+  const a = bounds(left);
+  const b = bounds(right);
+  // A malformed legacy locator cannot establish that a write on the same sheet is disjoint.
+  return !a || !b || (a.x <= b.endX && b.x <= a.endX && a.y <= b.endY && b.y <= a.endY);
+}
 
 /** Durable effect receipts, never persisted approval authority. Only bounded cell writes are replayable. */
 export class RecoveryCoordinator {
@@ -93,11 +141,27 @@ export class RecoveryCoordinator {
   private async save(): Promise<void> {
     await this.bridge.recoveryStorage?.save(this.owner, this.records);
   }
+  private assertNoUnresolvedOverlap(before: CellSnapshot): void {
+    const unresolved = this.records.find(
+      (record) => isUnresolved(record) && overlaps(record.before, before),
+    );
+    if (unresolved)
+      throw new Error(
+        `An unresolved write overlaps ${before.locator}. Inspect recovery history before writing to these cells again.`,
+      );
+  }
 
   /** Capture before approval. An absolute, versioned destination replaces the live selection. */
   async prepare(request: ActuationRequest): Promise<ActuationRequest> {
     if (request.kind !== 'write-cells' || !this.bridge.captureCells) return request;
-    if (this.prepared.has(request.changeId)) return request;
+    const prepared = this.prepared.get(request.changeId);
+    if (prepared) {
+      await this.locked(async () => {
+        await this.load();
+        this.assertNoUnresolvedOverlap(prepared);
+      });
+      return request;
+    }
     const values = gridForRequest(request);
     const address = rangeForGrid(
       request.params.target?.range ?? '',
@@ -120,7 +184,11 @@ export class RecoveryCoordinator {
           'A source or destination changed. Capture it again before reviewing this write.',
         );
     }
-    this.prepared.set(request.changeId, before);
+    await this.locked(async () => {
+      await this.load();
+      this.assertNoUnresolvedOverlap(before);
+      this.prepared.set(request.changeId, before);
+    });
     return ActuationRequestSchema.parse({
       ...request,
       params: { ...request.params, target: { ...request.params.target, range: before.locator } },
@@ -150,7 +218,18 @@ export class RecoveryCoordinator {
         );
       if (this.records.length >= 32)
         throw new Error('Recovery history is full. Remove a resolved receipt before writing.');
+      this.assertNoUnresolvedOverlap(before);
       const parent = this.parents.get(request.changeId);
+      if (parent) {
+        const original = this.records.find((r) => r.id === parent.id);
+        if (
+          !original ||
+          (parent.undo
+            ? original.state !== 'applied' || !original.afterHash
+            : original.state !== 'not-applied')
+        )
+          throw new Error('The recovery receipt changed. Inspect it again before continuing.');
+      }
       const record: RecoveryRecord = {
         version: 1,
         id: request.changeId,
@@ -190,11 +269,16 @@ export class RecoveryCoordinator {
           error: { code: 'outcome_unknown', message: record.message },
         };
       }
-      record.state = result.ok
-        ? result.verification?.status === 'verified'
-          ? 'applied'
-          : 'uncertain'
-        : 'not-applied';
+      record.state =
+        result.recoveryPending ||
+        result.error?.code === 'outcome_unknown' ||
+        (result.verification && result.verification.status !== 'verified')
+          ? 'uncertain'
+          : result.ok
+            ? result.verification?.status === 'verified'
+              ? 'applied'
+              : 'uncertain'
+            : 'not-applied';
       record.afterHash =
         result.verification?.status === 'verified' ? result.verification.afterHash : undefined;
       record.message = result.verification?.message ?? result.error?.message;
@@ -241,8 +325,9 @@ export class RecoveryCoordinator {
             record.afterHash = current.hash;
           } else {
             record.state = 'conflict';
-            record.message =
-              'The cells differ from both the reviewed input and output. Review them manually.';
+            record.message = record.afterHash
+              ? 'This verified write was changed later. Undo is no longer safe; review a new write or remove this receipt.'
+              : 'The cells differ from both the reviewed input and output. Review them manually.';
           }
         } catch {
           record.state = 'uncertain';
@@ -267,6 +352,7 @@ export class RecoveryCoordinator {
         columns: r.before.values[0]!.length,
         canUndo: r.state === 'applied' && Boolean(r.afterHash),
         canResume: r.state === 'not-applied',
+        canForget: !isUnresolved(r),
         ...(r.message ? { message: r.message } : {}),
       }));
   }
@@ -301,8 +387,7 @@ export class RecoveryCoordinator {
     await this.locked(async () => {
       await this.load();
       const entry = this.records.find((r) => r.id === id);
-      if (entry && !['applied', 'not-applied', 'undone', 'superseded'].includes(entry.state))
-        throw new Error('Unresolved receipts cannot be discarded.');
+      if (entry && isUnresolved(entry)) throw new Error('Unresolved receipts cannot be discarded.');
       this.records = this.records.filter((r) => r.id !== id);
       await this.save();
     });

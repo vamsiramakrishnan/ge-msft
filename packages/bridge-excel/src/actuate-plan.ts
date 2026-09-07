@@ -1,21 +1,26 @@
-import type { ActuationRequest, SourceRef } from '@ge/contracts';
+import {
+  gridForRequest,
+  type ActuationRequest,
+  type CellValue,
+  type SourceRef,
+} from '@ge/contracts';
 
 /**
  * Pure translation of an actuation into a host plan — testable without Office.js. A
  * `write-cells` is located by an explicit `target.range` (e.g. "Sheet1!A1:B3"); the grid to
- * write is `params.cells`. The bridge parses the address and writes `range.values` at
- * apply-time.
+ * write uses the shared `cellValues` → legacy `cells` precedence used by verification and
+ * recovery. Scalar types stay intact until the bridge encodes literals for Office.js.
  */
 export interface WriteCellsPlan {
   address?: string;
-  values: string[][];
+  values: CellValue[][];
 }
 
 export function planWriteCells(req: ActuationRequest): WriteCellsPlan {
   const p = req.params;
   return {
     ...(p.target?.range ? { address: p.target.range } : {}),
-    values: p.cells ?? p.cellValues?.map((r) => r.map((v) => String(v ?? ''))) ?? [],
+    values: gridForRequest(req),
   };
 }
 

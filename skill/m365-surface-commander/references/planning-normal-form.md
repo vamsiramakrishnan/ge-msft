@@ -2,8 +2,8 @@
 title: Planning Normal Form
 kind: reference
 skill: m365-surface-commander
-topics: [observe, derive, effect, verify, approval-boundaries]
-load_when: A task needs bindings, multiple effects, or a decision about model-turn boundaries.
+topics: [observe, derive, effect, verify, recipes, conditional-materialization, approval-boundaries]
+load_when: A task needs bindings, recipes, conditional materialization, multiple effects, or a model-turn boundary.
 ---
 
 # Planning normal form
@@ -30,7 +30,7 @@ With known ranges, column mappings, and destination, emit:
 let $invoices = analyze {"kind":"capture","range":"Invoices!A1:C500","headers":true}
 let $payments = analyze {"kind":"capture","range":"Payments!A1:C700","headers":true}
 let $result = analyze {"kind":"reconcile","spec":{"left":"$invoices","right":"$payments","leftKey":0,"rightKey":0,"leftAmount":1,"rightAmount":1,"leftCurrency":2,"rightCurrency":2,"tolerance":"0.01"}}
-analyze {"kind":"materialize","id":"$result","destination":"Results!A1"}
+analyze {"kind":"materialize","id":"$result","destination":"Results!A1","whenNonEmpty":true}
 finish when=verified
 ```
 
@@ -51,10 +51,35 @@ finish when=verified
 Pipelines cannot contain host effects. Analysis artifacts are handles, not table-expression values;
 use analyze operations to consume them. `help analyze` supplies action schemas and restrictions.
 
+## Conditional writes and reusable recipes
+
+`whenNonEmpty:true` on materialization asks the runtime to write only when the computed artifact
+contains data rows. The runtime checks source freshness and truncation before deciding. A complete,
+fresh zero-row result returns `status:skipped`, `reason:empty-result`, `effects:0`; it does not
+clear the destination, ask for approval, or prevent verified completion. This explicit empty-result
+condition differs from a blocked, failed or uncertain effect. Omitting the flag keeps normal
+materialization behavior. Model inference is unnecessary merely to test whether rows exist.
+
+A query may declare `requiredColumns:[{"input":"$source","indices":[0,1]}]`. Indices are zero-based
+within the captured range; each input must also appear in `inputs`. The runtime validates columns
+against the fresh artifact before SQL. Add `exactDecimal:true` to an amount-column requirement to
+reject native numbers whose magnitude already exceeds safe integer precision. Large exact amounts
+must arrive as decimal text. The guard does not repair rounded inputs or choose business mappings.
+
+The workbench's versioned `reconcile-tables`, `duplicate-rows` and `summarize-by-group` recipes
+compile typed parameters into the same `AnalysisProgram` used by command execution. In the SDK,
+`compileWorkflowRecipe` returns a program for `AssistSession.runAnalysisProgram`;
+`compileAnalysisProgram` returns its CLI text. Known inputs need no model-authored rewrite. The
+CLI executor receives that compiled text; recipe names are not additional host command verbs.
+Presets save recipe versions and parameter data only. Each run captures current sources and each
+nonempty write requires fresh approval; a saved recipe never carries authority from an earlier run.
+Use recipe schemas for exact amounts and invalid-group handling instead of inventing SQL semantics.
+
 ## Completion is a condition
 
 `finish when=verified` does not declare success. It asks the host to finish only if all effects
-have verified and no error, skipped effect, or pending recovery remains. Cancellation or a failed
+have verified and no error, blocked effect, or pending recovery remains. A declared empty-result
+condition creates no effect and can complete after its freshness and completeness checks. Cancellation or a failed
 check cannot become successful completion. Hosts/effects without verified readback cannot satisfy
 this condition; inspect their outcome and use legacy `done` only when the task's actual completion
 criteria are met. Never describe an unsupported verification as completed.

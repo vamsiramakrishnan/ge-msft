@@ -481,34 +481,24 @@ export class ExcelBridge implements DocBridge {
         ok: false,
         changeId: req.changeId,
         kind: req.kind,
-        error: { code: 'no_cells', message: 'write-cells needs params.cells' },
+        error: { code: 'no_cells', message: 'write-cells needs non-empty cellValues or cells' },
       };
     }
     const target = rangeForGrid(plan.address, plan.values.length, plan.values[0]!.length);
-    // ADR-0003 element 3: route any `=`-prefixed cell into a formula grid so Excel evaluates an
-    // inspectable, auditable formula rather than an opaque literal. Pure split (unit-tested);
-    // the host write path is chosen from `hasFormulas` so non-formula writes are unchanged.
-    const explicit = req.params.cellValues;
+    // Use the same normalized grid for dimensions and host values. Explicit typed strings stay
+    // literal; only cellFormulas (or legacy `=` cells) may enter Excel's formula channel.
+    const explicit = req.params.cellValues !== undefined;
     const formulaCells = formulasForRequest(req);
-    const grid = explicit
-      ? splitFormulaGrid(
-          formulaCells.map((row, r) => row.map((f, c) => f || String(explicit[r]?.[c] ?? ''))),
-        )
-      : splitFormulaGrid(plan.values);
-    if (explicit) {
-      grid.formulas = formulaCells.map((row) => row.map((f) => (f.startsWith('=') ? f : null)));
-      grid.hasFormulas = formulaCells.some((row) => row.some((f) => f.startsWith('=')));
-      grid.rejected = splitFormulaGrid(formulaCells).rejected;
-      grid.values = explicit.map((row, r) =>
-        row.map((v, c) =>
-          formulaCells[r]?.[c]?.startsWith('=')
-            ? null
-            : typeof v === 'string' && v !== ''
-              ? `'${v}`
-              : (v ?? ''),
-        ),
-      );
-    }
+    const grid = splitFormulaGrid(formulaCells);
+    grid.values = plan.values.map((row, r) =>
+      row.map((v, c) =>
+        formulaCells[r]?.[c]?.startsWith('=')
+          ? null
+          : explicit && typeof v === 'string' && v !== ''
+            ? `'${v}`
+            : (v ?? ''),
+      ),
+    );
     // Security gate (ADR-0003 §untrusted boundary): cell text is model/host-derived, so a
     // formula flagged as active-content (WEBSERVICE/DDE/external-ref/…) must never be evaluated.
     // Degrade the whole write rather than promote untrusted data into an executable instruction.
@@ -578,7 +568,7 @@ export class ExcelBridge implements DocBridge {
       if (grid.hasFormulas) {
         range.formulas = grid.formulas as unknown[][];
         range.values = grid.values as unknown[][];
-      } else range.values = (explicit ? grid.values : plan.values) as unknown[][];
+      } else range.values = grid.values as unknown[][];
       range.load('address');
       await ctx.sync();
       // Keep a landed write successful even if readback fails. Verification is a separate outcome.

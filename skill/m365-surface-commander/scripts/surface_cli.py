@@ -271,6 +271,27 @@ done
     checked = analyze(program, capabilities=["analyze", "set"])
     assert not checked["errors"] and checked["bindings"][0]["type"] == "Artifact"
     assert checked["requestedCompletion"] == "verified" and checked["effects"][0]["refs"] == ["source"]
+    conditional = bound_write[:-1] + ',"whenNonEmpty":true}'
+    checked_conditional = analyze(bound_read + "\n" + conditional + "\nfinish when=verified", capabilities=["analyze", "set"])
+    assert not checked_conditional["errors"] and len(checked_conditional["effects"]) == 1
+    assert checked_conditional["requestedCompletion"] == "verified"  # requested, never runtime proof
+    assert analyze(bound_read + "\n" + conditional, capabilities=["analyze"])["errors"]
+    assert analyze(bound_read + "\n" + conditional.replace('true', '"yes"'))["errors"]
+    query = {"kind": "query", "inputs": ["$source"], "sql": "SELECT c0, c1 FROM $source",
+             "requiredColumns": [{"input": "$source", "indices": [0, 1], "exactDecimal": True}]}
+    for prefix in ("analyze ", "let $result = analyze "):
+        assert not analyze(bound_read + "\n" + prefix + json.dumps(query))["errors"]
+        for guard in ({"input": "$missing", "indices": [0]},
+                      {"input": "$source", "indices": [True]},
+                      {"input": "$source", "indices": [16384]},
+                      {"input": "$source", "indices": [0], "exactDecimal": "yes"}):
+            assert analyze(bound_read + "\n" + prefix + json.dumps({**query, "requiredColumns": [guard]}))["errors"]
+    # Capture aliases may resolve to the same immutable artifact; do not invent inequality.
+    alias_read = bound_read.replace("$source", "$alias")
+    alias_query = {**query, "requiredColumns": [{"input": "$alias", "indices": [0]}]}
+    assert not analyze(bound_read + "\n" + alias_read + "\nanalyze " + json.dumps(alias_query))["errors"]
+    concrete_query = {**query, "inputs": ["a_admitted"], "requiredColumns": [{"input": "a_other", "indices": [0]}]}
+    assert analyze("analyze " + json.dumps(concrete_query))["errors"]
     assert analyze(program, capabilities=["analyze"])["errors"]
     assert analyze(bound_read, capabilities=[])["errors"]
     assert analyze(bound_write)["errors"]

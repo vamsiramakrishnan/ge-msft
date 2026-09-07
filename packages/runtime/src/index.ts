@@ -52,6 +52,8 @@ export { analyseEffectDependencies, propagateFailure, effectResources } from './
 // is the only way web-shell/controller.ts's artifact rendering can reach these workspace types.
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
 export * from './docfs/index.js';
+export * from './workflow-recipes.js';
+export * from './execution-state.js';
 export {
   CommandCapsule,
   CommandCapsuleBudgetError,

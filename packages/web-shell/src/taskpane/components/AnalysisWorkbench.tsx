@@ -305,34 +305,40 @@ export function AnalysisWorkbench({
                 freshness checked before each operation
               </p>
             </details>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                run({ kind: 'materialize', id: selected.id, destination: destination.trim() });
-              }}
-            >
-              <label className="analysis-field">
-                Write destination
-                <div className="analysis-inline">
-                  <input
-                    aria-label="Write destination"
-                    placeholder="Results!A1"
-                    value={destination}
-                    onChange={(e) => setDestination(e.target.value)}
-                    disabled={disabled}
-                    required
-                  />
-                  <button
-                    type="submit"
-                    disabled={
-                      disabled || !destination.trim() || selected.truncated || !selected.rowCount
-                    }
-                  >
-                    Preview write
-                  </button>
-                </div>
-              </label>
-            </form>
+            {state.workflowWritesAvailable === false ? (
+              <p className="analysis-hint" role="status">
+                Writing is unavailable in this document. You can still inspect the result.
+              </p>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  run({ kind: 'materialize', id: selected.id, destination: destination.trim() });
+                }}
+              >
+                <label className="analysis-field">
+                  Write destination
+                  <div className="analysis-inline">
+                    <input
+                      aria-label="Write destination"
+                      placeholder="Results!A1"
+                      value={destination}
+                      onChange={(e) => setDestination(e.target.value)}
+                      disabled={disabled}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      disabled={
+                        disabled || !destination.trim() || selected.truncated || !selected.rowCount
+                      }
+                    >
+                      Preview write
+                    </button>
+                  </div>
+                </label>
+              </form>
+            )}
             {analysis.note && (
               <p role="status" className="analysis-hint">
                 {analysis.note}
@@ -420,7 +426,8 @@ export function AnalysisWorkbench({
                       Preview resume
                     </button>
                   )}
-                  {(r.canUndo ||
+                  {(r.canForget ||
+                    r.canUndo ||
                     r.canResume ||
                     r.state === 'undone' ||
                     r.state === 'superseded') && (

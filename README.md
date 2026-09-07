@@ -17,6 +17,11 @@ The command runtime supports dependent analysis in one model response, or zero m
 the typed SDK. Compact command discovery, bounded result inspection and verified completion reduce
 repeated context while preserving approval. See [programs and measured results](docs/COMMAND-PERFORMANCE.md).
 
+**Guided workflows** now provide reconciliation, duplicate-key detection and grouped totals with
+saved settings, source chips and result previews. They run directly through the SDK with no model
+call. Sessionless follow-ups use current execution state with inspectable evidence. See
+[workflow usage and extension points](docs/WORKFLOW-RECIPES.md).
+
 ## Choose the environment you want to test
 
 | Goal | Start here | Successful result |

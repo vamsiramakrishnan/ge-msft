@@ -6,11 +6,47 @@ import {
   planCreateTable,
   planFormatCells,
   planInsertChart,
+  planWriteCells,
 } from './actuate-plan.js';
 
 function req(params: ActuationRequest['params'], kind: ActuationRequest['kind']): ActuationRequest {
   return { changeId: asChangeId('c1'), kind, surface: 'excel', params };
 }
+
+describe('planWriteCells (shared grid precedence)', () => {
+  it('prefers typed cells over a conflicting legacy grid and preserves scalar types', () => {
+    expect(
+      planWriteCells(
+        req(
+          {
+            target: { range: 'Sales!B2' },
+            cells: [['legacy']],
+            cellValues: [
+              [17, true],
+              [null, '=literal'],
+            ],
+          },
+          'write-cells',
+        ),
+      ),
+    ).toEqual({
+      address: 'Sales!B2',
+      values: [
+        [17, true],
+        [null, '=literal'],
+      ],
+    });
+  });
+
+  it.each([
+    { cells: [], cellValues: [[42]], expected: [[42]] },
+    { cells: [['legacy']], cellValues: [], expected: [] },
+    { cells: [['legacy']], expected: [['legacy']] },
+    { expected: [] },
+  ])('preserves empty-grid precedence: %j', ({ expected, ...params }) => {
+    expect(planWriteCells(req(params, 'write-cells')).values).toEqual(expected);
+  });
+});
 
 describe('planFormatCells (ADR-0004 format-cells)', () => {
   it('maps each present format facet to a host op and flags hasOps', () => {

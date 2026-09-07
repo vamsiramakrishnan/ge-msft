@@ -24,6 +24,16 @@ type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type RecordValue = { value: Json; bytes: number; ref: string };
 type StringCursor = { length: number; offset: number; position: number };
 type Limits = Required<CommandResultStoreOptions>;
+const DEFAULT_RESULT_LIMITS: Limits = {
+  turnBytes: 16 * 1024,
+  inlineBytes: 2 * 1024,
+  itemBytes: 8 * 1024 * 1024,
+  totalBytes: 16 * 1024 * 1024,
+  maxItems: 128,
+  maxDepth: 32,
+  maxNodes: 200_000,
+  maxResults: 1024,
+};
 const encoder = new TextEncoder();
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 let nextScope = 0;
@@ -155,6 +165,16 @@ function failure(code: string, message: string): Json {
   return { complete: false, storageError: { code, message } };
 }
 
+/** Canonical bounded JSON for other runtime projections, with the identical untrusted-data rules. */
+export function snapshotCommandData(input: unknown): {
+  value: unknown;
+  json: string;
+  bytes: number;
+} {
+  const record = snapshot(input, DEFAULT_RESULT_LIMITS);
+  return { value: record.value, json: JSON.stringify(record.value), bytes: record.bytes };
+}
+
 /** Carry effect outcome flags independently of large payloads; never copy exception stacks. */
 function metadata(value: unknown): { [key: string]: Json } {
   if (!value || typeof value !== 'object') return {};
@@ -195,17 +215,7 @@ export class CommandResultStore {
   private bytes = 0;
 
   constructor(options: CommandResultStoreOptions = {}) {
-    this.limits = {
-      turnBytes: 16 * 1024,
-      inlineBytes: 2 * 1024,
-      itemBytes: 8 * 1024 * 1024,
-      totalBytes: 16 * 1024 * 1024,
-      maxItems: 128,
-      maxDepth: 32,
-      maxNodes: 200_000,
-      maxResults: 1024,
-      ...options,
-    };
+    this.limits = { ...DEFAULT_RESULT_LIMITS, ...options };
     for (const [key, value] of Object.entries(this.limits)) {
       if (!Number.isSafeInteger(value) || value < 1)
         throw new RangeError(`${key} must be a positive safe integer.`);

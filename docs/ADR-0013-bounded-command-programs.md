@@ -40,3 +40,6 @@ its session. Every independent command request carries the full bounded task/pro
 and a fresh document snapshot. Overflow and session-bound uploads stop explicitly, with no silent
 stateful fallback. Conversation mode remains an explicit compatibility option. Tenant behavior still
 needs live validation. Omitting `session` alone creates a session.
+
+ADR-0014 refines the independent context default to deterministic execution-state projection, with
+full bounded transcript replay available explicitly. [Current state and workflow contract](ADR-0014-workflow-recipes-execution-state.md).

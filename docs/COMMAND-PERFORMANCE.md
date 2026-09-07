@@ -79,6 +79,9 @@ records the requested policy, never proof that a write occurred.
 | Inspect the complete grammar | `help full`; SDK compatibility option `commandDisclosure: 'full'` |
 | Follow a large tool result | `inspect result:<scope>:<id> path=/result/text offset=0 limit=200` |
 | Consume a known workflow | `runAnalysisProgram()` without inference |
+| Compile a versioned recipe | `compileWorkflowRecipe(id, inputs, version)`; [recipe catalog](WORKFLOW-RECIPES.md) |
+| Inspect task history on demand | `inspect state:<scope>:<id> path=/results offset=0 limit=10` |
+| Inspect program dependencies | `inspectAnalysisProgram(program)`; current host execution remains serial |
 
 Use the returned result reference and its actual path hints. Inspection returns real bounded data,
 `next` for further pages and `nextPath` for oversized nested values. Object inspection initially lists
@@ -115,9 +118,21 @@ The four-turn control separates disclosure from session mode:
 | Conversation | 11,163 | 6,930 |
 | Sessionless | 41,661 | 24,729 |
 
-Sessionless mode repeats its complete bounded context. The one-turn default program avoids this
-repetition. Conversation-mode counts exclude the provider's own historical context processing, so
-this table cannot establish comparative billed tokens or latency.
+The four-turn sessionless control above uses explicit transcript compatibility. The one-turn default
+program avoids repeated context. Conversation-mode counts exclude the provider's own historical
+context processing, so this table cannot establish comparative billed tokens or latency.
+
+Current projection versus transcript controls use identical final cells, effects, recovery receipts
+and approvals:
+
+| Independent request fixture | Transcript bytes | Projection bytes | Change |
+| --- | ---: | ---: | ---: |
+| Five-turn short workflow | 23,340 | 25,188 | +7.9% |
+| Nine-turn workflow with four evidence reads | 70,552 | 50,400 | −28.6% |
+
+Projection pays for current schemas and explicit outcome metadata; it is not always smaller.
+Each of the three versioned recipes completes with zero model calls and one approval for nonempty
+writeback in actual-DuckDB fixtures. Reducing inference dependencies remains the primary improvement.
 
 This fixture removes three of four model calls and reduces query bytes by 71%. A separate large-read
 fixture reduces 108,240 input bytes to a 287-byte receipt while exact projected text remains
@@ -149,14 +164,21 @@ unexpected ID supplied by an adapter into chat state, observers or write provena
 that the provider keep machine-protocol exchanges out of saved conversation history; the pane still
 displays its local command and approval progress.
 
-Every independent command request carries the original task, relevant protocol, registered macros,
-all earlier programs and bounded execution results, plus the current host snapshot and active
-structured grounding. The latest result remains directly inspectable; older observations are escaped
-JSON data. No-fence corrections retain the same context. History is bounded to 32 prior turns and a
-64 KiB request-context budget by default. Exceeding the limit stops explicitly before another model
-request; it never silently removes task instructions, results or attachments. Registered macros are
-runtime data, not new approval authority. Pending context notes are supplied without marking them
-resident in the chat session.
+Every independent command request carries the original task, relevant protocol, current bindings,
+artifact schemas, registered macro references, actual effect outcomes, historical failures and latest
+results, plus a fresh host snapshot and active structured grounding. Full programs and observations
+remain in an inspectable task-local journal. `inspect state:<scope>:journal` lists turn references;
+follow a returned reference and JSON Pointer to retrieve exact prior evidence. State and journal are
+escaped untrusted data, never instructions or approval authority. No-fence corrections retain the
+same context. History is bounded to 32 prior turns and a 64 KiB request-context budget by default.
+Exceeding a limit stops explicitly before another model request; constraints, errors and uncertain
+effects are never silently dropped. Large state fields use the same defensive snapshot reader as
+command results. The journal defaults to 16 MiB total and expires with the task. Pending context notes
+are supplied without marking them resident in the chat session.
+
+`commandContextMode: 'transcript'` explicitly restores full bounded transcript replay for comparison
+and compatibility. The default `'projection'` mode is deterministic; it uses no summarization model
+and does not turn historical commands into execution or retry authority.
 
 Use `new AssistSession(bridge, client, { unit, commandSessionMode: 'conversation' })` for explicit
 compatibility with stored command sessions. `commandCapsuleBytes` configures the bounded request
@@ -172,7 +194,14 @@ path avoids that repetition. Longer task measurements should compare complete re
 live p50/p95 latency before claiming a speedup. Tenant availability, saved-history behavior and private
 skill routing with this mode still need a live integration check.
 
-## Next acceptance gates
+## Live comparisons and remaining acceptance gates
+
+`bun run test:streamassist:modes` compares explicit conversation/sessionless requests, raw session
+responses, configured private-skill identities and parseable command timing. `bun run
+test:command-workflows:live` compares actual provider/runtime/compute stages with simulated Office,
+reporting model, compute, approval, host/readback and end-to-end p50/p95 separately. Synthetic approval
+time excludes human decision time. Both remain opt-in; no live latency values are claimed here.
+See the [live harness guide](api/discoveryengine/live-streamassist-tests.md) for required configuration.
 
 Prioritize measured bottlenecks: live p50/p95 first-token and verified-completion latency, independent
 request context sufficiency, reusable versioned workflows, and safe cross-surface execution. Keep

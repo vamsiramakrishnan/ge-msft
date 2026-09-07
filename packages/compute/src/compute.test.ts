@@ -5,6 +5,7 @@ import type * as DuckDB from '@duckdb/duckdb-wasm/blocking';
 import { ArtifactStore } from './artifacts.js';
 import { validateQuery } from './sql-policy.js';
 import { reconciliationQuery } from './reconcile.js';
+import { exactDecimalColumnSql } from './exact-decimal.js';
 import { artifactToIPC, arrowRows, ENGINE_SETTINGS } from './arrow.js';
 import { makeCellSnapshot } from '@ge/contracts';
 
@@ -116,6 +117,121 @@ describe('actual DuckDB WASM computation', () => {
     });
     conn.insertArrowFromIPCStream(artifactToIPC(empty), { name: empty.id, create: true });
     expect(arrowRows(conn.query(`SELECT count(*) FROM ${empty.id}`), 10)).toEqual([['0']]);
+  });
+  it('never rounds invalid reconciliation decimals or presents partial group totals', async () => {
+    const store = new ArtifactStore();
+    const left = await store.add({
+      title: 'Precision invoices',
+      labels: ['key', 'amount'],
+      sources: [],
+      lineage: { parents: [], operation: 'snapshot' },
+      rows: [
+        ['fine', '0.0000001'],
+        ['exponent', '1e2'],
+        ['overflow', '100000000000000000000000000000000'],
+        ['partial', '7.00'],
+        ['partial', 'not a number'],
+        ['blank', null],
+        ['exact', '9007199254740993.010001'],
+        ['negative', '-0.000001'],
+      ],
+    });
+    const right = await store.add({
+      title: 'Precision payments',
+      labels: ['key', 'amount'],
+      sources: [],
+      lineage: { parents: [], operation: 'snapshot' },
+      rows: [
+        ['fine', '0.00'],
+        ['exponent', '100.00'],
+        ['overflow', '0.00'],
+        ['partial', '7.00'],
+        ['blank', '0.00'],
+        ['exact', '9007199254740993.010001'],
+        ['negative', '-0.000001'],
+      ],
+    });
+    conn.insertArrowFromIPCStream(artifactToIPC(left), { name: left.id, create: true });
+    conn.insertArrowFromIPCStream(artifactToIPC(right), { name: right.id, create: true });
+    const sql = validateQuery(
+      reconciliationQuery(left, right, {
+        left: left.id,
+        right: right.id,
+        leftKey: 0,
+        rightKey: 0,
+        leftAmount: 1,
+        rightAmount: 1,
+        currency: 'USD',
+        tolerance: '0',
+      }),
+    );
+    const rows = arrowRows(conn.query(sql), 100);
+    for (const key of ['fine', 'exponent', 'overflow', 'partial', 'blank'])
+      expect(rows.find((row) => row[0] === key)?.slice(2, 6)).toEqual([
+        null,
+        null,
+        null,
+        'invalid',
+      ]);
+    expect(rows.find((row) => row[0] === 'exact')?.slice(2, 6)).toEqual([
+      '9007199254740993.010001',
+      '9007199254740993.010001',
+      '0.000000',
+      'matched',
+    ]);
+    expect(rows.find((row) => row[0] === 'negative')?.slice(2, 6)).toEqual([
+      '-0.000001',
+      '-0.000001',
+      '0.000000',
+      'matched',
+    ]);
+  });
+  it('rejects already-imprecise native numbers on either reconciliation side before SQL execution', async () => {
+    const store = new ArtifactStore();
+    const unsafe = await store.add({
+      title: 'Unsafe amounts',
+      labels: ['key', 'amount'],
+      rows: [['A', Number.MAX_SAFE_INTEGER + 1]],
+      sources: [],
+      lineage: { parents: [], operation: 'snapshot' },
+    });
+    const exact = await store.add({
+      title: 'Exact amounts',
+      labels: ['key', 'amount'],
+      rows: [['A', '9007199254740992']],
+      sources: [],
+      lineage: { parents: [], operation: 'snapshot' },
+    });
+    for (const [left, right] of [
+      [unsafe, exact],
+      [exact, unsafe],
+    ]) {
+      expect(() =>
+        reconciliationQuery(left!, right!, {
+          left: left!.id,
+          right: right!.id,
+          leftKey: 0,
+          rightKey: 0,
+          leftAmount: 1,
+          rightAmount: 1,
+          currency: 'USD',
+          tolerance: '0',
+        }),
+      ).toThrow('Store those amounts as decimal text');
+    }
+    expect(() =>
+      reconciliationQuery(exact, exact, {
+        left: exact.id,
+        right: exact.id,
+        leftKey: 5,
+        rightKey: 0,
+        leftAmount: 1,
+        rightAmount: 1,
+        currency: 'USD',
+        tolerance: '0',
+      }),
+    ).toThrow('Column 6 (index 5)');
+    expect(() => exactDecimalColumnSql('c0); SELECT 1')).toThrow('captured column identifier');
   });
   it('roundtrips decimals and integers without Number coercion', () => {
     expect(

@@ -32,9 +32,9 @@ Generated from resource frontmatter. Load the listed file only when its `load_wh
 | [references/generated-command-catalog.md](../references/generated-command-catalog.md) | generated-reference | - | - | Checking generated command syntax, command playbooks, or the CLI help surface. |
 | [references/onenote-semantics.md](../references/onenote-semantics.md) | reference | onenote | - | The active surface is OneNote or a plan mentions pages, notebook notes, or append-page. |
 | [references/outlook-semantics.md](../references/outlook-semantics.md) | reference | outlook | - | The active surface is Outlook or a plan mentions mail, thread, attachment, reply, or draft. |
-| [references/planning-normal-form.md](../references/planning-normal-form.md) | reference | - | - | A task needs bindings, multiple effects, or a decision about model-turn boundaries. |
+| [references/planning-normal-form.md](../references/planning-normal-form.md) | reference | - | - | A task needs bindings, recipes, conditional materialization, multiple effects, or a model-turn boundary. |
 | [references/powerpoint-semantics.md](../references/powerpoint-semantics.md) | reference | powerpoint | - | The active surface is PowerPoint or a handoff targets a PowerPoint deck. |
-| [references/progressive-disclosure.md](../references/progressive-disclosure.md) | reference | - | - | Choosing the smallest sufficient context or command help for the next decision. |
+| [references/progressive-disclosure.md](../references/progressive-disclosure.md) | reference | - | - | Choosing context or command help, or recovering omitted evidence from an execution-state reference. |
 | [references/specialized-capabilities.md](../references/specialized-capabilities.md) | reference | - | - | A task needs host-native capability beyond the core CLI verbs. |
 | [references/teams-semantics.md](../references/teams-semantics.md) | reference | teams | - | The active surface is Teams or a plan mentions meetings, transcript, channel, thread, or post. |
 | [references/word-semantics.md](../references/word-semantics.md) | reference | word | - | The active surface is Word or a plan mentions redlines, comments, paragraphs, or text anchors. |

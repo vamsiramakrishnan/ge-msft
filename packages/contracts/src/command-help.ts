@@ -31,7 +31,8 @@ export const COMMAND_HELP = {
       'analyze {"kind":"inspect","id":"RETURNED_ID"}',
       'analyze {"kind":"materialize","id":"RESULT_ID","destination":"Sheet1!F1"}',
       'let $source = analyze {"kind":"capture","range":"Sheet1!A1:D100","headers":true}',
-      'analyze {"kind":"materialize","id":"$source","destination":"Sheet1!F1"}',
+      'analyze {"kind":"materialize","id":"$source","destination":"Sheet1!F1","whenNonEmpty":true}',
+      'analyze {"kind":"query","inputs":["$source"],"requiredColumns":[{"input":"$source","indices":[0,1]}],"sql":"SELECT c0, c1 FROM $source"}',
       'finish when=verified',
     ],
     doNot: [
@@ -44,6 +45,8 @@ export const COMMAND_HELP = {
       'Stale sources require capture and recomputation.',
       'Truncated results cannot be materialized.',
       'Compute is available only on hosts with versioned cell capture.',
+      'whenNonEmpty:true skips a fresh, complete zero-row result without approval or clearing the destination; it does not weaken verification.',
+      'query.requiredColumns validates declared input indices before SQL; exactDecimal:true rejects native amounts beyond safe numeric precision. It cannot restore digits already lost in the source.',
     ],
     safety: ['Queries have no external I/O. Writes require capability checks and human approval.'],
   },

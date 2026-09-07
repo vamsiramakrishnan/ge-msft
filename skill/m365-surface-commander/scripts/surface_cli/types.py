@@ -7,18 +7,6 @@ import re
 # everything else stays a Table. A source (read/search/outline/$var) is a Table.
 _AGG = {"sum", "avg", "min", "max", "count"}
 
-# Effects that touch the recipient/host externally (vs an in-document change) — surfaced as risk.
-_EXTERNAL = {"mail", "post", "compose"}
-
-# Specialized `/<kind>` capabilities that reach the estate / an external recipient (Plane B + sends) —
-# surfaced as external risk on the preflight, same as the core external verbs.
-_EXTERNAL_KINDS = {
-    "post-chat-message", "post-channel-message", "reply-channel-message", "update-message",
-    "send-activity-notification", "create-online-meeting", "create-event", "create-task",
-    "move-message", "copy-message", "categorize-message", "flag-message", "delete-message",
-    "create-mail-rule", "graph-create-page", "graph-patch-page", "graph-create-section",
-}
-
 _RANGE = re.compile(r"^(?:(?P<sheet>[^!]+)!)?(?P<a>[A-Za-z]+\d+)(?::(?P<b>[A-Za-z]+\d+))?$")
 _CELL = re.compile(r"^([A-Za-z]+)(\d+)$")
 

@@ -1,63 +1,20 @@
-import { z } from 'zod';
 import {
   ArtifactStore,
   reconciliationQuery,
-  ReconciliationSpecSchema,
   assertExactDecimalColumn,
   type ComputeEngine,
 } from '@ge/compute';
 import {
   asChangeId,
+  AnalysisActionSchema,
+  type AnalysisAction,
   type ActuationRequest,
   type ArtifactSummary,
   type TableArtifact,
 } from '@ge/contracts';
 import type { DocBridge } from './bridge.js';
 
-export const AnalysisActionSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('capture'),
-    range: z.string().min(1).max(1024),
-    headers: z.boolean().default(true),
-  }),
-  z.object({
-    kind: z.literal('query'),
-    sql: z.string().min(1).max(32768),
-    inputs: z.array(z.string()).min(1).max(16),
-    title: z.string().min(1).max(256).default('Query result'),
-    requiredColumns: z
-      .array(
-        z
-          .object({
-            input: z.string().min(1),
-            indices: z.array(z.number().int().nonnegative().max(16383)).min(1).max(64),
-            exactDecimal: z.boolean().optional(),
-          })
-          .strict(),
-      )
-      .max(16)
-      .optional(),
-  }),
-  z.object({ kind: z.literal('reconcile'), spec: ReconciliationSpecSchema }),
-  z.object({ kind: z.literal('inspect'), id: z.string() }),
-  z.object({ kind: z.literal('remove'), id: z.string() }),
-  z.object({
-    kind: z.literal('filter'),
-    id: z.string(),
-    status: z.enum(['matched', 'variance', 'unpaid', 'unallocated', 'invalid']),
-  }),
-  z.object({
-    kind: z.literal('materialize'),
-    id: z.string(),
-    destination: z.string().min(1).max(1024),
-    whenNonEmpty: z.boolean().optional(),
-  }),
-  z.object({ kind: z.literal('recovery') }),
-  z.object({ kind: z.literal('undo'), id: z.string() }),
-  z.object({ kind: z.literal('resume'), id: z.string() }),
-  z.object({ kind: z.literal('forget'), id: z.string() }),
-]);
-export type AnalysisAction = z.input<typeof AnalysisActionSchema>;
+export { AnalysisActionSchema, type AnalysisAction } from '@ge/contracts';
 export interface ActionOffer {
   id: string;
   title: string;

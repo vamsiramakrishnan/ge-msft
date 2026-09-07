@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AnalysisActionSchema as SharedActionSchema,
+  AnalysisProgramSchema as SharedProgramSchema,
+} from '@ge/contracts';
+import { AnalysisActionSchema } from './analysis-workspace.js';
+import { AnalysisProgramSchema } from './analysis-program.js';
+import {
   AnalysisBindings,
   compileAnalysisProgram,
   inspectAnalysisProgram,
@@ -69,6 +75,10 @@ describe('typed artifact bindings', () => {
 });
 
 describe('SDK analysis program compiler', () => {
+  it('retains compatibility exports as the authoritative shared schema instances', () => {
+    expect(AnalysisActionSchema).toBe(SharedActionSchema);
+    expect(AnalysisProgramSchema).toBe(SharedProgramSchema);
+  });
   it('preserves a typed nonempty guard and serializes dependency barriers around writes', () => {
     const program = {
       version: 1 as const,

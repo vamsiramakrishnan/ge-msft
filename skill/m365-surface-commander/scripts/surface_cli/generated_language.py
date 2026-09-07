@@ -1,6 +1,6 @@
 """surface_cli.generated_language — the verb/transform/kind tables, sourced from the GENERATED
 language manifest (ADR-0008 §4) via the shared `parse_commands` loader. Not hand-maintained: the
-manifest is emitted from @ge/contracts, so these tables can never diverge from the runtime grammar."""
+manifest is emitted from @ge/contracts; structural parser behavior remains parity-tested."""
 
 import sys
 from pathlib import Path
@@ -15,6 +15,7 @@ from parse_commands import (  # noqa: E402
     COMMAND_HELP,
     CAPABILITY_REGISTRY,
     LANGUAGE_VERSION,
+    PREFLIGHT,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "COMMAND_HELP",
     "CAPABILITY_REGISTRY",
     "LANGUAGE_VERSION",
+    "PREFLIGHT",
 ]

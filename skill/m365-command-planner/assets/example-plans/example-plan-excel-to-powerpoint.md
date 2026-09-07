@@ -21,16 +21,13 @@ Planner output:
 intent   draft
 surface  excel
 scope    document
-workflow cross-surface
-source   excel document
-target   powerpoint deck
 context  analytical
 context  full-scope
 context  upload-preferred
 context  code-execution-preferred
-phase    excel analyze the workbook, extract top risks, timeline, and status, and prepare a slide-ready handoff packet
-phase    powerpoint create an executive deck from the approved handoff packet
-handoff  chart-ready summary table, slide outline, source workbook refs, exclusions, and provenance
+step     Analyze the workbook in Excel, extract top risks, timeline, and status, and prepare a slide-ready handoff packet
+step     After the user opens PowerPoint and reviews the handoff, create an executive deck from the approved handoff packet
+step     Include in the reviewable handoff: chart-ready summary table, slide outline, source workbook refs, exclusions, and provenance
 step     prepare the Excel analysis handoff; do not mutate PowerPoint from Excel
 exclude  do not overwrite source workbook cells
 confidence high
@@ -40,6 +37,6 @@ confidence high
 Why this is correct:
 
 - `surface excel` says where the workflow starts.
-- `workflow cross-surface` makes the handoff explicit.
+- Ordered steps make the handoff and separate app review explicit.
 - The Excel phase prepares a packet; it does not create PowerPoint slides.
 - PowerPoint receives its own later commander run and approval.

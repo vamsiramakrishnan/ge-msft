@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { ReconciliationSpecSchema, exactDecimalColumnSql } from '@ge/compute';
+import { exactDecimalColumnSql } from '@ge/compute';
+import { ReconciliationSpecSchema } from '@ge/contracts';
 import { compileAnalysisProgram, type AnalysisProgram } from './analysis-program.js';
 
 const range = z

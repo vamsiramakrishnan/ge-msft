@@ -12,47 +12,35 @@ from .parser import (
     _analysis_refs,
     verified_frame_error,
 )
-from .types import _parse_range, _overlap, _EXTERNAL, _EXTERNAL_KINDS
-from .generated_language import LANGUAGE_VERSION
+from .types import _parse_range, _overlap
+from .generated_language import LANGUAGE_VERSION, PREFLIGHT
+from language_manifest import guard_errors
 
-_READ_PHASE_VERBS = {
-    "outline", "read", "search", "list", "inspect", "properties", "comments", "attachments",
-    "tables", "slides", "neighbors", "context", "open",
-    "workspace", "save", "cat", "grep",
-}
+_READ_PHASE_VERBS = set(PREFLIGHT["readPhaseVerbs"])
 
 
 def _analysis_guard_errors(action):
-    """Check declared guards without pretending to know live row counts or column schemas."""
-    if action.get("kind") == "materialize":
-        return (["whenNonEmpty must be a boolean"]
-                if "whenNonEmpty" in action and not isinstance(action["whenNonEmpty"], bool) else [])
-    if action.get("kind") != "query" or "requiredColumns" not in action:
-        return []
-    required = action["requiredColumns"]
-    if not isinstance(required, list) or len(required) > 16:
-        return ["requiredColumns must be an array with at most 16 input guards"]
     errors = []
+    kind = action.get("kind")
+    if not isinstance(kind, str):
+        return ["analysis kind must be a string"]
+    for name, schema in PREFLIGHT["analysisGuards"].get(kind, {}).items():
+        if name in action:
+            errors.extend(guard_errors(action[name], schema, name))
+    # Membership of literal handles is statically decidable; aliases need runtime resolution.
     inputs = action.get("inputs") if isinstance(action.get("inputs"), list) else []
-    for entry in required:
-        if not isinstance(entry, dict) or set(entry) - {"input", "indices", "exactDecimal"}:
-            errors.append("invalid requiredColumns guard fields")
-            continue
-        if not isinstance(entry.get("input"), str) or not entry["input"]:
-            errors.append("requiredColumns needs an input artifact")
-        elif (not entry["input"].startswith("$")
-              and all(isinstance(value, str) and not value.startswith("$") for value in inputs)
-              and entry["input"] not in inputs):
-            # Bound aliases can resolve to the same content-addressed artifact. Only concrete
-            # mismatches are decidable here; the runtime checks resolved membership again.
-            errors.append("requiredColumns input must also be declared in query inputs")
-        indices = entry.get("indices")
-        if (not isinstance(indices, list) or not 1 <= len(indices) <= 64
-                or any(type(index) is not int or not 0 <= index <= 16383 for index in indices)):
-            errors.append("requiredColumns indices must be 1-64 zero-based integers from 0 to 16383")
-        if "exactDecimal" in entry and not isinstance(entry["exactDecimal"], bool):
-            errors.append("requiredColumns exactDecimal must be a boolean")
+    if action.get("kind") == "query" and not errors:
+        for entry in action.get("requiredColumns", []):
+            if (not entry["input"].startswith("$")
+                    and all(isinstance(value, str) and not value.startswith("$") for value in inputs)
+                    and entry["input"] not in inputs):
+                errors.append("requiredColumns input must also be declared in query inputs")
     return errors
+
+
+def _authority(name, specialized=False):
+    info = PREFLIGHT["approvalByKind" if specialized else "approvalByVerb"].get(name)
+    return info or {"approvalClass": "in-document", "reversible": True}
 
 
 def analyze(program_text: str, capabilities=None):
@@ -156,7 +144,8 @@ def analyze(program_text: str, capabilities=None):
                     target = None
                 effects.append({"verb": "analyze:materialize", "target": target,
                                 "range": _parse_range(target) if target else None,
-                                "external": False, "refs": refs})
+                                "external": _authority("write-cells", True)["approvalClass"] != "in-document",
+                                **_authority("write-cells", True), "refs": refs})
             elif isinstance(kind, str) and kind in {"capture", "query", "reconcile", "inspect", "filter", "remove"}:
                 reads.append(line)
             else:
@@ -176,7 +165,8 @@ def analyze(program_text: str, capabilities=None):
                 errors.append(f"/{kind} is not in this turn's capabilities")
             effects.append(
                 {"verb": f"/{kind}", "target": None, "range": None,
-                 "external": kind in _EXTERNAL_KINDS, "refs": []}
+                 "external": _authority(kind, True)["approvalClass"] != "in-document",
+                 **_authority(kind, True), "refs": []}
             )
             continue
 
@@ -188,7 +178,8 @@ def analyze(program_text: str, capabilities=None):
             "verb": verb,
             "target": target,
             "range": _parse_range(target) if target else None,
-            "external": verb in _EXTERNAL,
+            "external": _authority(verb)["approvalClass"] != "in-document",
+            **_authority(verb),
             "refs": re.findall(r"\$(\w+)", rec.get("value", "")) if verb == "spill" else [],
         }
         for ref in eff["refs"]:

@@ -205,7 +205,9 @@ describe('content → gemini-client → runtime grounding interplay', () => {
     expect(client.sentParts[0]!.every((p) => 'text' in p)).toBe(true);
     expect(client.sentParts[0]!.length).toBe(resolved.length);
 
-    // 4. A provenance-stamped, reversible write flows back through the REAL apply() path.
+    // 4. Pin attribution from this answer to the reviewed proposal, as the controller does.
+    const proposalProvenance = events.find((event) => event.type === 'provenance');
+    expect(proposalProvenance?.type).toBe('provenance');
     const result = await session.apply(
       'tracked-change',
       {
@@ -213,6 +215,7 @@ describe('content → gemini-client → runtime grounding interplay', () => {
         target: { matchText: 'The SLA is 99.5% measured monthly.' },
       },
       asChangeId('chg-1'),
+      proposalProvenance?.type === 'provenance' ? proposalProvenance.payload : undefined,
     );
     expect(result.ok).toBe(true);
 

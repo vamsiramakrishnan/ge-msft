@@ -11,7 +11,7 @@ import argparse
 import importlib.util
 import re
 import sys
-import zipfile
+from bundle import validate_archive
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -197,18 +197,7 @@ def validate_skill(skill_dir: Path) -> list[str]:
 
 
 def validate_zip(skill_name: str) -> list[str]:
-    zip_path = ROOT / f"{skill_name}.zip"
-    if not zip_path.exists():
-        return []
-    errors: list[str] = []
-    with zipfile.ZipFile(zip_path) as zf:
-        names = zf.namelist()
-    if "SKILL.md" not in names:
-        errors.append(f"{zip_path.name} missing root SKILL.md")
-    forbidden = [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
-    if forbidden:
-        errors.append(f"{zip_path.name} contains Python cache files: {', '.join(forbidden)}")
-    return errors
+    return validate_archive(ROOT / skill_name, ROOT / f"{skill_name}.zip")
 
 
 def import_module(path: Path, name: str):
@@ -216,7 +205,17 @@ def import_module(path: Path, name: str):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Resolve each standalone parser's bundled helper, without accidentally reusing the other
+    # skill's previously imported copy. A missing helper must remain a packaging failure.
+    previous_helper = sys.modules.pop("language_manifest", None)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+        sys.modules.pop("language_manifest", None)
+        if previous_helper is not None:
+            sys.modules["language_manifest"] = previous_helper
     return module
 
 

@@ -15,6 +15,7 @@
     "@ge/content": "*",
     "@ge/gemini-client": "*",
     "@ge/triggers": "*",
-    "@ge/compute": "*"
+    "@ge/compute": "*",
+    "zod": "^3.23.0"
   }
 }

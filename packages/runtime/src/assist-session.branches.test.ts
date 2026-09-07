@@ -432,7 +432,7 @@ describe('AssistSession.runCommands — approvePlan defensive + actuate failure'
     warn.mockRestore();
   });
 
-  it('a thrown actuate becomes a corrective actuate_failed result (no thrown loop)', async () => {
+  it('a thrown host dispatch becomes an uncertain corrective result (no thrown loop)', async () => {
     const bridge = writingBridge();
     bridge.actuateError = new Error('bridge boom');
     const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
@@ -442,7 +442,8 @@ describe('AssistSession.runCommands — approvePlan defensive + actuate failure'
     const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
     const w = writeResults(events)[0];
     expect(w?.result.ok).toBe(false);
-    expect(w?.result.error).toMatchObject({ code: 'actuate_failed', message: 'bridge boom' });
+    expect(w?.result.error?.code).toBe('outcome_unknown');
+    expect(w?.result.recoveryPending).toBe(true);
     expect(bridge.applied).toHaveLength(0);
   });
 });

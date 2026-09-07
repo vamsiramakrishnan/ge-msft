@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildLanguageManifest, assertManifestConsistent } from '../dist/language-manifest.js';
+import { PLANNER_LANGUAGE } from '../dist/command-plan.js';
 
 const manifest = assertManifestConsistent(buildLanguageManifest());
 const json = JSON.stringify(manifest, null, 2) + '\n';
@@ -21,6 +22,13 @@ for (const out of targets) {
   writeOrCheck(out, json);
   if (!check)
     console.log(`wrote ${out} (${manifest.version}, ${manifest.verbs.write.length} write verbs)`);
+}
+
+writeOrCheck(resolve(here, '../../../skill/m365-command-planner/scripts/m365-plan-1.0.json'), JSON.stringify(PLANNER_LANGUAGE, null, 2) + '\n');
+
+const manifestLoader = readFileSync(resolve(here, '../../../skill/shared/language_manifest.py'), 'utf8');
+for (const skill of ['m365-surface-commander', 'm365-command-planner']) {
+  writeOrCheck(resolve(here, `../../../skill/${skill}/scripts/language_manifest.py`), '# GENERATED from skill/shared/language_manifest.py by emit:language.\n' + manifestLoader);
 }
 
 const generatedDocs = [

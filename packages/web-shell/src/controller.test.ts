@@ -509,7 +509,7 @@ describe('PanelController — ask / stream', () => {
     assist.hold();
     const turn = c.send('explain');
     expect(c.getState().busy).toBe(true);
-
+    await tick(); // The partial token must arrive before cancellation, not after it.
     c.cancel();
     await turn;
 
@@ -543,6 +543,7 @@ describe('PanelController — ask / stream', () => {
     assist.hold();
     const first = c.send('a');
     expect(c.getState().busy).toBe(true);
+    await tick();
 
     // Queue a follow-up, then cancel the current turn: the queued one should drain.
     c.onAutomate('b');
@@ -1761,5 +1762,317 @@ describe('workflow controller ownership and outcome truth', () => {
     expect(controller.getState().workflowRun?.write).toBeUndefined();
     await controller.runAnalysis(action);
     expect(writes).toBe(2);
+  });
+});
+
+describe('PanelController shared execution lifecycle', () => {
+  it.each(['chat', 'commands', 'direct', 'analysis', 'workflow', 'planner', 'proposal'] as const)(
+    'installs cancellation ownership before publishing a busy %s execution',
+    async (route) => {
+      const calls: string[] = [];
+      const session = Object.assign(new FakeAssist(), {
+        analysis: { state: () => ({ artifacts: [], offers: [] }) },
+        async *runAnalysis() {
+          calls.push('analysis');
+          yield { type: 'done' as const };
+        },
+        async *runAnalysisProgram() {
+          calls.push('workflow');
+          yield { type: 'done' as const };
+        },
+        async *runCommandProgram() {
+          calls.push('direct');
+          yield { type: 'done' as const };
+        },
+      });
+      session.ask = async function* () {
+        calls.push('chat');
+        yield { type: 'done' };
+      };
+      session.runCommands = async function* () {
+        calls.push('commands');
+        yield { type: 'done' };
+      };
+      session.plan = async () => {
+        calls.push('planner');
+        return { plan: null, errors: [], needsClarification: false };
+      };
+      session.apply = async (kind, _params, changeId) => {
+        calls.push('proposal');
+        return { kind, changeId, ok: true };
+      };
+      const controller = new PanelController(session, lister([]));
+      const proposal = controller.propose(
+        'tracked-change',
+        { text: 'Reviewed replacement' },
+        'Replace text',
+      );
+      controller.subscribe((state) => {
+        if (state.busy) controller.cancel();
+      });
+      if (route === 'chat') await controller.send('Explain this');
+      else if (route === 'commands') await controller.runCommands('Rewrite this');
+      else if (route === 'direct') await controller.runDirectCommands('read selection');
+      else if (route === 'analysis') await controller.runAnalysis({ kind: 'recovery' });
+      else if (route === 'workflow')
+        await controller.runWorkflowRecipe('duplicate-rows', { sourceRange: 'Orders!A1:B5' });
+      else if (route === 'planner') await controller.proposePlan('Rewrite these sections');
+      else await controller.applyProposal(proposal.changeId);
+      expect(calls).toEqual([]);
+      expect(controller.getState().busy).toBe(false);
+      expect(controller.getState().pendingPlan).toBeUndefined();
+      expect(controller.getState().pendingWrite).toBeUndefined();
+      if (route === 'proposal') expect(controller.getState().proposals[0]?.status).toBe('pending');
+    },
+  );
+
+  it('holds proposal ownership through failure, settles its card, then drains the queued route', async () => {
+    const session = new FakeAssist();
+    let rejectApply: (reason: Error) => void = () => {};
+    const apply = vi.spyOn(session, 'apply').mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectApply = reject;
+        }),
+    );
+    const controller = new PanelController(session, lister([]));
+    const first = controller.propose('tracked-change', { text: 'First' }, 'First');
+    const second = controller.propose('tracked-change', { text: 'Second' }, 'Second');
+    const pending = controller.applyProposal(first.changeId);
+    expect(controller.getState().busy).toBe(true);
+    await controller.applyProposal(second.changeId);
+    await controller.runCommands('Inspect the document');
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(session.runTasks).toEqual([]);
+    rejectApply(new Error('Connection lost after sending the write'));
+    await expect(pending).resolves.toBeUndefined();
+    await tick();
+    expect(controller.getState().proposals[0]).toMatchObject({
+      status: 'failed',
+      detail: expect.stringContaining('outcome is uncertain'),
+    });
+    expect(controller.getState().proposals[1]?.status).toBe('pending');
+    expect(session.runTasks).toEqual(['Inspect the document']);
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it('preserves a landed proposal receipt after cancellation during non-abortable host work', async () => {
+    const session = new FakeAssist();
+    let settle: (result: ActuationResult) => void = () => {};
+    vi.spyOn(session, 'apply').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const controller = new PanelController(session, lister([]));
+    const proposal = controller.propose('tracked-change', { text: 'Confirmed' }, 'Replace text');
+    const pending = controller.applyProposal(proposal.changeId);
+    controller.cancel();
+    expect(controller.getState().busy).toBe(true);
+    settle({
+      kind: proposal.kind,
+      changeId: proposal.changeId,
+      ok: true,
+      verification: { status: 'verified' },
+    });
+    await pending;
+    expect(controller.getState().proposals[0]?.status).toBe('applied');
+    expect(controller.getState().changes[0]?.ok).toBe(true);
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it('passes proposal cancellation into delayed pre-dispatch runtime work', async () => {
+    const session: AssistLike = new FakeAssist();
+    let finishPreparation: () => void = () => {};
+    const preparing = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const hostWrite = vi.fn();
+    let observedSignal: AbortSignal | undefined;
+    session.apply = async (kind, _params, changeId, _provenance, options) => {
+      observedSignal = options?.signal;
+      await preparing;
+      options?.signal?.throwIfAborted();
+      hostWrite();
+      return { kind, changeId, ok: true };
+    };
+    const controller = new PanelController(session, lister([]));
+    const proposal = controller.propose('tracked-change', { text: 'Confirmed' }, 'Replace text');
+    const pending = controller.applyProposal(proposal.changeId);
+    controller.cancel();
+    expect(observedSignal?.aborted).toBe(true);
+    finishPreparation();
+    await pending;
+    expect(hostWrite).not.toHaveBeenCalled();
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it.each(['model', 'direct'] as const)(
+    'shares the exact approval gates through the %s command route',
+    async (route) => {
+      const session = new FakeAssist();
+      let options: RunCommandsOptions | undefined;
+      const decisions: boolean[] = [];
+      const request = writeReq('shared-owner');
+      const runner = async function* (
+        _program: string,
+        opts?: RunCommandsOptions,
+      ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+        options = opts;
+        decisions.push(Boolean(await opts?.approveWrite?.(request)));
+        decisions.push(Boolean(await opts?.approvePlan?.([planEffect('plan-owner')])));
+        decisions.push(
+          Boolean(
+            await opts?.approveShare?.({
+              name: 'Result',
+              text: 'Ready',
+              bytes: 5,
+              truncated: false,
+              sourceLabel: 'Selected range',
+            }),
+          ),
+        );
+        yield { type: 'done', turn: 1, answer: '' };
+      };
+      const extended = Object.assign(session, { runCommandProgram: runner });
+      session.runCommands = runner;
+      const controller = new PanelController(extended, lister([]));
+      const pending =
+        route === 'model'
+          ? controller.runCommands('Apply these')
+          : controller.runDirectCommands('set Sales!A1 2');
+      expect(controller.getState().pendingWrite?.changeId).toBe(request.changeId);
+      controller.approvePendingWrite(request.changeId);
+      await tick();
+      expect(controller.getState().pendingPlan?.effects[0]?.request.changeId).toBe('plan-owner');
+      controller.rejectPlan();
+      await tick();
+      expect(controller.getState().pendingShare?.name).toBe('Result');
+      controller.rejectPendingShare();
+      await pending;
+      expect(decisions).toEqual([true, false, false]);
+      expect(options?.maxCommandsPerTurn).toBe(route === 'direct' ? 128 : undefined);
+      expect(options?.maxWritesPerTurn).toBe(route === 'direct' ? 128 : undefined);
+      expect(controller.getState()).toMatchObject({
+        busy: false,
+        pendingWrite: undefined,
+        pendingPlan: undefined,
+        pendingShare: undefined,
+      });
+    },
+  );
+
+  it('rejects late approval requests after cancellation and retains any already-landed receipt', async () => {
+    let continueStream: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => {
+      continueStream = resolve;
+    });
+    const decisions: boolean[] = [];
+    const session = new FakeAssist();
+    const request = writeReq('late-write');
+    session.runCommands = async function* (_task, options) {
+      yield { type: 'token', text: 'Partial answer' };
+      await waiting; // Deliberately ignore cancellation to exercise the controller boundary.
+      decisions.push(Boolean(await options?.approveWrite?.(request)));
+      decisions.push(Boolean(await options?.approvePlan?.([planEffect('late-plan')])));
+      decisions.push(
+        Boolean(
+          await options?.approveShare?.({
+            name: 'Late',
+            text: 'data',
+            bytes: 4,
+            truncated: false,
+            sourceLabel: 'selection',
+          }),
+        ),
+      );
+      yield { type: 'token', text: 'LATE RESPONSE' };
+      yield {
+        type: 'write-result',
+        turn: 1,
+        changeId: request.changeId,
+        result: {
+          changeId: request.changeId,
+          kind: request.kind,
+          ok: true,
+          verification: { status: 'verified' },
+        },
+      };
+      yield { type: 'done', turn: 1, answer: '' };
+    };
+    const controller = new PanelController(session, lister([]));
+    const pending = controller.runCommands('Review');
+    await tick();
+    controller.cancel();
+    continueStream();
+    await pending;
+    expect(decisions).toEqual([false, false, false]);
+    expect(controller.getState().messages.at(-1)).toMatchObject({
+      text: 'Partial answer',
+      cancelled: true,
+      streaming: false,
+    });
+    expect(controller.getState().steps.some((step) => step.kind === 'write-result')).toBe(true);
+    expect(controller.getState().steps.some((step) => step.kind === 'done')).toBe(false);
+    expect(controller.getState().busy).toBe(false);
+    expect(controller.getState().pendingWrite).toBeUndefined();
+    expect(controller.getState().pendingPlan).toBeUndefined();
+    expect(controller.getState().pendingShare).toBeUndefined();
+  });
+
+  it('leaves a new execution owned by an idle-state subscriber intact', async () => {
+    const session = new FakeAssist();
+    let finishSecond: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => {
+      finishSecond = resolve;
+    });
+    session.ask = async function* (query, opts) {
+      if (query === 'second') {
+        await waiting;
+        opts?.signal?.throwIfAborted();
+      }
+      yield { type: 'token', text: query };
+    };
+    const controller = new PanelController(session, lister([]));
+    let started = false;
+    let second: Promise<void> | undefined;
+    controller.subscribe((state) => {
+      if (!state.busy && !started) {
+        started = true;
+        second = controller.send('second');
+      }
+    });
+    await controller.send('first');
+    expect(controller.getState().busy).toBe(true);
+    controller.cancel();
+    finishSecond();
+    await second;
+    expect(controller.getState().messages.at(-1)).toMatchObject({
+      cancelled: true,
+      streaming: false,
+    });
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it('releases execution ownership even if a service projection fails during settlement', async () => {
+    let projectionFails = false;
+    const session = Object.assign(new FakeAssist(), {
+      analysis: {
+        state: () => {
+          if (projectionFails) throw new Error('Snapshot service unavailable');
+          return { artifacts: [], offers: [] };
+        },
+      },
+    });
+    session.runCommands = async function* () {
+      projectionFails = true;
+      yield { type: 'done', turn: 1, answer: '' };
+    };
+    const controller = new PanelController(session, lister([]));
+    await expect(controller.runCommands('Inspect')).resolves.toBeUndefined();
+    expect(controller.getState().busy).toBe(false);
+    expect(controller.getState().error).toContain('Could not refresh document state');
+    expect(() => controller.cancel()).not.toThrow();
   });
 });

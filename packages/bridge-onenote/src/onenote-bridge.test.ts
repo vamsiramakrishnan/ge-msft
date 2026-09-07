@@ -553,7 +553,7 @@ describe('OneNoteBridge.actuate dispatch', () => {
     const res = await new OneNoteBridge().actuate({
       changeId: asChangeId('chg-x'),
       kind: 'write-cells',
-      surface: 'excel',
+      surface: 'onenote',
       params: { cells: [['1']] },
     });
     expect(res).toMatchObject({
@@ -625,6 +625,7 @@ describe('OneNoteBridge.actuate append-page (write path)', () => {
     );
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-write'),
       kind: 'append-page',
       location: `page:${sec.addedPages[0]?.id}`,

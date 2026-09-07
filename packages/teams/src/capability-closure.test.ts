@@ -1,3 +1,4 @@
+import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import { describe, expect, it } from 'vitest';
 import { implementedRegistryKindsForSurface } from '../../contracts/src/capability-registry.js';
 import type { DocBridge } from '@ge/runtime';
@@ -36,5 +37,33 @@ describe('Teams capability closure', () => {
 
   it('does NOT advertise outline (a transcript has no heading structure)', () => {
     expect(TEAMS_CAPABILITIES.reads ?? []).not.toContain('outline');
+  });
+});
+
+describe('TeamsBridge dispatch admission', () => {
+  it('rejects another surface before reaching a host handler', async () => {
+    const request: ActuationRequest = {
+      changeId: asChangeId('wrong-surface'),
+      kind: 'post-message',
+      surface: 'excel',
+      params: {},
+    };
+    expect(await new TeamsBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'surface_mismatch' },
+    });
+  });
+
+  it('rejects malformed parameters before reaching a host handler', async () => {
+    const request = {
+      changeId: asChangeId('invalid-params'),
+      kind: 'post-message',
+      surface: 'teams',
+      params: { text: 42 },
+    } as unknown as ActuationRequest;
+    expect(await new TeamsBridge().actuate(request)).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_request' },
+    });
   });
 });

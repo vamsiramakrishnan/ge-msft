@@ -1,5 +1,566 @@
 {
   "version": "m365-cli/1.0",
+  "preflight": {
+    "formatVersion": 1,
+    "contextKinds": [
+      "selection",
+      "document",
+      "paragraph",
+      "table",
+      "range",
+      "sheet",
+      "slide",
+      "shape",
+      "image",
+      "comment",
+      "mail-item",
+      "mail-thread",
+      "attachment",
+      "calendar-event",
+      "transcript",
+      "page",
+      "person",
+      "indexed-document",
+      "drive-document",
+      "file",
+      "brief"
+    ],
+    "contextHints": [
+      "incremental",
+      "inline-preferred",
+      "reference-preferred",
+      "upload-preferred",
+      "code-execution-preferred",
+      "analytical",
+      "full-scope"
+    ],
+    "analysisBindingKinds": [
+      "capture",
+      "query",
+      "reconcile",
+      "filter",
+      "inspect"
+    ],
+    "readPhaseVerbs": [
+      "outline",
+      "read",
+      "search",
+      "ls",
+      "find",
+      "tail",
+      "list",
+      "inspect",
+      "properties",
+      "comments",
+      "attachments",
+      "tables",
+      "slides",
+      "neighbors",
+      "context",
+      "open",
+      "workspace",
+      "save",
+      "cat",
+      "grep"
+    ],
+    "approvalByKind": {
+      "insert-text": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "replace-selection": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-ooxml": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "insert-html": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-image": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-table": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-hyperlink": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-comment": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "comment-reply": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "tracked-change": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "fill-content-control": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-content-control": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-paragraph": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "apply-style": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "define-style": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "apply-list": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-bookmark": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-field": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-break": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-page-layout": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-header-footer": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-note": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "resolve-revisions": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "find-replace": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-doc-properties": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "write-cells": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "format-cells": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "create-table": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-chart": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "format-conditional": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-pivot": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "sort-range": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "filter-range": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "manage-worksheet": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "format-chart": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-entity-card": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-speaker-notes": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-shape": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-table-slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-shape-text": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "format-shape": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "delete-slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "move-slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "duplicate-slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "apply-slide-layout": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "append-page": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-outline": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "append-html": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "append-rich-text": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "create-section": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "create-section-group": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-page-title": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-note-tag": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-html-at-cursor": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "insert-link-at-cursor": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "create-mail": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "reply-mail": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "add-attachment": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "remove-attachment": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-recipients": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-subject": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-body": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "prepend-body": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-categories": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-sensitivity-label": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-sensitivity": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-internet-headers": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "add-notification": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "compose-appointment": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "set-delay-delivery": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "save-draft": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "post-card": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "post-message": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "create-event": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "create-task": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "move-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "copy-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "categorize-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "flag-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "delete-message": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "create-mail-rule": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "post-chat-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "post-channel-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "reply-channel-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "update-message": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "set-reaction": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "create-online-meeting": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "send-activity-notification": {
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "graph-create-page": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "graph-patch-page": {
+        "approvalClass": "estate",
+        "reversible": true
+      },
+      "graph-create-section": {
+        "approvalClass": "estate",
+        "reversible": true
+      }
+    },
+    "approvalByVerb": {
+      "set": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "grid": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "suggest": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "comment": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "format": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "reply": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "slide": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "page": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "mail": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "post": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "compose": {
+        "approvalClass": "external",
+        "reversible": true
+      },
+      "table": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "chart": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "cf": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "shape": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "spill": {
+        "approvalClass": "in-document",
+        "reversible": true
+      },
+      "share": {
+        "approvalClass": "estate",
+        "reversible": false
+      }
+    },
+    "analysisGuards": {
+      "query": {
+        "requiredColumns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "strict": true,
+            "properties": {
+              "input": {
+                "type": "string",
+                "checks": [
+                  {
+                    "kind": "min",
+                    "value": 1
+                  }
+                ]
+              },
+              "indices": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "checks": [
+                    {
+                      "kind": "int"
+                    },
+                    {
+                      "kind": "min",
+                      "value": 0,
+                      "inclusive": true
+                    },
+                    {
+                      "kind": "max",
+                      "value": 16383,
+                      "inclusive": true
+                    }
+                  ]
+                },
+                "min": 1,
+                "max": 64
+              },
+              "exactDecimal": {
+                "type": "boolean",
+                "optional": true
+              }
+            }
+          },
+          "max": 16,
+          "optional": true
+        }
+      },
+      "materialize": {
+        "whenNonEmpty": {
+          "type": "boolean",
+          "optional": true
+        }
+      }
+    }
+  },
   "valueTypes": [
     "Table",
     "Number",

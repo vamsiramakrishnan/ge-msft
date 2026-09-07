@@ -23,7 +23,12 @@ import type {
   Surface,
   SseEvent,
 } from '@ge/contracts';
-import { asChangeId, deriveOutput, extractCommandBlock } from '@ge/contracts';
+import {
+  asChangeId,
+  assessActuationResult,
+  deriveOutput,
+  extractCommandBlock,
+} from '@ge/contracts';
 import type {
   AgentView,
   ConversationSummary,
@@ -135,6 +140,7 @@ export interface AssistLike {
     params: ActuationParams,
     changeId: ChangeId,
     provenance?: ProvenancePayload,
+    opts?: { signal?: AbortSignal },
   ): Promise<ActuationResult>;
   /**
    * The ADR-0004 read-many/write-one command loop, extended with ADR-0005 plan execution. Streams
@@ -649,34 +655,34 @@ export class PanelController {
       });
       return;
     }
-    this.beginTurn({ steps: [] });
-    if (workflowWrite && action.kind === 'materialize')
-      this.set({
-        workflowRun: {
-          ...workflowWrite,
-          write: { destination: action.destination, status: 'pending' },
-        },
-      });
-    const controller = new AbortController();
-    this.inflight = controller;
+    const controller = this.beginExecution({
+      steps: [],
+      ...(workflowWrite && action.kind === 'materialize'
+        ? {
+            workflowRun: {
+              ...workflowWrite,
+              write: { destination: action.destination, status: 'pending' as const },
+            },
+          }
+        : {}),
+    });
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
     let writeResult: ActuationResult | undefined;
     let approved = false;
     let reviewedChangeId: string | undefined;
     let failure: string | undefined;
     try {
+      controller.signal.throwIfAborted();
       for await (const event of this.session.runAnalysis(action, {
         signal: controller.signal,
         approvePlan: async (effects) => {
           reviewedChangeId = effects[0]?.request.changeId;
-          approved = await this.approvals.awaitPlan({
-            effects,
-            summary: summarizeEffects(effects),
-          });
+          approved = await this.reviewPlan(effects, controller.signal);
           return approved;
         },
       })) {
-        this.reduceLoopEvent(event, reply.id, []);
+        if (this.inflight !== controller) break;
+        if (!this.reduceOwnedLoopEvent(controller, event, reply.id, [])) continue;
         if (event.type === 'write-result') writeResult = event.result;
         if (event.type === 'error') failure = event.message;
         this.syncServices();
@@ -685,62 +691,63 @@ export class PanelController {
       if (!controller.signal.aborted && !isAbortError(error)) failure = errorText(error);
       else this.addStep('activity', 'Analysis cancelled');
     } finally {
-      this.approvals.releaseAll();
-      if (this.inflight === controller) this.inflight = undefined;
-      if (!failure && !controller.signal.aborted && action.kind === 'forget') {
-        for (const [id, receipt] of this.workflowWrites) {
-          if (receipt.changeId !== action.id) continue;
-          this.workflowWrites.delete(id);
-          if (this.state.workflowRun?.resultId === id)
-            this.set({ workflowRun: { ...this.state.workflowRun, write: undefined } });
-        }
-      }
-      this.syncServices(!failure && ['recovery', 'resume', 'undo'].includes(action.kind));
-      if (failure) this.set({ error: failure });
-      if (workflowWrite && action.kind === 'materialize') {
-        const status: NonNullable<WorkflowRun['write']>['status'] = writeResult
-          ? writeResult.recoveryPending ||
-            writeResult.error?.code === 'outcome_unknown' ||
-            writeResult.verification?.status === 'unknown' ||
-            writeResult.verification?.status === 'mismatch'
-            ? 'uncertain'
-            : writeResult.ok
-              ? writeResult.verification?.status === 'verified'
-                ? 'written'
-                : 'uncertain'
-              : ['plan_unapproved', 'unapproved'].includes(writeResult.error?.code ?? '')
-                ? 'rejected'
-                : 'failed'
-          : approved
-            ? 'uncertain'
-            : failure
-              ? 'failed'
-              : 'rejected';
-        const write: NonNullable<WorkflowRun['write']> = {
-          destination: action.destination,
-          status,
-          ...((writeResult?.changeId ?? reviewedChangeId)
-            ? { changeId: writeResult?.changeId ?? reviewedChangeId }
-            : {}),
-          ...(failure || writeResult?.error?.message
-            ? { message: failure ?? writeResult?.error?.message }
-            : {}),
-        };
-        this.workflowWrites.set(action.id, write);
-        // Resolved previews can expire with their artifacts. Uncertain receipts remain visible.
-        const retainedIds = new Set(this.state.analysis?.artifacts.map((artifact) => artifact.id));
-        for (const [id, receipt] of this.workflowWrites)
-          if (!retainedIds.has(id) && receipt.status !== 'uncertain')
+      if (this.inflight === controller) {
+        if (!failure && !controller.signal.aborted && action.kind === 'forget') {
+          for (const [id, receipt] of this.workflowWrites) {
+            if (receipt.changeId !== action.id) continue;
             this.workflowWrites.delete(id);
-        this.set({
-          workflowRun: {
-            ...workflowWrite,
-            write,
+            if (this.state.workflowRun?.resultId === id)
+              this.set({ workflowRun: { ...this.state.workflowRun, write: undefined } });
+          }
+        }
+        if (failure) this.set({ error: failure });
+        if (workflowWrite && action.kind === 'materialize') {
+          const assessment = writeResult ? assessActuationResult(writeResult) : undefined;
+          const status: NonNullable<WorkflowRun['write']>['status'] = assessment
+            ? assessment === 'verified'
+              ? 'written'
+              : assessment === 'unverified'
+                ? 'uncertain'
+                : assessment
+            : approved
+              ? 'uncertain'
+              : failure
+                ? 'failed'
+                : 'rejected';
+          const write: NonNullable<WorkflowRun['write']> = {
+            destination: action.destination,
+            status,
+            ...((writeResult?.changeId ?? reviewedChangeId)
+              ? { changeId: writeResult?.changeId ?? reviewedChangeId }
+              : {}),
+            ...(failure || writeResult?.error?.message
+              ? { message: failure ?? writeResult?.error?.message }
+              : {}),
+          };
+          this.workflowWrites.set(action.id, write);
+          // Resolved previews can expire with their artifacts. Uncertain receipts remain visible.
+          const retainedIds = new Set(
+            this.state.analysis?.artifacts.map((artifact) => artifact.id),
+          );
+          for (const [id, receipt] of this.workflowWrites)
+            if (!retainedIds.has(id) && receipt.status !== 'uncertain')
+              this.workflowWrites.delete(id);
+          this.set({
+            workflowRun: {
+              ...workflowWrite,
+              write,
+            },
+          });
+        }
+        this.finishExecution(
+          controller,
+          {},
+          {
+            reconcileWorkflowWrites:
+              !failure && ['recovery', 'resume', 'undo'].includes(action.kind),
           },
-        });
+        );
       }
-      this.set({ busy: false });
-      this.drainPendingTurn();
     }
   }
 
@@ -784,17 +791,17 @@ export class PanelController {
       });
       return;
     }
-    this.beginTurn({ steps: [], workflowRun: workflow });
-    const controller = new AbortController();
-    this.inflight = controller;
+    const controller = this.beginExecution({ steps: [], workflowRun: workflow });
     let completed = false;
     let producedResultId: string | undefined;
     let failure: string | undefined;
     try {
+      controller.signal.throwIfAborted();
       for await (const event of this.session.runAnalysisProgram(program, {
         signal: controller.signal,
       })) {
-        this.reduceLoopEvent(event, runId, []);
+        if (this.inflight !== controller) break;
+        if (!this.reduceOwnedLoopEvent(controller, event, runId, [])) continue;
         if (event.type === 'read-result' && event.result && typeof event.result === 'object') {
           const result = event.result as { binding?: unknown; id?: unknown };
           if (result.binding === '$result' && typeof result.id === 'string')
@@ -808,35 +815,35 @@ export class PanelController {
     } catch (error) {
       if (!controller.signal.aborted && !isAbortError(error)) failure = errorText(error);
     } finally {
-      if (this.inflight === controller) this.inflight = undefined;
-      this.syncServices();
-      const resultId = this.state.analysis?.artifacts.some((item) => item.id === producedResultId)
-        ? producedResultId
-        : undefined;
-      const status = controller.signal.aborted
-        ? 'cancelled'
-        : completed && !failure && resultId
-          ? 'ready'
-          : 'failed';
-      const error =
-        status === 'failed'
-          ? (failure ??
-            'The workflow did not produce a verified result. Review the activity and run it again.')
+      if (this.inflight === controller) {
+        const resultId = this.session.analysis
+          .state()
+          .artifacts.some((item) => item.id === producedResultId)
+          ? producedResultId
           : undefined;
-      this.set({
-        busy: false,
-        ...(error ? { error } : {}),
-        workflowRun: {
-          ...workflow,
-          status,
-          ...(status === 'ready' ? { resultId } : {}),
-          ...(status === 'ready' && resultId && this.workflowWrites.has(resultId)
-            ? { write: this.workflowWrites.get(resultId) }
-            : {}),
+        const status = controller.signal.aborted
+          ? 'cancelled'
+          : completed && !failure && resultId
+            ? 'ready'
+            : 'failed';
+        const error =
+          status === 'failed'
+            ? (failure ??
+              'The workflow did not produce a verified result. Review the activity and run it again.')
+            : undefined;
+        this.finishExecution(controller, {
           ...(error ? { error } : {}),
-        },
-      });
-      this.drainPendingTurn();
+          workflowRun: {
+            ...workflow,
+            status,
+            ...(status === 'ready' ? { resultId } : {}),
+            ...(status === 'ready' && resultId && this.workflowWrites.has(resultId)
+              ? { write: this.workflowWrites.get(resultId) }
+              : {}),
+            ...(error ? { error } : {}),
+          },
+        });
+      }
     }
   }
 
@@ -951,19 +958,21 @@ export class PanelController {
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: q };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
-
-    const controller = new AbortController();
-    this.inflight = controller;
+    const controller = this.beginExecution({
+      messages: [...this.state.messages, userMsg, reply],
+      steps: [],
+    });
     const sources: SourceRef[] = [];
     let replyText = '';
     let recoverAsCommandTask: string | undefined;
     let failed = false;
     try {
+      controller.signal.throwIfAborted();
       for await (const ev of this.session.ask(q, {
         signal: controller.signal,
         ...(grounding ? { grounding } : {}),
       })) {
+        if (this.inflight !== controller || controller.signal.aborted) break;
         switch (ev.type) {
           case 'token':
             replyText += ev.text;
@@ -1017,16 +1026,20 @@ export class PanelController {
         this.patchMessage(reply.id, () => ({ error: errorText(err) }));
       }
     } finally {
-      // Clear the stored controller so a later cancel() after settle is a clean no-op (only if it is
-      // still ours — a queued turn that already replaced it must keep its own controller).
-      if (this.inflight === controller) this.inflight = undefined;
-      this.patchMessage(reply.id, () => ({ streaming: false, activity: undefined }));
-      this.syncServices();
-      this.set({ busy: false });
-      if (recoverAsCommandTask) {
-        await this.runCommands(recoverAsCommandTask, grounding, 'Continue in Office command route');
-      } else {
-        this.drainPendingTurn();
+      if (this.inflight === controller) {
+        if (controller.signal.aborted) this.currentTurnProvenance = undefined;
+        this.patchMessage(reply.id, () => ({
+          streaming: false,
+          activity: undefined,
+          ...(controller.signal.aborted ? { cancelled: true } : {}),
+        }));
+        const recover = controller.signal.aborted ? undefined : recoverAsCommandTask;
+        this.finishExecution(controller, {}, { drain: !recover });
+        if (recover) {
+          if (!controller.signal.aborted)
+            await this.runCommands(recover, grounding, 'Continue in Office command route');
+          else if (!this.inflight) this.drainPendingTurn();
+        }
       }
     }
   }
@@ -1052,23 +1065,21 @@ export class PanelController {
       return;
     }
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: displayText ?? t };
-    this.beginTurn({
+    const controller = this.beginExecution({
       messages: [...this.state.messages, userMsg],
       pendingPlanClarification: undefined,
     });
-    const controller = new AbortController();
-    this.inflight = controller;
+    let continuation: 'commands' | 'ask' | undefined;
     try {
+      controller.signal.throwIfAborted();
       const { plan, needsClarification } = await this.session.plan(t, {
         signal: controller.signal,
         ...(grounding ? { grounding } : {}),
       });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || this.inflight !== controller) return;
       if (!plan) {
         // No parseable plan → run the executor directly (it stages its own effect-level gate).
-        this.syncServices();
-        this.set({ busy: false });
-        void this.runCommands(t, grounding);
+        continuation = 'commands';
         return;
       }
       if (needsClarification) {
@@ -1086,27 +1097,28 @@ export class PanelController {
             questions: plan.clarify,
             ...(grounding ? { grounding } : {}),
           },
-          busy: false,
         });
         return;
       }
       if (deriveOutput(plan.intent) === 'chat') {
         this.set({
           messages: this.state.messages.filter((message) => message.id !== userMsg.id),
-          busy: false,
         });
-        void this.send(t, grounding);
+        continuation = 'ask';
         return;
       }
       this.set({
         pendingCommandPlan: { plan, task: t, ...(grounding ? { grounding } : {}) },
-        busy: false,
       });
     } catch (err) {
-      if (controller.signal.aborted || isAbortError(err)) this.set({ busy: false });
-      else this.set({ error: errorText(err), busy: false });
+      if (this.inflight === controller && !controller.signal.aborted && !isAbortError(err))
+        this.set({ error: errorText(err) });
     } finally {
-      if (this.inflight === controller) this.inflight = undefined;
+      if (this.finishExecution(controller, {}, { drain: false }) && !controller.signal.aborted) {
+        // Planner handoffs remain explicit; a staged plan/clarification waits for its own user action.
+        if (continuation === 'commands') void this.runCommands(t, grounding);
+        else if (continuation === 'ask') void this.send(t, grounding);
+      }
     }
   }
 
@@ -1193,66 +1205,13 @@ export class PanelController {
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: displayText ?? t };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
-
-    const controller = new AbortController();
-    this.inflight = controller;
-    const sources: SourceRef[] = [];
-
-    // The per-write approver (ADR-0004) and the plan-level approver (ADR-0005) both delegate to the
-    // ApprovalCoordinator, which owns the staged-decision state and is fail-closed by construction.
-    const approveWrite: ApproveWrite = (request) =>
-      this.approvals.awaitWrite(
-        { changeId: request.changeId, kind: request.kind, command: renderCommandLine(request) },
-        request.changeId,
-      );
-
-    const approvePlan: ApprovePlan = (effects) =>
-      this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
-
-    // The `share` (estate write) approver — a separate gate from `approveWrite`/`approvePlan`
-    // since it never actuates Office content via `bridge.actuate()` (ADR-0008 distinct-approval-
-    // authorities: the `/shared` write is a different authority than an in-document change).
-    const approveShare: ApproveShare = ({ name, text, bytes, truncated, sourceLabel }) =>
-      this.approvals.awaitShare({
-        name,
-        bytes,
-        truncated,
-        sourceLabel: truncateSourceLabel(sourceLabel),
-        ...sharePreview(text),
-      });
-
-    const opts: RunCommandsOptions = {
-      signal: controller.signal,
-      approveWrite,
-      approvePlan,
-      approveShare,
+    const owner = this.beginExecution({
+      messages: [...this.state.messages, userMsg, reply],
+      steps: [],
+    });
+    await this.runCommandStream(owner, reply, (options) => this.session.runCommands(t, options), {
       ...(grounding ? { grounding } : {}),
-    };
-
-    try {
-      for await (const ev of this.session.runCommands(t, opts)) {
-        this.reduceLoopEvent(ev, reply.id, sources);
-      }
-    } catch (err) {
-      if (controller.signal.aborted || isAbortError(err)) {
-        this.patchMessage(reply.id, () => ({ cancelled: true }));
-        this.currentTurnProvenance = undefined;
-      } else {
-        this.patchMessage(reply.id, () => ({ error: errorText(err) }));
-        this.addStep('error', errorText(err));
-      }
-    } finally {
-      // Finding #6: release any awaiting decision fail-closed AND drop both cards on EVERY terminal
-      // path — including ones where the decision was ALREADY consumed (an approval whose execution
-      // then THREW, or a write with no write-result), so no card lingers after the loop returns/throws.
-      this.approvals.releaseAll();
-      if (this.inflight === controller) this.inflight = undefined;
-      this.patchMessage(reply.id, () => ({ streaming: false }));
-      this.syncServices();
-      this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
-      this.drainPendingTurn();
-    }
+    });
   }
 
   /**
@@ -1270,62 +1229,25 @@ export class PanelController {
 
     const userMsg: ChatMessage = { id: this.id('u'), role: 'user', text: p };
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
-    this.beginTurn({ messages: [...this.state.messages, userMsg, reply], steps: [] });
-
-    const controller = new AbortController();
-    this.inflight = controller;
-    const sources: SourceRef[] = [];
-
-    const approveWrite: ApproveWrite = (request) =>
-      this.approvals.awaitWrite(
-        { changeId: request.changeId, kind: request.kind, command: renderCommandLine(request) },
-        request.changeId,
-      );
-    const approvePlan: ApprovePlan = (effects) =>
-      this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) });
-    const approveShare: ApproveShare = ({ name, text, bytes, truncated, sourceLabel }) =>
-      this.approvals.awaitShare({
-        name,
-        bytes,
-        truncated,
-        sourceLabel: truncateSourceLabel(sourceLabel),
-        ...sharePreview(text),
-      });
-    const opts: RunCommandsOptions = {
-      signal: controller.signal,
-      approveWrite,
-      approvePlan,
-      approveShare,
-      maxCommandsPerTurn: DIRECT_COMMAND_LIMIT,
-      maxWritesPerTurn: DIRECT_COMMAND_LIMIT,
-    };
-
-    try {
-      const runner = this.session.runCommandProgram
-        ? this.session.runCommandProgram(p, opts)
-        : this.session.runCommands(
-            `Run this exact command program:\n\`\`\`cmd\n${p}\n\`\`\``,
-            opts,
-          );
-      for await (const ev of runner) {
-        this.reduceLoopEvent(ev, reply.id, sources);
-      }
-    } catch (err) {
-      if (controller.signal.aborted || isAbortError(err)) {
-        this.patchMessage(reply.id, () => ({ cancelled: true }));
-        this.currentTurnProvenance = undefined;
-      } else {
-        this.patchMessage(reply.id, () => ({ error: errorText(err) }));
-        this.addStep('error', errorText(err));
-      }
-    } finally {
-      this.approvals.releaseAll();
-      if (this.inflight === controller) this.inflight = undefined;
-      this.patchMessage(reply.id, () => ({ streaming: false }));
-      this.syncServices();
-      this.set({ busy: false, changes: this.store.list(), shares: this.store.listShares() });
-      this.drainPendingTurn();
-    }
+    const owner = this.beginExecution({
+      messages: [...this.state.messages, userMsg, reply],
+      steps: [],
+    });
+    await this.runCommandStream(
+      owner,
+      reply,
+      (options) =>
+        this.session.runCommandProgram
+          ? this.session.runCommandProgram(p, options)
+          : this.session.runCommands(
+              `Run this exact command program:\n\`\`\`cmd\n${p}\n\`\`\``,
+              options,
+            ),
+      {
+        maxCommandsPerTurn: DIRECT_COMMAND_LIMIT,
+        maxWritesPerTurn: DIRECT_COMMAND_LIMIT,
+      },
+    );
   }
 
   /**
@@ -1447,6 +1369,24 @@ export class PanelController {
     }
   }
 
+  /** Cancellation stops narration, but already-landed host and estate receipts remain observable. */
+  private reduceOwnedLoopEvent(
+    owner: AbortController,
+    event: SseEvent | CommandLoopEvent,
+    replyId: string,
+    sources: SourceRef[],
+  ): boolean {
+    if (this.inflight !== owner) return false;
+    const effectReceipt =
+      event.type === 'write-result' ||
+      (event.type === 'read-result' &&
+        isWorkspaceResult(event.result) &&
+        event.result.workspace === 'share');
+    if (owner.signal.aborted && !effectReceipt) return false;
+    this.reduceLoopEvent(event, replyId, sources);
+    return true;
+  }
+
   /**
    * Approve the staged write — resolves the loop's `approveWrite` with `true` so it actuates.
    * Finding #6: pass the `changeId` the card was showing; a decision whose id no longer matches the
@@ -1531,33 +1471,62 @@ export class PanelController {
     const proposal = this.state.proposals.find((p) => p.changeId === changeId);
     if (!proposal || proposal.status !== 'pending') return;
 
-    // Flip status synchronously before awaiting so a second (e.g. double-click) call bails at
-    // the guard above — preventing a double host write / duplicate ChangeRecord.
-    this.setProposal(changeId, { status: 'applying' });
-
-    // Finding #4: stamp the PROPOSAL's OWN captured provenance — never an ambient `lastProvenance`
-    // a later turn could have overwritten. The session also receives it explicitly so the durable
-    // host-metadata record is attributed to the turn that produced this change.
-    const result = await this.session.apply(
-      proposal.kind,
-      proposal.params,
-      proposal.changeId,
-      proposal.provenance,
+    const owner = this.beginExecution(
+      {
+        proposals: this.state.proposals.map((item) =>
+          item.changeId === changeId ? { ...item, status: 'applying' } : item,
+        ),
+      },
+      { preserveProvenance: true },
     );
-    this.store.record(result, proposal.provenance);
-
-    const status: Proposal['status'] = result.ok
-      ? 'applied'
-      : result.degraded
-        ? 'degraded'
-        : result.error?.code === 'blocked'
-          ? 'blocked'
-          : 'failed';
-    this.setProposal(changeId, {
-      status,
-      ...(result.error ? { detail: result.error.message } : {}),
-    });
-    this.set({ changes: this.store.list() });
+    let invoked = false;
+    try {
+      owner.signal.throwIfAborted();
+      invoked = true;
+      // The proposal carries the provenance of its producing turn, independent of later activity.
+      const result = await this.session.apply(
+        proposal.kind,
+        proposal.params,
+        proposal.changeId,
+        proposal.provenance,
+        { signal: owner.signal },
+      );
+      if (this.inflight !== owner) return;
+      this.store.record(result, proposal.provenance);
+      const assessment = assessActuationResult(result);
+      const status: Proposal['status'] =
+        assessment === 'uncertain'
+          ? 'failed'
+          : result.ok
+            ? 'applied'
+            : result.degraded
+              ? 'degraded'
+              : result.error?.code === 'blocked'
+                ? 'blocked'
+                : 'failed';
+      this.setProposal(changeId, {
+        status,
+        ...(assessment === 'uncertain'
+          ? { detail: 'The write outcome is uncertain. Inspect the document before trying again.' }
+          : result.error
+            ? { detail: result.error.message }
+            : {}),
+      });
+    } catch (error) {
+      if (this.inflight === owner) {
+        if (!invoked && (owner.signal.aborted || isAbortError(error))) {
+          this.setProposal(changeId, { status: 'pending' });
+        } else {
+          const detail = invoked
+            ? 'The write outcome is uncertain. Inspect the document before trying again.'
+            : errorText(error);
+          this.setProposal(changeId, { status: 'failed', detail });
+          this.set({ error: detail });
+        }
+      }
+    } finally {
+      this.finishExecution(owner);
+    }
   }
 
   // ---- event-driven inputs (wire to the Orchestrator) ---------------------
@@ -1705,9 +1674,119 @@ export class PanelController {
    * provenance (Finding #4) so no leftover from an earlier turn can leak into this one's proposals.
    * Callers pass the turn's initial message/step patch.
    */
-  private beginTurn(patch: Partial<PanelState>): void {
-    this.currentTurnProvenance = undefined;
-    this.set({ busy: true, error: undefined, suggestions: [], ...patch });
+  private beginExecution(
+    patch: Partial<PanelState>,
+    options: { preserveProvenance?: boolean } = {},
+  ): AbortController {
+    const owner = new AbortController();
+    // Install cancellation ownership before notifying synchronous subscribers that work started.
+    this.inflight = owner;
+    if (!options.preserveProvenance) this.currentTurnProvenance = undefined;
+    this.set({ error: undefined, suggestions: [], ...patch, busy: true });
+    return owner;
+  }
+
+  /** Only the owning execution may release approvals, publish idle, or dispatch queued work. */
+  private finishExecution(
+    owner: AbortController,
+    patch: Partial<PanelState> = {},
+    options: { drain?: boolean; reconcileWorkflowWrites?: boolean } = {},
+  ): boolean {
+    if (this.inflight !== owner) return false;
+    this.approvals.releaseAll();
+    let serviceError: string | undefined;
+    try {
+      this.syncServices(options.reconcileWorkflowWrites);
+    } catch (error) {
+      serviceError = `Could not refresh document state: ${errorText(error)}`;
+    }
+    this.inflight = undefined;
+    this.set({
+      changes: this.store.list(),
+      shares: this.store.listShares(),
+      ...patch,
+      ...(serviceError ? { error: serviceError } : {}),
+      busy: false,
+    });
+    // An idle-state subscriber may already have acquired ownership of the next execution.
+    if (options.drain !== false && !this.inflight) this.drainPendingTurn();
+    return true;
+  }
+
+  private commandApprovals(
+    signal: AbortSignal,
+  ): Pick<RunCommandsOptions, 'approveWrite' | 'approvePlan' | 'approveShare'> {
+    const approveWrite: ApproveWrite = async (request) => {
+      if (signal.aborted) return false;
+      const approved = await this.approvals.awaitWrite(
+        { changeId: request.changeId, kind: request.kind, command: renderCommandLine(request) },
+        request.changeId,
+      );
+      return approved && !signal.aborted;
+    };
+    const approvePlan: ApprovePlan = (effects) => this.reviewPlan(effects, signal);
+    const approveShare: ApproveShare = async ({ name, text, bytes, truncated, sourceLabel }) => {
+      if (signal.aborted) return false;
+      const approved = await this.approvals.awaitShare({
+        name,
+        bytes,
+        truncated,
+        sourceLabel: truncateSourceLabel(sourceLabel),
+        ...sharePreview(text),
+      });
+      return approved && !signal.aborted;
+    };
+    return { approveWrite, approvePlan, approveShare };
+  }
+
+  private async reviewPlan(effects: RuntimePlanEffect[], signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    const approved = await this.approvals.awaitPlan({
+      effects,
+      summary: summarizeEffects(effects),
+    });
+    return approved && !signal.aborted;
+  }
+
+  private async runCommandStream(
+    owner: AbortController,
+    reply: ChatMessage,
+    run: (options: RunCommandsOptions) => AsyncIterable<SseEvent | CommandLoopEvent>,
+    overrides: Pick<
+      RunCommandsOptions,
+      'grounding' | 'maxCommandsPerTurn' | 'maxWritesPerTurn'
+    > = {},
+  ): Promise<void> {
+    const sources: SourceRef[] = [];
+    try {
+      owner.signal.throwIfAborted();
+      for await (const event of run({
+        ...overrides,
+        signal: owner.signal,
+        ...this.commandApprovals(owner.signal),
+      })) {
+        if (this.inflight !== owner) break;
+        this.reduceOwnedLoopEvent(owner, event, reply.id, sources);
+      }
+    } catch (error) {
+      if (this.inflight !== owner) return;
+      if (owner.signal.aborted || isAbortError(error)) {
+        this.patchMessage(reply.id, () => ({ cancelled: true }));
+        this.currentTurnProvenance = undefined;
+      } else {
+        this.patchMessage(reply.id, () => ({ error: errorText(error) }));
+        this.addStep('error', errorText(error));
+      }
+    } finally {
+      if (this.inflight === owner) {
+        if (owner.signal.aborted) this.currentTurnProvenance = undefined;
+        this.patchMessage(reply.id, () => ({
+          streaming: false,
+          ...(owner.signal.aborted ? { cancelled: true } : {}),
+        }));
+        this.finishExecution(owner);
+      }
+    }
   }
 
   /**
@@ -1965,7 +2044,14 @@ function exprStepText(ev: Extract<CommandLoopEvent, { type: 'expr-result' }>): s
 /** A one-line label for a `write-result` loop step: the write kind + its outcome. */
 function writeStepText(ev: Extract<CommandLoopEvent, { type: 'write-result' }>): string {
   const r = ev.result;
-  const outcome = r.ok ? (r.degraded ? 'degraded' : 'applied') : (r.error?.code ?? 'failed');
+  const outcome =
+    assessActuationResult(r) === 'uncertain'
+      ? 'outcome uncertain'
+      : r.ok
+        ? r.degraded
+          ? 'degraded'
+          : 'applied'
+        : (r.error?.code ?? 'failed');
   // Observability: the change landed but its provenance is not durably recorded — make it visible.
   // `provenanceMissing` (no payload at all → unattributed) is distinct from `provenanceDropped`
   // (had a record, failed to persist); both leave the write without a durable trace.

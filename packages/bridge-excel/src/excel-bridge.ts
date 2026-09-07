@@ -1,3 +1,4 @@
+import { createBridgeDispatch } from '@ge/runtime';
 import {
   cellsMatchRequest,
   formulasForRequest,
@@ -43,20 +44,6 @@ import {
 import { provenanceRecord } from './provenance-record.js';
 
 /**
- * The exact `ActuationKind`s {@link ExcelBridge.actuate} handles (ADR-0006 closure source of
- * truth). The conformance test asserts this set equals the advertised manifest's actuation kinds.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
-  'write-cells',
-  'format-cells',
-  'create-table',
-  'insert-chart',
-  'format-conditional',
-  'add-comment',
-  'comment-reply',
-];
-
-/**
  * The Excel `DocBridge`. The ONLY place Office.js (`Excel.run`) is touched. Reads via the
  * native object model (selected range, used range) and maps the grid to a native table block;
  * writes via **`write-cells`** into an explicit, address-targeted range (`Sheet1!A1:B3` →
@@ -64,6 +51,21 @@ export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
  * this file is the host wiring.
  */
 export class ExcelBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<ExcelBridge>(
+    'excel',
+    {
+      'write-cells': (host, request) => host.applyWriteCells(request),
+      'format-cells': (host, request) => host.applyFormatCells(request),
+      'create-table': (host, request) => host.applyCreateTable(request),
+      'insert-chart': (host, request) => host.applyInsertChart(request),
+      'format-conditional': (host, request) => host.applyConditional(request),
+      'add-comment': (host, request) => host.applyAddComment(request),
+      'comment-reply': (host, request) => host.applyCommentReply(request),
+    },
+    { provenance: 'reported' },
+  );
+  static readonly handledActuations = ExcelBridge.dispatcher.handledActuations;
+
   readonly surface = 'excel' as const;
   readonly recoveryStorage = excelRecoveryStorage;
 
@@ -343,29 +345,7 @@ export class ExcelBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    switch (req.kind) {
-      case 'write-cells':
-        return this.applyWriteCells(req);
-      case 'format-cells':
-        return this.applyFormatCells(req);
-      case 'create-table':
-        return this.applyCreateTable(req);
-      case 'insert-chart':
-        return this.applyInsertChart(req);
-      case 'format-conditional':
-        return this.applyConditional(req);
-      case 'add-comment':
-        return this.applyAddComment(req);
-      case 'comment-reply':
-        return this.applyCommentReply(req);
-      default:
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          error: { code: 'unsupported', message: `Excel bridge cannot ${req.kind}` },
-        };
-    }
+    return ExcelBridge.dispatcher.dispatch(this, req);
   }
 
   /**
@@ -1180,3 +1160,6 @@ function stripSheetQuotes(name: string): string {
   }
   return name;
 }
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ExcelBridge.handledActuations;

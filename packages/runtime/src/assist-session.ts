@@ -6,15 +6,15 @@ import {
   type AnalysisAction,
 } from './analysis-workspace.js';
 import { RecoveryCoordinator } from './recovery.js';
+import { admitActuationRequest } from './actuation-admission.js';
+import { assessActuationResult, unknownActuationResult } from '@ge/contracts';
 import {
   AnalysisBindings,
   compileAnalysisProgram,
   type AnalysisProgram,
 } from './analysis-program.js';
-import { CommandResultStore } from './result-store.js';
-import { CommandCapsule } from './command-capsule.js';
-import { ExecutionState, type ExecutionStateBinding } from './execution-state.js';
-import { approvalClassOf, isReversibleKind } from '@ge/contracts';
+import { CommandContextSession } from './command-context-session.js';
+import { approvalClassOf, isReversibleKind, isAnalysisBindingKind } from '@ge/contracts';
 import type {
   ActuationKind,
   ActuationParams,
@@ -81,8 +81,6 @@ import {
   compileCommand,
   isCompileError,
   renderCommandHelp,
-  renderGrammarPrompt,
-  renderCommandBootstrap,
   type CompiledCommand,
   type ReadIntent,
   type WorkspaceIntent,
@@ -147,10 +145,8 @@ export interface ContextLoopOptions {
 const DEFAULT_MAX_READS = 4;
 
 /**
- * The {@link StreamAssistClient.stream} options type, widened with the structured `grounding`
- * (Finding #2/#B-wire) the session forwards. Derived from the client's own parameter type (rather
- * than re-declared) so it never drifts; the `grounding` field is the typed `@`-mention resolution
- * the gemini-client request-merge will consume (that last hop is the wiring agent's, deferred).
+ * Options are derived from the provider client. Structured grounding carries resolved mentions
+ * into request construction without an independently maintained provider options interface.
  */
 type StreamOptionsWithGrounding = NonNullable<Parameters<StreamAssistClient['stream']>[1]> & {
   grounding?: ResolvedGrounding;
@@ -458,8 +454,7 @@ export class AssistSession {
   readonly recovery: RecoveryCoordinator;
   readonly evidence?: EvidencePipeline;
   private readonly analysisBindings = new AnalysisBindings();
-  private readonly commandResults = new CommandResultStore({ inlineBytes: 4096 });
-  private commandState?: ExecutionState;
+  private readonly commandContext: CommandContextSession;
   private lastCommandDocState?: { signature: string; session?: SessionId };
   private disposeEvidence?: () => void;
   private disposed = false;
@@ -535,8 +530,7 @@ export class AssistSession {
       }
       signal?.throwIfAborted();
       task.status = task.effects.some(
-        (r) =>
-          !r.ok || r.recoveryPending || (r.verification && r.verification.status !== 'verified'),
+        (result) => !['verified', 'unverified'].includes(assessActuationResult(result)),
       )
         ? 'incomplete'
         : task.status === 'running'
@@ -660,6 +654,12 @@ export class AssistSession {
     private readonly client: StreamAssistClient,
     private readonly options: AssistSessionOptions,
   ) {
+    this.commandContext = new CommandContextSession({
+      sessionMode: options.commandSessionMode,
+      contextMode: options.commandContextMode,
+      disclosure: options.commandDisclosure,
+      maxBytes: options.commandCapsuleBytes,
+    });
     this.hooks = options.hooks ?? new RuntimeHooks();
     this.evidence = options.evidence;
     this.disposeEvidence = this.evidence?.install(this.hooks);
@@ -815,9 +815,7 @@ export class AssistSession {
     this.disposed = true;
     this.analysis?.dispose();
     this.analysisBindings.clear();
-    this.commandResults.clear();
-    this.commandState?.clear();
-    this.commandState = undefined;
+    this.commandContext.clear();
     this.lastCommandDocState = undefined;
     this.disposeEvidence?.();
   }
@@ -956,11 +954,13 @@ export class AssistSession {
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
+    let delivered = false;
     try {
       for await (const event of this.modelStream(
         req,
         this.streamOptions({ grounding: opts.grounding, signal: opts.signal }),
       )) {
+        if (event.type === 'done') delivered = true;
         if (event.type === 'citation') this.citations.push(event.source);
         if (event.type === 'provenance') {
           // Finding #4: capture THIS turn's provenance (turn-scoped — it was cleared at turn start and
@@ -971,10 +971,16 @@ export class AssistSession {
         }
         yield event;
       }
-      // Reached only on a fully-consumed stream → the folded brief is now in the session
-      // history; mark exactly those notes resident. On a mid-stream throw this is skipped, so
-      // the notes stay pending and re-fold next turn (at-least-once, never lost).
-      if (foldedVersion !== undefined) this.model.markCommitted(foldedVersion);
+      // A successful terminal confirms residency. modelStream also returns normally after
+      // error/policy events; those failures, partial EOF and cancellation must leave notes pending.
+      // Commit only the version actually sent; newer notes still fold into the next request.
+      if (
+        foldedVersion !== undefined &&
+        delivered &&
+        this.task?.status === 'running' &&
+        !opts.signal?.aborted
+      )
+        this.model.markCommitted(foldedVersion);
     } finally {
       // Always unstage the brief part: on success it is resident; on failure it re-folds next turn.
       this.context.remove(BRIEF_REF_ID);
@@ -1064,16 +1070,21 @@ export class AssistSession {
       query: PRIME_INSTRUCTION,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
+    let delivered = false;
+    let failed = false;
     for await (const event of this.modelStream(req, {
       session: this.session,
       context: brief.entries,
       skillRoute: 'default',
       ...(opts.signal ? { signal: opts.signal } : {}),
     })) {
+      if (event.type === 'done') delivered = true;
+      if (event.type === 'error' || (event.type === 'policy' && event.verdict === 'block'))
+        failed = true;
       if (event.type === 'provenance') this.session = event.payload.sessionId ?? this.session;
     }
-    // Mark exactly the notes that were primed (by version) resident — not any that arrived since.
-    this.model.markCommitted(brief.version);
+    // Only a successful terminal confirms residency; transport EOF or policy/error events do not.
+    if (delivered && !failed && !opts.signal?.aborted) this.model.markCommitted(brief.version);
   }
 
   /**
@@ -1095,52 +1106,52 @@ export class AssistSession {
   }
 
   /**
-   * Apply a proposed write through the bridge — reversibly and provenanced. The caller SHOULD supply
-   * the provenance of the very turn that produced this change EXPLICITLY (the controller stamps the
-   * proposal's own captured provenance); when omitted, `apply` falls back to the CURRENT turn's
-   * provenance only.
-   *
-   * Finding #4: the fallback is TURN-SCOPED, not an ambient `lastProvenance` that outlives its turn —
-   * {@link currentTurnProvenance} is reset at the start of every turn, so a write made after a later,
-   * provenance-less turn inherits NOTHING from an unrelated earlier turn.
+   * Apply an explicitly reviewed proposal. Attribution belongs to that proposal; omitting it
+   * records a missing attribution payload rather than borrowing a previous chat's provenance.
    */
   async apply(
     kind: ActuationRequest['kind'],
     params: ActuationParams,
     changeId: ChangeId,
     provenance?: ProvenancePayload,
+    opts: { signal?: AbortSignal } = {},
   ): Promise<ActuationResult> {
-    const effective = provenance ?? this.currentTurnProvenance;
     const request: ActuationRequest = {
       changeId,
       kind,
       surface: this.bridge.surface,
       params,
-      ...(effective ? { provenance: effective } : {}),
+      ...(provenance ? { provenance } : {}),
     };
 
     if (this.task) throw new Error('Cannot apply a proposal while another task is running.');
-    let result!: ActuationResult;
-    const apply = () => this.applyRequest(request, effective, () => true);
-    for await (const value of this.withTask('proposal', '', undefined, async function* () {
-      yield await apply();
-    }))
-      result = value;
-    return result;
+    let result: ActuationResult | undefined;
+    const apply = () => this.applyRequest(request, provenance, () => true);
+    try {
+      for await (const value of this.withTask('proposal', '', opts.signal, async function* () {
+        // Host writes cannot always be aborted. Retain their receipt even when the task
+        // was cancelled during dispatch; cancellation must never erase a landed effect.
+        result = await apply();
+        yield result;
+      }))
+        result = value;
+    } catch (error) {
+      if (!result || !opts.signal?.aborted) throw error;
+    }
+    return result!;
   }
 
   /**
    * Drive the bounded, model-driven command loop (ADR-0004). The model expresses reads/writes
    * as flat command lines inside a ```cmd block; this method parses → compiles → executes them
-   * and feeds outcomes back as a ```result block on the next turn, all within ONE streamAssist
-   * `session`. Distinct from {@link ask} (which is left unchanged): `ask` is plain grounded chat.
+   * and retains outcomes through CommandContextSession. Each request is isolated by default;
+   * conversation mode is explicit compatibility. {@link ask} retains ordinary grounded chat.
    *
-   * Loop policy (ADR-0004 §3):
-   *   • Turn 1 = `renderGrammarPrompt(capabilities)` + the ambient `<doc_state>` + the task.
+   * Loop policy:
+   *   • Context includes capability disclosure, current document state, and bounded task state.
    *   • **Read-many:** execute all read commands in a turn and collect their results.
    *   • **Write-one:** compile each write to an `ActuationRequest` and run it through the
-   *     actuation gate ONE AT A TIME via {@link apply} (per-write approval; `DocBridge.actuate`
-   *     is never called without confirmation).
+   *     shared actuation boundary one at a time after plan or per-write approval.
    *   • A turn with no ```cmd fence is a re-prompt, not an error.
    *   • `done` stops the loop and yields the final answer; `maxTurns` bounds it.
    *
@@ -1173,19 +1184,10 @@ export class AssistSession {
     // Fresh ADR-0005 binding env per task: `$vars` persist across turns WITHIN this loop, but a
     // later independent runCommands() call must not read a binding it never computed.
     this.composeEnv.clear();
-    this.resetCommandState();
+    this.resetCommandState(task);
     this.shareCountThisTask = 0;
 
-    const capsule = this.isolateCommands
-      ? this.options.commandContextMode === 'transcript'
-        ? new CommandCapsule(task, { maxBytes: this.options.commandCapsuleBytes })
-        : (this.commandState = new ExecutionState(task, {
-            maxBytes: this.options.commandCapsuleBytes,
-          }))
-      : undefined;
-    let query = capsule
-      ? await this.renderCommandCapsule(capsule, capabilities, task)
-      : await this.firstCommandTurn(capabilities, task);
+    let query = await this.renderCommandContext(capabilities);
     let answer = '';
     let pendingNoFenceReprompt = false;
     let lastTurn = 0;
@@ -1232,10 +1234,8 @@ export class AssistSession {
         if (pendingNoFenceReprompt) break;
         pendingNoFenceReprompt = true;
         const correction = noFenceReprompt(turnHadCodeExecution);
-        if (capsule) {
-          capsule.append({ program: turnText, correction });
-          query = await this.renderCommandCapsule(capsule, capabilities, task);
-        } else query = correction;
+        this.commandContext.record({ program: turnText, correction });
+        query = await this.renderCommandContext(capabilities);
         continue;
       }
       pendingNoFenceReprompt = false;
@@ -1255,12 +1255,8 @@ export class AssistSession {
       if (stopped) return;
 
       // Feed all outcomes back as a ```result block + a fresh <doc_state> for the next turn.
-      if (capsule) {
-        const observation = { program: turnText, resultsJson: this.encodeCommandResults(results) };
-        if (capsule instanceof ExecutionState) capsule.append(observation, results);
-        else capsule.append(observation);
-        query = await this.renderCommandCapsule(capsule, capabilities, task);
-      } else query = await this.nextCommandTurn(results);
+      this.commandContext.record({ program: turnText, results }, this.task?.metrics);
+      query = await this.renderCommandContext(capabilities);
     }
 
     yield { type: 'exhausted', turns: lastTurn, answer };
@@ -1290,11 +1286,8 @@ export class AssistSession {
     yield* this.runCommandProgram(compileAnalysisProgram(program), opts);
   }
 
-  private resetCommandState(): void {
+  private resetCommandState(task?: string): void {
     this.analysisBindings.clear();
-    this.commandResults.clear();
-    this.commandState?.clear();
-    this.commandState = undefined;
     this.lastCommandDocState = undefined;
     if (this.task)
       this.task.metrics = {
@@ -1304,6 +1297,8 @@ export class AssistSession {
         resultOutputBytes: 0,
         snapshotBytesSaved: 0,
       };
+    if (task !== undefined) this.commandContext.begin(task);
+    else this.commandContext.clear();
   }
 
   /** Count macro expansion before any operation in a verified program can execute. */
@@ -1559,10 +1554,7 @@ export class AssistSession {
       const effects = this.task?.effects ?? [];
       const verified =
         this.shareCountThisTask === 0 &&
-        effects.every(
-          (result) =>
-            result.ok && !result.recoveryPending && result.verification?.status === 'verified',
-        );
+        effects.every((result) => assessActuationResult(result) === 'verified');
       if (!errors && verified && this.task?.status === 'running') plan.done = true;
       else {
         plan.results.push({
@@ -1650,7 +1642,7 @@ export class AssistSession {
         if (this.composeEnv.has(entry.name) || this.analysisBindings.has(entry.name))
           throw new Error(`Binding $${entry.name} already exists.`);
         const action = this.analysisBindings.resolve(JSON.parse(entry.request));
-        if (!['capture', 'query', 'reconcile', 'filter', 'inspect'].includes(action.kind))
+        if (!isAnalysisBindingKind(action.kind))
           throw new Error('Only artifact-producing reads can be bound.');
         const artifact = await this.toolOperation(`analysis:${action.kind}`, action, () =>
           this.requireAnalysis().execute(action, opts.signal),
@@ -2143,11 +2135,7 @@ export class AssistSession {
       // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
       if (!this.task?.effects.some((r) => r.changeId === result.changeId))
         await this.recordEffect(effect.request, result);
-      if (
-        !result.ok ||
-        result.recoveryPending ||
-        (result.verification && result.verification.status !== 'verified')
-      )
+      if (!['verified', 'unverified'].includes(assessActuationResult(result)))
         failedNodes.add(nodeId);
       results[index] = result;
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
@@ -2167,64 +2155,27 @@ export class AssistSession {
     }
   }
 
-  /** Build turn 1: protocol preamble + ambient `<doc_state>` + the task. */
-  private async firstCommandTurn(capabilities: CapabilityManifest, task: string): Promise<string> {
-    const protocol =
-      this.options.commandDisclosure === 'full'
-        ? renderGrammarPrompt(capabilities)
-        : renderCommandBootstrap(capabilities, task);
-    const docState = await this.renderAmbientDocState();
-    const parts = [protocol];
-    if (docState) parts.push(docState);
-    parts.push(`TASK:\n${task}`, 'Begin.');
-    return parts.join('\n\n');
-  }
-
   private get isolateCommands(): boolean {
-    return this.options.commandSessionMode !== 'conversation';
+    return this.commandContext.isolated;
   }
 
-  private async renderCommandCapsule(
-    capsule: CommandCapsule | ExecutionState,
-    capabilities: CapabilityManifest,
-    task: string,
-  ): Promise<string> {
-    const bindings: ExecutionStateBinding[] = [];
-    const artifacts =
-      capsule instanceof ExecutionState
-        ? (this.analysis?.artifacts.list() ?? []).map(
-            ({ preview: _preview, createdAt: _createdAt, ...artifact }) => artifact,
-          )
-        : [];
-    if (capsule instanceof ExecutionState) {
-      const available = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
-      for (const [name, id] of this.analysisBindings.entries())
-        bindings.push({ name, kind: 'artifact', value: { id, available: available.has(id) } });
-      for (const [name, value] of this.composeEnv)
-        bindings.push({
-          name,
-          kind: value.kind,
-          value,
-          ...(value.kind === 'table'
-            ? { schema: { columns: value.columns, rows: value.rows.length } }
-            : {}),
-        });
-    }
-    return capsule.render({
-      ...(capsule instanceof ExecutionState
-        ? {
-            bindings,
-            artifacts,
-            effects: this.task?.effects ?? [],
-            externalShareAttempts: this.shareCountThisTask,
-          }
-        : {}),
-      protocol:
-        this.options.commandDisclosure === 'full'
-          ? renderGrammarPrompt(capabilities)
-          : renderCommandBootstrap(capabilities, task),
-      docState: await this.renderAmbientDocState(false),
+  private async renderCommandContext(capabilities: CapabilityManifest): Promise<string> {
+    const snapshotPolicy = this.commandContext.snapshotPolicy;
+    const docState =
+      snapshotPolicy === 'none'
+        ? undefined
+        : await this.renderAmbientDocState(snapshotPolicy === 'deduplicate');
+    return this.commandContext.render({
+      capabilities,
+      docState,
       skills: [...this.skills.names()].map((name) => this.skills.get(name)!),
+      state: () => ({
+        analysisBindings: this.analysisBindings.entries(),
+        composeBindings: this.composeEnv,
+        artifacts: this.analysis?.artifacts.list() ?? [],
+        effects: this.task?.effects ?? [],
+        externalShareAttempts: this.shareCountThisTask,
+      }),
     });
   }
 
@@ -2277,26 +2228,6 @@ export class AssistSession {
     return parsePlanBlock(text);
   }
 
-  /** Build a follow-up turn: the ```result block (JSON) + a fresh `<doc_state>`. */
-  private encodeCommandResults(results: unknown[]): string {
-    const encoded = this.commandResults.encode(results);
-    if (this.task?.metrics) {
-      this.task.metrics.resultInputBytes += encoded.inputBytes;
-      this.task.metrics.resultInputBytesComplete =
-        this.task.metrics.resultInputBytesComplete !== false && encoded.inputBytesComplete;
-      this.task.metrics.resultOutputBytes += encoded.outputBytes;
-    }
-    return encoded.text;
-  }
-
-  private async nextCommandTurn(results: unknown[]): Promise<string> {
-    const resultBlock = '```result\n' + this.encodeCommandResults(results) + '\n```';
-    const docState = await this.renderAmbientDocState();
-    return docState
-      ? `${resultBlock}\n\n${docState}\n\n(Continue. Next command?)`
-      : `${resultBlock}\n\n(Continue. Next command?)`;
-  }
-
   /** Capture + render the ambient `<doc_state>` for a command turn, defensively (skip on failure). */
   private async renderAmbientDocState(deduplicate = true): Promise<string | undefined> {
     if (!this.docStateEnabled || !this.bridge.captureDocState) return undefined;
@@ -2342,9 +2273,8 @@ export class AssistSession {
   }
 
   /**
-   * Stream one command-loop turn through the engine within the resident `session`, recording the
-   * session id, citations, and provenance exactly as {@link ask} does. No ephemeral context-loop
-   * parts are injected here — the loop carries its own `<doc_state>`/result blocks in the query.
+   * Apply model hooks and stream completion policy to a provider request. Session mode and
+   * constructed query belong to the calling route; this boundary does not invent residency.
    */
   private async *modelStream(
     request: Parameters<StreamAssistClient['stream']>[0],
@@ -2360,6 +2290,7 @@ export class AssistSession {
     if (this.task) this.task.modelTurns++;
     if (this.task?.metrics) this.task.metrics.queryBytes += byteLength(request.query ?? '');
     let text = '';
+    let completed = false;
     for await (const received of this.client.stream(request, options)) {
       // Isolated protocol exchanges must not leak a stale adapter-supplied chat session into
       // observers, write provenance, or the caller's conversational state.
@@ -2370,6 +2301,7 @@ export class AssistSession {
       }
       await this.hooks.run('model:event', { event }, context);
       if (event.type === 'token') text += event.text;
+      if (event.type === 'done') completed = true;
       yield event;
       // Error/policy events remain visible, but must never fall through into command parsing
       // or a successful task receipt just because the transport ended normally.
@@ -2377,6 +2309,18 @@ export class AssistSession {
         if (this.task) this.task.status = event.type === 'error' ? 'failed' : 'blocked';
         return;
       }
+    }
+    if (!completed) {
+      if (this.task) this.task.status = 'incomplete';
+      const event: SseEvent = {
+        type: 'error',
+        code: 'incomplete_response',
+        message:
+          'The assistant response ended before completion was confirmed. Its commands were not executed. Review this run before continuing.',
+      };
+      await this.hooks.run('model:event', { event }, context);
+      yield event;
+      return;
     }
     await this.hooks.run('model:response', { text, route }, context);
   }
@@ -2810,20 +2754,9 @@ export class AssistSession {
           };
         }
         case 'inspect-context': {
-          if (intent.selector.trim().startsWith('state:'))
-            return {
-              label: `inspect ${intent.selector}`,
-              result: this.commandState?.inspect(intent.selector.trim()) ?? {
-                error: 'Execution state reference expired.',
-                code: 'reference',
-                complete: false,
-              },
-            };
-          if (intent.selector.trim().startsWith('result:'))
-            return {
-              label: `inspect ${intent.selector}`,
-              result: this.commandResults.inspect(intent.selector.trim()),
-            };
+          const observed = this.commandContext.inspect(intent.selector);
+          if (observed !== undefined)
+            return { label: `inspect ${intent.selector}`, result: observed };
           const found = await this.findContextRef(intent.selector);
           if (found?.found) {
             const reads = await this.bridge.resolveContext(found.ref);
@@ -2967,8 +2900,14 @@ export class AssistSession {
     // Finding #4: provenance is bound to the turn that emitted this command and passed in
     // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
     // A turn with no provenance stamps none (rather than inheriting a previous turn's). Durable
-    // persistence of the payload is the bridge's job (BUILD-PLAN 1.6, deferred).
-    request = await this.recovery.prepare(request);
+    // persistence is reported by the bridge; unsupported hosts mark it explicitly.
+    const admission = admitActuationRequest(
+      { ...request, ...(provenance ? { provenance } : {}) },
+      this.bridge.surface,
+      await this.effectiveCapabilities(),
+    );
+    if (admission.rejection) return admission.rejection;
+    request = await this.recovery.prepare(admission.request);
     const stamped: ActuationRequest = {
       ...request,
       ...(provenance ? { provenance } : {}),
@@ -2988,6 +2927,7 @@ export class AssistSession {
         error: { code: 'unapproved', message: 'write requires user approval (none granted)' },
       };
     }
+    let dispatched = false;
     try {
       await this.hooks.run('effect:before', { request: stamped }, this.hookContext());
       this.task?.signal?.throwIfAborted();
@@ -3004,13 +2944,34 @@ export class AssistSession {
         }
       }
       this.task?.signal?.throwIfAborted();
-      const result = await this.recovery.execute(stamped, () => {
-        this.task?.signal?.throwIfAborted();
+      // Approval and policy hooks can outlive a capability change. Re-admit before dispatch.
+      const current = admitActuationRequest(
+        stamped,
+        this.bridge.surface,
+        await this.effectiveCapabilities(),
+      );
+      if (current.rejection) return current.rejection;
+      const result = await this.recovery.execute(stamped, async () => {
+        // Recovery may await durable intent storage. Cancellation in that interval is a
+        // known non-write; throwing here would be indistinguishable from a host failure.
+        if (this.task?.signal?.aborted)
+          return {
+            ok: false,
+            changeId: stamped.changeId,
+            kind: stamped.kind,
+            error: { code: 'cancelled', message: 'Cancelled before host dispatch.' },
+          };
+        dispatched = true;
         return this.bridge.actuate(stamped);
       });
       await this.recordEffect(stamped, result);
       return result;
     } catch (err) {
+      if (dispatched)
+        return unknownActuationResult(
+          stamped,
+          'Host execution was interrupted. Inspect the document before retrying.',
+        );
       return {
         ok: false,
         changeId: stamped.changeId,
@@ -3075,11 +3036,9 @@ export class AssistSession {
 
   /**
    * Build the {@link StreamAssistClient.stream} options for a turn, folding in the structured
-   * grounding (Finding #2/#B-wire) alongside the live `session`/`context`/`signal`. The grounding's
-   * resolved `queryParts`/`dataStoreSpecs`/`fileIds` ride as a typed `grounding` option (NOT inlined
-   * into the prompt). The client's request-merge of `opts.grounding` into the streamAssist body is
-   * the gemini-client wiring agent's remaining hop (deferred); this method threads it that far so a
-   * `@`-mention is carried structurally end-to-end on our side.
+   * grounding alongside the live `session`/`context`/`signal`. Resolved query parts, data stores,
+   * and file IDs remain typed grounding options for the client's request construction. The
+   * command route removes session/context when it selects isolated execution.
    */
   private streamOptions(o: {
     grounding?: ResolvedGrounding;

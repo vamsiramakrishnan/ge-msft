@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parseProgramBlock } from '@ge/contracts';
+import { parseProgramBlock, parsePlanBlock } from '@ge/contracts';
 import { parseJsonArrayStream } from './json-stream.js';
 import { summarizeStages } from './live-performance.js';
 
@@ -313,7 +313,8 @@ function scenarios(): LiveScenario[] {
     {
       id: 'planner-cross-surface',
       group: 'planner',
-      title: 'cross-product work is represented as an explicit handoff workflow',
+      title:
+        'cross-product intentions use the production plan grammar and an explicit handoff boundary',
       skills: (cfg) => [cfg.plannerSkill],
       prompt: (cfg) =>
         `${mention(cfg.plannerSkill)} Active surface: excel. Request: /draft Use the selected revenue workbook to create a three-slide PowerPoint executive summary with source-backed charts. Do not mutate the workbook.`,
@@ -323,9 +324,10 @@ function scenarios(): LiveScenario[] {
         ...expectFence(result, 'plan'),
         ...expectText(
           result,
-          /workflow\s+cross-surface|source\s+excel|target\s+powerpoint|handoff/i,
-          'expected cross-surface handoff plan',
+          /step\s+.*(?:PowerPoint|handoff)|clarify\s+/i,
+          'expected a supported step or clarification describing the handoff',
         ),
+        ...parsePlanBlock(result.text).errors,
       ],
     },
     {

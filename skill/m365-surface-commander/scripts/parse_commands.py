@@ -19,11 +19,8 @@ import re
 import sys
 from pathlib import Path
 
-# ADR-0008 §4 — the verb/transform/kind tables are LOADED from the generated language manifest
-# (`m365-cli-<v>.json`, emitted from @ge/contracts), NOT hand-maintained here. This is the
-# anti-drift hinge: the TS grammar → the manifest → these tables, so the Python preflight can never
-# diverge from the runtime parser. The hardcoded fallback below only runs if the bundled manifest is
-# missing (a stripped sandbox); the parity test asserts fallback == manifest, so it cannot drift.
+# Structural argument parsing stays here; vocabulary and advisory semantics are generated.
+from language_manifest import load_manifest, ManifestError
 _MANIFEST_PATH = Path(__file__).with_name("m365-cli-1.0.json")
 
 # The write verbs `parse_line` has an explicit arg-parsing arm for. The manifest gives the verb SET
@@ -39,89 +36,28 @@ HANDLED_WRITE_VERBS = {
     "table", "chart", "cf", "spill",
 }
 
-CONTEXT_HINTS = {
-    "incremental",
-    "inline-preferred",
-    "reference-preferred",
-    "upload-preferred",
-    "code-execution-preferred",
-    "analytical",
-    "full-scope",
-}
-
-CONTEXT_KINDS = {
-    "selection",
-    "document",
-    "paragraph",
-    "table",
-    "range",
-    "sheet",
-    "slide",
-    "shape",
-    "image",
-    "comment",
-    "mail-item",
-    "mail-thread",
-    "attachment",
-    "calendar-event",
-    "transcript",
-    "page",
-    "person",
-    "indexed-document",
-    "drive-document",
-    "file",
-    "brief",
-}
-
-
 def _load_language():
-    """Load (read, workspace, control, write, transforms, effects, kinds, version) from the bundled manifest."""
-    try:
-        data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
-        return (
-            set(data["verbs"]["read"]),
-            set(data["verbs"].get("workspace", [])),
-            set(data["verbs"]["control"]),
-            set(data["verbs"]["write"]),
-            set(data.get("transforms", [])),
-            set(data.get("effectVerbs", [])),
-            set(data.get("actuationKinds", [])),
-            data.get("commandHelp", {}),
-            data.get("capabilityRegistry", []),
-            data.get("version", "unknown"),
-        )
-    except (OSError, KeyError, ValueError):
-        # Fallback: the manifest is absent (stripped sandbox) — fall back to HANDLED_WRITE_VERBS so the
-        # checker still runs. Parity asserts this matches the manifest, so the fallback can't rot.
-        return (
-            {
-                "outline", "read", "search", "list", "inspect", "properties", "comments",
-                "attachments", "tables", "slides", "neighbors", "context", "open",
-            },
-            {"workspace", "save", "cat", "grep", "cp", "mv", "rm", "share"},
-            {"done", "help"},
-            set(HANDLED_WRITE_VERBS),
-            {"filter", "select", "sum", "avg", "min", "max", "count", "sort", "head", "tail"},
-            set(HANDLED_WRITE_VERBS),
-            set(),
-            {},
-            [],
-            "fallback",
-        )
+    return load_manifest(_MANIFEST_PATH, "m365-cli/1.0")
 
+try:
+    _LANGUAGE = _load_language()
+except ManifestError as error:
+    raise SystemExit(str(error)) from error
 
-(
-    READ_VERBS,
-    WORKSPACE_VERBS,
-    CONTROL_VERBS,
-    WRITE_VERBS,
-    TRANSFORM_NAMES,
-    EFFECT_VERBS,
-    ACTUATION_KINDS,
-    COMMAND_HELP,
-    CAPABILITY_REGISTRY,
-    LANGUAGE_VERSION,
-) = _load_language()
+READ_VERBS = set(_LANGUAGE["verbs"]["read"])
+WORKSPACE_VERBS = set(_LANGUAGE["verbs"]["workspace"])
+CONTROL_VERBS = set(_LANGUAGE["verbs"]["control"])
+WRITE_VERBS = set(_LANGUAGE["verbs"]["write"])
+TRANSFORM_NAMES = set(_LANGUAGE["transforms"])
+EFFECT_VERBS = set(_LANGUAGE["effectVerbs"])
+ACTUATION_KINDS = set(_LANGUAGE["actuationKinds"])
+COMMAND_HELP = _LANGUAGE["commandHelp"]
+CAPABILITY_REGISTRY = _LANGUAGE["capabilityRegistry"]
+LANGUAGE_VERSION = _LANGUAGE["version"]
+PREFLIGHT = _LANGUAGE["preflight"]
+CONTEXT_KINDS = set(PREFLIGHT["contextKinds"])
+CONTEXT_HINTS = set(PREFLIGHT["contextHints"])
+ANALYSIS_BINDING_KINDS = frozenset(PREFLIGHT["analysisBindingKinds"])
 ALL_VERBS = READ_VERBS | WORKSPACE_VERBS | CONTROL_VERBS | WRITE_VERBS
 
 _FENCE = re.compile(r"```cmd[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
@@ -379,7 +315,7 @@ def _parse_invoke(verb: str, rest: str):
     kind = verb[1:].lower()
     if not kind:
         return {"error": "a / command needs a capability name — usage: /<capability> key=value ..."}
-    if ACTUATION_KINDS and kind not in ACTUATION_KINDS:
+    if kind not in ACTUATION_KINDS:
         near = difflib.get_close_matches(kind, sorted(ACTUATION_KINDS), n=1)
         tail = f" — did you mean '/{near[0]}'?" if near else ""
         return {"error": f"unknown capability '/{kind}'{tail} (the / surface names an ActuationKind)"}
@@ -403,8 +339,6 @@ def verified_frame_error(text: str):
         return "finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences"
     return None
 
-
-ANALYSIS_BINDING_KINDS = frozenset({"capture", "query", "reconcile", "filter", "inspect"})
 
 
 def _parse_analysis_binding(line: str):

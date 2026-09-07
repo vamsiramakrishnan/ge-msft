@@ -2,7 +2,7 @@
 
 The honest, current state of the codebase. Companion to `BUILD-PLAN.md` (the original checklist,
 now partly superseded), `CAPABILITY-MAP.md` (the I/O inventory), and the **ADRs** (the current
-architecture). Updated for the September 2026 workspace, analysis and command program increments.
+architecture). Updated for the September 2026 architecture unification.
 
 The September analysis increment implements versioned Excel artifacts, constrained DuckDB-WASM
 queries/reconciliation, typed finding actions, scoped evidence hooks, readback verification and a
@@ -59,13 +59,37 @@ semantics. The current Outlook event is active-message `ItemChanged`,
 not background mail delivery. No default mail grounding policy is installed. See the
 [extension guide](RUNTIME-EXTENSIONS.md) for examples, guarantees, and exact operation coverage.
 
+## Architecture unification (ADR-0015)
+
+All six host adapters derive dispatch coverage from their executable handler tables. Runtime
+admission checks the effective capability manifest before approval and again before dispatch;
+shared receipt validation and outcome assessment preserve uncertainty across recovery and the pane.
+Analysis/program schemas and Word/Excel provenance serialization now live in contracts, with
+compatibility exports. Command context has one lifecycle owner; panel routes share execution
+ownership, command event handling, and approval construction.
+
+CLI/preflight metadata and planner vocabulary are generated from the TypeScript contracts.
+Standalone loaders fail closed, unsupported planner directives are removed, and deterministic
+skill archives are checked against exact source content. Package dependency direction, direct
+imports, and TypeScript references are enforced by conformance tests. No package versions changed.
+
+The refactor fixes proposal capability bypass, pre-dispatch cancellation races, mismatched and
+contradictory receipts, lost history verification, ambient proposal attribution, invalid-grid
+refinement crashes, and provider EOF being treated as successful completion. These changes add
+no product features. See [the ownership decision](ADR-0015-architecture-unification.md) and
+[the canonical contract map](CONTRACTS.md).
+
 ## Verification baseline
 
-TypeScript project build clean · **2,542 tests passed, 16 skipped across 187 files** (Vitest) ·
-ESLint and Prettier clean · production Vite build and language/resource drift checks passed.
-Local validation used the installed Node tools because Bun was unavailable. CI runs the Bun scripts.
-Security review closed with 148 targeted regressions. The cloud browser could not reach the local
-preview; rendered React state tests passed, but browser layout and live Office/tenant acceptance remain pending.
+TypeScript project build clean · **2,671 tests passed, 16 optional live tests skipped across 198
+files** (Vitest) · ESLint and Prettier clean · all workspace production builds and language/resource
+drift checks passed. Skill validation passed 46 Python tests, 71 parity cases, parser self-tests,
+14 deterministic eval cases, and exact source checks for all three archives. Bun 1.3.13 validates
+the frozen lockfile; dependency corrections changed no resolved versions.
+
+Security review closed all concrete findings with 200 focused tests and independent real
+controller/runtime cancellation probes. Host/provider boundaries were simulated; live Office,
+tenant skill routing, and browser layout acceptance remain pending. No live latency claim is made.
 
 ## Packages — built vs planned
 

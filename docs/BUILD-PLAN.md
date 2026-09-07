@@ -174,3 +174,23 @@ User-directed foundation work builds on the existing client-direct runtime and t
 - [ ] Run real Office and tenant acceptance, including narrow-pane browser layout, sessionless
       private-skill routing, saved-history behavior and measured p50/p95. The cloud browser could not
       reach the local preview; no live provider or Office performance result is claimed.
+
+## Architecture unification — September 2026
+
+- [x] Centralize request admission and correlated effect receipts for every execution route.
+- [x] Derive bridge dispatch coverage from executable handlers; share provenance primitives while
+      keeping host persistence and mutation boundaries explicit.
+- [x] Move analysis/program schemas to contracts with compatibility exports; remove duplicated
+      producer classifications and align generated skill/CLI metadata with executable grammar.
+- [x] Consolidate command context lifecycle and panel execution ownership; preserve public behavior,
+      cancellation, queue routing, provenance and exact approval semantics.
+- [x] Fail closed on missing/corrupt CLI contracts and remove unsupported planner disclosures.
+- [x] Reconcile architectural documentation with the client-direct implementation and add durable
+      conformance checks for boundaries that previously drifted.
+- [x] Complete security review, type/lint/build gates, existing behavior tests and CLI/skill parity;
+      publish the refactor with measured structural changes and explicit remaining limitations.
+
+Validation: 2,671 Vitest tests passed, 16 optional live tests skipped (198 files); all workspace
+builds, TypeScript, ESLint, Prettier, frozen lockfile, generated-resource checks, 46 Python tests,
+71 parity cases, 14 deterministic eval cases, and three source-exact skill archives passed.
+Security review closed all concrete findings. Live Office/tenant acceptance remains tracked above.

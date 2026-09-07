@@ -1,3 +1,4 @@
+import { createBridgeDispatch } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -43,27 +44,6 @@ import {
 import { isSet } from './capabilities-runtime.js';
 import { canRevealWordContext, OfficeWordHost, type WordHost } from './host-port.js';
 
-/**
- * The exact `ActuationKind`s {@link WordBridge.actuate} handles — the SINGLE source of truth for
- * what the switch dispatches, sitting beside it so the two can't drift. The conformance test
- * (ADR-0006 closure) asserts `set(WORD_CAPABILITIES.actuations) === set(HANDLED_ACTUATIONS)`: a
- * phantom (advertised-but-unhandled) or a silent handled-but-unadvertised kind fails the build.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = [
-  'insert-text',
-  'replace-selection',
-  'insert-ooxml',
-  'tracked-change',
-  'fill-content-control',
-  'add-comment',
-  'comment-reply',
-  'apply-style',
-  'insert-table',
-  'insert-content-control',
-  'insert-hyperlink',
-  'find-replace',
-];
-
 const MAX_LISTED_PARAGRAPHS = 12;
 
 /**
@@ -75,6 +55,26 @@ const MAX_LISTED_PARAGRAPHS = 12;
  * `capture.ts` / `actuate-plan.ts` / `events.ts`; the `Word.run` batching lives in the port.
  */
 export class WordBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<WordBridge>(
+    'word',
+    {
+      'insert-text': (host, request) => host.applyInsertText(request),
+      'replace-selection': (host, request) => host.applyReplaceSelection(request),
+      'insert-ooxml': (host, request) => host.applyInsertOoxml(request),
+      'tracked-change': (host, request) => host.applyTrackedChange(request),
+      'fill-content-control': (host, request) => host.applyFillContentControl(request),
+      'add-comment': (host, request) => host.applyAddComment(request),
+      'comment-reply': (host, request) => host.applyCommentReply(request),
+      'apply-style': (host, request) => host.applyApplyStyle(request),
+      'insert-table': (host, request) => host.applyInsertTable(request),
+      'insert-content-control': (host, request) => host.applyInsertContentControl(request),
+      'insert-hyperlink': (host, request) => host.applyInsertHyperlink(request),
+      'find-replace': (host, request) => host.applyFindReplace(request),
+    },
+    { provenance: 'reported' },
+  );
+  static readonly handledActuations = WordBridge.dispatcher.handledActuations;
+
   readonly surface = 'word' as const;
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
@@ -188,39 +188,7 @@ export class WordBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    switch (req.kind) {
-      case 'tracked-change':
-        return this.applyTrackedChange(req);
-      case 'add-comment':
-        return this.applyAddComment(req);
-      case 'comment-reply':
-        return this.applyCommentReply(req);
-      case 'insert-text':
-        return this.applyInsertText(req);
-      case 'replace-selection':
-        return this.applyReplaceSelection(req);
-      case 'insert-ooxml':
-        return this.applyInsertOoxml(req);
-      case 'fill-content-control':
-        return this.applyFillContentControl(req);
-      case 'apply-style':
-        return this.applyApplyStyle(req);
-      case 'insert-table':
-        return this.applyInsertTable(req);
-      case 'insert-content-control':
-        return this.applyInsertContentControl(req);
-      case 'insert-hyperlink':
-        return this.applyInsertHyperlink(req);
-      case 'find-replace':
-        return this.applyFindReplace(req);
-      default:
-        return {
-          ok: false,
-          changeId: req.changeId,
-          kind: req.kind,
-          error: { code: 'unsupported', message: `Word bridge cannot ${req.kind}` },
-        };
-    }
+    return WordBridge.dispatcher.dispatch(this, req);
   }
 
   private async applyTrackedChange(req: ActuationRequest): Promise<ActuationResult> {
@@ -954,3 +922,6 @@ function provFlags(
   if (!req.provenance) return { provenanceMissing: true };
   return dropped ? { provenanceDropped: true } : {};
 }
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = WordBridge.handledActuations;

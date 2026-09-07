@@ -1,30 +1,10 @@
-import { z } from 'zod';
-import type { TableArtifact } from '@ge/contracts';
+import {
+  ReconciliationSpecSchema,
+  type ReconciliationSpec,
+  type TableArtifact,
+} from '@ge/contracts';
 import { assertExactDecimalColumn, exactDecimalColumnSql } from './exact-decimal.js';
-export const ReconciliationSpecSchema = z
-  .object({
-    left: z.string(),
-    right: z.string(),
-    leftKey: z.number().int().nonnegative(),
-    rightKey: z.number().int().nonnegative(),
-    leftAmount: z.number().int().nonnegative(),
-    rightAmount: z.number().int().nonnegative(),
-    leftCurrency: z.number().int().nonnegative().optional(),
-    rightCurrency: z.number().int().nonnegative().optional(),
-    currency: z
-      .string()
-      .regex(/^[A-Z]{3}$/)
-      .optional(),
-    tolerance: z
-      .string()
-      .regex(/^\d{1,12}(\.\d{1,6})?$/)
-      .default('0.01'),
-  })
-  .refine(
-    (s) => Boolean(s.currency) || (s.leftCurrency !== undefined && s.rightCurrency !== undefined),
-    'Choose a currency or a currency column in both tables.',
-  );
-export type ReconciliationSpec = z.infer<typeof ReconciliationSpecSchema>;
+export { ReconciliationSpecSchema, type ReconciliationSpec } from '@ge/contracts';
 export function reconciliationQuery(
   left: TableArtifact,
   right: TableArtifact,

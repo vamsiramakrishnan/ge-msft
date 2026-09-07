@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   asChangeId,
   DocStateSnapshotSchema,
@@ -822,7 +822,7 @@ describe('PowerPointBridge.actuate dispatch', () => {
     const res = await new PowerPointBridge().actuate({
       changeId: asChangeId('chg-x'),
       kind: 'write-cells',
-      surface: 'excel',
+      surface: 'powerpoint',
       params: { cells: [['1']] },
     });
     expect(res).toMatchObject({
@@ -869,6 +869,7 @@ describe('PowerPointBridge.actuate insert-slide (base64 prebuilt deck)', () => {
     );
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-deck'),
       kind: 'insert-slide',
       location: 'inserted-deck',
@@ -898,6 +899,7 @@ describe('PowerPointBridge.actuate insert-slide (base64 prebuilt deck)', () => {
     );
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-generated-deck'),
       kind: 'insert-slide',
       location: 'inserted-deck:2',
@@ -969,6 +971,35 @@ describe('PowerPointBridge.actuate insert-slide (native compose)', () => {
 });
 
 describe('PowerPointBridge.actuate set-shape-text', () => {
+  it.each([1, 3])(
+    'distinguishes a failed pre-read from a dispatched text write (sync %s)',
+    async (failAt) => {
+      const d = deck(SAMPLE_SLIDES, [0]);
+      installed = install(d);
+      const original = FakeContext.prototype.sync;
+      let calls = 0;
+      const sync = vi.spyOn(FakeContext.prototype, 'sync').mockImplementation(function (
+        this: FakeContext,
+      ) {
+        if (++calls === failAt) return Promise.reject(new Error('Office disconnected'));
+        return original.call(this);
+      });
+      try {
+        const result = await new PowerPointBridge().actuate(
+          setShapeText('s2', 's2-shape-1', 'New text'),
+        );
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: failAt === 1 ? 'target_conflict' : 'outcome_unknown' },
+        });
+        expect(result.recoveryPending).toBe(failAt === 1 ? undefined : true);
+        expect(d.slides[1]?.shapes[1]?.text).toBe(failAt === 1 ? 'Pat, Sam' : 'New text');
+      } finally {
+        sync.mockRestore();
+      }
+    },
+  );
+
   it('rewrites one addressed shape and records the inverse text', async () => {
     const d = deck(SAMPLE_SLIDES, [0]);
     installed = install(d);
@@ -978,6 +1009,7 @@ describe('PowerPointBridge.actuate set-shape-text', () => {
 
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('shape-1'),
       kind: 'set-shape-text',
       location: 'shape:s2:s2-shape-1',
@@ -1028,6 +1060,30 @@ function addShape(params: ActuationRequest['params'], id = 'add-shape-1'): Actua
 }
 
 describe('PowerPointBridge.actuate add-shape', () => {
+  it('reports unknown outcome when shape creation landed but its sync failed', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const sync = vi
+      .spyOn(FakeContext.prototype, 'sync')
+      .mockRejectedValue(new Error('Office disconnected'));
+    try {
+      const result = await new PowerPointBridge().actuate(
+        addShape({
+          target: { slideId: 's1' },
+          shape: { shapeType: 'textBox', text: 'Created' },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown' },
+      });
+      expect(d.slides[0]?.shapes).toHaveLength(3);
+    } finally {
+      sync.mockRestore();
+    }
+  });
+
   it('adds a text box to the addressed slide, recording the minted shape id as delete-object inverse', async () => {
     const d = deck(SAMPLE_SLIDES, [0]);
     installed = install(d);
@@ -1050,6 +1106,7 @@ describe('PowerPointBridge.actuate add-shape', () => {
 
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-add-textbox'),
       kind: 'add-shape',
       location: 'shape:s2:s2-shape-2',
@@ -1166,6 +1223,36 @@ function styledDeck(): DeckSeed {
 }
 
 describe('PowerPointBridge.actuate format-shape', () => {
+  it('retains uncertainty when one format facet landed before the next prior-state read failed', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const original = FakeContext.prototype.sync;
+    let calls = 0;
+    const sync = vi.spyOn(FakeContext.prototype, 'sync').mockImplementation(function (
+      this: FakeContext,
+    ) {
+      if (++calls === 3) return Promise.reject(new Error('Office disconnected'));
+      return original.call(this);
+    });
+    try {
+      const result = await new PowerPointBridge().actuate(
+        formatShape({
+          target: { slideId: 's2', shapeId: 's2-shape-1' },
+          shapeFormat: { fill: '#123456', line: '#654321' },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown' },
+      });
+      expect(d.slides[0]?.shapes[1]?.fillColor).toBe('#123456');
+      expect(d.slides[0]?.shapes[1]?.lineColor).toBe('#000000');
+    } finally {
+      sync.mockRestore();
+    }
+  });
+
   it('applies fill/line/font deltas and records only the touched prior fields as inverse', async () => {
     const d = styledDeck();
     installed = install(d);
@@ -1185,6 +1272,7 @@ describe('PowerPointBridge.actuate format-shape', () => {
 
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-format'),
       kind: 'format-shape',
       location: 'shape:s2:s2-shape-1',
@@ -1309,6 +1397,30 @@ function addTableSlide(params: ActuationRequest['params'], id = 'add-table-1'): 
 }
 
 describe('PowerPointBridge.actuate add-table-slide', () => {
+  it('reports uncertainty when a table landed but its identifying receipt could not be read', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const sync = vi
+      .spyOn(FakeContext.prototype, 'sync')
+      .mockRejectedValue(new Error('Office disconnected'));
+    try {
+      const result = await new PowerPointBridge().actuate(
+        addTableSlide({
+          target: { slideId: 's1' },
+          tableGrid: { hasHeaders: false, rows: [['Created']] },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown' },
+      });
+      expect(d.slides[0]?.shapes[2]?.tableGrid).toEqual([['Created']]);
+    } finally {
+      sync.mockRestore();
+    }
+  });
+
   it('seeds a native table from the value grid and records the minted shape id as inverse', async () => {
     const d = deck(SAMPLE_SLIDES, [0]);
     installed = install(d);
@@ -1334,6 +1446,7 @@ describe('PowerPointBridge.actuate add-table-slide', () => {
 
     expect(res).toEqual({
       ok: true,
+      provenanceMissing: true,
       changeId: asChangeId('chg-table'),
       kind: 'add-table-slide',
       location: 'shape:s3:s3-shape-2',

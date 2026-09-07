@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { asChangeId } from '@ge/contracts';
-import type { ActuationParams, ActuationRequest } from '@ge/contracts';
+import type { ActuationParams, ActuationRequest, ProvenancePayload } from '@ge/contracts';
 import { AssistSession } from '@ge/runtime';
 import { ExcelBridge } from '@ge/bridge-excel';
 import {
@@ -114,11 +114,14 @@ function makeSession(registry: TriggerRegistry): { bridge: ExcelBridge; session:
   return { bridge, session };
 }
 
-/** Run one grounded turn so `AssistSession` captures last-turn provenance to stamp on the write. */
-async function primeProvenance(session: AssistSession): Promise<void> {
-  for await (const _e of session.ask('compute the total revenue')) {
-    // drain — the scripted client emits a provenance event we want stamped onto the next write.
+/** Pin this answer's attribution to its explicit proposal, independent of later session turns. */
+async function proposalProvenance(session: AssistSession): Promise<ProvenancePayload> {
+  let provenance: ProvenancePayload | undefined;
+  for await (const event of session.ask('compute the total revenue')) {
+    if (event.type === 'provenance') provenance = event.payload;
   }
+  if (!provenance) throw new Error('The scripted answer must provide proposal attribution.');
+  return provenance;
 }
 
 describe('INTERPLAY: triggers + runtime + fake host — debounce/coalesce', () => {
@@ -200,12 +203,12 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
     });
 
     const { session } = makeSession(registry);
-    await primeProvenance(session);
+    const provenance = await proposalProvenance(session);
 
     // Kick off the gated write but DO NOT await it yet — it suspends inside the trigger gate.
     let result: Awaited<ReturnType<AssistSession['apply']>> | undefined;
     const applying = session
-      .apply('write-cells', writeParams(), asChangeId('gate-write-1'))
+      .apply('write-cells', writeParams(), asChangeId('gate-write-1'), provenance)
       .then((r) => (result = r));
 
     // Synchronize with gate entry, independently of the number of lifecycle-hook awaits.
@@ -223,7 +226,7 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
 
     expect(result?.ok).toBe(true);
     expect(cellB2(sim)).toBe('1180');
-    // Provenance from the primed turn landed durably in the host settings bag (not dropped/missing).
+    // Provenance from the reviewed proposal landed durably in the host settings bag (not dropped/missing).
     expect(result?.provenanceMissing).toBeUndefined();
     // CROSS-BOUNDARY READBACK: read the durable provenance record straight out of the fake host's
     // workbook settings bag (where `ExcelBridge.persistProvenance` wrote it via
@@ -246,12 +249,13 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
     });
 
     const { session } = makeSession(registry);
-    await primeProvenance(session);
+    const provenance = await proposalProvenance(session);
 
     const result = await session.apply(
       'write-cells',
       writeParams(),
       asChangeId('gate-write-blocked'),
+      provenance,
     );
 
     // The gate vetoed BEFORE the bridge ran: the host cell is untouched and the error surfaces.
@@ -272,11 +276,11 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
     });
 
     const { session } = makeSession(registry);
-    await primeProvenance(session);
+    const provenance = await proposalProvenance(session);
 
     let settled = false;
     const applying = session
-      .apply('write-cells', writeParams(), asChangeId('gate-write-hung'))
+      .apply('write-cells', writeParams(), asChangeId('gate-write-hung'), provenance)
       .then(() => (settled = true));
 
     // Race the never-resolving apply against a short timeout: the timeout must win.
@@ -306,12 +310,13 @@ describe('INTERPLAY: triggers + runtime + fake host — post-actuation audit fir
     });
 
     const { session } = makeSession(registry);
-    await primeProvenance(session);
+    const provenance = await proposalProvenance(session);
 
     const result = await session.apply(
       'write-cells',
       writeParams(),
       asChangeId('gate-write-audit'),
+      provenance,
     );
 
     // Let the fire-and-forget post-actuation dispatch run.

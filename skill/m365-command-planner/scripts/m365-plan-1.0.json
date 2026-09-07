@@ -1,0 +1,52 @@
+{
+  "version": "m365-plan/1.0",
+  "scalarKeys": [
+    "intent",
+    "surface",
+    "scope",
+    "confidence"
+  ],
+  "listKeys": [
+    "ground",
+    "context",
+    "step",
+    "exclude",
+    "clarify"
+  ],
+  "brackets": [
+    "plan",
+    "end"
+  ],
+  "intents": [
+    "ask",
+    "summarize",
+    "explain",
+    "rewrite",
+    "review",
+    "visualize",
+    "draft",
+    "notes"
+  ],
+  "surfaces": [
+    "word",
+    "excel",
+    "powerpoint",
+    "onenote",
+    "outlook",
+    "teams"
+  ],
+  "confidence": [
+    "high",
+    "medium",
+    "low"
+  ],
+  "contextHints": [
+    "incremental",
+    "inline-preferred",
+    "reference-preferred",
+    "upload-preferred",
+    "code-execution-preferred",
+    "analytical",
+    "full-scope"
+  ]
+}

@@ -613,6 +613,7 @@ export const ActuationRequestSchema = z
     (r) =>
       !r.params.cellFormulas ||
       (r.params.cellValues &&
+        r.params.cellValues.length > 0 &&
         r.params.cellFormulas.length === r.params.cellValues.length &&
         r.params.cellFormulas.every((row) => row.length === r.params.cellValues![0]!.length)),
     'Explicit formula dimensions must match typed values',

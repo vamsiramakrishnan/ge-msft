@@ -1,3 +1,4 @@
+import { createBridgeDispatch } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -35,13 +36,17 @@ import { planAppendPage } from './actuate-plan.js';
  *     `Paragraph.richText` → 1.1 (l.170835); `RichText.text` → 1.1 (l.171198).
  *   - `Section.addPage(title)` → 1.1 (l.170042); `Page.addOutline(left, top, html)` → 1.1 (l.170290).
  */
-/**
- * The exact `ActuationKind`s {@link OneNoteBridge.actuate} handles (ADR-0006 closure source of
- * truth). The conformance test asserts this equals the advertised manifest's actuation kinds.
- */
-export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ['append-page'];
 
 export class OneNoteBridge implements DocBridge {
+  private static readonly dispatcher = createBridgeDispatch<OneNoteBridge>(
+    'onenote',
+    {
+      'append-page': (host, request) => host.applyAppendPage(request),
+    },
+    { provenance: 'unsupported' },
+  );
+  static readonly handledActuations = OneNoteBridge.dispatcher.handledActuations;
+
   readonly surface = 'onenote' as const;
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
@@ -182,14 +187,10 @@ export class OneNoteBridge implements DocBridge {
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
-    if (req.kind !== 'append-page') {
-      return {
-        ok: false,
-        changeId: req.changeId,
-        kind: req.kind,
-        error: { code: 'unsupported', message: `OneNote bridge cannot ${req.kind}` },
-      };
-    }
+    return OneNoteBridge.dispatcher.dispatch(this, req);
+  }
+
+  private async applyAppendPage(req: ActuationRequest): Promise<ActuationResult> {
     const plan = planAppendPage(req);
     if (!plan.html.trim()) {
       return {
@@ -260,3 +261,6 @@ function prefixedValue(value: string | undefined, ...prefixes: string[]): string
   }
   return undefined;
 }
+
+/** Actual dispatch keys; conformance checks these against the advertised capabilities. */
+export const HANDLED_ACTUATIONS: readonly ActuationKind[] = OneNoteBridge.handledActuations;

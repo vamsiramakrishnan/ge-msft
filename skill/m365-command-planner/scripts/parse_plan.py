@@ -18,39 +18,21 @@ Usage:
 import json
 import re
 import sys
+from pathlib import Path
+from language_manifest import load_manifest, ManifestError
 
-# `scope` is the orthogonal WHERE axis (CommandScope kind):
-#   selection | document | range | section | comment | this-item  (free-text ref ok)
-SCALAR_KEYS = {"intent", "surface", "scope", "confidence", "workflow"}   # last one wins
-LIST_KEYS = {
-    "ground",
-    "context",
-    "source",
-    "target",
-    "phase",
-    "handoff",
-    "step",
-    "exclude",
-    "clarify",
-}  # accumulate, in order
-BRACKETS = {"plan", "end"}                                   # optional, ignored
+try:
+    _LANGUAGE = load_manifest(Path(__file__).with_name("m365-plan-1.0.json"), "m365-plan/1.0")
+except ManifestError as error:
+    raise SystemExit(str(error)) from error
+SCALAR_KEYS = set(_LANGUAGE["scalarKeys"])
+LIST_KEYS = set(_LANGUAGE["listKeys"])
+BRACKETS = set(_LANGUAGE["brackets"])
 ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
-
-# The general, Copilot-altitude verbs (see docs/EXPERIENCE.md §1). Scope is a
-# separate orthogonal axis (the `scope` keyword), never a verb.
-INTENTS = {"ask", "summarize", "explain", "rewrite", "review", "visualize", "draft", "notes"}
-SURFACES = {"word", "excel", "powerpoint", "onenote", "outlook", "teams"}
-CONFIDENCE = {"high", "medium", "low"}
-WORKFLOWS = {"single-surface", "cross-surface"}
-CONTEXT_HINTS = {
-    "incremental",
-    "inline-preferred",
-    "reference-preferred",
-    "upload-preferred",
-    "code-execution-preferred",
-    "analytical",
-    "full-scope",
-}
+INTENTS = set(_LANGUAGE["intents"])
+SURFACES = set(_LANGUAGE["surfaces"])
+CONFIDENCE = set(_LANGUAGE["confidence"])
+CONTEXT_HINTS = set(_LANGUAGE["contextHints"])
 
 _FENCE = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
 _FENCE_OPEN = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*)$", re.IGNORECASE)
@@ -96,14 +78,8 @@ def parse_line(line: str):
         return {"error": f"unknown surface '{rest}' — expected one of {sorted(SURFACES)}"}
     if key == "confidence" and rest.lower() not in CONFIDENCE:
         return {"error": f"confidence must be high|medium|low — got '{rest}'"}
-    if key == "workflow" and rest.lower() not in WORKFLOWS:
-        return {"error": f"workflow must be single-surface|cross-surface — got '{rest}'"}
     if key == "context" and rest.lower() not in CONTEXT_HINTS:
         return {"error": f"unknown context hint '{rest}' — expected one of {sorted(CONTEXT_HINTS)}"}
-    if key in {"source", "target", "phase"}:
-        surface = rest.split(None, 1)[0].rstrip(":").lower()
-        if surface not in SURFACES:
-            return {"error": f"'{key}' must start with a surface ({sorted(SURFACES)}) — got '{rest}'"}
     if key == "ground":
         rest = rest.strip().strip('"')
     return (key, rest)
@@ -116,9 +92,7 @@ def parse_plan(model_text: str):
         return {"block": None, "plan": None, "errors": [],
                 "note": "no ```plan fence (re-prompt, not an error)"}
 
-    plan = {"intent": None, "surface": None, "scope": None, "confidence": None,
-            "workflow": None, "ground": [], "context": [], "source": [], "target": [],
-            "phase": [], "handoff": [], "step": [], "exclude": [], "clarify": []}
+    plan = {**{key: None for key in SCALAR_KEYS}, **{key: [] for key in LIST_KEYS}}
     errors = []
     for raw in inner.splitlines():
         rec = parse_line(raw)
@@ -131,7 +105,7 @@ def parse_plan(model_text: str):
         if key == "bracket":
             continue
         if key in SCALAR_KEYS:
-            plan[key] = val.lower() if key in ("surface", "confidence", "workflow") else val
+            plan[key] = val.lower() if key in ("surface", "confidence") else val
         elif key == "context":
             plan[key].append(val.lower())
         else:
@@ -144,14 +118,6 @@ def parse_plan(model_text: str):
         errors.append("plan is missing 'surface'")
     if not plan["step"] and not plan["clarify"]:
         errors.append("plan needs at least one 'step' (or a 'clarify' to ask first)")
-    if plan["workflow"] == "cross-surface" and not plan["clarify"]:
-        if not plan["source"]:
-            errors.append("cross-surface plan needs at least one 'source <surface> ...' line")
-        if not plan["target"]:
-            errors.append("cross-surface plan needs at least one 'target <surface> ...' line")
-        if not plan["handoff"]:
-            errors.append("cross-surface plan needs at least one 'handoff ...' artifact line")
-
     plan["needs_clarification"] = bool(plan["clarify"])
     return {"block": inner, "plan": plan, "errors": errors}
 
@@ -193,37 +159,26 @@ step inspect
     cross = parse_plan("""```plan
 intent draft
 surface excel
-workflow cross-surface
-source excel document
-target powerpoint deck
 context analytical
-phase excel create a chart-ready summary and handoff packet
-phase powerpoint create slides from the approved handoff packet
-handoff chart-ready summary table, slide outline, source refs, and provenance
-step prepare the Excel analysis handoff; do not mutate PowerPoint from Excel
+step Prepare a slide-ready summary with source refs and constraints in Excel.
+step Resume deck creation only after the user opens PowerPoint and reviews the handoff.
+exclude Do not mutate PowerPoint from Excel.
 confidence high
 ```""")
-    cp = cross["plan"]
-    if cp["workflow"] != "cross-surface":
-        failures.append("cross-surface workflow did not parse")
-    if cp["source"] != ["excel document"] or cp["target"] != ["powerpoint deck"]:
-        failures.append(f"source/target did not parse: {cp['source']} -> {cp['target']}")
     if cross["errors"]:
-        failures.append(f"cross-surface plan unexpectedly errored: {cross['errors']}")
-
+        failures.append(f"Supported cross-surface intentions errored: {cross['errors']}")
+    for keyword in ("workflow", "source", "target", "phase", "handoff"):
+        unsupported = parse_plan(f"```plan\nintent draft\nsurface excel\n{keyword} unsupported\nstep prepare\n```")
+        if not any("unknown plan keyword" in error for error in unsupported["errors"]):
+            failures.append(f"Unsupported TypeScript plan keyword {keyword} was accepted")
     paused = parse_plan("""```plan
 intent draft
 surface excel
-workflow cross-surface
-source excel selection
-context inline-preferred
-clarify Which target should receive the update: PowerPoint, Word, Outlook, or Teams?
+clarify Which target application should receive the summary?
 confidence low
 ```""")
-    if paused["errors"]:
-        failures.append(f"clarification-gated cross-surface plan errored: {paused['errors']}")
-    if not paused["plan"]["needs_clarification"]:
-        failures.append("clarification-gated cross-surface plan did not mark needs_clarification")
+    if paused["errors"] or not paused["plan"]["needs_clarification"]:
+        failures.append("Cross-surface clarification must remain supported")
 
     print(
         json.dumps(

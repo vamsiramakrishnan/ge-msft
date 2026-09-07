@@ -21,7 +21,11 @@ class FakeBridge implements DocBridge {
   emit: ((e: HostEvent) => void) | null = null;
 
   getCapabilities(): CapabilityManifest {
-    return { surface: 'word', contextKinds: [], actuations: [] };
+    return {
+      surface: 'word',
+      contextKinds: [],
+      actuations: [{ kind: 'tracked-change', surface: 'word', title: 'Edit', reversible: true }],
+    };
   }
   listContext(): Promise<ContextRef[]> {
     return Promise.resolve([]);

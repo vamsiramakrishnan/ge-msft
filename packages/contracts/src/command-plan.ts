@@ -17,16 +17,20 @@ import { SurfaceSchema, type Surface } from './context.js';
  */
 
 /** Scalar keys (last one wins). */
-const SCALAR_KEYS = new Set(['intent', 'surface', 'scope', 'confidence']);
+export const PLAN_SCALAR_KEYS = ['intent', 'surface', 'scope', 'confidence'] as const;
+const SCALAR_KEYS = new Set<string>(PLAN_SCALAR_KEYS);
 /** List keys (accumulate, in order). */
-const LIST_KEYS = new Set(['ground', 'context', 'step', 'exclude', 'clarify']);
+export const PLAN_LIST_KEYS = ['ground', 'context', 'step', 'exclude', 'clarify'] as const;
+const LIST_KEYS = new Set<string>(PLAN_LIST_KEYS);
 /** Optional bracket markers, ignored. */
-const BRACKETS = new Set(['plan', 'end']);
+export const PLAN_BRACKETS = ['plan', 'end'] as const;
+const BRACKETS = new Set<string>(PLAN_BRACKETS);
 const ALL_KEYS = new Set([...SCALAR_KEYS, ...LIST_KEYS, ...BRACKETS]);
 
 const INTENTS = new Set(IntentSchema.options);
 const SURFACES = new Set(SurfaceSchema.options);
-const CONFIDENCE = new Set(['high', 'medium', 'low']);
+export const PLAN_CONFIDENCE = ['high', 'medium', 'low'] as const;
+const CONFIDENCE = new Set<string>(PLAN_CONFIDENCE);
 
 export const PlanContextHintSchema = z.enum([
   'incremental',
@@ -38,6 +42,18 @@ export const PlanContextHintSchema = z.enum([
   'full-scope',
 ]);
 export type PlanContextHint = z.infer<typeof PlanContextHintSchema>;
+
+/** Versioned planner vocabulary emitted into the standalone Python skill bundle. */
+export const PLANNER_LANGUAGE = {
+  version: 'm365-plan/1.0',
+  scalarKeys: [...PLAN_SCALAR_KEYS],
+  listKeys: [...PLAN_LIST_KEYS],
+  brackets: [...PLAN_BRACKETS],
+  intents: [...IntentSchema.options],
+  surfaces: [...SurfaceSchema.options],
+  confidence: [...PLAN_CONFIDENCE],
+  contextHints: [...PlanContextHintSchema.options],
+};
 const CONTEXT_HINTS = new Set(PlanContextHintSchema.options);
 
 export interface PlanContextHintInfo {

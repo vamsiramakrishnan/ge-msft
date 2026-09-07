@@ -104,7 +104,7 @@ describe('createMessageSendHandler (host glue with a real registry, stubbed even
     expect(seenId).toBe('AAMk-send');
   });
 
-  it('fails safe (allowEvent true) if the gate throws', async () => {
+  it('blocks when a registered required check fails, rather than bypassing that check', async () => {
     const registry = new TriggerRegistry();
     registry.register({
       id: 'boom',
@@ -116,7 +116,13 @@ describe('createMessageSendHandler (host glue with a real registry, stubbed even
     const handler = createMessageSendHandler(registry);
     const { calls, event } = fakeEvent();
     await handler(event);
-    expect(calls).toEqual([{ allowEvent: true }]);
+    expect(calls).toEqual([
+      {
+        allowEvent: false,
+        errorMessage:
+          'Required check boom could not complete. Try again before applying this action.',
+      },
+    ]);
   });
 
   // HIGH-2 regression: a decided block whose first `completed(...)` throws must NOT be downgraded
@@ -147,4 +153,25 @@ describe('createMessageSendHandler (host glue with a real registry, stubbed even
     ]);
     expect(calls.some((c) => c.allowEvent === true)).toBe(false);
   });
+});
+
+it('does not bypass send checks when resolving the draft fails', async () => {
+  const registry = new TriggerRegistry();
+  const calls: OnSendCompletedOptions[] = [];
+  const handler = createMessageSendHandler(registry, {
+    resolveItemId() {
+      throw new Error('private draft details');
+    },
+  });
+  await handler({
+    completed(options) {
+      calls.push(options ?? {});
+    },
+  });
+  expect(calls).toEqual([
+    {
+      allowEvent: false,
+      errorMessage: 'The send checks could not complete. Try again before sending this message.',
+    },
+  ]);
 });

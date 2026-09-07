@@ -38,6 +38,8 @@ export {
   type RunStep,
 } from './controller.js';
 export { renderCommandLine } from './render-command.js';
+export { createApplicationRuntime, APPLICATION_EXTENSIONS } from './runtime-extensions.js';
+export { connectPanelRuntime } from './panel-runtime.js';
 export {
   buildPowerPointDeckImportRequest,
   type BuildPowerPointDeckImportOptions,

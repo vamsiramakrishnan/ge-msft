@@ -41,7 +41,7 @@ function actionButton(actionId: string): HTMLButtonElement {
 }
 
 function actionTab(label: string): HTMLButtonElement {
-  const el = [...ui!.container.querySelectorAll<HTMLButtonElement>('button.action-tab')].find(
+  const el = [...ui!.container.querySelectorAll<HTMLButtonElement>('.library-filters button')].find(
     (button) => button.textContent?.includes(label),
   );
   if (!el) throw new Error(`no action tab "${label}"`);

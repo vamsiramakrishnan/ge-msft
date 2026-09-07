@@ -10,8 +10,7 @@ import type { Intent, QuickAction, Surface } from '@ge/contracts';
 import type { ContextChip, ConversationsState, Skill } from '../../controller.js';
 import { ContextTray } from './ContextTray.js';
 import { SkillsPanel } from './SkillsPanel.js';
-import { QuickActionBar } from './QuickActionBar.js';
-import { SurfaceCommandCenter } from './SurfaceCommandCenter.js';
+import { ActionLibrary } from './ActionLibrary.js';
 import { ConversationHistoryPanel } from './ConversationHistoryPanel.js';
 
 export interface ToolbarProps {
@@ -63,7 +62,7 @@ const HOST_NAME: Readonly<Record<Surface, string>> = {
 
 const PANEL_TITLE: Readonly<Record<Panel, string>> = {
   context: 'Context and grounding',
-  actions: 'Quick tasks',
+  actions: 'Find your next action',
   skills: 'Session skills',
   sessions: 'Conversation history',
   settings: 'Catalog and routing',
@@ -85,11 +84,9 @@ export function Toolbar({
   chips,
   attachedCount,
   availableCount,
-  messageCount,
-  proposalCount,
+
   skills,
   conversations,
-  primaryActionIds,
   hasSettings,
   settingsPanel,
   onToggleChip,
@@ -163,6 +160,18 @@ export function Toolbar({
     }
   }, [conversations.loaded, conversations.loading, onRefreshConversations, panel]);
 
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        const trigger = rootRef.current?.querySelector<HTMLButtonElement>('[aria-label="Actions"]');
+        if (trigger) choose('actions', trigger);
+      }
+    };
+    document.addEventListener('keydown', shortcut);
+    return () => document.removeEventListener('keydown', shortcut);
+  }, [choose]);
+
   const state = hasGate ? 'gate' : busy ? 'busy' : 'ready';
   const status = hasGate ? 'Decision needed' : busy ? 'Working' : 'Ready';
   const hasSkills = skills.length > 0;
@@ -211,7 +220,7 @@ export function Toolbar({
           aria-haspopup="dialog"
           aria-controls="tw-panel-actions"
           aria-label="Actions"
-          title="Actions"
+          title="Find actions (Ctrl / ⌘ K)"
           onClick={(event) => choose('actions', event.currentTarget)}
         >
           <ToolbarIcon name="actions" />
@@ -304,6 +313,7 @@ export function Toolbar({
             <div id="tw-panel-context" className="tw-modal-pane" hidden={panel !== 'context'}>
               <ContextTray
                 embedded
+                disabled={busy}
                 chips={chips}
                 onToggle={onToggleChip}
                 onReveal={onRevealChip}
@@ -312,26 +322,10 @@ export function Toolbar({
             </div>
 
             <div id="tw-panel-actions" className="tw-modal-pane" hidden={panel !== 'actions'}>
-              <SurfaceCommandCenter
+              <ActionLibrary
                 surface={surface}
                 allowedIntents={allowedIntents}
-                busy={busy}
-                hasGate={hasGate}
-                attachedCount={attachedCount}
-                availableCount={availableCount}
-                messageCount={messageCount}
-                proposalCount={proposalCount}
-                onAction={(action) => {
-                  onQuickAction(action);
-                  close();
-                }}
-              />
-              <QuickActionBar
-                embedded
-                surface={surface}
-                allowedIntents={allowedIntents}
-                busy={busy}
-                excludeIds={primaryActionIds}
+                disabled={busy}
                 onAction={(action) => {
                   onQuickAction(action);
                   close();
@@ -356,7 +350,10 @@ export function Toolbar({
                 conversations={conversations}
                 disabled={busy}
                 onRefresh={onRefreshConversations}
-                onResume={onResumeConversation}
+                onResume={(name) => {
+                  onResumeConversation(name);
+                  close();
+                }}
               />
             </div>
 

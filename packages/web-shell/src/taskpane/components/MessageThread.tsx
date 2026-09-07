@@ -7,6 +7,9 @@ import { canRenderHostLocation } from '../../host-location.js';
 
 export interface MessageThreadProps {
   messages: ChatMessage[];
+  showEmpty?: boolean;
+  disabled?: boolean;
+  onFollowUp?: (text: string) => void;
   surface?: Surface;
   onInsertArtifact?: (artifact: InsertableArtifact) => void;
   onRevealLocation?: (location: string) => void;
@@ -749,14 +752,83 @@ function Citation({ source, id }: { source: SourceRef; id: string }): JSX.Elemen
   );
 }
 
+function AnswerActions({
+  text,
+  onFollowUp,
+  disabled,
+}: {
+  text: string;
+  onFollowUp?: (text: string) => void;
+  disabled: boolean;
+}): JSX.Element {
+  const [copyState, setCopyState] = useState('');
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState('Copied');
+    } catch {
+      setCopyState('Select the answer to copy it.');
+    }
+  };
+  return (
+    <div className="answer-actions" aria-label="Use this answer">
+      <button type="button" onClick={() => void copy()}>
+        Copy answer
+      </button>
+      {onFollowUp && (
+        <>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onFollowUp(
+                'Summarize the previous answer as a decision brief: recommendation, evidence, risks, and next steps. Preserve its citations and flag unknowns.',
+              )
+            }
+          >
+            Decision brief
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onFollowUp(
+                'Turn the previous answer into a checklist with stated owners, dates, and source references. Leave unstated owners and dates blank.',
+              )
+            }
+          >
+            Action checklist
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() =>
+              onFollowUp(
+                'Check the previous answer against the attached evidence. Separate supported facts, assumptions, contradictions, and unanswered questions. Cite the sources.',
+              )
+            }
+          >
+            Check evidence
+          </button>
+        </>
+      )}
+      {copyState && <span role="status">{copyState}</span>}
+    </div>
+  );
+}
+
 function Message({
   message,
+  disabled,
+  onFollowUp,
   surface,
   onInsertArtifact,
   onRevealLocation,
   insertArtifactDisabledReason,
 }: {
   message: ChatMessage;
+  disabled: boolean;
+  onFollowUp?: (text: string) => void;
   surface: Surface;
   onInsertArtifact?: (artifact: InsertableArtifact) => void;
   onRevealLocation?: (location: string) => void;
@@ -774,7 +846,11 @@ function Message({
             <MarkdownContent
               text={message.text}
               surface={surface}
-              onInsertArtifact={onInsertArtifact}
+              onInsertArtifact={
+                message.streaming || message.cancelled || message.error
+                  ? undefined
+                  : onInsertArtifact
+              }
               onRevealLocation={onRevealLocation}
               insertArtifactDisabledReason={insertArtifactDisabledReason}
             />
@@ -801,6 +877,9 @@ function Message({
             ))}
           </div>
         )}
+        {!isUser && message.text && !message.streaming && !message.cancelled && !message.error && (
+          <AnswerActions text={message.text} onFollowUp={onFollowUp} disabled={disabled} />
+        )}
       </div>
     </div>
   );
@@ -821,6 +900,9 @@ const EMPTY_COPY: Record<Surface, string> = {
 /** The grounded conversation: user/assistant bubbles, streamed answer + citation pills. */
 export function MessageThread({
   messages,
+  showEmpty = true,
+  disabled = false,
+  onFollowUp,
   surface = 'word',
   onInsertArtifact,
   onRevealLocation,
@@ -828,7 +910,7 @@ export function MessageThread({
 }: MessageThreadProps): JSX.Element {
   return (
     <div className="thread" role="log" aria-live="polite" aria-label="Conversation">
-      {messages.length === 0 && (
+      {showEmpty && messages.length === 0 && (
         <div className="thread-empty">
           <div className="thread-empty-plate">
             <span className="thread-empty-mark" aria-hidden="true" />
@@ -844,6 +926,8 @@ export function MessageThread({
         <Message
           key={m.id}
           message={m}
+          disabled={disabled}
+          onFollowUp={m === messages[messages.length - 1] ? onFollowUp : undefined}
           surface={surface}
           onInsertArtifact={onInsertArtifact}
           onRevealLocation={onRevealLocation}

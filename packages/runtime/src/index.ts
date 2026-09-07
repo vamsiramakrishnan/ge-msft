@@ -51,3 +51,27 @@ export { analyseEffectDependencies, propagateFailure, effectResources } from './
 // is the only way web-shell/controller.ts's artifact rendering can reach these workspace types.
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
 export * from './docfs/index.js';
+export {
+  RuntimeHooks,
+  HookBlockedError,
+  type RuntimeHook,
+  type RuntimeHookPhase,
+  type RuntimeHookPayloads,
+  type HookContext,
+  type HookRecord,
+  type HookDecision,
+  type HookResult,
+} from './hooks.js';
+export {
+  ExecutionLedger,
+  type RunOutcome,
+  type RunRecord,
+  type RunStatus,
+  type TaskMode,
+} from './execution-ledger.js';
+export {
+  installRuntimeExtensions,
+  completedEffectsExtension,
+  type RuntimeExtension,
+  type RuntimeExtensionApi,
+} from './extensions.js';

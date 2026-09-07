@@ -20,7 +20,7 @@ import type {
   EnsureSkillResult,
 } from '@ge/gemini-client';
 import { AssistSession } from '@ge/runtime';
-import type { AuthClient, DocBridge } from '@ge/runtime';
+import type { AuthClient, DocBridge, RuntimeHooks } from '@ge/runtime';
 import { GraphClient, GraphSharedStore } from '@ge/graph-client';
 import type { TriggerRegistry } from '@ge/triggers';
 
@@ -69,6 +69,8 @@ export interface ComposeOptions {
   bridge: DocBridge;
   unit: UnitDescriptor;
   triggers?: TriggerRegistry;
+  hooks?: RuntimeHooks;
+  primeOnHostEvent?: boolean;
   autoAttach?: ContextKind[];
   /** Resume a prior session (persisted in host metadata) so constructed context survives. */
   resumeSessionId?: string;
@@ -209,6 +211,8 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     ...(estateWritesEnabled ? { estateWritesEnabled: true } : {}),
     ...(opts.autoAttach ? { autoAttach: opts.autoAttach } : {}),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
+    ...(opts.hooks ? { hooks: opts.hooks } : {}),
+    ...(opts.primeOnHostEvent !== undefined ? { primeOnHostEvent: opts.primeOnHostEvent } : {}),
     ...(opts.resumeSessionId ? { resumeSessionId: asSessionId(opts.resumeSessionId) } : {}),
     ...(config.releaseProfile
       ? {

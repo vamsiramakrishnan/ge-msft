@@ -154,10 +154,10 @@ describe('Outlook on-send full-stack interplay', () => {
     expect(allowed.calls).toEqual([{ allowEvent: true }]);
   });
 
-  it('a decision-path error FAILS SAFE (lets Send proceed) rather than wedging the user', async () => {
+  it('a registered required check failure blocks Send with a recoverable reason', async () => {
     sim = installFakeOutlook();
     const registry = new TriggerRegistry();
-    // A guard that throws WHILE DECIDING — our own bug must not wedge the Send button.
+    // A registered required check must finish before Send can proceed.
     registry.register({
       id: 'buggy-guard',
       on: 'mail-send',
@@ -169,9 +169,14 @@ describe('Outlook on-send full-stack interplay', () => {
 
     const send = captureSend();
     await handler(send.event);
-    // Fail-safe: a crash while computing the decision lets the mail through (refusing on our own bug
-    // is worse than the mail going out). Exactly one completed call, allowing the event.
-    expect(send.calls).toEqual([{ allowEvent: true }]);
+    // Exactly one completion; do not expose raw exception details or silently bypass the check.
+    expect(send.calls).toEqual([
+      {
+        allowEvent: false,
+        errorMessage:
+          'Required check buggy-guard could not complete. Try again before applying this action.',
+      },
+    ]);
   });
 
   it('a crash while SIGNALLING a decided BLOCK does NOT silently downgrade to an allow (no silent send)', async () => {

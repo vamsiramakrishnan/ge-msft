@@ -42,6 +42,11 @@ export interface TokenSource {
 export interface StreamOptions {
   /** Resume an existing conversation; otherwise the engine starts a fresh one. */
   session?: string;
+  /**
+   * Opt into Discovery Engine v1alpha sessionless execution: no session is created or resumed.
+   * Existing session ids and uploaded session context files are incompatible. Default: false.
+   */
+  isSessionLess?: boolean;
   /** Live host objects attached to the session (from a bridge / SessionContext). */
   context?: ResolvedContext[];
   /** Which GE skill set, if any, should be mounted for this turn. */
@@ -52,6 +57,8 @@ export interface StreamOptions {
 }
 
 type FetchLike = typeof fetch;
+
+class StreamRequestError extends Error {}
 
 /**
  * Calls Gemini Enterprise `:streamAssist` directly as the signed-in user and
@@ -126,11 +133,18 @@ export class StreamAssistClient {
   }
 
   async *stream(req: AssistRequest, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {
+    // Snapshot the mode before awaiting the POST; callers cannot change provenance semantics
+    // by mutating their options while a response is in flight.
+    const isSessionLess = opts.isSessionLess === true;
     let res: Response;
     try {
-      res = await this.post(req, opts);
+      res = await this.post(req, { ...opts, isSessionLess });
     } catch (err) {
-      yield { type: 'error', code: 'network', message: errorMessage(err) };
+      yield {
+        type: 'error',
+        code: err instanceof StreamRequestError ? 'invalid_request' : 'network',
+        message: errorMessage(err),
+      };
       return;
     }
     if (!res.ok || !res.body) {
@@ -145,7 +159,7 @@ export class StreamAssistClient {
 
     let accumulated = '';
     const citations = new Map<string, SourceRef>();
-    let session: string | undefined = opts.session;
+    let session: string | undefined = isSessionLess ? undefined : opts.session;
     const invokedSkills: string[] = [];
     const relatedQuestions: string[] = [];
     const emittedSupports = new Set<string>();
@@ -155,7 +169,7 @@ export class StreamAssistClient {
       const resp = DeStreamAssistResponseSchema.safeParse(chunk);
       if (!resp.success) continue; // tolerate non-conforming keepalive/metadata frames
       const data = resp.data;
-      session = data.sessionInfo?.session ?? session;
+      if (!isSessionLess) session = data.sessionInfo?.session ?? session;
       for (const skill of data.invokedSkills ?? []) {
         const name = skill.displayName ?? skill.name;
         if (name && !invokedSkills.includes(name)) invokedSkills.push(name);
@@ -279,6 +293,7 @@ export class StreamAssistClient {
         opts.context,
         opts.skillRoute,
         opts.grounding,
+        { isSessionLess: opts.isSessionLess },
       ),
     );
     const send = async (): Promise<Response> => {
@@ -460,7 +475,19 @@ export function buildStreamAssistRequest(
   context?: ResolvedContext[],
   skillRoute: GeminiSkillRoute = 'default',
   grounding?: ResolvedGrounding,
+  options: Pick<StreamOptions, 'isSessionLess'> = {},
 ): Record<string, unknown> {
+  const isSessionLess = options.isSessionLess === true;
+  if (isSessionLess) {
+    if (session !== undefined && session !== '' && session !== '-')
+      throw new StreamRequestError(
+        'Sessionless requests cannot resume an existing session; omit session or use "-".',
+      );
+    if (grounding?.fileIds?.length)
+      throw new StreamRequestError(
+        'Sessionless requests cannot use uploaded session context files; use inline context or indexed document references.',
+      );
+  }
   const attached = [
     ...(context ?? []).map((c) => contextValueToQueryPart(c.value)),
     ...(grounding?.queryParts ?? []),
@@ -470,7 +497,8 @@ export function buildStreamAssistRequest(
   const out: Record<string, unknown> = {
     query: buildQuery(req, attached, mentionText),
   };
-  if (session) out.session = session;
+  if (isSessionLess) out.isSessionLess = true;
+  else if (session) out.session = session;
   if (cfg.modelId) out.generationSpec = { modelId: cfg.modelId };
   if (skillSet.resources.length) {
     out.agentsSpec = {

@@ -6,6 +6,13 @@ import {
   type AnalysisAction,
 } from './analysis-workspace.js';
 import { RecoveryCoordinator } from './recovery.js';
+import {
+  AnalysisBindings,
+  compileAnalysisProgram,
+  type AnalysisProgram,
+} from './analysis-program.js';
+import { CommandResultStore } from './result-store.js';
+import { CommandCapsule } from './command-capsule.js';
 import { approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type {
   ActuationKind,
@@ -36,6 +43,8 @@ import {
   CapabilityManifestSchema,
   isCommandParseError,
   isProgramExpr,
+  isProgramAnalysisBinding,
+  isProgramVerifiedFinish,
   isProgramSkillCall,
   isProgramSkillDef,
   parseProgramBlock,
@@ -72,6 +81,7 @@ import {
   isCompileError,
   renderCommandHelp,
   renderGrammarPrompt,
+  renderCommandBootstrap,
   type CompiledCommand,
   type ReadIntent,
   type WorkspaceIntent,
@@ -252,6 +262,7 @@ interface PlanState {
    * skill call expands into — so expansion can't exceed the cap (security finding). */
   budget: number;
   done: boolean;
+  finishVerified?: boolean;
 }
 
 /** Max nesting depth for skill-call expansion — bounds recursive/mutually-recursive skills. */
@@ -334,6 +345,12 @@ export const READ_REF_PREFIX = 'ctx:read:';
  */
 export interface AssistSessionOptions {
   unit: UnitDescriptor;
+  /** Compact generated command discovery is the default; full retains the legacy grammar prompt. */
+  commandDisclosure?: 'compact' | 'full';
+  /** Internal command/planner exchanges default to isolated v1alpha requests; chat keeps its session. */
+  commandSessionMode?: 'sessionless' | 'conversation';
+  /** Maximum UTF-8 query bytes for a complete sessionless command capsule (default 64 KiB). */
+  commandCapsuleBytes?: number;
   compute?: () => Promise<ComputeEngine>;
   recoveryOwner?: string;
   evidence?: EvidencePipeline;
@@ -437,6 +454,9 @@ export class AssistSession {
   readonly analysis?: AnalysisWorkspace;
   readonly recovery: RecoveryCoordinator;
   readonly evidence?: EvidencePipeline;
+  private readonly analysisBindings = new AnalysisBindings();
+  private readonly commandResults = new CommandResultStore({ inlineBytes: 4096 });
+  private lastCommandDocState?: { signature: string; session?: SessionId };
   private disposeEvidence?: () => void;
   private disposed = false;
   private task?: RunOutcome & { signal?: AbortSignal };
@@ -521,7 +541,7 @@ export class AssistSession {
       const { signal: _signal, ...outcome } = task;
       await this.hooks.run('task:verify', { outcome }, this.hookContext());
       consumed = true;
-      if (completion !== undefined) yield completion;
+      if (completion !== undefined && task.status === 'completed') yield completion;
     } catch (error) {
       task.status =
         signal?.aborted || (error instanceof Error && error.name === 'AbortError')
@@ -533,6 +553,8 @@ export class AssistSession {
       throw error;
     } finally {
       if (!consumed) task.status = 'cancelled';
+      // A request may have failed before delivery. Never claim its snapshot is resident.
+      if (task.status !== 'completed') this.lastCommandDocState = undefined;
       for (const id of contextIds) this.context.remove(id);
       const { signal: _signal, ...outcome } = task;
       this.executions.record(outcome);
@@ -728,6 +750,9 @@ export class AssistSession {
     if (this.disposed) return;
     this.disposed = true;
     this.analysis?.dispose();
+    this.analysisBindings.clear();
+    this.commandResults.clear();
+    this.lastCommandDocState = undefined;
     this.disposeEvidence?.();
   }
 
@@ -1082,9 +1107,15 @@ export class AssistSession {
     // Fresh ADR-0005 binding env per task: `$vars` persist across turns WITHIN this loop, but a
     // later independent runCommands() call must not read a binding it never computed.
     this.composeEnv.clear();
+    this.resetCommandState();
     this.shareCountThisTask = 0;
 
-    let query = await this.firstCommandTurn(capabilities, task);
+    const capsule = this.isolateCommands
+      ? new CommandCapsule(task, { maxBytes: this.options.commandCapsuleBytes })
+      : undefined;
+    let query = capsule
+      ? await this.renderCommandCapsule(capsule, capabilities, task)
+      : await this.firstCommandTurn(capabilities, task);
     let answer = '';
     let pendingNoFenceReprompt = false;
     let lastTurn = 0;
@@ -1123,19 +1154,23 @@ export class AssistSession {
 
       // ADR-0005 Phase 3 — parse the block scoped to the live skill registry, so a line whose first
       // token is a registered skill parses as a CALL (not an unknown verb) and `def … end` groups.
-      const { found, entries } = parseProgramBlock(turnText, this.skills.names());
+      const { found, entries } = this.parseExecutableProgram(turnText);
 
       // No fenced block → re-prompt ONCE (not an error). A second consecutive no-fence ends the loop.
       if (!found) {
         yield { type: 'no-fence', turn, rawSnippet: redactedSnippet(turnText) };
         if (pendingNoFenceReprompt) break;
         pendingNoFenceReprompt = true;
-        query = noFenceReprompt(turnHadCodeExecution);
+        const correction = noFenceReprompt(turnHadCodeExecution);
+        if (capsule) {
+          capsule.append({ program: turnText, correction });
+          query = await this.renderCommandCapsule(capsule, capabilities, task);
+        } else query = correction;
         continue;
       }
       pendingNoFenceReprompt = false;
 
-      const { results, done } = yield* this.executeProgramTurn(
+      const { results, done, stopped } = yield* this.executeProgramTurn(
         entries,
         turn,
         capabilities,
@@ -1147,9 +1182,13 @@ export class AssistSession {
         yield { type: 'done', turn, answer };
         return;
       }
+      if (stopped) return;
 
       // Feed all outcomes back as a ```result block + a fresh <doc_state> for the next turn.
-      query = await this.nextCommandTurn(results);
+      if (capsule) {
+        capsule.append({ program: turnText, resultsJson: this.encodeCommandResults(results) });
+        query = await this.renderCommandCapsule(capsule, capabilities, task);
+      } else query = await this.nextCommandTurn(results);
     }
 
     yield { type: 'exhausted', turns: lastTurn, answer };
@@ -1171,6 +1210,118 @@ export class AssistSession {
     );
   }
 
+  /** Typed SDK entry point; uses the identical CLI compiler, approval, recovery and verification path. */
+  async *runAnalysisProgram(
+    program: AnalysisProgram,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    yield* this.runCommandProgram(compileAnalysisProgram(program), opts);
+  }
+
+  private resetCommandState(): void {
+    this.analysisBindings.clear();
+    this.commandResults.clear();
+    this.lastCommandDocState = undefined;
+    if (this.task)
+      this.task.metrics = {
+        queryBytes: 0,
+        resultInputBytes: 0,
+        resultInputBytesComplete: true,
+        resultOutputBytes: 0,
+        snapshotBytesSaved: 0,
+      };
+  }
+
+  /** Count macro expansion before any operation in a verified program can execute. */
+  private verifiedProgramBudget(
+    entries: readonly ProgramEntry[],
+    maxCommands: number,
+    maxWrites: number,
+  ): string | undefined {
+    const skills = new SkillRegistry();
+    for (const name of this.skills.names()) {
+      const definition = this.skills.get(name)!;
+      skills.register({ kind: 'skill-def', ...definition });
+    }
+    let commands = 0;
+    let writes = 0;
+    let finished = false;
+    const visit = (items: readonly ProgramEntry[], depth: number): void => {
+      if (depth > MAX_SKILL_DEPTH) throw new Error('Skill expansion exceeds its depth budget.');
+      for (const entry of items) {
+        if (finished)
+          throw new Error('A verified program must have one final terminal after expansion.');
+        if (++commands > maxCommands)
+          throw new Error('Verified program exceeds the command budget; no operations ran.');
+        if ('error' in entry) throw new Error(entry.error);
+        if (isProgramVerifiedFinish(entry)) {
+          finished = true;
+        } else if (isProgramSkillDef(entry)) {
+          const result = skills.register(entry);
+          if (!result.ok) throw new Error(result.error);
+        } else if (isProgramSkillCall(entry)) {
+          const result = skills.expand(entry);
+          if (!result.ok) throw new Error(result.error);
+          visit(reparseExpandedLines(result.lines, skills.names()), depth + 1);
+        } else if ('verb' in entry) {
+          if (entry.verb === 'share')
+            throw new Error(
+              'Verified completion is unavailable for share. Use a separate reviewed handoff.',
+            );
+          if (entry.verb === 'done')
+            throw new Error('A verified program must use finish as its only terminal.');
+          if (
+            Object.hasOwn(WRITE_VERB_TO_KIND, entry.verb) ||
+            entry.verb === 'invoke' ||
+            (entry.verb === 'analyze' && JSON.parse(entry.request).kind === 'materialize')
+          )
+            writes++;
+          if (writes > maxWrites)
+            throw new Error('Verified program exceeds the effect budget; no operations ran.');
+        }
+      }
+    };
+    try {
+      visit(entries, 0);
+      return undefined;
+    } catch (error) {
+      return errMsg(error);
+    }
+  }
+
+  private containsVerifiedFinish(entries: readonly ProgramEntry[]): boolean {
+    const skills = new SkillRegistry();
+    for (const name of this.skills.names())
+      skills.register({ kind: 'skill-def', ...this.skills.get(name)! });
+    let visited = 0;
+    const inspect = (items: readonly ProgramEntry[], depth: number): boolean => {
+      // An uninspectable expansion must go through the strict budget preflight, never execute a prefix.
+      if (depth > MAX_SKILL_DEPTH) return true;
+      for (const entry of items) {
+        if (++visited > 4096) return true;
+        if (isProgramVerifiedFinish(entry)) return true;
+        if (isProgramSkillDef(entry)) skills.register(entry);
+        if (isProgramSkillCall(entry)) {
+          const expanded = skills.expand(entry);
+          if (
+            expanded.ok &&
+            inspect(reparseExpandedLines(expanded.lines, skills.names()), depth + 1)
+          )
+            return true;
+        }
+      }
+      return false;
+    };
+    return inspect(entries, 0);
+  }
+
+  private parseExecutableProgram(text: string): ReturnType<typeof parseProgramBlock> {
+    const parsed = parseProgramBlock(text, this.skills.names());
+    return this.containsVerifiedFinish(parsed.entries)
+      ? parseProgramBlock(text, this.skills.names(), { requireCompleteFrame: true })
+      : parsed;
+  }
+
   private async *runCommandProgramCore(
     program: string,
     opts: RunCommandsOptions,
@@ -1181,14 +1332,21 @@ export class AssistSession {
     const capabilities = await this.effectiveCapabilities();
     this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
     this.composeEnv.clear();
+    this.resetCommandState();
     this.shareCountThisTask = 0;
     this.currentTurnProvenance = undefined;
 
     const turn = 1;
     yield { type: 'turn-start', turn };
-    const { entries } = parseProgramBlock(`\`\`\`cmd\n${body}\n\`\`\``, this.skills.names());
-    const { done } = yield* this.executeProgramTurn(entries, turn, capabilities, opts, undefined);
-    yield { type: 'done', turn, answer: done ? '' : '' };
+    const { entries } = this.parseExecutableProgram(`\`\`\`cmd\n${body}\n\`\`\``);
+    const { stopped } = yield* this.executeProgramTurn(
+      entries,
+      turn,
+      capabilities,
+      opts,
+      undefined,
+    );
+    if (!stopped) yield { type: 'done', turn, answer: '' };
   }
 
   /**
@@ -1202,9 +1360,21 @@ export class AssistSession {
     capabilities: CapabilityManifest,
     opts: RunCommandsOptions,
     turnProvenance: ProvenancePayload | undefined,
-  ): AsyncGenerator<SseEvent | CommandLoopEvent, { results: unknown[]; done: boolean }, void> {
+  ): AsyncGenerator<
+    SseEvent | CommandLoopEvent,
+    { results: unknown[]; done: boolean; stopped?: boolean },
+    void
+  > {
     const maxCommands = opts.maxCommandsPerTurn ?? DEFAULT_MAX_COMMANDS_PER_TURN;
     const maxWrites = opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN;
+    if (this.containsVerifiedFinish(entries)) {
+      const error = this.verifiedProgramBudget(entries, maxCommands, maxWrites);
+      if (error) {
+        if (this.task) this.task.status = 'incomplete';
+        yield { type: 'capped', turn, reason: error };
+        return { results: [{ error }], done: false, stopped: true };
+      }
+    }
     // `budget` is the per-turn command cap; `processEntry` decrements it for EVERY processed entry,
     // including a skill call's expanded body, so expansion cannot exceed the cap.
     const plan: PlanState = {
@@ -1230,6 +1400,21 @@ export class AssistSession {
       for await (const ev of this.processEntry(entry, plan, capabilities, 0, opts, turnProvenance))
         yield ev;
       if (plan.done) break;
+    }
+
+    // A failed read/derivation cannot leave a verified program applying its remaining prefix.
+    if (
+      plan.finishVerified &&
+      plan.results.some(
+        (result) =>
+          result !== null &&
+          typeof result === 'object' &&
+          'error' in result &&
+          result.error != null,
+      )
+    ) {
+      plan.planSlots = [];
+      if (this.task) this.task.status = 'incomplete';
     }
 
     // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then execute
@@ -1289,6 +1474,37 @@ export class AssistSession {
         yield ev;
     }
 
+    if (plan.finishVerified) {
+      const errors = plan.results.some(
+        (result) =>
+          result !== null &&
+          typeof result === 'object' &&
+          'error' in result &&
+          result.error != null,
+      );
+      const effects = this.task?.effects ?? [];
+      const verified =
+        this.shareCountThisTask === 0 &&
+        effects.every(
+          (result) =>
+            result.ok && !result.recoveryPending && result.verification?.status === 'verified',
+        );
+      if (!errors && verified && this.task?.status === 'running') plan.done = true;
+      else {
+        plan.results.push({
+          error:
+            'Verified completion requires successful operations and verified readback for every effect. Review the receipts; do not replay a landed write.',
+        });
+        if (this.task) this.task.status = 'incomplete';
+        yield {
+          type: 'error',
+          code: 'verification_incomplete',
+          message:
+            'Some operations could not be verified. Review the receipts; a landed write must not be replayed.',
+        };
+      }
+    }
+
     // Intermediate read/parse failures may be repaired by a later model turn. A final turn
     // (or a direct program) must not claim success while its results still contain errors.
     if (
@@ -1303,7 +1519,11 @@ export class AssistSession {
       )
     )
       this.task.status = 'incomplete';
-    return { results: plan.results, done: plan.done };
+    return {
+      results: plan.results,
+      done: plan.done,
+      ...(plan.finishVerified && !plan.done ? { stopped: true } : {}),
+    };
   }
 
   /**
@@ -1342,6 +1562,41 @@ export class AssistSession {
       return;
     }
     plan.budget -= 1;
+
+    if (isProgramVerifiedFinish(entry)) {
+      plan.finishVerified = true;
+      return;
+    }
+    if (plan.finishVerified) {
+      plan.results.push({ error: 'No operation may follow finish when=verified.' });
+      return;
+    }
+    if (isProgramAnalysisBinding(entry)) {
+      try {
+        if (this.composeEnv.has(entry.name) || this.analysisBindings.has(entry.name))
+          throw new Error(`Binding $${entry.name} already exists.`);
+        const action = this.analysisBindings.resolve(JSON.parse(entry.request));
+        if (!['capture', 'query', 'reconcile', 'filter', 'inspect'].includes(action.kind))
+          throw new Error('Only artifact-producing reads can be bound.');
+        const artifact = await this.toolOperation(`analysis:${action.kind}`, action, () =>
+          this.requireAnalysis().execute(action, opts.signal),
+        );
+        if (!artifact) throw new Error('This operation produced no artifact.');
+        this.analysisBindings.bind(entry.name, artifact.id);
+        const result = {
+          binding: `$${entry.name}`,
+          id: artifact.id,
+          rows: artifact.rows.length,
+          columns: artifact.columns,
+          truncated: artifact.truncated,
+        };
+        plan.results.push(result);
+        yield { type: 'read-result', turn, intentLabel: `analyze ${action.kind}`, result };
+      } catch (error) {
+        plan.results.push({ error: errMsg(error) });
+      }
+      return;
+    }
 
     // ADR-0005 Phase 3 — a `def` registers a skill (no execution). Confirmation result only.
     if (isProgramSkillDef(entry)) {
@@ -1399,6 +1654,12 @@ export class AssistSession {
     // ADR-0005 composed read-expression: evaluate to a Value (pure — no gate/approval), feed the
     // rendered value back as the result. `$vars` persist in `composeEnv` across turns.
     if (isProgramExpr(entry)) {
+      if (entry.kind === 'let' && this.analysisBindings.has(entry.name)) {
+        plan.results.push({
+          error: `Binding $${entry.name} already names an artifact. Choose a new name.`,
+        });
+        return;
+      }
       const result = await this.evalExpression(entry);
       plan.results.push('error' in result ? result : { value: renderValue(result) });
       yield { type: 'expr-result', turn, expr: entry, result };
@@ -1456,7 +1717,7 @@ export class AssistSession {
       }
       if (compiled.intent.workspace === 'analyze') {
         try {
-          const action = AnalysisActionSchema.parse(JSON.parse(compiled.intent.request));
+          const action = this.analysisBindings.resolve(JSON.parse(compiled.intent.request));
           if (action.kind === 'materialize') {
             if (plan.planSlots.length >= plan.maxWrites) throw new Error('Write cap reached.');
             if (!capabilities.actuations.some((a) => a.kind === 'write-cells'))
@@ -1823,12 +2084,34 @@ export class AssistSession {
 
   /** Build turn 1: protocol preamble + ambient `<doc_state>` + the task. */
   private async firstCommandTurn(capabilities: CapabilityManifest, task: string): Promise<string> {
-    const protocol = renderGrammarPrompt(capabilities);
+    const protocol =
+      this.options.commandDisclosure === 'full'
+        ? renderGrammarPrompt(capabilities)
+        : renderCommandBootstrap(capabilities, task);
     const docState = await this.renderAmbientDocState();
     const parts = [protocol];
     if (docState) parts.push(docState);
     parts.push(`TASK:\n${task}`, 'Begin.');
     return parts.join('\n\n');
+  }
+
+  private get isolateCommands(): boolean {
+    return this.options.commandSessionMode !== 'conversation';
+  }
+
+  private async renderCommandCapsule(
+    capsule: CommandCapsule,
+    capabilities: CapabilityManifest,
+    task: string,
+  ): Promise<string> {
+    return capsule.render({
+      protocol:
+        this.options.commandDisclosure === 'full'
+          ? renderGrammarPrompt(capabilities)
+          : renderCommandBootstrap(capabilities, task),
+      docState: await this.renderAmbientDocState(false),
+      skills: [...this.skills.names()].map((name) => this.skills.get(name)!),
+    });
   }
 
   /**
@@ -1857,13 +2140,14 @@ export class AssistSession {
   ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
     const capabilities = await this.effectiveCapabilities();
     const protocol = renderPlanPrompt(capabilities.surface);
-    const docState = await this.renderAmbientDocState();
+    const docState = await this.renderAmbientDocState(!this.isolateCommands);
     const parts = [protocol];
     if (docState) parts.push(docState);
     parts.push(`REQUEST:\n${task}`, 'Emit one ```plan block.');
 
     this.currentTurnProvenance = undefined; // a planner turn must not leave provenance for a later write
     let text = '';
+    const failures: string[] = [];
     for await (const event of this.streamTurn(
       parts.join('\n\n'),
       opts.signal,
@@ -1871,13 +2155,28 @@ export class AssistSession {
       'planner',
     )) {
       if (event.type === 'token') text += event.text;
+      if (event.type === 'error') failures.push(event.message);
+      if (event.type === 'policy' && event.verdict === 'block')
+        failures.push('The planner request was blocked by policy.');
     }
+    if (failures.length) return { plan: null, errors: failures, needsClarification: false };
     return parsePlanBlock(text);
   }
 
   /** Build a follow-up turn: the ```result block (JSON) + a fresh `<doc_state>`. */
+  private encodeCommandResults(results: unknown[]): string {
+    const encoded = this.commandResults.encode(results);
+    if (this.task?.metrics) {
+      this.task.metrics.resultInputBytes += encoded.inputBytes;
+      this.task.metrics.resultInputBytesComplete =
+        this.task.metrics.resultInputBytesComplete !== false && encoded.inputBytesComplete;
+      this.task.metrics.resultOutputBytes += encoded.outputBytes;
+    }
+    return encoded.text;
+  }
+
   private async nextCommandTurn(results: unknown[]): Promise<string> {
-    const resultBlock = '```result\n' + JSON.stringify(results) + '\n```';
+    const resultBlock = '```result\n' + this.encodeCommandResults(results) + '\n```';
     const docState = await this.renderAmbientDocState();
     return docState
       ? `${resultBlock}\n\n${docState}\n\n(Continue. Next command?)`
@@ -1885,13 +2184,33 @@ export class AssistSession {
   }
 
   /** Capture + render the ambient `<doc_state>` for a command turn, defensively (skip on failure). */
-  private async renderAmbientDocState(): Promise<string | undefined> {
+  private async renderAmbientDocState(deduplicate = true): Promise<string | undefined> {
     if (!this.docStateEnabled || !this.bridge.captureDocState) return undefined;
     try {
       const snapshot = await this.toolOperation('context:snapshot', {}, () =>
         this.bridge.captureDocState!(),
       );
-      return snapshot ? renderDocState(snapshot) : undefined;
+      if (!snapshot) return undefined;
+      const rendered = renderDocState(snapshot);
+      if (!deduplicate) return rendered;
+      const { version: _version, capturedAt: _capturedAt, ...structure } = snapshot;
+      const signature = JSON.stringify(structure);
+      if (
+        this.session &&
+        signature === this.lastCommandDocState?.signature &&
+        this.lastCommandDocState.session === this.session
+      ) {
+        const unchanged =
+          '<doc_state unchanged="true">The previously supplied document snapshot is unchanged. Read specific targets when needed; writes still recheck freshness.</doc_state>';
+        if (this.task?.metrics)
+          this.task.metrics.snapshotBytesSaved += Math.max(
+            0,
+            byteLength(rendered) - byteLength(unchanged),
+          );
+        return unchanged;
+      }
+      this.lastCommandDocState = { signature, session: this.session };
+      return rendered;
     } catch (err) {
       if (err instanceof HookBlockedError || this.task?.signal?.aborted) throw err;
       console.warn(
@@ -1922,10 +2241,19 @@ export class AssistSession {
       ...(options.signal ? { signal: options.signal } : {}),
     };
     const route = options.skillRoute ?? 'default';
+    const isSessionLess = options.isSessionLess === true;
     await this.hooks.run('model:request', { query: request.query ?? '', route }, context);
     if (this.task) this.task.modelTurns++;
+    if (this.task?.metrics) this.task.metrics.queryBytes += byteLength(request.query ?? '');
     let text = '';
-    for await (const event of this.client.stream(request, options)) {
+    for await (const received of this.client.stream(request, options)) {
+      // Isolated protocol exchanges must not leak a stale adapter-supplied chat session into
+      // observers, write provenance, or the caller's conversational state.
+      let event = received;
+      if (isSessionLess && received.type === 'provenance') {
+        const { sessionId: _sessionId, ...payload } = received.payload;
+        event = { ...received, payload };
+      }
       await this.hooks.run('model:event', { event }, context);
       if (event.type === 'token') text += event.text;
       yield event;
@@ -1945,20 +2273,53 @@ export class AssistSession {
     grounding?: ResolvedGrounding,
     skillRoute: StreamOptionsWithGrounding['skillRoute'] = 'default',
   ): AsyncGenerator<SseEvent> {
+    const isolated = this.isolateCommands && (skillRoute === 'command' || skillRoute === 'planner');
+    // Conversation compaction may rely on previously delivered context. Independent requests
+    // retain their active context and fail explicitly when the complete request exceeds its budget.
+    if (!isolated) this.compact();
+    const options = this.streamOptions({ grounding, signal, skillRoute });
+    if (isolated) {
+      delete options.session;
+      options.isSessionLess = true;
+      if (grounding?.fileIds?.length) {
+        if (this.task) this.task.status = 'failed';
+        yield {
+          type: 'error',
+          code: 'invalid_request',
+          message:
+            'This task uses a session-bound uploaded file. Attach a selection or an indexed document instead.',
+        };
+        return;
+      }
+      const active = new Map((options.context ?? []).map((entry) => [entry.ref.id, entry]));
+      for (const entry of this.model.pendingBrief()?.entries ?? []) active.set(entry.ref.id, entry);
+      options.context = [...active.values()];
+      const bytes = byteLength(JSON.stringify({ query, context: options.context, grounding }));
+      const limit = Math.min(this.options.commandCapsuleBytes ?? 64 * 1024, 1024 * 1024);
+      if (bytes > limit) {
+        if (this.task) this.task.status = 'incomplete';
+        yield {
+          type: 'error',
+          code: 'command_context_budget',
+          message: `Complete command context exceeds its ${limit}-byte budget (${bytes} bytes). Narrow the task or attachments; no context was silently discarded.`,
+        };
+        return;
+      }
+    }
     const req = {
       intent: 'ask' as const,
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.modelStream(
-      req,
-      this.streamOptions({ grounding, signal, skillRoute }),
-    )) {
+    for await (const event of this.modelStream(req, options)) {
       if (event.type === 'citation') this.citations.push(event.source);
-      if (event.type === 'provenance') {
+      if (event.type === 'provenance' && !isolated) {
         // Finding #4: the caller (`runCommands`) captures this `provenance` event into a turn-local
         // and threads it into THIS turn's writes. `streamTurn` only updates the resumable session id.
+        const previousSession = this.session;
         this.session = event.payload.sessionId ?? this.session;
+        if (this.lastCommandDocState?.session === previousSession && this.lastCommandDocState)
+          this.lastCommandDocState.session = this.session;
       }
       yield event;
     }
@@ -2335,6 +2696,11 @@ export class AssistSession {
           };
         }
         case 'inspect-context': {
+          if (intent.selector.trim().startsWith('result:'))
+            return {
+              label: `inspect ${intent.selector}`,
+              result: this.commandResults.inspect(intent.selector.trim()),
+            };
           const found = await this.findContextRef(intent.selector);
           if (found?.found) {
             const reads = await this.bridge.resolveContext(found.ref);
@@ -2544,6 +2910,7 @@ export class AssistSession {
   }
 
   resumeSession(sessionIdOrName: string): void {
+    this.lastCommandDocState = undefined;
     this.session = asSessionId(sessionIdOrName);
   }
 

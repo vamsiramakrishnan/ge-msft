@@ -14,7 +14,8 @@ Assist a query in streaming fashion.
 
 ### Request body — `StreamAssistRequest`
 
-- **session** `string` — Optional. The session to use for the request. If specified, the assistant has access to the session history, and the query and the answer are stored there. If `-` is specified a…
+- **session** `string` — Optional. Reuses the named session and its history. Omitting it, leaving it empty, or using session ID `-` creates a new session unless `isSessionLess` is true.
+- **isSessionLess** `boolean` — Optional, documented in [v1alpha](https://docs.cloud.google.com/gemini/enterprise/docs/reference/rest/v1alpha/projects.locations.collections.engines.assistants/streamAssist), checked 2026-09-07. True runs without creating or associating a session; response session information is empty. A real session ID combined with this flag is invalid. The [v1beta reference](https://docs.cloud.google.com/gemini/enterprise/docs/reference/rest/v1beta/projects.locations.collections.engines.assistants/streamAssist) does not document this flag. The repo uses v1alpha; `StreamAssistClient` exposes the flag explicitly. Application commands and planning default to isolated requests with complete bounded context, while ordinary chat retains session reuse. See [the runtime guide](../../COMMAND-PERFORMANCE.md) for limits and compatibility.
 - **actionSpec** `StreamAssistRequestActionSpec` — Optional. Specification of actions for the request.
   - **actionDisabled** `boolean` — Optional. If true, actions will not be served for the request. This only works for enterprise edition.
 - **query** `Query` — Optional. Current user query. Empty query is only supported if `file_ids` are provided. In this case, the answer will be generated based on those context files.

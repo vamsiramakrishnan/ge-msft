@@ -15,6 +15,7 @@
     "dev": "vite --config packages/web-shell/vite.preview.config.ts",
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
+    "test:command-efficiency": "GE_COMMAND_EFFICIENCY_REPORT=1 vitest run packages/runtime/src/command-efficiency.test.ts",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "validate:manifests": "vitest run packages/contracts/src/manifest-lint.test.ts packages/contracts/src/manifest-generation.test.ts",

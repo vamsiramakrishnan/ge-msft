@@ -7,22 +7,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from parse_commands import parse_line, extract_command_block_meta  # noqa: E402
+from parse_commands import parse_line, extract_command_block_meta, verified_frame_error  # noqa: E402
 from .types import _AGG
 from .generated_language import TRANSFORM_NAMES
 
 __all__ = [
     "parse_line",
     "extract_command_block_meta",
+    "verified_frame_error",
     "_is_expr_line",
     "_infer_pipeline_type",
+    "_analysis_refs",
 ]
+
+
+def _analysis_refs(action):
+    """Only typed artifact slots resolve variables; SQL, labels and other text stay literal."""
+    kind = action.get("kind")
+    values = []
+    if kind == "query" and isinstance(action.get("inputs"), list):
+        values = action["inputs"]
+    elif kind == "reconcile" and isinstance(action.get("spec"), dict):
+        values = [action["spec"].get("left"), action["spec"].get("right")]
+    elif kind in ("inspect", "filter", "materialize", "remove"):
+        values = [action.get("id")]
+    return [value[1:] for value in values
+            if isinstance(value, str) and re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", value)]
 
 
 def _is_expr_line(line: str) -> bool:
     """A `let $x = …` binding or a bare pipeline (a top-level ` | `), mirroring expr-grammar."""
     s = line.strip()
-    if s.startswith("let "):
+    if re.match(r"^let\s", s, re.IGNORECASE):
         return True
     depth = 0
     for i, ch in enumerate(s):

@@ -2,12 +2,23 @@
 
 The honest, current state of the codebase. Companion to `BUILD-PLAN.md` (the original checklist,
 now partly superseded), `CAPABILITY-MAP.md` (the I/O inventory), and the **ADRs** (the current
-architecture). Updated for the September 2026 workspace and runtime extension foundation.
+architecture). Updated for the September 2026 workspace, analysis and command program increments.
 
 The September analysis increment implements versioned Excel artifacts, constrained DuckDB-WASM
 queries/reconciliation, typed finding actions, scoped evidence hooks, readback verification and a
 bounded document-backed cell recovery journal. [Details and limits](COMPUTE-RECOVERY.md). This does
 not claim the full PowerPoint/VFS scope proposed in ADR-0010 or universal undo across host kinds.
+
+The command program increment adds task-local artifact bindings, runtime-verified completion,
+typed SDK programs with no inference, selective capability discovery, bounded result inspection,
+snapshot deduplication and query/result byte diagnostics. The real-DuckDB acceptance fixture goes
+from four model calls to one (zero through the SDK), retaining one approval. These are simulated
+model/Office measurements, not live-provider latency. [Guide and API-version details](COMMAND-PERFORMANCE.md).
+
+Command and planner calls default to Discovery Engine v1alpha sessionless requests with a complete,
+bounded task context. Ordinary chat retains its conversation. Session-bound uploaded files require
+explicit conversation-mode compatibility; requests never fall back silently. Tenant validation of
+sessionless private-skill routing and saved-history behavior remains pending.
 
 > **Architecture:** client-direct (see `ADR-0001`). The add-in federates the signed-in user's
 > Entra identity to Google (Workforce Identity Federation, in the browser) and calls Gemini
@@ -35,14 +46,15 @@ observers cannot turn a landed write into a failed receipt. The Outlook command 
 the same extension definitions independently.
 
 Task and hook diagnostics are bounded and in memory; inverse receipts are retained when hosts supply
-them. Background mailbox notifications, durable replay, automatic undo, and domain-specific
-readback verification are not implemented. The current Outlook event is active-message `ItemChanged`,
+them. Background mailbox notifications and durable automatic replay are not implemented. The analysis
+increment adds Excel cell readback and reviewed recovery; other host kinds need their own verification
+semantics. The current Outlook event is active-message `ItemChanged`,
 not background mail delivery. No default mail grounding policy is installed. See the
 [extension guide](RUNTIME-EXTENSIONS.md) for examples, guarantees, and exact operation coverage.
 
 ## Verification baseline
 
-`bun run typecheck` clean · **2,187 tests passed, 10 skipped across 166 files** (Vitest) ·
+`bun run typecheck` clean · **2,408 tests passed, 10 skipped across 180 files** (Vitest) ·
 `bun run lint` clean · production build and language/resource drift checks passed.
 Host/network integration tests use fake adapters; live tenant validation remains pending.
 

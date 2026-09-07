@@ -18,6 +18,7 @@ export {
   compileCommand,
   isCompileError,
   renderGrammarPrompt,
+  renderCommandBootstrap,
   type CompiledCommand,
   type ReadIntent,
 } from './command-protocol.js';
@@ -52,6 +53,12 @@ export { analyseEffectDependencies, propagateFailure, effectResources } from './
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
 export * from './docfs/index.js';
 export {
+  CommandCapsule,
+  CommandCapsuleBudgetError,
+  type CommandCapsuleOptions,
+  type CommandCapsuleTurn,
+} from './command-capsule.js';
+export {
   RuntimeHooks,
   HookBlockedError,
   type RuntimeHook,
@@ -79,3 +86,6 @@ export {
 export * from './analysis-workspace.js';
 export * from './recovery.js';
 export * from './evidence.js';
+export * from './analysis-program.js';
+export * from './result-store.js';
+export { discoverCommands, type CommandCard } from './capability-catalog.js';

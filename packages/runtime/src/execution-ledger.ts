@@ -12,6 +12,15 @@ export interface RunOutcome {
   modelTurns: number;
   toolCalls: number;
   effects: ActuationResult[];
+  /** UTF-8 counts for command queries/results only; not provider token usage or billable bytes. */
+  metrics?: {
+    queryBytes: number;
+    resultInputBytes: number;
+    /** False when bounded serialization rejected input; resultInputBytes is then a lower bound. */
+    resultInputBytesComplete?: boolean;
+    resultOutputBytes: number;
+    snapshotBytesSaved: number;
+  };
 }
 /** The diagnostic ledger deliberately excludes prompts, source content, model output, and inverse bodies. */
 export interface RunRecord extends Omit<RunOutcome, 'effects'> {
@@ -35,6 +44,7 @@ export class ExecutionLedger {
       startedAt: outcome.startedAt,
       modelTurns: outcome.modelTurns,
       toolCalls: outcome.toolCalls,
+      ...(outcome.metrics ? { metrics: { ...outcome.metrics } } : {}),
       ...(outcome.status !== 'running' ? { finishedAt: new Date().toISOString() } : {}),
       effects: outcome.effects.map((r) => ({
         changeId: r.changeId,

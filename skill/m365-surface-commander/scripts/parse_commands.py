@@ -391,6 +391,39 @@ def _reject_json_constant(_value):
     raise ValueError("Non-JSON numeric constant")
 
 
+def verified_frame_error(text: str):
+    """A completion-bearing model response has one entire, closed frame. Inspect all blocks."""
+    if not any(re.match(r"^finish(?:\s|$)", line.strip(), re.IGNORECASE)
+               for line in text.splitlines()):
+        return None
+    if not _FENCE.search(text):
+        return "finish when=verified requires a closed cmd fence"
+    match = re.fullmatch(r"```cmd[^\S\n]*\r?\n([\s\S]*?)\r?\n```", text.strip(), re.IGNORECASE)
+    if not match or "```" in match.group(1):
+        return "finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences"
+    return None
+
+
+ANALYSIS_BINDING_KINDS = frozenset({"capture", "query", "reconcile", "filter", "inspect"})
+
+
+def _parse_analysis_binding(line: str):
+    match = re.match(r"^let\s+([^=]*)=\s*analyze(?:\s+(.*))?$", line, re.IGNORECASE)
+    if not match:
+        return None
+    name = match.group(1).strip()
+    if not re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+        return {"error": "analysis binding needs a $-prefixed name — usage: let $name = analyze <JSON action>"}
+    command = parse_line("analyze " + (match.group(2) or ""))
+    if "error" in command:
+        return command
+    action = json.loads(command["request"])
+    kind = action.get("kind")
+    if not isinstance(kind, str) or kind not in ANALYSIS_BINDING_KINDS:
+        return {"error": "analysis bindings require capture, query, reconcile, filter, or inspect; effects and recovery cannot bind artifacts"}
+    return {"kind": "analysis-binding", "name": name[1:], "request": command["request"]}
+
+
 def parse_line(line: str):
     """Parse one command line → a dict record, or {'error': '...'} (the corrective contract)."""
     line = line.strip()
@@ -401,7 +434,14 @@ def parse_line(line: str):
     verb = raw_verb.lower()
     rest = parts[1].strip() if len(parts) > 1 else ""
 
+    if verb == "finish":
+        if re.fullmatch(r"finish\s+when=verified", line, re.IGNORECASE):
+            return {"kind": "verified-finish"}
+        return {"error": "finish requires exactly when=verified — usage: finish when=verified"}
     if verb == "let":
+        binding = _parse_analysis_binding(line)
+        if binding is not None:
+            return binding
         return _parse_let(line)
     if _has_top_level_pipe(line):
         return _parse_pipeline(line)
@@ -760,10 +800,22 @@ def parse_block(model_text: str):
             "note": "no ```cmd fence (re-prompt, not an error)",
         }
     out = []
+    finished = False
     for line in inner.splitlines():
         rec = parse_line(line)
         if rec is not None:
+            if finished:
+                out.append({"error": "finish when=verified must be the final program entry"})
+                break
             out.append(rec)
+            finished = rec.get("kind") == "verified-finish"
+    requests_finish = any(re.match(r"^finish(?:\s|$)", line.strip(), re.IGNORECASE)
+                          for line in model_text.splitlines())
+    frame_error = verified_frame_error(model_text)
+    if frame_error:
+        out.append({"error": frame_error})
+    if requests_finish and any("error" in rec for rec in out):
+        out = [rec for rec in out if "error" in rec]
     return {"block": inner, "closed": closed, "commands": out}
 
 
@@ -952,6 +1004,29 @@ done
     assert parse_line('analyze {"kind":"capture","range":"S!A1:C2"}')["verb"] == "analyze"
     assert "error" in parse_line('analyze {"kind":"query","value":NaN}')
     assert "error" in parse_line('analyze []')
+    assert parse_line('let $x = analyze {"kind":"capture","range":"S!A1:C2"}') == {
+        "kind": "analysis-binding", "name": "x", "request": '{"kind":"capture","range":"S!A1:C2"}'
+    }
+    for kind in ("materialize", "remove", "recovery", "undo", "resume", "forget", None, []):
+        assert "error" in parse_line("let $x = analyze " + json.dumps({"kind": kind}))
+    for name in ("$1", "$a-b", "$a b", "a", "$" + "x" * 65):
+        assert "error" in parse_line(f'let {name} = analyze {{"kind":"capture"}}')
+    assert parse_line("finish when=verified") == {"kind": "verified-finish"}
+    for tail in ("finish now", "finish when=verified\nread A1", "finish when=verified\nunknown"):
+        records = parse_block("```cmd\nset A1 2\n" + tail + "\n```")["commands"]
+        assert records and all("error" in rec for rec in records)
+    assert all("error" in rec for rec in parse_block("```cmd\nset A1 2\nfinish when=verified")["commands"])
+    assert not block_is_complete(parse_block("```cmd\nfinish when=verified\n```"))
+    verified = "```cmd\nset S!A1 5\nfinish when=verified\n```"
+    plain = "```cmd\nset S!A2 6\n```"
+    for response in (verified + "\n" + plain, plain + "\n" + verified,
+                     "Explanation\n" + verified, verified + "\nExplanation",
+                     verified + "\n# comment", verified.replace("set S!A1 5", 'set S!A1 "```"')):
+        records = parse_block(response)["commands"]
+        assert records and all("error" in rec for rec in records)
+        assert verified_frame_error(response)
+    assert verified_frame_error(" \n" + verified + "\n ") is None
+    assert parse_block("Explanation\n" + plain + "\n" + plain)["commands"] == [{"verb": "set", "cell": "S!A2", "value": "6"}]
     print("SELF-TEST OK — fail-closed `done`, unclosed fence, trailing-token guards hold")
     return 0
 

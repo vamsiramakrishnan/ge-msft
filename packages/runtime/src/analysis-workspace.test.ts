@@ -65,6 +65,46 @@ it('preserves truncation through derived results and never writes a partial arti
   expect(child?.truncated).toBe(true);
   await expect(f.workspace.materialize(child!.id, 'S!D1')).rejects.toThrow('truncated');
 });
+it('rejects stale column selections with an actionable error before dispatching SQL', async () => {
+  const f = fixture();
+  const source = await f.workspace.execute({ kind: 'capture', range: 'S!A1:B2' });
+  await expect(
+    f.workspace.execute({
+      kind: 'query',
+      inputs: [source!.id],
+      sql: `SELECT c5 FROM ${source!.id}`,
+      requiredColumns: [{ input: source!.id, indices: [5] }],
+    }),
+  ).rejects.toThrow('Column 6 (index 5)');
+  await expect(
+    f.workspace.execute({
+      kind: 'query',
+      inputs: [source!.id],
+      sql: `SELECT * FROM ${source!.id}`,
+      requiredColumns: [{ input: 'a_unknown', indices: [0] }],
+    }),
+  ).rejects.toThrow('undeclared query input');
+  expect(f.query).not.toHaveBeenCalled();
+});
+it('rejects unsafe native numeric amounts before claiming exact decimal arithmetic', async () => {
+  const f = fixture();
+  const source = await f.workspace.artifacts.add({
+    title: 'Unsafe amounts',
+    labels: ['amount'],
+    rows: [[Number.MAX_SAFE_INTEGER + 1]],
+    sources: [],
+    lineage: { parents: [], operation: 'snapshot' },
+  });
+  await expect(
+    f.workspace.execute({
+      kind: 'query',
+      inputs: [source.id],
+      sql: `SELECT c0 FROM ${source.id}`,
+      requiredColumns: [{ input: source.id, indices: [0], exactDecimal: true }],
+    }),
+  ).rejects.toThrow('Store those amounts as decimal text');
+  expect(f.query).not.toHaveBeenCalled();
+});
 describe('typed action offers', () => {
   it('derives counts from findings and preserves meaningful labels when filtering', async () => {
     const f = fixture();

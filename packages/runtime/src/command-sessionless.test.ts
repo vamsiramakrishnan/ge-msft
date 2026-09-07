@@ -18,6 +18,7 @@ import type { DocBridge } from './bridge.js';
 
 type Event = SseEvent | CommandLoopEvent;
 type Response = string | { text: string; sessionId: string };
+type ScriptedResponse = Response | ((calls: Invocation[]) => Response);
 type Invocation = { request: AssistRequest; options: StreamOptions };
 const command = (text: string): string => `\`\`\`cmd\n${text}\n\`\`\``;
 const planner = '```plan\nintent review\nsurface excel\nstep Inspect\n```';
@@ -31,7 +32,7 @@ async function collect(generator: AsyncGenerator<Event>): Promise<Event[]> {
 
 /** Runtime integration: model responses and Office are simulated; no provider/network call occurs. */
 function fixture(
-  responses: Response[],
+  responses: ScriptedResponse[],
   options: Partial<AssistSessionOptions> = {},
   mutateStreamOptions?: (options: StreamOptions) => void,
 ) {
@@ -105,7 +106,8 @@ function fixture(
   const client = {
     async *stream(request: AssistRequest, streamOptions: StreamOptions): AsyncGenerator<SseEvent> {
       calls.push({ request: structuredClone(request), options: structuredClone(streamOptions) });
-      const response = responses[calls.length - 1];
+      const scripted = responses[calls.length - 1];
+      const response = typeof scripted === 'function' ? scripted(calls) : scripted;
       if (response === undefined) throw new Error('Unexpected model inference');
       mutateStreamOptions?.(streamOptions);
       yield { type: 'token', text: typeof response === 'string' ? response : response.text };
@@ -166,11 +168,14 @@ describe('sessionless command and planner execution', () => {
   });
 
   it('sends self-contained correction turns with the task, protocol, earlier programs/results, live context and grounding', async () => {
-    const f = fixture([
-      command('read Missing!A1'),
-      command('read Data!A1'),
-      command('set Results!A1 42\nfinish when=verified'),
-    ]);
+    const f = fixture(
+      [
+        command('read Missing!A1'),
+        command('read Data!A1'),
+        command('set Results!A1 42\nfinish when=verified'),
+      ],
+      { commandContextMode: 'transcript' },
+    );
     const task = 'Set Results!A1 to the approved total; preserve all other cells.';
     f.session.context.add({
       ref: {
@@ -228,6 +233,43 @@ describe('sessionless command and planner execution', () => {
       status: 'completed',
       modelTurns: 3,
     });
+    f.session.dispose();
+  });
+
+  it('projects current state and retrieves omitted read evidence without forgetting an earlier error', async () => {
+    let firstReceipt = '';
+    const task = 'Publish only the approved total. Do not change any other cells.';
+    const f = fixture([
+      command('read Data!A1'),
+      (calls) => {
+        const state = JSON.parse(
+          /<execution_state[^>]*>\n([\s\S]*?)\n<\/execution_state>/.exec(
+            calls.at(-1)!.request.query!,
+          )![1]!,
+        );
+        firstReceipt = state.latest.receipt;
+        return command('read Missing!A1');
+      },
+      (calls) => {
+        const query = calls.at(-1)!.request.query!;
+        expect(query).toContain(task);
+        expect(query).toContain('Missing range; use Data!A1');
+        expect(query).not.toContain('Approved total: 42');
+        expect(query).not.toContain('read Data!A1');
+        return command(`inspect ${firstReceipt} path=/results offset=0 limit=1`);
+      },
+      (calls) => {
+        expect(calls.at(-1)!.request.query).toContain('Approved total: 42');
+        expect(calls.at(-1)!.request.query).toContain('Missing range; use Data!A1');
+        return command('set Results!A1 42\nfinish when=verified');
+      },
+    ]);
+    const events = await collect(f.session.runCommands(task, { approvePlan: () => true }));
+    expect(completed(events)).toBe(true);
+    expect(f.calls).toHaveLength(4);
+    expect(f.landed).toHaveLength(1);
+    expect(f.cells()).toEqual([['42']]);
+    expect(f.calls.every((call) => call.options.isSessionLess && !call.options.session)).toBe(true);
     f.session.dispose();
   });
 

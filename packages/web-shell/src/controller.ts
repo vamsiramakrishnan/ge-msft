@@ -1,4 +1,15 @@
-import type { AnalysisAction, AnalysisState, RecoverySummary, EvidenceState } from '@ge/runtime';
+import type {
+  AnalysisAction,
+  AnalysisProgram,
+  AnalysisState,
+  RecoverySummary,
+  EvidenceState,
+} from '@ge/runtime';
+import {
+  compileWorkflowRecipe,
+  getWorkflowRecipe,
+  validateWorkflowRecipeInputs,
+} from '@ge/runtime';
 import type {
   ActuationParams,
   ActuationRequest,
@@ -91,11 +102,16 @@ export type PlanRunCommandsOptions = RunCommandsOptions;
  * so the controller is unit-testable against a fake and carries no host/network dependency.
  */
 export interface AssistLike {
+  getAnalysisCapabilities?(): Promise<{ preview: boolean; write: boolean }>;
   readonly analysis?: { state(): AnalysisState };
   readonly recovery?: { durable: boolean; list(): RecoverySummary[] };
   readonly evidence?: { state(): EvidenceState };
   runAnalysis?(
     action: AnalysisAction,
+    opts?: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  runAnalysisProgram?(
+    program: AnalysisProgram,
     opts?: RunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent>;
   readonly context: { size: number };
@@ -411,7 +427,26 @@ export interface RunStepArtifact {
   matches?: Array<{ line: number; text: string }>;
 }
 
+export interface WorkflowRun {
+  runId: string;
+  recipeId: string;
+  recipeVersion: number;
+  inputs: Record<string, unknown>;
+  status: 'running' | 'ready' | 'failed' | 'cancelled';
+  resultId?: string;
+  error?: string;
+  write?: {
+    destination: string;
+    status: 'pending' | 'written' | 'rejected' | 'uncertain' | 'failed';
+    message?: string;
+    changeId?: string;
+  };
+}
+
 export interface PanelState {
+  workflowRecipesAvailable?: boolean;
+  workflowWritesAvailable?: boolean;
+  workflowRun?: WorkflowRun;
   analysis?: AnalysisState;
   recovery?: { durable: boolean; records: RecoverySummary[] };
   evidence?: EvidenceState;
@@ -485,6 +520,9 @@ export class PanelController {
   private readonly attachmentVersions = new Map<string, number>();
   private readonly listeners = new Set<(state: PanelState) => void>();
   private readonly refs = new Map<string, ContextRef>();
+  /** Keep outcome context when an identical content-addressed preview is refreshed. */
+  private readonly workflowWrites = new Map<string, NonNullable<WorkflowRun['write']>>();
+  private workflowCapabilities?: { preview: boolean; write: boolean };
   private seq = 0;
   /**
    * Finding #4: provenance is TURN-SCOPED, never ambient. This holds ONLY the provenance of the
@@ -518,6 +556,18 @@ export class PanelController {
     private readonly store: ProvenanceStore = new ProvenanceStore(),
   ) {
     this.syncServices();
+    if (session.getAnalysisCapabilities) {
+      void session.getAnalysisCapabilities().then(
+        (capabilities) => {
+          this.workflowCapabilities = capabilities;
+          this.syncServices();
+        },
+        () => {
+          this.workflowCapabilities = { preview: false, write: false };
+          this.syncServices();
+        },
+      );
+    }
   }
 
   getState(): PanelState {
@@ -529,14 +579,42 @@ export class PanelController {
     return () => this.listeners.delete(listener);
   }
 
-  private syncServices(): void {
+  private syncServices(reconcileWorkflowWrites = false): void {
+    const records = this.session.recovery?.list();
+    for (const [id, receipt] of this.workflowWrites) {
+      if (!reconcileWorkflowWrites) break;
+      if (receipt.status !== 'uncertain' || !receipt.changeId) continue;
+      const record = records?.find((item) => item.id === receipt.changeId);
+      if (!record) continue;
+      let write = receipt;
+      if (record.state === 'applied') {
+        write = { ...receipt, status: 'written' };
+        this.workflowWrites.set(id, write);
+      } else if (
+        ['not-applied', 'undone', 'superseded'].includes(record.state) ||
+        (record.state === 'conflict' && record.canForget)
+      ) {
+        this.workflowWrites.delete(id);
+      } else continue;
+      if (this.state.workflowRun?.resultId === id)
+        this.set({
+          workflowRun: { ...this.state.workflowRun, write: this.workflowWrites.get(id) },
+        });
+    }
     this.set({
+      workflowRecipesAvailable: Boolean(
+        this.session.analysis &&
+        this.session.runAnalysisProgram &&
+        (this.workflowCapabilities?.preview ?? !this.session.getAnalysisCapabilities),
+      ),
+      workflowWritesAvailable:
+        this.workflowCapabilities?.write ?? !this.session.getAnalysisCapabilities,
       ...(this.session.analysis ? { analysis: this.session.analysis.state() } : {}),
       ...(this.session.recovery
         ? {
             recovery: {
               durable: this.session.recovery.durable,
-              records: this.session.recovery.list(),
+              records: records ?? [],
             },
           }
         : {}),
@@ -554,27 +632,210 @@ export class PanelController {
       this.state.pendingShare
     )
       return;
+    const workflow = this.state.workflowRun;
+    const workflowWrite =
+      action.kind === 'materialize' && workflow?.resultId === action.id ? workflow : undefined;
+    const priorWrite =
+      action.kind === 'materialize' ? this.workflowWrites.get(action.id) : undefined;
+    if (
+      priorWrite?.status === 'uncertain' ||
+      (workflowWrite?.write?.destination ===
+        (action.kind === 'materialize' && action.destination) &&
+        ['pending', 'written', 'uncertain'].includes(workflowWrite.write.status))
+    ) {
+      this.set({
+        error:
+          'This result already has a write at that destination. Inspect its outcome before running it again.',
+      });
+      return;
+    }
     this.beginTurn({ steps: [] });
+    if (workflowWrite && action.kind === 'materialize')
+      this.set({
+        workflowRun: {
+          ...workflowWrite,
+          write: { destination: action.destination, status: 'pending' },
+        },
+      });
     const controller = new AbortController();
     this.inflight = controller;
     const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
+    let writeResult: ActuationResult | undefined;
+    let approved = false;
+    let reviewedChangeId: string | undefined;
+    let failure: string | undefined;
     try {
       for await (const event of this.session.runAnalysis(action, {
         signal: controller.signal,
-        approvePlan: (effects) =>
-          this.approvals.awaitPlan({ effects, summary: summarizeEffects(effects) }),
+        approvePlan: async (effects) => {
+          reviewedChangeId = effects[0]?.request.changeId;
+          approved = await this.approvals.awaitPlan({
+            effects,
+            summary: summarizeEffects(effects),
+          });
+          return approved;
+        },
       })) {
         this.reduceLoopEvent(event, reply.id, []);
+        if (event.type === 'write-result') writeResult = event.result;
+        if (event.type === 'error') failure = event.message;
         this.syncServices();
       }
     } catch (error) {
-      if (!controller.signal.aborted && !isAbortError(error)) this.set({ error: errorText(error) });
+      if (!controller.signal.aborted && !isAbortError(error)) failure = errorText(error);
       else this.addStep('activity', 'Analysis cancelled');
     } finally {
       this.approvals.releaseAll();
       if (this.inflight === controller) this.inflight = undefined;
-      this.syncServices();
+      if (!failure && !controller.signal.aborted && action.kind === 'forget') {
+        for (const [id, receipt] of this.workflowWrites) {
+          if (receipt.changeId !== action.id) continue;
+          this.workflowWrites.delete(id);
+          if (this.state.workflowRun?.resultId === id)
+            this.set({ workflowRun: { ...this.state.workflowRun, write: undefined } });
+        }
+      }
+      this.syncServices(!failure && ['recovery', 'resume', 'undo'].includes(action.kind));
+      if (failure) this.set({ error: failure });
+      if (workflowWrite && action.kind === 'materialize') {
+        const status: NonNullable<WorkflowRun['write']>['status'] = writeResult
+          ? writeResult.recoveryPending ||
+            writeResult.error?.code === 'outcome_unknown' ||
+            writeResult.verification?.status === 'unknown' ||
+            writeResult.verification?.status === 'mismatch'
+            ? 'uncertain'
+            : writeResult.ok
+              ? writeResult.verification?.status === 'verified'
+                ? 'written'
+                : 'uncertain'
+              : ['plan_unapproved', 'unapproved'].includes(writeResult.error?.code ?? '')
+                ? 'rejected'
+                : 'failed'
+          : approved
+            ? 'uncertain'
+            : failure
+              ? 'failed'
+              : 'rejected';
+        const write: NonNullable<WorkflowRun['write']> = {
+          destination: action.destination,
+          status,
+          ...((writeResult?.changeId ?? reviewedChangeId)
+            ? { changeId: writeResult?.changeId ?? reviewedChangeId }
+            : {}),
+          ...(failure || writeResult?.error?.message
+            ? { message: failure ?? writeResult?.error?.message }
+            : {}),
+        };
+        this.workflowWrites.set(action.id, write);
+        // Resolved previews can expire with their artifacts. Uncertain receipts remain visible.
+        const retainedIds = new Set(this.state.analysis?.artifacts.map((artifact) => artifact.id));
+        for (const [id, receipt] of this.workflowWrites)
+          if (!retainedIds.has(id) && receipt.status !== 'uncertain')
+            this.workflowWrites.delete(id);
+        this.set({
+          workflowRun: {
+            ...workflowWrite,
+            write,
+          },
+        });
+      }
       this.set({ busy: false });
+      this.drainPendingTurn();
+    }
+  }
+
+  /** Compute a known workflow without model inference. Writes are reviewed from its exact result. */
+  async runWorkflowRecipe(recipeId: string, rawInputs: Record<string, unknown>): Promise<void> {
+    if (
+      this.state.busy ||
+      this.state.pendingCommandPlan ||
+      this.state.pendingPlan ||
+      this.state.pendingWrite ||
+      this.state.pendingShare
+    )
+      return;
+    if (!this.session.runAnalysisProgram || !this.session.analysis) {
+      this.set({ error: 'Workflows are unavailable in this document.' });
+      return;
+    }
+    const runId = this.id('workflow');
+    let workflow: WorkflowRun;
+    let program: AnalysisProgram;
+    try {
+      const recipe = getWorkflowRecipe(recipeId);
+      if (!recipe)
+        throw new Error('This workflow version is unavailable. Choose a current workflow.');
+      // Preview never includes a write destination, even when a caller supplies one.
+      const { destination: _destination, ...previewInputs } = rawInputs;
+      const inputs = validateWorkflowRecipeInputs(recipeId, previewInputs);
+      program = compileWorkflowRecipe(recipeId, inputs);
+      workflow = { runId, recipeId, recipeVersion: recipe.version, inputs, status: 'running' };
+    } catch (error) {
+      this.set({
+        error: errorText(error),
+        workflowRun: {
+          runId,
+          recipeId,
+          recipeVersion: 1,
+          inputs: {},
+          status: 'failed',
+          error: errorText(error),
+        },
+      });
+      return;
+    }
+    this.beginTurn({ steps: [], workflowRun: workflow });
+    const controller = new AbortController();
+    this.inflight = controller;
+    let completed = false;
+    let producedResultId: string | undefined;
+    let failure: string | undefined;
+    try {
+      for await (const event of this.session.runAnalysisProgram(program, {
+        signal: controller.signal,
+      })) {
+        this.reduceLoopEvent(event, runId, []);
+        if (event.type === 'read-result' && event.result && typeof event.result === 'object') {
+          const result = event.result as { binding?: unknown; id?: unknown };
+          if (result.binding === '$result' && typeof result.id === 'string')
+            producedResultId = result.id;
+        }
+        if (event.type === 'done' && 'turn' in event) completed = true;
+        if (event.type === 'error') failure = event.message;
+        if (event.type === 'capped') failure = event.reason;
+        this.syncServices();
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !isAbortError(error)) failure = errorText(error);
+    } finally {
+      if (this.inflight === controller) this.inflight = undefined;
+      this.syncServices();
+      const resultId = this.state.analysis?.artifacts.some((item) => item.id === producedResultId)
+        ? producedResultId
+        : undefined;
+      const status = controller.signal.aborted
+        ? 'cancelled'
+        : completed && !failure && resultId
+          ? 'ready'
+          : 'failed';
+      const error =
+        status === 'failed'
+          ? (failure ??
+            'The workflow did not produce a verified result. Review the activity and run it again.')
+          : undefined;
+      this.set({
+        busy: false,
+        ...(error ? { error } : {}),
+        workflowRun: {
+          ...workflow,
+          status,
+          ...(status === 'ready' ? { resultId } : {}),
+          ...(status === 'ready' && resultId && this.workflowWrites.has(resultId)
+            ? { write: this.workflowWrites.get(resultId) }
+            : {}),
+          ...(error ? { error } : {}),
+        },
+      });
       this.drainPendingTurn();
     }
   }

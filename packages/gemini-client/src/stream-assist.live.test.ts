@@ -3,7 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseProgramBlock } from '@ge/contracts';
 import { parseJsonArrayStream } from './json-stream.js';
+import { summarizeStages } from './live-performance.js';
+
+type SessionMode = 'conversation' | 'sessionless';
 
 type LiveSkillRef = {
   label: string;
@@ -27,6 +31,7 @@ type LiveConfig = {
   requireCodeExecution: boolean;
   repetitions: number;
   scenarioFilter?: Set<string>;
+  sessionModes: SessionMode[];
 };
 
 type LiveCallResult = {
@@ -35,6 +40,7 @@ type LiveCallResult = {
   text: string;
   session?: string;
   invokedSkills: string[];
+  responseSession?: string;
   codeExecutionObserved: boolean;
   codeExecutionEventCount: number;
   timing: LiveTiming;
@@ -45,14 +51,17 @@ type LiveTiming = {
   timeToFirstChunkMs?: number;
   timeToFirstVisibleTextMs?: number;
   timeToFirstTokenMs?: number;
+  timeToParseableProgramMs?: number;
   totalMs: number;
 };
 
 type LiveResult = {
   id: string;
   group: string;
+  sessionMode: SessionMode;
   status: 'pass' | 'fail';
   session?: string;
+  responseSession?: string;
   chunkCount: number;
   invokedSkills: string[];
   textPreview: string;
@@ -70,6 +79,7 @@ type LiveScenario = {
   id: string;
   group: string;
   title: string;
+  sessionMode?: SessionMode;
   prompt: (cfg: LiveConfig) => string;
   skills?: (cfg: LiveConfig) => LiveSkillRef[];
   assert: (result: LiveCallResult, cfg: LiveConfig) => string[];
@@ -110,16 +120,28 @@ function selectedScenarios(): LiveScenario[] {
   const filter = scenarioFilter();
   const selected = scenarios().filter((scenario) => !filter || filter.has(scenario.id));
   const repetitions = liveRepetitions();
+  const modes = liveSessionModes();
   return Array.from({ length: repetitions }, (_, iteration) =>
-    selected.map((scenario) => ({
-      ...scenario,
-      id: repetitions === 1 ? scenario.id : `${scenario.id}-run-${iteration + 1}`,
-      title:
-        repetitions === 1
-          ? scenario.title
-          : `${scenario.title} (run ${iteration + 1}/${repetitions})`,
-    })),
+    modes.flatMap((sessionMode) =>
+      selected.map((scenario) => ({
+        ...scenario,
+        sessionMode,
+        id: `${scenario.id}-${sessionMode}${repetitions === 1 ? '' : `-run-${iteration + 1}`}`,
+        title: `${scenario.title} (${sessionMode}, run ${iteration + 1}/${repetitions})`,
+      })),
+    ),
   ).flat();
+}
+
+function liveSessionModes(): SessionMode[] {
+  const raw = env('GE_LIVE_STREAMASSIST_SESSION_MODES') ?? 'conversation';
+  const modes = [...new Set(raw.split(',').map((mode) => mode.trim()))];
+  if (!modes.length || modes.some((mode) => mode !== 'conversation' && mode !== 'sessionless')) {
+    throw new Error(
+      'GE_LIVE_STREAMASSIST_SESSION_MODES must contain conversation and/or sessionless',
+    );
+  }
+  return modes as SessionMode[];
 }
 
 function liveRepetitions(): number {
@@ -145,13 +167,15 @@ function scenarioFilter(): Set<string> | undefined {
 
 async function runScenario(cfg: LiveConfig, scenario: LiveScenario): Promise<LiveResult> {
   try {
-    const result = await callLiveStreamAssist(
-      cfg,
-      scenario.prompt(cfg),
-      scenario.id,
-      scenario.skills ? { skills: scenario.skills(cfg) } : {},
-    );
+    const result = await callLiveStreamAssist(cfg, scenario.prompt(cfg), scenario.id, {
+      skills: scenario.skills?.(cfg),
+      isSessionLess: scenario.sessionMode === 'sessionless',
+    });
     const failures = scenario.assert(result, cfg);
+    if (scenario.sessionMode === 'sessionless' && result.responseSession)
+      failures.push('Sessionless response unexpectedly contains sessionInfo.session');
+    if (scenario.sessionMode === 'conversation' && !result.responseSession)
+      failures.push('Conversation response did not return sessionInfo.session');
     const recorded = record(scenario, result, failures);
     if (failures.length > 0) return recorded;
     return recorded;
@@ -305,6 +329,49 @@ function scenarios(): LiveScenario[] {
       ],
     },
     {
+      id: 'commander-verified-program',
+      group: 'program',
+      title: 'reconciliation emits a parseable bound program with verified completion',
+      skills: (cfg) => [cfg.commandSkill],
+      prompt: (cfg) =>
+        `${mention(cfg.commandSkill)} ${commanderProtocol(
+          'Excel workbook',
+          [
+            'let $name = analyze {"kind":"capture","range":"Sheet!A1:C10"} -> bind a captured artifact',
+            'let $name = analyze {"kind":"reconcile","spec":{"left":"$left","right":"$right","leftKey":0,"rightKey":0,"leftAmount":1,"rightAmount":1,"leftCurrency":2,"rightCurrency":2,"tolerance":"0.001"}} -> derive a reconciliation artifact',
+            'analyze {"kind":"materialize","id":"$result","destination":"Results!A1"} -> approved, verified write',
+            'finish when=verified -> complete only after every effect verifies',
+          ].join('\n'),
+          '<doc_state surface=excel>Invoices!A1:C4 and Payments!A1:C5 contain headers id, amount, currency. Destination Results!A1 is available.</doc_state>',
+          'Reconcile invoices and payments, preserving exact decimal amounts and matching currencies. Tolerance 0.001. Write all reconciliation rows to Results!A1. Emit capture, reconcile, materialize, finish in one closed cmd block using bindings. Do not infer amounts.',
+        )}`,
+      assert: (result, cfg) => {
+        const parsed = parseProgramBlock(result.text, new Set(), { requireCompleteFrame: true });
+        const names = new Set(result.invokedSkills);
+        return [
+          ...expectChunked(result),
+          ...(names.has(cfg.commandSkill.label) ||
+          names.has(cfg.commandSkill.resource) ||
+          names.has(cfg.commandSkill.mentionUri)
+            ? []
+            : [
+                'Expected configured commander identity in invokedSkills; a generic m365 match is insufficient',
+              ]),
+          ...(parsed.found &&
+          parsed.entries.length >= 5 &&
+          parsed.entries.every((entry) => !('error' in entry))
+            ? []
+            : ['Expected a complete parseable program']),
+          ...expectText(
+            result,
+            /let \$[A-Za-z_][A-Za-z0-9_]* = analyze/,
+            'Expected task-local artifact bindings',
+          ),
+          ...expectText(result, /finish when=verified/i, 'Expected verified completion'),
+        ];
+      },
+    },
+    {
       id: 'multi-skill-mount',
       group: 'routing',
       title: 'planner is selected explicitly while planner and commander are both mounted',
@@ -352,6 +419,7 @@ function liveConfig(): LiveConfig {
     requireCodeExecution: env('GE_LIVE_STREAMASSIST_REQUIRE_CODE') === '1',
     repetitions: liveRepetitions(),
     scenarioFilter: scenarioFilter(),
+    sessionModes: liveSessionModes(),
   };
 }
 
@@ -534,13 +602,16 @@ async function callLiveStreamAssist(
   config: LiveConfig,
   text: string,
   scenarioId: string,
-  opts: { skills?: LiveSkillRef[] } = {},
+  opts: { skills?: LiveSkillRef[]; isSessionLess?: boolean } = {},
 ): Promise<LiveCallResult> {
   const startedAt = performance.now();
   const requestSession =
-    config.transport === 'widget' ? seededSession(config, scenarioId) : undefined;
+    config.transport === 'widget' && !opts.isSessionLess
+      ? seededSession(config, scenarioId)
+      : undefined;
   const streamAssistRequest: Record<string, unknown> = {
     ...(requestSession ? { session: requestSession } : {}),
+    ...(opts.isSessionLess ? { isSessionLess: true } : {}),
     query: config.transport === 'widget' ? { parts: [{ text }] } : { text },
     userMetadata: { timeZone: config.timeZone },
     ...(config.transport === 'widget'
@@ -593,12 +664,25 @@ async function callLiveStreamAssist(
   let firstChunkAt: number | undefined;
   let firstVisibleTextAt: number | undefined;
   let firstTokenAt: number | undefined;
+  let parseableProgramAt: number | undefined;
+  let accumulatedText = '';
   for await (const chunk of parseJsonArrayStream(parseBranch)) {
     const now = performance.now();
     firstChunkAt ??= now;
     if (firstVisibleTextAt === undefined && responseTextPiece(chunk, true))
       firstVisibleTextAt = now;
     if (firstTokenAt === undefined && responseTextPiece(chunk)) firstTokenAt = now;
+    const piece = responseTextPiece(chunk);
+    if (piece) accumulatedText += piece;
+    if (parseableProgramAt === undefined && accumulatedText.includes('\n```')) {
+      const parsed = parseProgramBlock(accumulatedText, new Set(), { requireCompleteFrame: true });
+      if (
+        parsed.found &&
+        parsed.entries.length > 0 &&
+        parsed.entries.every((entry) => !('error' in entry))
+      )
+        parseableProgramAt = now;
+    }
     chunks.push(chunk);
   }
   const raw = await rawPromise;
@@ -615,6 +699,9 @@ async function callLiveStreamAssist(
     ...(firstTokenAt === undefined
       ? {}
       : { timeToFirstTokenMs: roundMs(firstTokenAt - startedAt) }),
+    ...(parseableProgramAt === undefined
+      ? {}
+      : { timeToParseableProgramMs: roundMs(parseableProgramAt - startedAt) }),
     totalMs: roundMs(completedAt - startedAt),
   });
 }
@@ -628,6 +715,7 @@ function parseLiveResponse(
   const chunks = streamedChunks;
   let text = '';
   let session = fallbackSession;
+  let responseSession: string | undefined;
   const invokedSkills = new Set<string>();
   let codeExecutionEventCount = 0;
 
@@ -636,7 +724,10 @@ function parseLiveResponse(
     if (!chunk || typeof chunk !== 'object') continue;
     const rec = chunk as Record<string, unknown>;
     const sessionInfo = rec.sessionInfo as Record<string, unknown> | undefined;
-    if (typeof sessionInfo?.session === 'string') session = sessionInfo.session;
+    if (typeof sessionInfo?.session === 'string') {
+      session = sessionInfo.session;
+      responseSession = sessionInfo.session;
+    }
     for (const skill of Array.isArray(rec.invokedSkills) ? rec.invokedSkills : []) {
       if (!skill || typeof skill !== 'object') continue;
       const skillRec = skill as Record<string, unknown>;
@@ -661,6 +752,7 @@ function parseLiveResponse(
     chunks,
     text,
     session,
+    responseSession,
     invokedSkills: [...invokedSkills],
     codeExecutionObserved: codeExecutionEventCount > 0,
     codeExecutionEventCount,
@@ -672,15 +764,16 @@ function responseTextPiece(rawChunk: unknown, includeThought = false): string | 
   const chunk = unwrapWidgetResponse(rawChunk);
   if (!chunk || typeof chunk !== 'object') return undefined;
   const answer = (chunk as Record<string, unknown>).answer as Record<string, unknown> | undefined;
+  const pieces: string[] = [];
   for (const reply of Array.isArray(answer?.replies) ? answer.replies : []) {
     const content = ((
       (reply as Record<string, unknown>).groundedContent as Record<string, unknown> | undefined
     )?.content ?? {}) as Record<string, unknown>;
     if (!includeThought && content.thought === true) continue;
     const piece = stringValue(content.text);
-    if (piece) return piece;
+    if (piece) pieces.push(piece);
   }
-  return undefined;
+  return pieces.length ? pieces.join('') : undefined;
 }
 
 async function readStreamText(stream: ReadableStream<Uint8Array>): Promise<string> {
@@ -733,8 +826,10 @@ function record(scenario: LiveScenario, result: LiveCallResult, failures: string
   const recorded: LiveResult = {
     id: scenario.id,
     group: scenario.group,
+    sessionMode: scenario.sessionMode ?? 'conversation',
     status: failures.length ? 'fail' : 'pass',
     session: result.session,
+    responseSession: result.responseSession,
     chunkCount: result.chunks.length,
     invokedSkills: result.invokedSkills,
     textPreview: result.text.slice(0, 600),
@@ -755,6 +850,7 @@ function recordFailure(scenario: LiveScenario, error: unknown): LiveResult {
   const recorded: LiveResult = {
     id: scenario.id,
     group: scenario.group,
+    sessionMode: scenario.sessionMode ?? 'conversation',
     status: 'fail',
     chunkCount: 0,
     invokedSkills: [],
@@ -787,6 +883,9 @@ function writeEvidence(config: LiveConfig | undefined, results: LiveResult[]): v
         engine: config?.engine,
         scenarioFilter: config?.scenarioFilter ? [...config.scenarioFilter] : undefined,
         repetitions: config?.repetitions,
+        sessionModes: config?.sessionModes,
+        scope:
+          'Live provider and private skill routing. No Office host is connected. Absence of a response session id does not independently prove saved-history isolation.',
         summary: {
           total: results.length,
           pass: results.filter((r) => r.status === 'pass').length,
@@ -797,6 +896,19 @@ function writeEvidence(config: LiveConfig | undefined, results: LiveResult[]): v
           ),
           codeExecutionObserved: results.filter((r) => r.codeExecutionObserved).length,
           timing: timingSummary(results),
+          byScenario: Object.fromEntries(
+            [...new Set(results.map((result) => result.id.replace(/-run-\d+$/, '')))].map((id) => {
+              const samples = results.filter((result) => result.id.replace(/-run-\d+$/, '') === id);
+              return [
+                id,
+                {
+                  samples: samples.length,
+                  pass: samples.filter((sample) => sample.status === 'pass').length,
+                  timing: timingSummary(samples),
+                },
+              ];
+            }),
+          ),
         },
         results,
       },
@@ -806,32 +918,18 @@ function writeEvidence(config: LiveConfig | undefined, results: LiveResult[]): v
   );
 }
 
-function timingSummary(results: LiveResult[]): Record<string, number | undefined> {
-  const visible = results
-    .map((result) => result.timing?.timeToFirstVisibleTextMs)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => a - b);
-  const ttft = results
-    .map((result) => result.timing?.timeToFirstTokenMs)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => a - b);
-  const total = results
-    .map((result) => result.timing?.totalMs)
-    .filter((value): value is number => typeof value === 'number')
-    .sort((a, b) => a - b);
-  return {
-    medianTimeToFirstVisibleTextMs: percentile(visible, 0.5),
-    p95TimeToFirstVisibleTextMs: percentile(visible, 0.95),
-    medianTimeToFirstTokenMs: percentile(ttft, 0.5),
-    p95TimeToFirstTokenMs: percentile(ttft, 0.95),
-    medianTotalMs: percentile(total, 0.5),
-    p95TotalMs: percentile(total, 0.95),
-  };
-}
-
-function percentile(values: number[], fraction: number): number | undefined {
-  if (!values.length) return undefined;
-  return values[Math.min(values.length - 1, Math.ceil(values.length * fraction) - 1)];
+function timingSummary(results: LiveResult[]) {
+  return summarizeStages(
+    results.flatMap((result) => (result.timing ? [result.timing] : [])),
+    [
+      'requestToHeadersMs',
+      'timeToFirstChunkMs',
+      'timeToFirstVisibleTextMs',
+      'timeToFirstTokenMs',
+      'timeToParseableProgramMs',
+      'totalMs',
+    ],
+  );
 }
 
 function sha256(text: string): string {

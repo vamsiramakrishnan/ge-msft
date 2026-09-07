@@ -69,6 +69,8 @@
     "skills:index": "python3 skill/generate_resource_index.py",
     "test:streamassist:live": "GE_LIVE_STREAMASSIST=1 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
     "test:streamassist:latency": "GE_LIVE_STREAMASSIST=1 GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-excel-visualize,commander-word-surgical,planner-single-surface GE_LIVE_STREAMASSIST_REPETITIONS=3 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
+    "test:streamassist:modes": "GE_LIVE_STREAMASSIST=1 GE_LIVE_STREAMASSIST_SESSION_MODES=conversation,sessionless GE_LIVE_STREAMASSIST_SCENARIOS=smoke-basic,commander-verified-program,multi-skill-mount GE_LIVE_STREAMASSIST_REPETITIONS=3 vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
+    "test:command-workflows:live": "GE_LIVE_COMMAND_WORKFLOWS=1 vitest run packages/runtime/src/command-efficiency.test.ts --testNamePattern=\"live workflow comparison\" --testTimeout=360000",
     "test:streamassist:widget": "GE_LIVE_STREAMASSIST=1 GE_LIVE_STREAMASSIST_TRANSPORT=widget vitest run packages/gemini-client/src/stream-assist.live.test.ts --testTimeout=120000",
     "test:streamassist:live:login": "bun scripts/streamassist-live-login.mjs",
     "probe:streamassist-code-exec": "bun scripts/streamassist-code-exec-probe.mjs",

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AnalysisBindings, compileAnalysisProgram } from './analysis-program.js';
+import {
+  AnalysisBindings,
+  compileAnalysisProgram,
+  inspectAnalysisProgram,
+} from './analysis-program.js';
 
 const A = `a_${'a'.repeat(24)}`;
 const B = `a_${'b'.repeat(24)}`;
@@ -43,6 +47,14 @@ describe('typed artifact bindings', () => {
     bindings.clear();
     expect(() => bindings.resolve({ kind: 'inspect', id: '$source' })).toThrow('Unknown');
   });
+  it('exposes detached binding entries for deterministic execution-state projection', () => {
+    const bindings = new AnalysisBindings();
+    bindings.bind('source', A);
+    const entries = bindings.entries();
+    bindings.clear();
+    expect(entries).toEqual([['source', A]]);
+    expect(bindings.entries()).toEqual([]);
+  });
   it('does not reinterpret quotes, comments or SQL strings as executable bindings', () => {
     const bindings = new AnalysisBindings();
     bindings.bind('x', A);
@@ -57,6 +69,22 @@ describe('typed artifact bindings', () => {
 });
 
 describe('SDK analysis program compiler', () => {
+  it('preserves a typed nonempty guard and serializes dependency barriers around writes', () => {
+    const program = {
+      version: 1 as const,
+      steps: [
+        { op: 'bind' as const, name: 'source', action: { kind: 'capture' as const, range: 'A1' } },
+        { op: 'materialize' as const, id: '$source', destination: 'B1', whenNonEmpty: true },
+        { op: 'bind' as const, name: 'after', action: { kind: 'capture' as const, range: 'B1' } },
+      ],
+    };
+    expect(compileAnalysisProgram(program)).toContain('"whenNonEmpty":true');
+    expect(inspectAnalysisProgram(program).steps.map((step) => step.dependsOn)).toEqual([
+      [],
+      [0],
+      [1],
+    ]);
+  });
   it('emits a bounded, locally executable program with verified completion', () => {
     const text = compileAnalysisProgram({
       version: 1,

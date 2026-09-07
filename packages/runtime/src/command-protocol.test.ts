@@ -1883,9 +1883,9 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(queries[1]).toContain('```cmd');
     expect(queries[1]).toContain('Do not emit prose');
     const observations = JSON.parse(
-      /<runtime_observations[^>]*>\n([\s\S]*?)\n<\/runtime_observations>/.exec(queries[1]!)![1]!,
-    ) as { turns: Array<{ correction: string }> };
-    expect(observations.turns[0]!.correction).toContain('```python');
+      /<execution_state[^>]*>\n([\s\S]*?)\n<\/execution_state>/.exec(queries[1]!)![1]!,
+    ) as { latest: { correction: string } };
+    expect(observations.latest.correction).toContain('```python');
     expect(bridge.applied).toHaveLength(1); // still completed the write
     expect(loop.at(-1)).toMatchObject({ type: 'done' });
   });

@@ -13,6 +13,7 @@ import {
 } from './analysis-program.js';
 import { CommandResultStore } from './result-store.js';
 import { CommandCapsule } from './command-capsule.js';
+import { ExecutionState, type ExecutionStateBinding } from './execution-state.js';
 import { approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type {
   ActuationKind,
@@ -349,6 +350,8 @@ export interface AssistSessionOptions {
   commandDisclosure?: 'compact' | 'full';
   /** Internal command/planner exchanges default to isolated v1alpha requests; chat keeps its session. */
   commandSessionMode?: 'sessionless' | 'conversation';
+  /** Deterministic live state is the sessionless default; transcript replays all prior observations. */
+  commandContextMode?: 'projection' | 'transcript';
   /** Maximum UTF-8 query bytes for a complete sessionless command capsule (default 64 KiB). */
   commandCapsuleBytes?: number;
   compute?: () => Promise<ComputeEngine>;
@@ -456,6 +459,7 @@ export class AssistSession {
   readonly evidence?: EvidencePipeline;
   private readonly analysisBindings = new AnalysisBindings();
   private readonly commandResults = new CommandResultStore({ inlineBytes: 4096 });
+  private commandState?: ExecutionState;
   private lastCommandDocState?: { signature: string; session?: SessionId };
   private disposeEvidence?: () => void;
   private disposed = false;
@@ -673,6 +677,16 @@ export class AssistSession {
     });
   }
 
+  /** Effective analysis affordances for the UI; every execution still rechecks its capability gate. */
+  async getAnalysisCapabilities(): Promise<{ preview: boolean; write: boolean }> {
+    if (this.disposed || !this.analysis) return { preview: false, write: false };
+    const manifest = await this.effectiveCapabilities();
+    return {
+      preview: true,
+      write: manifest.actuations.some((actuation) => actuation.kind === 'write-cells'),
+    };
+  }
+
   async *runAnalysis(
     raw: AnalysisAction,
     opts: RunCommandsOptions = {},
@@ -698,12 +712,26 @@ export class AssistSession {
       action.kind === 'undo' ||
       action.kind === 'resume'
     ) {
+      const materialization =
+        action.kind === 'materialize'
+          ? await this.prepareAnalysisMaterialization(action, opts.signal)
+          : undefined;
+      if (materialization && 'skipped' in materialization) {
+        yield {
+          type: 'read-result',
+          turn: 1,
+          intentLabel: 'analyze materialize',
+          result: materialization.skipped,
+        };
+        yield { type: 'done', turn: 1, answer: 'The result has no rows. No changes were made.' };
+        return;
+      }
       const manifest = await this.effectiveCapabilities();
       if (!manifest.actuations.some((a) => a.kind === 'write-cells'))
         throw new Error('Cell writes are disabled for this surface or release profile.');
       let request =
-        action.kind === 'materialize'
-          ? await this.requireAnalysis().materialize(action.id, action.destination)
+        materialization && 'request' in materialization
+          ? materialization.request
           : await this.recovery.request(action.id, action.kind === 'undo');
       request = await this.recovery.prepare(request);
       const command = `${action.kind} → ${request.params.target?.range}`;
@@ -741,6 +769,42 @@ export class AssistSession {
     }
     yield { type: 'done', turn: 1, answer: 'Analysis workspace updated.' };
   }
+  private async prepareAnalysisMaterialization(
+    action: Extract<AnalysisAction, { kind: 'materialize' }>,
+    signal?: AbortSignal,
+  ): Promise<
+    | { request: ActuationRequest }
+    | {
+        skipped: {
+          status: 'skipped';
+          reason: 'empty-result';
+          artifactId: string;
+          destination: string;
+          effects: 0;
+        };
+      }
+  > {
+    signal?.throwIfAborted();
+    if (action.whenNonEmpty) {
+      const artifact = this.requireAnalysis().artifacts.get(action.id);
+      await this.requireAnalysis().fresh([artifact]);
+      signal?.throwIfAborted();
+      if (artifact.truncated)
+        throw new Error('This result is truncated. Narrow the query before writing it.');
+      if (artifact.rows.length === 0)
+        return {
+          skipped: {
+            status: 'skipped',
+            reason: 'empty-result',
+            artifactId: artifact.id,
+            destination: action.destination,
+            effects: 0,
+          },
+        };
+    }
+    return { request: await this.requireAnalysis().materialize(action.id, action.destination) };
+  }
+
   private requireAnalysis(): AnalysisWorkspace {
     if (!this.analysis) throw new Error('Analysis is not configured for this surface.');
     return this.analysis;
@@ -752,6 +816,8 @@ export class AssistSession {
     this.analysis?.dispose();
     this.analysisBindings.clear();
     this.commandResults.clear();
+    this.commandState?.clear();
+    this.commandState = undefined;
     this.lastCommandDocState = undefined;
     this.disposeEvidence?.();
   }
@@ -1111,7 +1177,11 @@ export class AssistSession {
     this.shareCountThisTask = 0;
 
     const capsule = this.isolateCommands
-      ? new CommandCapsule(task, { maxBytes: this.options.commandCapsuleBytes })
+      ? this.options.commandContextMode === 'transcript'
+        ? new CommandCapsule(task, { maxBytes: this.options.commandCapsuleBytes })
+        : (this.commandState = new ExecutionState(task, {
+            maxBytes: this.options.commandCapsuleBytes,
+          }))
       : undefined;
     let query = capsule
       ? await this.renderCommandCapsule(capsule, capabilities, task)
@@ -1186,7 +1256,9 @@ export class AssistSession {
 
       // Feed all outcomes back as a ```result block + a fresh <doc_state> for the next turn.
       if (capsule) {
-        capsule.append({ program: turnText, resultsJson: this.encodeCommandResults(results) });
+        const observation = { program: turnText, resultsJson: this.encodeCommandResults(results) };
+        if (capsule instanceof ExecutionState) capsule.append(observation, results);
+        else capsule.append(observation);
         query = await this.renderCommandCapsule(capsule, capabilities, task);
       } else query = await this.nextCommandTurn(results);
     }
@@ -1221,6 +1293,8 @@ export class AssistSession {
   private resetCommandState(): void {
     this.analysisBindings.clear();
     this.commandResults.clear();
+    this.commandState?.clear();
+    this.commandState = undefined;
     this.lastCommandDocState = undefined;
     if (this.task)
       this.task.metrics = {
@@ -1720,9 +1794,20 @@ export class AssistSession {
           const action = this.analysisBindings.resolve(JSON.parse(compiled.intent.request));
           if (action.kind === 'materialize') {
             if (plan.planSlots.length >= plan.maxWrites) throw new Error('Write cap reached.');
+            const materialization = await this.prepareAnalysisMaterialization(action, opts.signal);
+            if ('skipped' in materialization) {
+              plan.results.push(materialization.skipped);
+              yield {
+                type: 'read-result',
+                turn,
+                intentLabel: 'analyze materialize',
+                result: materialization.skipped,
+              };
+              return;
+            }
             if (!capabilities.actuations.some((a) => a.kind === 'write-cells'))
               throw new Error('Cell writes are unavailable.');
-            const request = await this.requireAnalysis().materialize(action.id, action.destination);
+            const { request } = materialization;
             const index = plan.results.length;
             plan.results.push(undefined);
             plan.planSlots.push({
@@ -2100,11 +2185,40 @@ export class AssistSession {
   }
 
   private async renderCommandCapsule(
-    capsule: CommandCapsule,
+    capsule: CommandCapsule | ExecutionState,
     capabilities: CapabilityManifest,
     task: string,
   ): Promise<string> {
+    const bindings: ExecutionStateBinding[] = [];
+    const artifacts =
+      capsule instanceof ExecutionState
+        ? (this.analysis?.artifacts.list() ?? []).map(
+            ({ preview: _preview, createdAt: _createdAt, ...artifact }) => artifact,
+          )
+        : [];
+    if (capsule instanceof ExecutionState) {
+      const available = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+      for (const [name, id] of this.analysisBindings.entries())
+        bindings.push({ name, kind: 'artifact', value: { id, available: available.has(id) } });
+      for (const [name, value] of this.composeEnv)
+        bindings.push({
+          name,
+          kind: value.kind,
+          value,
+          ...(value.kind === 'table'
+            ? { schema: { columns: value.columns, rows: value.rows.length } }
+            : {}),
+        });
+    }
     return capsule.render({
+      ...(capsule instanceof ExecutionState
+        ? {
+            bindings,
+            artifacts,
+            effects: this.task?.effects ?? [],
+            externalShareAttempts: this.shareCountThisTask,
+          }
+        : {}),
       protocol:
         this.options.commandDisclosure === 'full'
           ? renderGrammarPrompt(capabilities)
@@ -2696,6 +2810,15 @@ export class AssistSession {
           };
         }
         case 'inspect-context': {
+          if (intent.selector.trim().startsWith('state:'))
+            return {
+              label: `inspect ${intent.selector}`,
+              result: this.commandState?.inspect(intent.selector.trim()) ?? {
+                error: 'Execution state reference expired.',
+                code: 'reference',
+                complete: false,
+              },
+            };
           if (intent.selector.trim().startsWith('result:'))
             return {
               label: `inspect ${intent.selector}`,

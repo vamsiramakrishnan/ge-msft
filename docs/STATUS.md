@@ -20,6 +20,13 @@ bounded task context. Ordinary chat retains its conversation. Session-bound uplo
 explicit conversation-mode compatibility; requests never fall back silently. Tenant validation of
 sessionless private-skill routing and saved-history behavior remains pending.
 
+The workflow increment adds three versioned zero-inference recipes, contract-generated forms, saved
+settings, source/result previews and capability-aware write review. Sessionless execution now projects
+current state with an inspectable journal. Financial recipes share exact-decimal admission. The
+bugbash fixed typed-grid precedence, stale/uncertain UI state, overlapping unresolved recovery writes,
+and React test collection. See [workflows](WORKFLOW-RECIPES.md) and
+[ADR-0014](ADR-0014-workflow-recipes-execution-state.md).
+
 > **Architecture:** client-direct (see `ADR-0001`). The add-in federates the signed-in user's
 > Entra identity to Google (Workforce Identity Federation, in the browser) and calls Gemini
 > Enterprise (Discovery Engine `v1alpha`) directly. **No gateway by default**; the only optional
@@ -54,9 +61,11 @@ not background mail delivery. No default mail grounding policy is installed. See
 
 ## Verification baseline
 
-`bun run typecheck` clean · **2,408 tests passed, 10 skipped across 180 files** (Vitest) ·
-`bun run lint` clean · production build and language/resource drift checks passed.
-Host/network integration tests use fake adapters; live tenant validation remains pending.
+TypeScript project build clean · **2,542 tests passed, 16 skipped across 187 files** (Vitest) ·
+ESLint and Prettier clean · production Vite build and language/resource drift checks passed.
+Local validation used the installed Node tools because Bun was unavailable. CI runs the Bun scripts.
+Security review closed with 148 targeted regressions. The cloud browser could not reach the local
+preview; rendered React state tests passed, but browser layout and live Office/tenant acceptance remain pending.
 
 ## Packages — built vs planned
 

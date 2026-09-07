@@ -3,6 +3,7 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  ArtifactSummary,
   ChangeId,
   CommandPlan,
   ContextRef,
@@ -10,7 +11,7 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
-import type { CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
+import type { AnalysisProgram, CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
 import type {
   AgentView,
   ConversationSummary,
@@ -1517,5 +1518,248 @@ describe('workspace state regression bash', () => {
     expect(approved).toBe(false);
     expect(controller.getState().pendingPlan).toBeUndefined();
     expect(controller.getState().busy).toBe(false);
+  });
+});
+
+describe('workflow controller ownership and outcome truth', () => {
+  const artifact: ArtifactSummary = {
+    id: 'a_111111111111111111111111',
+    hash: `sha256:${'1'.repeat(64)}`,
+    title: 'Duplicate keys',
+    createdAt: '2026-09-07T12:00:00.000Z',
+    columns: [{ name: 'c0', label: 'key', type: 'string' }],
+    sources: [],
+    lineage: { operation: 'query', parents: [] },
+    rowCount: 1,
+    preview: [['A']],
+    truncated: false,
+  };
+  const inputs = { sourceRange: 'Orders!A1:B20' };
+  const action = { kind: 'materialize' as const, id: artifact.id, destination: 'Results!A1' };
+
+  function setup() {
+    const assist = new FakeAssist();
+    const programs: AnalysisProgram[] = [];
+    const session: AssistLike = Object.assign(assist, {
+      analysis: { state: () => ({ artifacts: [artifact], selected: artifact.id, offers: [] }) },
+      async *runAnalysisProgram(program: AnalysisProgram, opts?: RunCommandsOptions) {
+        programs.push(program);
+        expect(opts?.approvePlan).toBeUndefined();
+        yield {
+          type: 'read-result' as const,
+          turn: 1,
+          intentLabel: 'analyze query',
+          result: { binding: '$result', id: artifact.id },
+        };
+        yield { type: 'done' as const, turn: 1, answer: '' };
+      },
+    });
+    return { session, assist, programs, controller: new PanelController(session, lister([])) };
+  }
+
+  it('compiles normalized preview inputs with no destination, inference, or approver', async () => {
+    const { controller, programs, assist } = setup();
+    await controller.runWorkflowRecipe('duplicate-rows', { ...inputs, destination: 'Results!A1' });
+    expect(programs).toHaveLength(1);
+    expect(programs[0]?.steps.some((step) => step.op === 'materialize')).toBe(false);
+    expect(assist.asked).toEqual([]);
+    expect(assist.runTasks).toEqual([]);
+    expect(controller.getState().workflowRun).toMatchObject({
+      status: 'ready',
+      resultId: artifact.id,
+      recipeVersion: 1,
+      inputs: { sourceRange: inputs.sourceRange, keyColumn: 0, headers: true },
+    });
+    expect(controller.getState().workflowRun?.inputs).not.toHaveProperty('destination');
+  });
+
+  it('rejects invalid settings before acquiring task ownership', async () => {
+    const { controller, programs } = setup();
+    await controller.runWorkflowRecipe('duplicate-rows', { sourceRange: '' });
+    expect(programs).toHaveLength(0);
+    expect(controller.getState().workflowRun?.status).toBe('failed');
+    expect(controller.getState().busy).toBe(false);
+    expect(controller.getState().error).toBeTruthy();
+  });
+
+  it('discloses preview and write capabilities independently after the effective manifest loads', async () => {
+    const { session } = setup();
+    session.getAnalysisCapabilities = async () => ({ preview: true, write: false });
+    const controller = new PanelController(session, lister([]));
+    expect(controller.getState().workflowRecipesAvailable).toBe(false);
+    expect(controller.getState().workflowWritesAvailable).toBe(false);
+    await tick();
+    expect(controller.getState().workflowRecipesAvailable).toBe(true);
+    expect(controller.getState().workflowWritesAvailable).toBe(false);
+  });
+
+  it('does not reuse an old selected artifact when a run emits no result binding', async () => {
+    const { controller, session } = setup();
+    session.runAnalysisProgram = async function* () {
+      yield { type: 'done', turn: 1, answer: '' };
+    };
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    expect(controller.getState().workflowRun?.status).toBe('failed');
+    expect(controller.getState().workflowRun?.resultId).toBeUndefined();
+  });
+
+  it('blocks overlapping previews and ignores successful completion after cancellation', async () => {
+    const { controller, session } = setup();
+    let release!: () => void;
+    let calls = 0;
+    session.runAnalysisProgram = async function* () {
+      calls++;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      yield {
+        type: 'read-result',
+        turn: 1,
+        intentLabel: 'query',
+        result: { binding: '$result', id: artifact.id },
+      };
+      yield { type: 'done', turn: 1, answer: '' };
+    };
+    const first = controller.runWorkflowRecipe('duplicate-rows', inputs);
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    expect(calls).toBe(1);
+    controller.cancel();
+    release();
+    await first;
+    expect(controller.getState().workflowRun?.status).toBe('cancelled');
+    expect(controller.getState().workflowRun?.resultId).toBeUndefined();
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it.each([
+    ['verified', { ok: true, verification: { status: 'verified' } }, 'written'],
+    ['unverified', { ok: true }, 'uncertain'],
+    [
+      'unknown host outcome',
+      {
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown', message: 'Host execution was interrupted.' },
+      },
+      'uncertain',
+    ],
+    [
+      'post-write checkpoint failure',
+      { ok: true, recoveryPending: true, verification: { status: 'verified' } },
+      'uncertain',
+    ],
+    [
+      'declined',
+      { ok: false, error: { code: 'plan_unapproved', message: 'Declined' } },
+      'rejected',
+    ],
+    [
+      'preflight failure',
+      { ok: false, error: { code: 'precondition_failed', message: 'Source changed' } },
+      'failed',
+    ],
+  ] as const)('classifies %s from the actual effect receipt', async (_name, receipt, status) => {
+    const { controller, session } = setup();
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    session.runAnalysis = async function* () {
+      yield {
+        type: 'write-result',
+        turn: 1,
+        changeId: 'write-1',
+        result: { kind: 'write-cells', changeId: asChangeId('write-1'), ...receipt },
+      };
+    };
+    await controller.runAnalysis(action);
+    expect(controller.getState().workflowRun?.write?.status).toBe(status);
+  });
+
+  it('retains uncertain outcomes across preview refresh and blocks direct resubmission', async () => {
+    const { controller, session } = setup();
+    let writes = 0;
+    session.runAnalysis = async function* () {
+      writes++;
+      yield {
+        type: 'write-result',
+        turn: 1,
+        changeId: 'unknown',
+        result: {
+          kind: 'write-cells',
+          changeId: asChangeId('unknown'),
+          ok: false,
+          recoveryPending: true,
+          error: { code: 'outcome_unknown', message: 'Inspect recovery.' },
+        },
+      };
+    };
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    await controller.runAnalysis(action);
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    expect(controller.getState().workflowRun?.write?.status).toBe('uncertain');
+    await controller.runAnalysis({ ...action, destination: 'Results!$A$1' });
+    expect(writes).toBe(1);
+    expect(controller.getState().error).toContain('Inspect its outcome');
+  });
+
+  it('preserves uncertainty when execution throws after approval', async () => {
+    const { controller, session } = setup();
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    session.runAnalysis = async function* (_action, opts) {
+      await opts?.approvePlan?.([planEffect('review-1')]);
+      yield { type: 'activity', text: 'Applying reviewed write' };
+      throw new Error('Connection interrupted');
+    };
+    const pending = controller.runAnalysis(action);
+    await tick();
+    expect(controller.getState().pendingPlan).toBeDefined();
+    controller.approvePlan();
+    await pending;
+    expect(controller.getState().workflowRun?.write?.status).toBe('uncertain');
+    expect(controller.getState().error).toBe('Connection interrupted');
+    expect(controller.getState().pendingPlan).toBeUndefined();
+    expect(controller.getState().busy).toBe(false);
+  });
+
+  it('clears uncertainty only after explicit recovery inspection confirms no write landed', async () => {
+    const { controller, session } = setup();
+    let writes = 0;
+    const receipt = {
+      id: 'recover-1',
+      createdAt: '2026-09-07T12:00:00.000Z',
+      state: 'uncertain',
+      target: 'Results!A1',
+      rows: 1,
+      columns: 1,
+      canUndo: false,
+      canResume: false,
+    };
+    Object.assign(session, { recovery: { durable: true, list: () => [receipt] } });
+    session.runAnalysis = async function* (request) {
+      if (request.kind === 'recovery') {
+        receipt.state = 'not-applied';
+        yield { type: 'done', turn: 1, answer: '' };
+        return;
+      }
+      writes++;
+      yield {
+        type: 'write-result',
+        turn: 1,
+        changeId: receipt.id,
+        result: {
+          ok: false,
+          recoveryPending: true,
+          kind: 'write-cells',
+          changeId: asChangeId(receipt.id),
+          error: { code: 'outcome_unknown', message: 'Inspect recovery.' },
+        },
+      };
+    };
+    await controller.runWorkflowRecipe('duplicate-rows', inputs);
+    await controller.runAnalysis(action);
+    await controller.runAnalysis(action);
+    expect(writes).toBe(1);
+    await controller.runAnalysis({ kind: 'recovery' });
+    expect(controller.getState().workflowRun?.write).toBeUndefined();
+    await controller.runAnalysis(action);
+    expect(writes).toBe(2);
   });
 });

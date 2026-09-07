@@ -19,6 +19,7 @@ export const AnalysisProgramSchema = z
             op: z.literal('materialize'),
             id: z.string().min(1),
             destination: z.string().min(1),
+            whenNonEmpty: z.boolean().optional(),
           }),
         ]),
       )
@@ -37,6 +38,9 @@ export class AnalysisBindings {
   }
   has(name: string): boolean {
     return this.values.has(name);
+  }
+  entries(): readonly (readonly [string, string])[] {
+    return [...this.values.entries()].map(([name, id]) => [name, id] as const);
   }
   bind(name: string, id: string): void {
     if (!NAME.test(name) || name.length > 64) throw new Error('Invalid analysis binding name.');
@@ -64,6 +68,14 @@ export class AnalysisBindings {
         ...action,
         inputs,
         sql: resolveSqlBindings(action.sql, this.values, new Set(inputs)),
+        ...(action.requiredColumns
+          ? {
+              requiredColumns: action.requiredColumns.map((entry) => ({
+                ...entry,
+                input: ref(entry.input),
+              })),
+            }
+          : {}),
       };
     }
     if (
@@ -121,7 +133,12 @@ export function compileAnalysisProgram(raw: AnalysisProgram): string {
     const action: AnalysisAction =
       step.op === 'bind'
         ? step.action
-        : { kind: 'materialize', id: step.id, destination: step.destination };
+        : {
+            kind: 'materialize',
+            id: step.id,
+            destination: step.destination,
+            ...(step.whenNonEmpty !== undefined ? { whenNonEmpty: step.whenNonEmpty } : {}),
+          };
     if (step.op === 'bind' && !PRODUCES_ARTIFACT.has(action.kind))
       throw new Error('Only artifact-producing actions can be bound.');
     if (step.op === 'bind' && names.has(step.name))
@@ -147,4 +164,73 @@ export function compileAnalysisProgram(raw: AnalysisProgram): string {
   }
   lines.push('finish when=verified');
   return lines.join('\n');
+}
+
+export interface AnalysisProgramPlan {
+  steps: Array<{
+    index: number;
+    op: 'bind' | 'materialize';
+    effect: 'read' | 'derive' | 'write';
+    dependsOn: number[];
+    binding?: string;
+  }>;
+  layers: number[][];
+  independentCaptureGroups: number[][];
+  execution: 'serial';
+  reason: string;
+}
+
+/** Exposes data dependencies without pretending that DocBridge offers atomic batch capture. */
+export function inspectAnalysisProgram(raw: AnalysisProgram): AnalysisProgramPlan {
+  compileAnalysisProgram(raw);
+  const program = AnalysisProgramSchema.parse(raw);
+  const bindings = new Map<string, number>();
+  const steps: AnalysisProgramPlan['steps'] = [];
+  const levels: number[] = [];
+  let lastWrite: number | undefined;
+  for (const [index, step] of program.steps.entries()) {
+    const action = step.op === 'bind' ? step.action : undefined;
+    const refs =
+      step.op === 'materialize'
+        ? [step.id]
+        : action?.kind === 'query'
+          ? action.inputs
+          : action?.kind === 'reconcile'
+            ? [action.spec.left, action.spec.right]
+            : action && 'id' in action
+              ? [action.id]
+              : [];
+    const dependencies = new Set<number>();
+    for (const ref of refs) if (ref.startsWith('$')) dependencies.add(bindings.get(ref.slice(1))!);
+    if (lastWrite !== undefined) dependencies.add(lastWrite);
+    if (step.op === 'materialize') {
+      // Preserve effect order against all earlier reads, including currently independent captures.
+      for (let previous = 0; previous < index; previous++) dependencies.add(previous);
+      lastWrite = index;
+    }
+    const dependsOn = [...dependencies].sort((a, b) => a - b);
+    steps.push({
+      index,
+      op: step.op,
+      effect: step.op === 'materialize' ? 'write' : action?.kind === 'capture' ? 'read' : 'derive',
+      dependsOn,
+      ...(step.op === 'bind' ? { binding: step.name } : {}),
+    });
+    levels.push(
+      dependsOn.length ? 1 + Math.max(...dependsOn.map((dependency) => levels[dependency]!)) : 0,
+    );
+    if (step.op === 'bind') bindings.set(step.name, index);
+  }
+  const layers: number[][] = [];
+  levels.forEach((level, index) => (layers[level] ??= []).push(index));
+  return {
+    steps,
+    layers,
+    independentCaptureGroups: layers
+      .map((layer) => layer.filter((index) => steps[index]!.effect === 'read'))
+      .filter((group) => group.length > 1),
+    execution: 'serial',
+    reason:
+      'The current host bridge exposes individual versioned captures. Execution preserves serial host access and rechecks sources before computation and writes.',
+  };
 }

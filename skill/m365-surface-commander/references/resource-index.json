@@ -185,8 +185,8 @@
     "kind": "reference",
     "surface": "",
     "workflow": "",
-    "topics": "[observe, derive, effect, verify, approval-boundaries]",
-    "load_when": "A task needs bindings, multiple effects, or a decision about model-turn boundaries."
+    "topics": "[observe, derive, effect, verify, recipes, conditional-materialization, approval-boundaries]",
+    "load_when": "A task needs bindings, recipes, conditional materialization, multiple effects, or a model-turn boundary."
   },
   {
     "path": "references/powerpoint-semantics.md",
@@ -203,8 +203,8 @@
     "kind": "reference",
     "surface": "",
     "workflow": "",
-    "topics": "[context, host-refs, inspect, full-file, handoff]",
-    "load_when": "Choosing the smallest sufficient context or command help for the next decision."
+    "topics": "[context, execution-state, journal, host-refs, inspect, full-file, handoff]",
+    "load_when": "Choosing context or command help, or recovering omitted evidence from an execution-state reference."
   },
   {
     "path": "references/specialized-capabilities.md",

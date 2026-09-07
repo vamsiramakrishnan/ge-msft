@@ -1169,6 +1169,126 @@ describe('ExcelBridge.revealContext (navigation-only host jump)', () => {
 });
 
 describe('ExcelBridge.actuate write-cells (reversible, address-anchored)', () => {
+  it.each([
+    { cells: [], cellValues: [[42]], range: 'Sales!A2', location: 'Sales!A2' },
+    {
+      cells: [['legacy']],
+      cellValues: [
+        [1, 2],
+        [3, 4],
+      ],
+      range: 'Sales!A2',
+      location: 'Sales!A2:B3',
+    },
+    {
+      cells: [
+        ['legacy', 'wrong'],
+        ['wrong', 'wrong'],
+      ],
+      cellValues: [[42]],
+      range: 'Sales!A2',
+      location: 'Sales!A2',
+    },
+  ])('uses typed dimensions for the host write, verification and inverse: %j', async (fixture) => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const before = await bridge.captureCells(fixture.location);
+    const res = await bridge.actuate(
+      writeCells({
+        target: { range: fixture.range },
+        cells: fixture.cells,
+        cellValues: fixture.cellValues,
+      }),
+    );
+    expect(res).toMatchObject({
+      ok: true,
+      location: fixture.location,
+      verification: { status: 'verified', beforeHash: before.hash },
+      inverse: { op: 'restore-cells', range: fixture.location, values: before.values },
+    });
+    const after = await bridge.captureCells(fixture.location);
+    expect(after.values).toEqual(fixture.cellValues.map((row) => row.map(String)));
+    expect(active.seed.sheets[0]?.values.flat()).not.toContain('legacy');
+    // C is outside every typed result, even when the legacy grid has a different shape.
+    expect(active.seed.sheets[0]?.values[1]?.[2]).toBe('300');
+  });
+
+  it('rejects an explicit empty typed grid without falling back to populated legacy cells', async () => {
+    active = installExcel(salesSeed());
+    const before = structuredClone(active.seed.sheets);
+    const res = await new ExcelBridge().actuate(
+      writeCells({ target: { range: 'Sales!A2' }, cells: [['legacy']], cellValues: [] }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_cells' } });
+    expect(active.seed.sheets).toEqual(before);
+    expect(active.workbook()).toBeUndefined();
+  });
+
+  it('preserves typed scalars and formula-looking literals through the Office write channel', async () => {
+    active = installExcel(salesSeed());
+    const writes = vi.spyOn(FakeRange.prototype, 'values', 'set');
+    const formulaWrites = vi.spyOn(FakeRange.prototype, 'formulas', 'set');
+    try {
+      const res = await new ExcelBridge().actuate(
+        writeCells({
+          target: { range: 'Sales!A2' },
+          cells: [['=SUM(A1:A2)']],
+          cellValues: [[17, true, null, '=WEBSERVICE("https://example.com")', '0017']],
+        }),
+      );
+      expect(res).toMatchObject({
+        ok: true,
+        location: 'Sales!A2:E2',
+        verification: { status: 'verified' },
+      });
+      expect(writes).toHaveBeenCalledWith([
+        [17, true, '', '\'=WEBSERVICE("https://example.com")', "'0017"],
+      ]);
+      expect(formulaWrites).not.toHaveBeenCalled();
+    } finally {
+      writes.mockRestore();
+      formulaWrites.mockRestore();
+    }
+  });
+
+  it('still refuses unsafe explicit formulas before touching the host', async () => {
+    active = installExcel(salesSeed());
+    const before = structuredClone(active.seed.sheets);
+    const res = await new ExcelBridge().actuate(
+      writeCells({
+        target: { range: 'Sales!A2' },
+        cells: [['safe legacy text']],
+        cellValues: [[null]],
+        cellFormulas: [['=WEBSERVICE("https://example.com")']],
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsafe_formula' } });
+    expect(active.seed.sheets).toEqual(before);
+    expect(active.workbook()).toBeUndefined();
+  });
+
+  it('routes explicit formulas separately from typed scalars and formula-looking literals', async () => {
+    active = installExcel(salesSeed());
+    const writes = vi.spyOn(FakeRange.prototype, 'values', 'set');
+    const formulaWrites = vi.spyOn(FakeRange.prototype, 'formulas', 'set');
+    try {
+      const res = await new ExcelBridge().actuate(
+        writeCells({
+          target: { range: 'Sales!A2:C2' },
+          cells: [['ignored']],
+          cellValues: [[3, null, '=literal']],
+          cellFormulas: [['', '=SUM(A3:A4)', '']],
+        }),
+      );
+      expect(res).toMatchObject({ ok: true, verification: { status: 'verified' } });
+      expect(writes).toHaveBeenCalledWith([[3, null, "'=literal"]]);
+      expect(formulaWrites).toHaveBeenCalledWith([[null, '=SUM(A3:A4)', null]]);
+    } finally {
+      writes.mockRestore();
+      formulaWrites.mockRestore();
+    }
+  });
+
   it('writes literal values into the target range and returns ok with the location', async () => {
     active = installExcel(salesSeed());
     const res = await new ExcelBridge().actuate(

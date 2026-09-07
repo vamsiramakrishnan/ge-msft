@@ -1,4 +1,5 @@
 import { AnalysisWorkbench } from './AnalysisWorkbench.js';
+import { WorkflowWorkbench } from './WorkflowWorkbench.js';
 import { EvidencePanel } from './EvidencePanel.js';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -428,6 +429,7 @@ export function App({
       )}
 
       <main className="thread-region" aria-label="Conversation and activity">
+        <WorkflowWorkbench state={state} controller={controller} disabled={actionBlocked} />
         <AnalysisWorkbench state={state} controller={controller} disabled={actionBlocked} />
         <EvidencePanel evidence={state.evidence} />
         {state.messages.length === 0 && (

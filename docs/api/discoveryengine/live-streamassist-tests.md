@@ -80,9 +80,9 @@ The suite verifies:
 
 - the public WIF-authenticated StreamAssist endpoint is reachable and returns a streamed answer;
 - hosted code-execution behavior is observable on analytical prompts;
-- `m365-surface-commander` can be mounted with `skillsSpec` and returns `cmd` fences for strict
+- `m365-surface-commander` can be selected with `agentsSpec` and an explicit mention and returns `cmd` fences for strict
   Excel, Word, PowerPoint, Outlook, and injection-resistance command-loop fixtures;
-- `m365-command-planner` can be mounted with `skillsSpec` and returns `plan` fences for
+- `m365-command-planner` can be selected with `agentsSpec` and an explicit mention and returns `plan` fences for
   single-surface and cross-surface handoff requests;
 - both planner and commander can be mounted in the same session without breaking the response
   schema.
@@ -120,3 +120,73 @@ completion. Its summary records median and p95 visible-text, answer-token, and t
 An opening `cmd` or `plan` fence that reaches end-of-response is recorded in `protocolWarnings`:
 the production parsers deliberately recover only this bounded whole-response shape. The report does
 not store bearer tokens.
+
+## Session mode and workflow comparison
+
+Compare the same private commander routing and command-generation fixtures with and without a
+provider conversation:
+
+```bash
+bun run test:streamassist:modes
+```
+
+`GE_LIVE_STREAMASSIST_SESSION_MODES=conversation,sessionless` expands each selected scenario into
+both request modes. Conversation samples start fresh; sessionless samples send `isSessionLess: true`
+and omit `session`. The harness reads the wire response before any production-client filtering. It
+fails a sessionless sample that returns `sessionInfo.session`, and a conversation sample that does
+not return one. This checks the API response contract. Confirming absence from saved UI history
+still requires a tenant check; an absent response field is not proof of storage behavior.
+
+The `commander-verified-program` scenario requests a bound capture/reconcile/materialize program.
+It checks the complete program with the production grammar parser and requires the configured
+commander identity in `invokedSkills`. A generic skill-name match cannot pass this routing probe.
+The evidence includes time to the first complete parseable program. This is a streaming observation;
+execution still waits for the whole response so later output cannot change program validity.
+
+Reports group repetitions by scenario and session mode. Each timing stage includes its sample
+count and nearest-rank p50/p95. Missing first-token or parseable-program timestamps remain missing,
+so a failed response cannot lower latency by contributing a synthetic zero.
+
+To measure through actual command execution and verification:
+
+```bash
+# Supply an existing signed-in user's WIF token through the environment or a token file.
+# This command never runs a login flow or falls back to a metadata/service-account identity.
+bun run test:command-workflows:live
+```
+
+This opt-in suite runs the production `StreamAssistClient`, `AssistSession`, recovery checkpoints,
+approval boundary and DuckDB WASM against a synthetic workbook. It compares five variants of the
+same exact-decimal reconciliation:
+
+| Provider mode | Context | Command encoding |
+| --- | --- | --- |
+| Conversation | Transcript | Sequential artifact handoffs |
+| Sessionless | Transcript | Sequential artifact handoffs |
+| Sessionless | Current execution state | Sequential artifact handoffs |
+| Conversation | Transcript | One bound program |
+| Sessionless | Current execution state | One bound program |
+
+Each sample gets fresh runtime state and workbook contents. The fixture includes an amount above
+JavaScript's safe-integer range, decimal aggregation, a variance and mismatched currencies. Results
+must preserve those exact values and classifications. Private skill invocation, request mode,
+returned session metadata, approvals, effects, model calls, correction turns and task completion are recorded. Encoding fidelity is checked separately: the one-program variant must finish in one model call, and the requested sequential variant in four. A successful task that ignores its assigned variant cannot silently pass the comparison.
+
+Required inputs are `GE_ENGINE`, `GE_SURFACE_COMMANDER_SKILL`, `GE_PROJECT_NUMBER` (or a numeric
+project in the skill resource), and `GE_WIF_ACCESS_TOKEN`/`GE_ACCESS_TOKEN` or
+`GE_WIF_ACCESS_TOKEN_FILE`/`GE_ACCESS_TOKEN_FILE`. `GE_LOCATION` defaults to `global`.
+`GE_USER_PROJECT`/`GE_PROJECT` sets the quota header. `GE_LIVE_COMMAND_REPETITIONS` accepts 1–10
+samples per variant and defaults to 3. This workflow suite reads explicitly exported variables;
+it does not load browser/widget credentials or configuration files automatically.
+
+The report is `dist/probes/command-workflows-live.json`. It separates first-token and parseable
+program latency, cumulative model duration, deterministic DuckDB calculation, approval wait,
+host application plus readback verification, and verified completion. Per-stage p50/p95 include
+their sample counts. Success counts accompany timing; compare them before optimizing latency.
+Query bytes describe submitted query text, not billed provider tokens or provider-side history.
+No prompts, raw replies, source rows or bearer tokens are written to this report.
+
+**The provider and DuckDB are live; Office and the approval responder are simulated.** The approval
+wait measurement is the fixture callback overhead, not human decision time. Host timing therefore
+does not measure Office.js or a real coauthor. Tenant saved-history behavior, real host latency and
+human review remain separate validation gates. Neither live suite runs during the default tests.

@@ -157,3 +157,20 @@ User-directed foundation work builds on the existing client-direct runtime and t
       language/resource drift checks.
 - [ ] Live tenant check: sessionless private-skill routing, saved conversation history, p50/p95 latency,
       Office application/readback, and deployed worker/CSP behavior remain release gates.
+
+## Workflow recipes and execution-state UX — September 2026
+
+- [x] Normalize typed Excel grids consistently across planning, application, readback and recovery.
+- [x] Project deterministic execution state for independent model requests; retain full inspectable
+      records, unresolved errors, bindings and uncertain effects without replaying the transcript.
+- [x] Add three typed, versioned recipes with parameter schemas, constrained computation, conditional
+      materialization and the existing approval/freshness/verification authority.
+- [x] Provide workflow cards, guided parameters, explicit saved settings, result previews and truthful
+      write/recovery outcomes in the narrow pane, without model calls for known recipes.
+- [x] Extend real-WASM controls and live API evaluation with session-mode and latency reporting.
+- [x] Complete UI/state bugbash, security review, types, tests, lint, build and generated-file checks.
+      React .tsx tests now run in CI. Local suite: 2,542 passed, 16 optional live cases skipped;
+      security review closed on 148 targeted regressions. See ADR-0014 and WORKFLOW-RECIPES.
+- [ ] Run real Office and tenant acceptance, including narrow-pane browser layout, sessionless
+      private-skill routing, saved-history behavior and measured p50/p95. The cloud browser could not
+      reach the local preview; no live provider or Office performance result is claimed.

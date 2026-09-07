@@ -10,6 +10,12 @@ actions, answers, and reviewable changes.
 Screenshots show the scripted preview at 360 × 760 px. The Excel sample deliberately stages a
 single illustrative effect; it is not evidence of a live model-generated chart or Office execution.
 
+## Analyze tables and recover changes
+
+Excel now has a **Data workbench** with versioned snapshots, exact-decimal reconciliation, finding
+chips, SQL, reviewed writeback, readback receipts and recovery/undo. See
+[Data workbench, evidence and recovery](COMPUTE-RECOVERY.md) for the workflow and operating limits.
+
 ## Start a task
 
 The empty conversation presents three actions chosen for the current host. Open **Actions** to
@@ -25,7 +31,7 @@ instructions** if needed. The action retains its intent, scope, and sources when
 | --- | --- | --- |
 | Word | Review the decision; adapt for an audience | Anchored comments or a tracked rewrite |
 | Excel | Reconcile actuals and forecast; build a chart and analysis | Review comments or a staged native chart workflow |
-| PowerPoint | Check claims against evidence; build a decision brief | Review comments or staged slides |
+| PowerPoint | Check claims against evidence; build a decision brief | Evidence gaps in chat or staged slides |
 | OneNote | Compare sources; write a research brief | An evidence table in chat or a cited page synthesis |
 | Outlook | Track commitments; draft a reply that closes the loop | An action table or an unsent reply draft |
 | Teams | Build a decision log; find unresolved disagreements | Staged notes or an answer with transcript references |

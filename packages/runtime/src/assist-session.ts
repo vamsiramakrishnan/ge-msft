@@ -1,3 +1,11 @@
+import type { EvidencePipeline } from './evidence.js';
+import type { ComputeEngine } from '@ge/compute';
+import {
+  AnalysisWorkspace,
+  AnalysisActionSchema,
+  type AnalysisAction,
+} from './analysis-workspace.js';
+import { RecoveryCoordinator } from './recovery.js';
 import { approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type {
   ActuationKind,
@@ -326,6 +334,9 @@ export const READ_REF_PREFIX = 'ctx:read:';
  */
 export interface AssistSessionOptions {
   unit: UnitDescriptor;
+  compute?: () => Promise<ComputeEngine>;
+  recoveryOwner?: string;
+  evidence?: EvidencePipeline;
   /** Trusted lifecycle extensions; no document/model-authored executable handlers. */
   hooks?: RuntimeHooks;
   /** Default true for API compatibility; production uses false so host events do not spend model calls. */
@@ -423,6 +434,11 @@ function isWorkspaceCommand(command: ParsedCommand): command is WorkspaceCommand
 export class AssistSession {
   readonly hooks: RuntimeHooks;
   readonly executions = new ExecutionLedger();
+  readonly analysis?: AnalysisWorkspace;
+  readonly recovery: RecoveryCoordinator;
+  readonly evidence?: EvidencePipeline;
+  private disposeEvidence?: () => void;
+  private disposed = false;
   private task?: RunOutcome & { signal?: AbortSignal };
   private taskSequence = 0;
   private backgroundSequence = 0;
@@ -444,7 +460,9 @@ export class AssistSession {
     text: string,
     signal: AbortSignal | undefined,
     run: () => AsyncGenerator<T>,
+    grounding?: ResolvedGrounding,
   ): AsyncGenerator<T> {
+    if (this.disposed) throw new Error('This session is closed.');
     if (this.task)
       throw new Error('This session is already running a task. Wait or cancel it first.');
     const task: RunOutcome & { signal?: AbortSignal } = {
@@ -464,7 +482,15 @@ export class AssistSession {
     let consumed = false;
     let completion: T | undefined;
     try {
-      const entries = await this.hooks.run('message:received', { mode, text }, this.hookContext());
+      const entries = await this.hooks.run(
+        'message:received',
+        {
+          mode,
+          text,
+          ...(grounding?.dataStoreSpecs ? { dataStoreSpecs: grounding.dataStoreSpecs } : {}),
+        },
+        this.hookContext(),
+      );
       for (const [i, entry] of entries.entries()) {
         const id = `ctx:hook:${task.taskId}:${i}`;
         contextIds.push(id);
@@ -484,7 +510,10 @@ export class AssistSession {
         yield event;
       }
       signal?.throwIfAborted();
-      task.status = task.effects.some((r) => !r.ok)
+      task.status = task.effects.some(
+        (r) =>
+          !r.ok || r.recoveryPending || (r.verification && r.verification.status !== 'verified'),
+      )
         ? 'incomplete'
         : task.status === 'running'
           ? 'completed'
@@ -515,6 +544,7 @@ export class AssistSession {
           { taskId: task.taskId, surface: this.bridge.surface },
         );
       } finally {
+        this.recovery.clearPrepared();
         this.task = undefined;
       }
     }
@@ -554,6 +584,7 @@ export class AssistSession {
   }
 
   readonly context = new SessionContext();
+  private readonly attachmentVersions = new Map<string, number>();
   private readonly workspace = new WorkspaceStore();
   private readonly docFs: DocFs;
   /** The event-fed constructor of the working-context brief (see context-model.ts). */
@@ -604,6 +635,11 @@ export class AssistSession {
     private readonly options: AssistSessionOptions,
   ) {
     this.hooks = options.hooks ?? new RuntimeHooks();
+    this.evidence = options.evidence;
+    this.disposeEvidence = this.evidence?.install(this.hooks);
+    this.recovery = new RecoveryCoordinator(bridge, options.recoveryOwner ?? 'session');
+    if (bridge.captureCells && options.compute)
+      this.analysis = new AnalysisWorkspace(bridge, options.compute);
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
     this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
@@ -613,6 +649,86 @@ export class AssistSession {
       skillFiles: options.skillFiles,
       sharedStore: options.sharedStore,
     });
+  }
+
+  async *runAnalysis(
+    raw: AnalysisAction,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const action = AnalysisActionSchema.parse(raw);
+    yield* this.withTask('analysis', action.kind, opts.signal, () =>
+      this.runAnalysisCore(action, opts),
+    );
+  }
+
+  private async *runAnalysisCore(
+    action: AnalysisAction,
+    opts: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    if (action.kind === 'recovery') {
+      await this.toolOperation('recovery:inspect', {}, () => this.recovery.inspect());
+    } else if (action.kind === 'forget') {
+      await this.toolOperation('recovery:forget', { id: action.id }, () =>
+        this.recovery.forget(action.id),
+      );
+    } else if (
+      action.kind === 'materialize' ||
+      action.kind === 'undo' ||
+      action.kind === 'resume'
+    ) {
+      const manifest = await this.effectiveCapabilities();
+      if (!manifest.actuations.some((a) => a.kind === 'write-cells'))
+        throw new Error('Cell writes are disabled for this surface or release profile.');
+      let request =
+        action.kind === 'materialize'
+          ? await this.requireAnalysis().materialize(action.id, action.destination)
+          : await this.recovery.request(action.id, action.kind === 'undo');
+      request = await this.recovery.prepare(request);
+      const command = `${action.kind} → ${request.params.target?.range}`;
+      const effect: PlanEffect = {
+        request,
+        command,
+        approvalClass: 'in-document',
+        reversible: true,
+        dryRun: {
+          target: request.params.target?.range,
+          resolved: JSON.stringify({
+            values: request.params.cellValues ?? request.params.cells,
+            formulas: request.params.cellFormulas,
+          }),
+        },
+      };
+      yield {
+        type: 'plan-preview',
+        turn: 1,
+        effects: [effect],
+        dag: analyseEffectDependencies([request]),
+        approvalClasses: ['in-document'],
+      };
+      yield* this.executePlan(1, [{ index: 0, effect }], opts, [], undefined);
+    } else {
+      const artifact = await this.toolOperation(`analysis:${action.kind}`, action, () =>
+        this.requireAnalysis().execute(action, opts.signal),
+      );
+      yield {
+        type: 'read-result',
+        turn: 1,
+        intentLabel: action.kind,
+        result: artifact ? this.requireAnalysis().receipt() : { removed: true },
+      };
+    }
+    yield { type: 'done', turn: 1, answer: 'Analysis workspace updated.' };
+  }
+  private requireAnalysis(): AnalysisWorkspace {
+    if (!this.analysis) throw new Error('Analysis is not configured for this surface.');
+    return this.analysis;
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.analysis?.dispose();
+    this.disposeEvidence?.();
   }
 
   /** Pull attachable context from the bridge and add it to the live session set. */
@@ -632,14 +748,18 @@ export class AssistSession {
 
   /** Detach an attached context object by ref id. */
   detach(id: string): void {
+    this.attachmentVersions.set(id, (this.attachmentVersions.get(id) ?? 0) + 1);
     this.context.remove(id);
   }
 
   /** Attach one specific ref (resolve → add). Backs the context tray's attach-by-chip. */
   async attachRef(ref: ContextRef): Promise<void> {
+    const version = (this.attachmentVersions.get(ref.id) ?? 0) + 1;
+    this.attachmentVersions.set(ref.id, version);
     for (const resolved of await this.toolOperation('context:resolve', { ref }, () =>
       this.bridge.resolveContext(ref),
     )) {
+      if (this.attachmentVersions.get(ref.id) !== version) return;
       this.context.add(resolved);
     }
   }
@@ -658,7 +778,13 @@ export class AssistSession {
     query: string,
     opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
   ): AsyncGenerator<SseEvent> {
-    yield* this.withTask('chat', query, opts.signal, () => this.askCore(query, opts));
+    yield* this.withTask(
+      'chat',
+      query,
+      opts.signal,
+      () => this.askCore(query, opts),
+      opts.grounding,
+    );
   }
 
   private async *askCore(
@@ -935,7 +1061,13 @@ export class AssistSession {
     task: string,
     opts: RunCommandsOptions = {},
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
-    yield* this.withTask('command', task, opts.signal, () => this.runCommandsCore(task, opts));
+    yield* this.withTask(
+      'command',
+      task,
+      opts.signal,
+      () => this.runCommandsCore(task, opts),
+      opts.grounding,
+    );
   }
 
   private async *runCommandsCore(
@@ -1103,6 +1235,35 @@ export class AssistSession {
     // Pass 2 — the plan-level gate. Preview the dry-run effect-set, take ONE approval, then execute
     // each effect through the existing gate + provenance. Fail-closed throughout.
     if (plan.planSlots.length > 0) {
+      // Preserve dependency failures while preparing only independent, resolvable effects.
+      const preparationDag = analyseEffectDependencies(plan.planSlots.map((s) => s.effect.request));
+      const failedPreparation = new Set<string>();
+      const ready: typeof plan.planSlots = [];
+      for (const [i, slot] of plan.planSlots.entries()) {
+        const prerequisiteFailed = preparationDag[i]!.dependsOn.some((id) =>
+          failedPreparation.has(id),
+        );
+        try {
+          if (prerequisiteFailed) throw new Error('A prerequisite could not be prepared.');
+          slot.effect.request = await this.recovery.prepare(slot.effect.request);
+          ready.push(slot);
+        } catch (error) {
+          failedPreparation.add(preparationDag[i]!.id);
+          const result: ActuationResult = {
+            ok: false,
+            changeId: slot.effect.request.changeId,
+            kind: slot.effect.request.kind,
+            error: {
+              code: prerequisiteFailed ? 'prerequisite_failed' : 'prepare_failed',
+              message: errMsg(error),
+            },
+          };
+          plan.results[slot.index] = result;
+          await this.recordEffect(slot.effect.request, result);
+          yield { type: 'write-result', turn, changeId: result.changeId, result };
+        }
+      }
+      plan.planSlots = ready;
       const effects = plan.planSlots.map((s) => s.effect);
       // ADR-0008 §7 — infer the dependency DAG so the approval preview shows dependent groups
       // (spill ← table/chart), approval classes, and reversibility, not a flat list.
@@ -1110,7 +1271,14 @@ export class AssistSession {
       const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
       const present = new Set(effects.map((e) => e.approvalClass));
       const approvalClasses = order.filter((c) => present.has(c));
-      yield { type: 'plan-preview', turn, effects: structuredClone(effects), dag, approvalClasses };
+      if (effects.length)
+        yield {
+          type: 'plan-preview',
+          turn,
+          effects: structuredClone(effects),
+          dag,
+          approvalClasses,
+        };
       for await (const ev of this.executePlan(
         turn,
         plan.planSlots,
@@ -1284,6 +1452,49 @@ export class AssistSession {
         plan.results.push({
           error: isCompileError(compiled) ? compiled.error : 'expected a workspace command',
         });
+        return;
+      }
+      if (compiled.intent.workspace === 'analyze') {
+        try {
+          const action = AnalysisActionSchema.parse(JSON.parse(compiled.intent.request));
+          if (action.kind === 'materialize') {
+            if (plan.planSlots.length >= plan.maxWrites) throw new Error('Write cap reached.');
+            if (!capabilities.actuations.some((a) => a.kind === 'write-cells'))
+              throw new Error('Cell writes are unavailable.');
+            const request = await this.requireAnalysis().materialize(action.id, action.destination);
+            const index = plan.results.length;
+            plan.results.push(undefined);
+            plan.planSlots.push({
+              index,
+              effect: {
+                request,
+                command: `analyze ${compiled.intent.request}`,
+                approvalClass: 'in-document',
+                reversible: true,
+                dryRun: {
+                  target: request.params.target?.range,
+                  resolved: JSON.stringify({
+                    values: request.params.cellValues,
+                    formulas: request.params.cellFormulas,
+                  }),
+                },
+              },
+            });
+          } else {
+            if (['undo', 'resume', 'forget', 'recovery'].includes(action.kind))
+              throw new Error(
+                'Recovery actions require an explicit user action in the recovery panel.',
+              );
+            await this.toolOperation(`analysis:${action.kind}`, action, () =>
+              this.requireAnalysis().execute(action, opts.signal),
+            );
+            const result = this.requireAnalysis().receipt();
+            plan.results.push(result);
+            yield { type: 'read-result', turn, intentLabel: 'analysis', result };
+          }
+        } catch (error) {
+          plan.results.push({ error: errMsg(error) });
+        }
         return;
       }
       // `share` never reaches `plan.planSlots` (it isn't a `PlanEffect`), so it needs its own cap
@@ -1527,6 +1738,7 @@ export class AssistSession {
     turnProvenance: ProvenancePayload | undefined,
   ): AsyncGenerator<CommandLoopEvent> {
     const effects = planSlots.map((s) => s.effect);
+    if (!effects.length) return;
     await this.hooks.run(
       'plan:ready',
       { effects: effects.map((e) => e.request) },
@@ -1585,7 +1797,12 @@ export class AssistSession {
       // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
       if (!this.task?.effects.some((r) => r.changeId === result.changeId))
         await this.recordEffect(effect.request, result);
-      if (!result.ok) failedNodes.add(nodeId);
+      if (
+        !result.ok ||
+        result.recoveryPending ||
+        (result.verification && result.verification.status !== 'verified')
+      )
+        failedNodes.add(nodeId);
       results[index] = result;
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
     }
@@ -1810,6 +2027,8 @@ export class AssistSession {
   ): Promise<{ label: string; result: WorkspaceResult }> {
     try {
       switch (intent.workspace) {
+        case 'analyze':
+          throw new Error('Analysis must run through the typed plan dispatcher.');
         case 'list':
           return {
             label: 'workspace',
@@ -2260,6 +2479,7 @@ export class AssistSession {
     // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
     // A turn with no provenance stamps none (rather than inheriting a previous turn's). Durable
     // persistence of the payload is the bridge's job (BUILD-PLAN 1.6, deferred).
+    request = await this.recovery.prepare(request);
     const stamped: ActuationRequest = {
       ...request,
       ...(provenance ? { provenance } : {}),
@@ -2295,7 +2515,10 @@ export class AssistSession {
         }
       }
       this.task?.signal?.throwIfAborted();
-      const result = await this.bridge.actuate(stamped);
+      const result = await this.recovery.execute(stamped, () => {
+        this.task?.signal?.throwIfAborted();
+        return this.bridge.actuate(stamped);
+      });
       await this.recordEffect(stamped, result);
       return result;
     } catch (err) {

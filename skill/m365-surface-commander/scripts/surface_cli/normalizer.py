@@ -1,6 +1,8 @@
 """surface_cli.normalizer — reorder a program into the OBSERVE→DERIVE→EFFECT→CONTROL normal form
 (ADR-0008 §3), flagging a read-after-effect as a fresh-observation (VERIFY) boundary."""
 
+import json
+
 from .parser import _is_expr_line, parse_line, extract_command_block_meta
 
 _READ_PHASE_VERBS = {
@@ -18,6 +20,9 @@ def _phase_of(line: str) -> str:
     if rec is None or "error" in rec:
         return "EFFECT"  # keep unknowns where the model put them (in the effect tail)
     verb = rec["verb"]
+    if verb == "analyze":
+        kind = json.loads(rec["request"]).get("kind")
+        return "OBSERVE" if isinstance(kind, str) and kind in {"capture", "query", "reconcile", "inspect", "filter", "remove"} else "EFFECT"
     if verb in _READ_PHASE_VERBS:
         return "OBSERVE"
     if verb in ("done", "help"):

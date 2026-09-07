@@ -1,6 +1,6 @@
 import type { ActuationResult, Surface } from '@ge/contracts';
 
-export type TaskMode = 'chat' | 'command' | 'program' | 'planner' | 'proposal';
+export type TaskMode = 'chat' | 'command' | 'program' | 'planner' | 'proposal' | 'analysis';
 export type RunStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled' | 'incomplete';
 /** Full outcomes are ephemeral hook inputs, including inverse receipts when the host supplies them. */
 export interface RunOutcome {

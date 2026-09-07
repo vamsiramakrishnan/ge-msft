@@ -387,6 +387,10 @@ def _parse_invoke(verb: str, rest: str):
     return {"verb": "invoke", "kind": kind, "props": props, "args": positional}
 
 
+def _reject_json_constant(_value):
+    raise ValueError("Non-JSON numeric constant")
+
+
 def parse_line(line: str):
     """Parse one command line → a dict record, or {'error': '...'} (the corrective contract)."""
     line = line.strip()
@@ -477,6 +481,15 @@ def parse_line(line: str):
             hints.append(hint)
         return {"verb": "context", "hints": hints}
 
+    if verb == "analyze":
+        if not rest or len(rest) > 32768:
+            return {"error": "analyze requires a bounded JSON action object"}
+        try:
+            if not isinstance(json.loads(rest, parse_constant=_reject_json_constant), dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            return {"error": "analyze requires a JSON action object"}
+        return {"verb": "analyze", "request": rest}
     if verb == "workspace":
         return {"verb": "workspace", **({"ref": rest.strip('"')} if rest else {})}
 
@@ -936,6 +949,9 @@ done
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
+    assert parse_line('analyze {"kind":"capture","range":"S!A1:C2"}')["verb"] == "analyze"
+    assert "error" in parse_line('analyze {"kind":"query","value":NaN}')
+    assert "error" in parse_line('analyze []')
     print("SELF-TEST OK — fail-closed `done`, unclosed fence, trailing-token guards hold")
     return 0
 

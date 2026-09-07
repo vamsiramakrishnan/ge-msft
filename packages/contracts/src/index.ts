@@ -35,3 +35,6 @@ export * from './skill-grammar.js';
 export * from './manifest-lint.js';
 export * from './release-profile.js';
 export * from './docfs.js';
+
+export * from './analysis.js';
+export * from './cells.js';

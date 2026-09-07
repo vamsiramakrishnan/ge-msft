@@ -1,0 +1,28 @@
+{
+  "name": "@ge/compute",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned tabular artifacts and bounded browser analytics, with no Office or model dependency",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@ge/contracts": "*",
+    "@duckdb/duckdb-wasm": "1.32.0",
+    "apache-arrow": "17.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    }
+  }
+}

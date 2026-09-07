@@ -119,3 +119,13 @@ context; the model consumes only that structured result, then uses the native sh
 - Uploading a context file is not a model command. The model can use `context upload-preferred` to
   request a host/user attachment decision, then consume only the structured file id the host returns.
 - If the user asks for something no listed command covers, emit `done`; do not invent a command.
+
+## Versioned Excel analysis
+
+`analyze` accepts a JSON action: capture, query, reconcile, inspect, filter, remove, or materialize.
+Use `help analyze` for the typed examples and limits. Capture explicit ranges first and use only
+returned artifact IDs and column names. SQL is constrained to analytical SELECT/WITH over admitted
+tables. Results preserve schema, lineage, truncation and source versions. Source edits require
+recapture. Materialize is a host write: it joins the ordinary capability-checked, reviewed effect
+plan and carries source preconditions. It never executes as an ungated workspace read. Recovery
+and undo require explicit user actions in the pane. Do not invent a recovered approval.

@@ -562,3 +562,288 @@
 .panel .composer-source-results button {
   font-size: 12px;
 }
+
+/* Data workbench: progressive disclosure keeps the narrow Office pane navigable. */
+.analysis-workbench {
+  margin: 0 0 16px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: var(--fz-sm);
+  overflow: hidden;
+}
+.analysis-workbench > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.analysis-workbench > summary::after {
+  content: '+';
+  font-size: 20px;
+  color: var(--blue);
+}
+.analysis-workbench[open] > summary::after {
+  content: '−';
+}
+.analysis-workbench summary small {
+  display: block;
+  color: var(--ink-3);
+  font-weight: 400;
+  margin-top: 4px;
+}
+.analysis-count {
+  color: var(--ink-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.analysis-body {
+  border-top: 1px solid var(--hairline-soft);
+  padding: 12px;
+}
+.analysis-hint {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 6px 0 10px;
+  overflow-wrap: anywhere;
+}
+.analysis-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 5px;
+  color: var(--ink-2);
+  font-size: 11px;
+  margin: 8px 0;
+}
+.analysis-body input:not([type='checkbox']),
+.analysis-body select,
+.analysis-body textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.analysis-body textarea {
+  resize: vertical;
+  font-family: var(--mono, monospace);
+}
+.analysis-body button:not(.text-control) {
+  padding: 8px 10px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--blue-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.analysis-body button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.analysis-body button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.analysis-body .analysis-primary {
+  width: 100%;
+  background: var(--blue) !important;
+  color: white !important;
+  border-color: var(--blue) !important;
+}
+.analysis-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.analysis-inline input {
+  flex: 1 1 100px;
+}
+.analysis-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.analysis-artifacts {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.analysis-body .analysis-artifact {
+  text-align: left;
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+.analysis-artifact small {
+  display: block;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+.analysis-body .analysis-artifact[aria-pressed='true'] {
+  border-color: var(--blue);
+  background: #eff5fc;
+}
+.analysis-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--hairline-soft);
+  padding-top: 10px;
+}
+.analysis-section > summary,
+.analysis-lineage > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  color: var(--ink-2);
+}
+.analysis-body fieldset {
+  border: 1px solid var(--hairline-soft);
+  border-radius: 5px;
+  margin: 10px 0;
+  padding: 8px;
+  min-width: 0;
+}
+.analysis-body legend {
+  color: var(--ink);
+  font-size: 12px;
+  padding: 0 4px;
+}
+.analysis-columns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.analysis-columns > label {
+  flex: 1 1 70px;
+}
+.analysis-result {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px solid var(--ink);
+}
+.analysis-result-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+.analysis-findings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0;
+}
+.analysis-body .analysis-findings button {
+  border-radius: 16px;
+  background: #eff5fc;
+  padding: 5px 9px;
+}
+.analysis-table-scroll {
+  overflow: auto;
+  max-height: 230px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 4px;
+}
+.analysis-table-scroll table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.analysis-table-scroll th,
+.analysis-table-scroll td {
+  text-align: left;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--hairline-soft);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.analysis-table-scroll th {
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  font-weight: 600;
+}
+.analysis-table-scroll tr:last-child td {
+  border-bottom: none;
+}
+.analysis-lineage {
+  margin: 10px 0;
+  font-size: 11px;
+}
+.analysis-lineage ul {
+  padding-left: 18px;
+}
+.analysis-lineage small,
+.analysis-query-ids small {
+  display: block;
+  color: var(--ink-3);
+}
+.analysis-lineage code,
+.analysis-query-ids code {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+.analysis-query-ids {
+  margin-top: 10px;
+  max-height: 160px;
+  overflow: auto;
+}
+.analysis-recovery article {
+  border-bottom: 1px solid var(--hairline-soft);
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.analysis-state {
+  display: inline-block;
+  font-size: 10px;
+  border: 1px solid var(--hairline-soft);
+  padding: 2px 5px;
+  border-radius: 8px;
+  margin-left: 6px;
+}
+.evidence-panel {
+  font-size: 12px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 10px;
+  color: var(--ink-2);
+}
+.evidence-panel summary {
+  cursor: pointer;
+}
+.evidence-panel summary span {
+  margin-left: 8px;
+  font-size: 11px;
+}
+.evidence-panel p {
+  line-height: 1.5;
+}
+.evidence-panel ul {
+  padding-left: 18px;
+}
+.analysis-workbench :focus-visible,
+.evidence-panel :focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}

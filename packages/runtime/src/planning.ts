@@ -93,8 +93,8 @@ export function effectResources(req: ActuationRequest): {
       const origin = p.target?.range;
       if (!origin) return { reads: [], writes: [] };
       const parsed = parseRange(origin);
-      const rows = p.cells?.length ?? 0;
-      const cols = p.cells?.[0]?.length ?? 0;
+      const rows = (p.cellValues ?? p.cells)?.length ?? 0;
+      const cols = (p.cellValues ?? p.cells)?.[0]?.length ?? 0;
       const region = parsed && rows > 0 ? expandGrid(parsed, rows, cols) : parsed;
       const id = region ? rangeToA1(region) : origin;
       return { reads: [], writes: [range(id)] };

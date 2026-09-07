@@ -75,3 +75,7 @@ export {
   type RuntimeExtension,
   type RuntimeExtensionApi,
 } from './extensions.js';
+
+export * from './analysis-workspace.js';
+export * from './recovery.js';
+export * from './evidence.js';

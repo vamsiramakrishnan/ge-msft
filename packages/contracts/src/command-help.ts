@@ -14,6 +14,34 @@ export const CommandHelpEntrySchema = z.object({
 export type CommandHelpEntry = z.infer<typeof CommandHelpEntrySchema>;
 
 export const COMMAND_HELP = {
+  analyze: {
+    command: 'analyze',
+    useWhen: 'you need exact tabular calculations with source freshness and lineage',
+    syntax: 'analyze <JSON action>',
+    discovery: ['help analyze'],
+    sequence: [
+      'Capture each explicit range. Use returned artifact IDs and column names c0, c1, etc.',
+      'Query or reconcile. Inspect the returned preview, truncation flag and finding counts.',
+      'Materialize to an explicit destination in a separate command block. The host previews and approves the exact values.',
+    ],
+    examples: [
+      'analyze {"kind":"capture","range":"Sheet1!A1:D100","headers":true}',
+      'analyze {"kind":"query","inputs":["RETURNED_ID"],"sql":"SELECT c0, sum(try_cast(c1 as decimal(38,6))) as total FROM RETURNED_ID GROUP BY c0"}',
+      'analyze {"kind":"reconcile","spec":{"left":"INVOICES_ID","right":"PAYMENTS_ID","leftKey":0,"rightKey":0,"leftAmount":1,"rightAmount":1,"leftCurrency":2,"rightCurrency":2,"tolerance":"0.01"}}',
+      'analyze {"kind":"inspect","id":"RETURNED_ID"}',
+      'analyze {"kind":"materialize","id":"RESULT_ID","destination":"Sheet1!F1"}',
+    ],
+    doNot: [
+      'Never invent artifact IDs or use arbitrary files, URLs or SQL extensions.',
+      'Do not use this command for recovery or undo.',
+    ],
+    failureModes: [
+      'Stale sources require capture and recomputation.',
+      'Truncated results cannot be materialized.',
+      'Compute is available only on hosts with versioned cell capture.',
+    ],
+    safety: ['Queries have no external I/O. Writes require capability checks and human approval.'],
+  },
   outline: genericRead(
     'outline',
     'outline',

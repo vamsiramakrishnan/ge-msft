@@ -468,6 +468,7 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
       window.removeEventListener('pageshow', resume);
       panelRuntime.dispose();
       controller.cancel();
+      session.dispose();
       runtime.dispose();
     };
     panelRuntime.start();

@@ -1,6 +1,7 @@
 """surface_cli.checker — analyze(): parse + capability-scope + type a program into a structured
 result (bindings, effects, reads, inferred dependencies). Pure; no rendering, no side effects."""
 
+import json
 import re
 
 from .parser import (
@@ -63,6 +64,26 @@ def analyze(program_text: str, capabilities=None):
             continue
 
         verb = rec["verb"]
+        if verb == "analyze":
+            action = json.loads(rec["request"])
+            kind = action.get("kind")
+            if capabilities is not None and "analyze" not in capabilities:
+                errors.append('"analyze" is not in this turn\'s capabilities')
+            if kind == "materialize":
+                if capabilities is not None and not {"set", "grid", "spill", "write-cells"}.intersection(capabilities):
+                    errors.append("analysis materialization requires cell-write capability")
+                target = action.get("destination")
+                if not isinstance(target, str) or not _parse_range(target):
+                    errors.append("analysis materialization requires an explicit A1 destination")
+                    target = None
+                effects.append({"verb": "analyze:materialize", "target": target,
+                                "range": _parse_range(target) if target else None,
+                                "external": False, "refs": []})
+            elif isinstance(kind, str) and kind in {"capture", "query", "reconcile", "inspect", "filter", "remove"}:
+                reads.append(line)
+            else:
+                errors.append("unsupported analysis action; recovery requires an explicit pane action")
+            continue
         if verb in _READ_PHASE_VERBS:
             reads.append(line)
             continue

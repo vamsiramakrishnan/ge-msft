@@ -8,6 +8,11 @@ The browser add-in exchanges the signed-in user's Entra token for a short-lived 
 
 Document changes go through surface-specific bridges so the runtime can attach provenance and use each host's native mutation model.
 
+The Excel **Data workbench** now supports versioned range snapshots, local SQL, exact-decimal
+reconciliation, finding chips, reviewed writeback, readback verification, and durable cell undo.
+Selected data stores also feed an evidence assembly and claim-checking pipeline. See
+[the implementation and operating limits](docs/COMPUTE-RECOVERY.md).
+
 ## Choose the environment you want to test
 
 | Goal | Start here | Successful result |

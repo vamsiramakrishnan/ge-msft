@@ -48,6 +48,7 @@ export type ReadIntent =
 
 /** Local virtual-workspace operation. Never mutates Office content. */
 export type WorkspaceIntent =
+  | { workspace: 'analyze'; request: string }
   | { workspace: 'list' }
   | { workspace: 'summary'; ref: string }
   | { workspace: 'save'; name: string; source: WorkspaceSource }
@@ -162,6 +163,8 @@ export function compileCommand(
       return { kind: 'read', intent: { read: 'context-strategy', hints: cmd.hints } };
     case 'open':
       return { kind: 'read', intent: { read: 'open-context', selector: cmd.selector } };
+    case 'analyze':
+      return { kind: 'workspace', intent: { workspace: 'analyze', request: cmd.request } };
     case 'workspace':
       return cmd.ref
         ? { kind: 'workspace', intent: { workspace: 'summary', ref: cmd.ref } }

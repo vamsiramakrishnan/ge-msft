@@ -256,6 +256,15 @@ done
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
+    read = 'analyze {"kind":"capture","range":"S!A1:C2"}'
+    write = 'analyze {"kind":"materialize","id":"a_result","destination":"S!F1"}'
+    result = analyze(read + "\n" + write, capabilities=["analyze", "set"])
+    assert not result["errors"] and len(result["reads"]) == 1 and len(result["effects"]) == 1
+    assert analyze(write, capabilities=["analyze"])["errors"]
+    assert analyze('analyze {"kind":"undo","id":"receipt"}')["errors"]
+    assert analyze('analyze {"kind":[]}')["errors"]
+    lines, notes = normalize(write + "\n" + read)
+    assert lines[0] == read and notes
     print(
         "SURFACE-CLI SELF-TEST OK — check/budget/plan/normalize, capability scope, dep inference, risk"
     )

@@ -249,3 +249,13 @@ describe('structured workspace interactions', () => {
     expect(controller.getState().messages.at(-1)?.text).toContain('rejected');
   });
 });
+
+it('keeps PowerPoint evidence review reachable with the real host capability closure', async () => {
+  const { POWERPOINT_CAPABILITIES } = await import('@ge/bridge-powerpoint');
+  const { intentsForManifest } = await import('@ge/contracts');
+  const actions = quickActionsForSurface('powerpoint', intentsForManifest(POWERPOINT_CAPABILITIES));
+  expect(actions.find((a) => a.id === 'ppt-evidence-review')).toMatchObject({
+    intent: 'ask',
+    output: 'chat',
+  });
+});

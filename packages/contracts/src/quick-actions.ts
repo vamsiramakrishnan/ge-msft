@@ -635,12 +635,12 @@ export const SURFACE_ACTIONS: QuickAction[] = [
     id: 'ppt-evidence-review',
     label: 'Check claims against evidence',
     surfaces: ['powerpoint'],
-    intent: 'review',
+    intent: 'ask',
     scope: {
       kind: 'document',
     },
     prompt:
-      'Read the deck and attached sources. Identify unsupported claims, inconsistent figures, missing citations, and conclusions that exceed the evidence. Stage anchored review comments where supported. Report gaps with slide locations; never invent a source.',
+      'Read the deck and attached sources. Identify unsupported claims, inconsistent figures, missing citations, and conclusions that exceed the evidence. Report gaps with slide locations; never invent a source.',
     ground: ['this', 'unit'],
     contextMenu: false,
   }),

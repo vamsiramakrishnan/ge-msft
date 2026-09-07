@@ -82,6 +82,7 @@ export const CONTROL_VERBS = ['done', 'help'] as const;
  * given a `sharedStore` for this session at all (Graph consent may not be granted).
  */
 export const WORKSPACE_VERBS = [
+  'analyze',
   'workspace',
   'save',
   'cat',
@@ -179,6 +180,7 @@ export type ParsedCommand =
   | { verb: 'neighbors'; selector?: string }
   | { verb: 'context'; hints: PlanContextHint[] }
   | { verb: 'open'; selector: string }
+  | { verb: 'analyze'; request: string }
   | { verb: 'workspace'; ref?: string }
   | { verb: 'save'; name: string; source: WorkspaceSource }
   | { verb: 'cat'; ref: string; head?: number }
@@ -245,6 +247,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('neighbors'), selector: z.string().optional() }),
   z.object({ verb: z.literal('context'), hints: z.array(PlanContextHintSchema) }),
   z.object({ verb: z.literal('open'), selector: z.string() }),
+  z.object({ verb: z.literal('analyze'), request: z.string().max(32768) }),
   z.object({ verb: z.literal('workspace'), ref: z.string().optional() }),
   z.object({
     verb: z.literal('save'),
@@ -540,6 +543,16 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
       return { verb: 'open', selector: stripWrappingQuotes(rest) };
     }
 
+    case 'analyze':
+      if (!rest || rest.length > 32768)
+        return { error: 'analyze requires a bounded JSON action object' };
+      try {
+        const value: unknown = JSON.parse(rest);
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+      } catch {
+        return { error: 'analyze requires a JSON action object' };
+      }
+      return { verb: 'analyze', request: rest };
     case 'workspace':
       return { verb: 'workspace', ...(rest ? { ref: stripWrappingQuotes(rest) } : {}) };
 
@@ -1659,7 +1672,8 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
       specs.push(readSpecByVerb[verb]);
   }
 
-  for (const verb of WORKSPACE_VERBS) specs.push(workspaceVerbSpec(verb));
+  for (const verb of WORKSPACE_VERBS)
+    if (verb !== 'analyze' || manifest.surface === 'excel') specs.push(workspaceVerbSpec(verb));
 
   // Write verbs, gated by the advertised actuation kinds. Derived from WRITE_VERB_TO_KIND so a
   // new (deferred) write verb only needs an entry there + its kind in the manifest.
@@ -1705,6 +1719,12 @@ function isRuntimeServedRead(verb: ReadVerb, manifest: CapabilityManifest): bool
 
 function workspaceVerbSpec(verb: WorkspaceVerb): VerbSpec {
   switch (verb) {
+    case 'analyze':
+      return {
+        verb,
+        usage: 'analyze <JSON action>',
+        hint: 'Capture versioned ranges, query input artifact IDs with SELECT, reconcile exact decimals, or materialize a result through approval. Use help analyze for the schema.',
+      };
     case 'workspace':
       return {
         verb,

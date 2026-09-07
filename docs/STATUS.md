@@ -4,6 +4,11 @@ The honest, current state of the codebase. Companion to `BUILD-PLAN.md` (the ori
 now partly superseded), `CAPABILITY-MAP.md` (the I/O inventory), and the **ADRs** (the current
 architecture). Updated for the September 2026 workspace and runtime extension foundation.
 
+The September analysis increment implements versioned Excel artifacts, constrained DuckDB-WASM
+queries/reconciliation, typed finding actions, scoped evidence hooks, readback verification and a
+bounded document-backed cell recovery journal. [Details and limits](COMPUTE-RECOVERY.md). This does
+not claim the full PowerPoint/VFS scope proposed in ADR-0010 or universal undo across host kinds.
+
 > **Architecture:** client-direct (see `ADR-0001`). The add-in federates the signed-in user's
 > Entra identity to Google (Workforce Identity Federation, in the browser) and calls Gemini
 > Enterprise (Discovery Engine `v1alpha`) directly. **No gateway by default**; the only optional

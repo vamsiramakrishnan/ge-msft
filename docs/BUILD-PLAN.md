@@ -117,3 +117,23 @@ remain historical release targets rather than prerequisites for this UI work.
       search/pins, all six host entry points, completed answers, and the real controller's sample
       approval flow at 320/360 px widths and 480/760 px heights.
 - [ ] Live Office sideloading against a configured Entra/Gemini tenant (separate release gate).
+
+
+## Runtime extension foundation — September 2026 (ADR-0011)
+
+User-directed foundation work builds on the existing client-direct runtime and the workspace upgrade.
+
+- [x] Typed lifecycle phases for request receipt, model calls/events/responses, tools, plans, effects,
+      outcome verification, and completion, wired through the real AssistSession entry points.
+- [x] Ordered guard/observer dispatch, deadlines, abort signals, immutable isolated inputs, bounded
+      provider context, metadata diagnostics, and atomic namespaced extension installation/disposal.
+- [x] Production host-event ownership, independent debouncers, bounded serialized ingress, cancellation
+      and late-result suppression, idle context refresh, and explicit suggestion actions.
+- [x] Same extension definition bundle in the pane and separate Outlook send runtime; required trigger
+      check failures block, while post-operation observer failures preserve landed outcomes.
+- [x] Task outcome records and default incomplete-execution verifier; retain supplied inverse receipts
+      without automatic retry or rollback. Preserve existing human approval and delegated identity.
+- [x] Developer API guide and ADR with request/context/event/verification examples and actual boundaries.
+- [x] Final verification: typecheck, 2,187 passing tests (10 skipped), lint, production build,
+      and language/resource drift checks. Reviewed approval, cancellation, and provenance paths.
+- [ ] Live host validation against a configured Entra/Gemini tenant (separate release gate).

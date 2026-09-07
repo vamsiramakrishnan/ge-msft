@@ -2,7 +2,7 @@
 
 The honest, current state of the codebase. Companion to `BUILD-PLAN.md` (the original checklist,
 now partly superseded), `CAPABILITY-MAP.md` (the I/O inventory), and the **ADRs** (the current
-architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
+architecture). Updated for the September 2026 workspace and runtime extension foundation.
 
 > **Architecture:** client-direct (see `ADR-0001`). The add-in federates the signed-in user's
 > Entra identity to Google (Workforce Identity Federation, in the browser) and calls Gemini
@@ -20,9 +20,26 @@ architecture). Updated as of the ADR-0006 capability-closure + task-pane wave.
 > stack underneath — the `cmd` executor grammar, the expr/skill grammars, the plan→approve→gate loop,
 > the bridges, the closure checker, and the WIF/identity layer — is **unchanged**.
 
+## Runtime extension foundation (ADR-0011)
+
+The production pane now installs typed hooks for request receipt, model requests/events/responses,
+tools, plans, effects, and task completion. It owns the host-event Orchestrator and refreshes context
+chips when idle. The shipped extensions offer active-message/meeting actions and reject incomplete
+execution outcomes. Registered send/pre-actuation check failures block the operation; after-write
+observers cannot turn a landed write into a failed receipt. The Outlook command runtime installs
+the same extension definitions independently.
+
+Task and hook diagnostics are bounded and in memory; inverse receipts are retained when hosts supply
+them. Background mailbox notifications, durable replay, automatic undo, and domain-specific
+readback verification are not implemented. The current Outlook event is active-message `ItemChanged`,
+not background mail delivery. No default mail grounding policy is installed. See the
+[extension guide](RUNTIME-EXTENSIONS.md) for examples, guarantees, and exact operation coverage.
+
 ## Verification baseline
 
-`bun run typecheck` clean · **2038 tests across 160 files green** (Vitest) · `bun run lint` clean.
+`bun run typecheck` clean · **2,187 tests passed, 10 skipped across 166 files** (Vitest) ·
+`bun run lint` clean · production build and language/resource drift checks passed.
+Host/network integration tests use fake adapters; live tenant validation remains pending.
 
 ## Packages — built vs planned
 
@@ -92,8 +109,8 @@ The defining work since the last status: the document became a programmable envi
   a grounded answer (tokens + citations + provenance) → run the command/plan loop → apply reversible,
   provenanced actuation. Session id is captured and resumable across surfaces.
 - **Foundational retrieval (beyond assist).** `search` (faceted/filtered, boost, snippets,
-  pagination, `dataStoreSpecs`), `completeQuery` (type-ahead), `checkGrounding` (per-claim score —
-  backs the on-send / pre-actuation gate, fail-closed), `rank` (semantic rerank).
+  pagination, `dataStoreSpecs`), `completeQuery` (type-ahead), `checkGrounding` (per-claim score, available to explicit extension policies;
+  not installed as a default gate), `rank` (semantic rerank).
 - **Native-first content processing.** Office object model → typed `Block`s with host locators →
   token-budgeted, section-aware chunks → contextualized → `ResolvedContext` mapping 1:1 to
   `query.parts`. Budget picks inline / reference / upload-for-code-execution.
@@ -101,8 +118,8 @@ The defining work since the last status: the document became a programmable envi
   search SharePoint/OneDrive/mail/calendar/people as the user).
 - **Event-driven, not assistant-spamming.** `watch()` on each bridge emits `HostEvent`s; the
   `Orchestrator` debounces and routes. Most events **construct context** via the `ContextModel`
-  (cheap, no model call); the `TriggerRegistry` gate handles the rare protective moments (on-send
-  grounding veto, pre-actuation veto); suggestions are scarce and ignorable.
+  (cheap, no model call); the `TriggerRegistry` gate handles the rare protective moments (registered on-send
+  and pre-actuation vetoes); suggestions are explicit and ignorable.
 - **Reversible, provenanced writes.** Every actuation carries agent id, sources, identity, timestamp,
   and a content hash; Word anchors by content (`body.search`, re-resolved at apply-time, degrades on
   drift); Excel formula writes pass `isUnsafeFormula`; Outlook/Teams open reviewable forms rather
@@ -207,9 +224,9 @@ chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration
    approval gate was added (initially blocked for lacking it), once after wiring the live UI
    (blocked again — policy enforcement, audit-trail, and size-disclosure gaps), and once more after
    closing those.
-6. **Security hardenings noted by review** — keep `decideSend` total; bound the on-send trigger with
-   a timeout so a *hung* trigger cannot wedge Send; validate `location`/`proxyUrl` at config
-   construction.
+6. **Security hardening** — registered checks are now bounded by per-handler and dispatch deadlines.
+   Send decision failures complete with a recoverable block; signalling failures never downgrade a
+   decided block. Tenant `location`/`proxyUrl` configuration validation remains separate work.
 7. **Engine extras** — the v1 `addContextFile` path (code-execution uploads) and the A2UI renderer —
    designed, not built.
 

@@ -159,7 +159,10 @@ describe('Orchestrator — react to events', () => {
 
     bridge.emit?.({ type: 'mail-received', id: 'm1' });
     await tick();
-    expect(onContext).toHaveBeenCalledWith({ type: 'mail-received', id: 'm1' });
+    expect(onContext).toHaveBeenCalledWith(
+      { type: 'mail-received', id: 'm1' },
+      { signal: expect.any(AbortSignal) },
+    );
   });
 });
 
@@ -196,5 +199,84 @@ describe('AssistSession actuation gate (PreToolUse analog)', () => {
     expect(bridge.applied).toHaveLength(1);
     await tick();
     expect(audit).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Orchestrator event ownership', () => {
+  it('keeps document and selection debounce independent and cancels queued events on stop', async () => {
+    const timers = new Map<number, () => void>();
+    let next = 0;
+    const scheduler: Scheduler = {
+      set(fn) {
+        const id = ++next;
+        timers.set(id, fn);
+        return id;
+      },
+      clear(id) {
+        timers.delete(id as number);
+      },
+    };
+    const bridge = new FakeBridge();
+    const seen: HostEvent[] = [];
+    const orch = new Orchestrator(
+      bridge,
+      new TriggerRegistry(),
+      {
+        onContext(event) {
+          seen.push(event);
+        },
+      },
+      { scheduler },
+    );
+    orch.start();
+    bridge.emit?.({ type: 'selection-changed', surface: 'word', origin: 'local', preview: 'a' });
+    bridge.emit?.({ type: 'document-changed', surface: 'word', origin: 'local' });
+    bridge.emit?.({ type: 'selection-changed', surface: 'word', origin: 'local', preview: 'b' });
+    expect(timers.size).toBe(2);
+    for (const timer of timers.values()) timer();
+    timers.clear();
+    await orch.idle();
+    expect(seen.map((e) => e.type)).toEqual(['document-changed', 'selection-changed']);
+    expect(seen[1]).toMatchObject({ preview: 'b' });
+    bridge.emit?.({ type: 'document-changed', surface: 'word', origin: 'local' });
+    const stale = [...timers.values()];
+    orch.stop();
+    expect(timers.size).toBe(0);
+    orch.start();
+    for (const timer of stale) timer();
+    await orch.idle();
+    expect(seen).toHaveLength(2);
+    orch.stop();
+  });
+
+  it('aborts context work on stop and suppresses its downstream reactions', async () => {
+    const bridge = new FakeBridge();
+    const registry = new TriggerRegistry();
+    registry.register({
+      id: 'suggest',
+      on: 'mail-received',
+      handle: () => ({ kind: 'suggest', title: 'Old message' }),
+    });
+    let contextSignal: AbortSignal | undefined;
+    let entered!: () => void;
+    const started = new Promise<void>((r) => {
+      entered = r;
+    });
+    const onSuggest = vi.fn();
+    const orch = new Orchestrator(bridge, registry, {
+      onContext(_event, { signal }) {
+        contextSignal = signal;
+        entered();
+        return new Promise(() => {});
+      },
+      onSuggest,
+    });
+    orch.start();
+    orch.publish({ type: 'mail-received', id: 'old' });
+    await started;
+    orch.stop();
+    await orch.idle();
+    expect(contextSignal?.aborted).toBe(true);
+    expect(onSuggest).not.toHaveBeenCalled();
   });
 });

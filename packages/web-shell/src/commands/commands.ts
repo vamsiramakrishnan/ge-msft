@@ -1,4 +1,4 @@
-import { TriggerRegistry } from '@ge/triggers';
+import { createApplicationRuntime } from '../runtime-extensions.js';
 import {
   createMessageSendHandler,
   activeItemIdResolver,
@@ -15,9 +15,9 @@ import {
  *   • `onMessageSend` — the Outlook `OnMessageSend` (Smart Alerts) gate, pointed at the bridge's
  *     pure on-send handler.
  *
- * NOTE: a fully-grounded send gate composes a session + trigger set; here we wire the structural
- * seam with an empty `TriggerRegistry` (which fails safe → allows) so the LaunchEvent is real and
- * the deploy can grow gating triggers without touching the manifest.
+ * The same bundled extension registrations are installed in this separate runtime. A mail-send
+ * guard executes here, with a deadline and fail-closed check failure. The built-in bundle has
+ * no content-grounding policy; deployments add one explicitly through APPLICATION_EXTENSIONS.
  */
 
 // The seed contract lives in a side-effect-free module so the task pane can read it on boot
@@ -38,7 +38,7 @@ interface OfficeActionsLike {
   context?: { ui?: { displayDialogAsync?: unknown } };
 }
 
-const sendRegistry = new TriggerRegistry();
+const { triggers: sendRegistry } = createApplicationRuntime();
 const handleMessageSend = createMessageSendHandler(sendRegistry, {
   resolveItemId: activeItemIdResolver,
 });

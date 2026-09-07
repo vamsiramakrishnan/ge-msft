@@ -13,6 +13,8 @@ export interface ChangeRecord {
   degraded?: boolean;
   error?: { code: string; message: string };
   provenance?: ProvenancePayload;
+  /** Preserve host-provided inverse receipts for a future explicit, conflict-checked undo action. */
+  inverse?: ActuationResult['inverse'];
   /** When the panel recorded it (client clock). */
   at: string;
 }
@@ -49,6 +51,7 @@ export class ProvenanceStore {
       ...(result.degraded ? { degraded: true } : {}),
       ...(result.error ? { error: result.error } : {}),
       ...(provenance ? { provenance } : {}),
+      ...(result.inverse ? { inverse: structuredClone(result.inverse) } : {}),
       at: this.now(),
     };
     this.records.set(rec.changeId, rec);

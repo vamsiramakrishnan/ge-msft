@@ -81,6 +81,8 @@ import {
   type SharedStore,
 } from './docfs/index.js';
 import { byteLength, truncateToBytes } from './docfs/bytes.js';
+import { RuntimeHooks, HookBlockedError, snapshot } from './hooks.js';
+import { ExecutionLedger, type RunOutcome, type TaskMode } from './execution-ledger.js';
 
 /**
  * Bounded-history compaction policy for the resident `SessionContext` (ADR-0003, element 5).
@@ -324,6 +326,10 @@ export const READ_REF_PREFIX = 'ctx:read:';
  */
 export interface AssistSessionOptions {
   unit: UnitDescriptor;
+  /** Trusted lifecycle extensions; no document/model-authored executable handlers. */
+  hooks?: RuntimeHooks;
+  /** Default true for API compatibility; production uses false so host events do not spend model calls. */
+  primeOnHostEvent?: boolean;
   /** Default kinds to auto-attach from the bridge before a turn (e.g. ['selection']). */
   autoAttach?: ContextKind[];
   /** Optional trigger registry: gates every write (pre-actuation) and audits it (post-actuation). */
@@ -415,6 +421,138 @@ function isWorkspaceCommand(command: ParsedCommand): command is WorkspaceCommand
 }
 
 export class AssistSession {
+  readonly hooks: RuntimeHooks;
+  readonly executions = new ExecutionLedger();
+  private task?: RunOutcome & { signal?: AbortSignal };
+  private taskSequence = 0;
+  private backgroundSequence = 0;
+  private readonly instanceId =
+    globalThis.crypto?.randomUUID?.() ??
+    `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  private hookContext() {
+    return {
+      taskId: this.task?.taskId ?? `${this.instanceId}:background:${++this.backgroundSequence}`,
+      surface: this.bridge.surface,
+      ...(this.task?.signal ? { signal: this.task.signal } : {}),
+    };
+  }
+
+  /** One operation owns the mutable session. Early iterator return is cancellation, not success. */
+  private async *withTask<T>(
+    mode: TaskMode,
+    text: string,
+    signal: AbortSignal | undefined,
+    run: () => AsyncGenerator<T>,
+  ): AsyncGenerator<T> {
+    if (this.task)
+      throw new Error('This session is already running a task. Wait or cancel it first.');
+    const task: RunOutcome & { signal?: AbortSignal } = {
+      taskId: `${this.instanceId}:${++this.taskSequence}`,
+      surface: this.bridge.surface,
+      mode,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      modelTurns: 0,
+      toolCalls: 0,
+      effects: [],
+      signal,
+    };
+    this.task = task;
+    this.executions.record(task);
+    const contextIds: string[] = [];
+    let consumed = false;
+    let completion: T | undefined;
+    try {
+      const entries = await this.hooks.run('message:received', { mode, text }, this.hookContext());
+      for (const [i, entry] of entries.entries()) {
+        const id = `ctx:hook:${task.taskId}:${i}`;
+        contextIds.push(id);
+        this.context.add(framedRead(entry, id));
+      }
+      for await (const event of run()) {
+        signal?.throwIfAborted();
+        if (event && typeof event === 'object' && 'type' in event) {
+          if (event.type === 'exhausted' || event.type === 'capped') task.status = 'incomplete';
+          if (event.type === 'done') {
+            // Command streams contain per-model-turn SSE `done` events too. Only the final
+            // command completion reaches the caller, and only after outcome verification.
+            if (mode === 'chat' || 'turn' in event) completion = event;
+            continue;
+          }
+        }
+        yield event;
+      }
+      signal?.throwIfAborted();
+      task.status = task.effects.some((r) => !r.ok)
+        ? 'incomplete'
+        : task.status === 'running'
+          ? 'completed'
+          : task.status;
+      const { signal: _signal, ...outcome } = task;
+      await this.hooks.run('task:verify', { outcome }, this.hookContext());
+      consumed = true;
+      if (completion !== undefined) yield completion;
+    } catch (error) {
+      task.status =
+        signal?.aborted || (error instanceof Error && error.name === 'AbortError')
+          ? 'cancelled'
+          : error instanceof HookBlockedError
+            ? 'blocked'
+            : 'failed';
+      consumed = true;
+      throw error;
+    } finally {
+      if (!consumed) task.status = 'cancelled';
+      for (const id of contextIds) this.context.remove(id);
+      const { signal: _signal, ...outcome } = task;
+      this.executions.record(outcome);
+      try {
+        // Completion observers must run even after cancellation. They cannot reverse a landed write.
+        await this.hooks.run(
+          'task:finished',
+          { outcome },
+          { taskId: task.taskId, surface: this.bridge.surface },
+        );
+      } finally {
+        this.task = undefined;
+      }
+    }
+  }
+
+  private async toolOperation<T>(name: string, args: unknown, run: () => Promise<T>): Promise<T> {
+    const task = this.task;
+    const beforeContext = this.hookContext();
+    const afterContext = { taskId: beforeContext.taskId, surface: beforeContext.surface };
+    await this.hooks.run('tool:before', { name, args }, beforeContext);
+    if (task) task.toolCalls++;
+    try {
+      const result = await run();
+      // After-observers deliberately have no cancelled task signal: record successful work accurately.
+      await this.hooks.run('tool:after', { name, result }, afterContext);
+      return result;
+    } catch (error) {
+      await this.hooks.run(
+        'tool:after',
+        { name, result: { error: 'operation_failed' } },
+        afterContext,
+      );
+      throw error;
+    }
+  }
+
+  private async recordEffect(request: ActuationRequest, result: ActuationResult): Promise<void> {
+    this.task?.effects.push(structuredClone(result));
+    this.model.observe({ type: 'post-actuation', request, result });
+    await this.hooks.run(
+      'effect:after',
+      { request, result },
+      { taskId: this.hookContext().taskId, surface: this.bridge.surface },
+    );
+    if (this.options.triggers)
+      await this.options.triggers.dispatch({ type: 'post-actuation', request, result });
+  }
+
   readonly context = new SessionContext();
   private readonly workspace = new WorkspaceStore();
   private readonly docFs: DocFs;
@@ -465,6 +603,7 @@ export class AssistSession {
     private readonly client: StreamAssistClient,
     private readonly options: AssistSessionOptions,
   ) {
+    this.hooks = options.hooks ?? new RuntimeHooks();
     this.model = new ContextModel(bridge.surface);
     this.session = options.resumeSessionId;
     this.compaction = { ...DEFAULT_COMPACTION, ...options.compaction };
@@ -479,10 +618,12 @@ export class AssistSession {
   /** Pull attachable context from the bridge and add it to the live session set. */
   async attachContext(kinds?: ContextKind[]): Promise<ContextRef[]> {
     const want = kinds ?? this.options.autoAttach;
-    const refs = await this.bridge.listContext();
+    const refs = await this.toolOperation('context:list', {}, () => this.bridge.listContext());
     const chosen = want ? refs.filter((r) => want.includes(r.kind)) : refs;
     for (const ref of chosen) {
-      for (const resolved of await this.bridge.resolveContext(ref)) {
+      for (const resolved of await this.toolOperation('context:resolve', { ref }, () =>
+        this.bridge.resolveContext(ref),
+      )) {
         this.context.add(resolved);
       }
     }
@@ -496,7 +637,9 @@ export class AssistSession {
 
   /** Attach one specific ref (resolve → add). Backs the context tray's attach-by-chip. */
   async attachRef(ref: ContextRef): Promise<void> {
-    for (const resolved of await this.bridge.resolveContext(ref)) {
+    for (const resolved of await this.toolOperation('context:resolve', { ref }, () =>
+      this.bridge.resolveContext(ref),
+    )) {
       this.context.add(resolved);
     }
   }
@@ -514,6 +657,13 @@ export class AssistSession {
   async *ask(
     query: string,
     opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
+  ): AsyncGenerator<SseEvent> {
+    yield* this.withTask('chat', query, opts.signal, () => this.askCore(query, opts));
+  }
+
+  private async *askCore(
+    query: string,
+    opts: { signal?: AbortSignal; grounding?: ResolvedGrounding },
   ): AsyncGenerator<SseEvent> {
     // Finding #4: a new turn starts — drop any prior turn's provenance so this turn cannot inherit it.
     this.currentTurnProvenance = undefined;
@@ -545,7 +695,9 @@ export class AssistSession {
     // 1. Ambient `<doc_state>` snapshot — fresh each turn (reflects the current document).
     if (this.docStateEnabled && this.bridge.captureDocState) {
       try {
-        const snapshot = await this.bridge.captureDocState();
+        const snapshot = await this.toolOperation('context:snapshot', {}, () =>
+          this.bridge.captureDocState!(),
+        );
         if (snapshot) {
           this.context.add({
             ref: {
@@ -560,6 +712,7 @@ export class AssistSession {
           ephemeralIds.push(DOC_STATE_REF_ID);
         }
       } catch (err) {
+        if (err instanceof HookBlockedError || this.task?.signal?.aborted) throw err;
         console.warn('[assist] captureDocState failed; skipping <doc_state> for this turn', err);
       }
     }
@@ -567,13 +720,16 @@ export class AssistSession {
     // 2. Lazy read-pull — query-relevant working-document slices, bounded to `maxReads`.
     if (this.lazyReadEnabled && this.bridge.searchDocument && query.trim().length > 0) {
       try {
-        const reads = await this.bridge.searchDocument(query);
+        const reads = await this.toolOperation('context:search', { query }, () =>
+          this.bridge.searchDocument!(query),
+        );
         for (let i = 0; i < Math.min(reads.length, this.maxReads); i++) {
           const id = `${READ_REF_PREFIX}${i}`;
           ephemeralIds.push(id);
           this.context.add(framedRead(reads[i]!, id));
         }
       } catch (err) {
+        if (err instanceof HookBlockedError || this.task?.signal?.aborted) throw err;
         console.warn('[assist] searchDocument failed; skipping lazy reads for this turn', err);
       }
     }
@@ -584,7 +740,7 @@ export class AssistSession {
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
     try {
-      for await (const event of this.client.stream(
+      for await (const event of this.modelStream(
         req,
         this.streamOptions({ grounding: opts.grounding, signal: opts.signal }),
       )) {
@@ -667,7 +823,10 @@ export class AssistSession {
    */
   async ingest(event: HostEvent): Promise<void> {
     const hint = this.model.observe(event);
-    if (hint.commit) await this.commit(hint.commit);
+    if (hint.commit)
+      await this.commit(
+        this.task || this.options.primeOnHostEvent === false ? 'fold' : hint.commit,
+      );
   }
 
   /**
@@ -688,7 +847,7 @@ export class AssistSession {
       query: PRIME_INSTRUCTION,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.client.stream(req, {
+    for await (const event of this.modelStream(req, {
       session: this.session,
       context: brief.entries,
       skillRoute: 'default',
@@ -743,24 +902,13 @@ export class AssistSession {
       ...(effective ? { provenance: effective } : {}),
     };
 
-    // PreToolUse-style gate: a trigger may veto the write before it lands.
-    const triggers = this.options.triggers;
-    if (triggers) {
-      const gate = await triggers.gate({ type: 'pre-actuation', request });
-      if (gate.kind === 'block') {
-        return {
-          ok: false,
-          changeId,
-          kind,
-          error: { code: 'blocked', message: gate.reason },
-        };
-      }
-    }
-
-    const result = await this.bridge.actuate(request);
-
-    // PostToolUse-style audit hook (fire-and-forget).
-    if (triggers) void triggers.dispatch({ type: 'post-actuation', request, result });
+    if (this.task) throw new Error('Cannot apply a proposal while another task is running.');
+    let result!: ActuationResult;
+    const apply = () => this.applyRequest(request, effective, () => true);
+    for await (const value of this.withTask('proposal', '', undefined, async function* () {
+      yield await apply();
+    }))
+      result = value;
     return result;
   }
 
@@ -786,6 +934,13 @@ export class AssistSession {
   async *runCommands(
     task: string,
     opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    yield* this.withTask('command', task, opts.signal, () => this.runCommandsCore(task, opts));
+  }
+
+  private async *runCommandsCore(
+    task: string,
+    opts: RunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     const capabilities = await this.effectiveCapabilities();
@@ -816,9 +971,12 @@ export class AssistSession {
       this.currentTurnProvenance = undefined;
       let turnText = '';
       let turnHadCodeExecution = false;
+      let turnFailed = false;
       let turnProvenance: ProvenancePayload | undefined;
       for await (const event of this.streamTurn(query, opts.signal, opts.grounding, 'command')) {
         if (event.type === 'token') turnText += event.text;
+        if (event.type === 'error' || (event.type === 'policy' && event.verdict === 'block'))
+          turnFailed = true;
         if (event.type === 'code-execution' || event.type === 'code-execution-result') {
           turnHadCodeExecution = true;
         }
@@ -828,6 +986,7 @@ export class AssistSession {
         }
         yield event;
       }
+      if (turnFailed) return;
       answer += turnText;
 
       // ADR-0005 Phase 3 — parse the block scoped to the live skill registry, so a line whose first
@@ -874,6 +1033,15 @@ export class AssistSession {
   async *runCommandProgram(
     program: string,
     opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    yield* this.withTask('program', program, opts.signal, () =>
+      this.runCommandProgramCore(program, opts),
+    );
+  }
+
+  private async *runCommandProgramCore(
+    program: string,
+    opts: RunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const body = program.trim();
     if (!body) return;
@@ -942,7 +1110,7 @@ export class AssistSession {
       const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
       const present = new Set(effects.map((e) => e.approvalClass));
       const approvalClasses = order.filter((c) => present.has(c));
-      yield { type: 'plan-preview', turn, effects, dag, approvalClasses };
+      yield { type: 'plan-preview', turn, effects: structuredClone(effects), dag, approvalClasses };
       for await (const ev of this.executePlan(
         turn,
         plan.planSlots,
@@ -953,6 +1121,20 @@ export class AssistSession {
         yield ev;
     }
 
+    // Intermediate read/parse failures may be repaired by a later model turn. A final turn
+    // (or a direct program) must not claim success while its results still contain errors.
+    if (
+      this.task &&
+      (plan.done || this.task.mode === 'program') &&
+      plan.results.some(
+        (result) =>
+          result !== null &&
+          typeof result === 'object' &&
+          'error' in result &&
+          result.error != null,
+      )
+    )
+      this.task.status = 'incomplete';
     return { results: plan.results, done: plan.done };
   }
 
@@ -1345,6 +1527,11 @@ export class AssistSession {
     turnProvenance: ProvenancePayload | undefined,
   ): AsyncGenerator<CommandLoopEvent> {
     const effects = planSlots.map((s) => s.effect);
+    await this.hooks.run(
+      'plan:ready',
+      { effects: effects.map((e) => e.request) },
+      this.hookContext(),
+    );
 
     // Decide the plan-level disposition once. `approvePlan` is authoritative when present.
     let planApproved: boolean | undefined;
@@ -1365,6 +1552,7 @@ export class AssistSession {
     const failedNodes = new Set<string>();
 
     for (let k = 0; k < planSlots.length; k++) {
+      opts.signal?.throwIfAborted();
       const { index, effect } = planSlots[k]!;
       const nodeId = dag[k]?.id ?? `e${k + 1}`;
       const failedPrereqs = (dag[k]?.dependsOn ?? []).filter((d) => failedNodes.has(d));
@@ -1395,6 +1583,8 @@ export class AssistSession {
         result = await this.applyRequest(effect.request, turnProvenance, opts.approveWrite);
       }
       // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
+      if (!this.task?.effects.some((r) => r.changeId === result.changeId))
+        await this.recordEffect(effect.request, result);
       if (!result.ok) failedNodes.add(nodeId);
       results[index] = result;
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
@@ -1407,7 +1597,7 @@ export class AssistSession {
     effects: PlanEffect[],
   ): Promise<boolean> {
     try {
-      return await approve(effects);
+      return await approve(snapshot(effects) as PlanEffect[]);
     } catch (err) {
       console.warn('[assist] approvePlan threw; failing closed (plan blocked)', err);
       return false;
@@ -1434,6 +1624,19 @@ export class AssistSession {
   async plan(
     task: string,
     opts: { signal?: AbortSignal; grounding?: ResolvedGrounding } = {},
+  ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
+    let result!: Awaited<ReturnType<AssistSession['planCore']>>;
+    const plan = () => this.planCore(task, opts);
+    for await (const value of this.withTask('planner', task, opts.signal, async function* () {
+      yield await plan();
+    }))
+      result = value;
+    return result;
+  }
+
+  private async planCore(
+    task: string,
+    opts: { signal?: AbortSignal; grounding?: ResolvedGrounding },
   ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
     const capabilities = await this.effectiveCapabilities();
     const protocol = renderPlanPrompt(capabilities.surface);
@@ -1468,9 +1671,12 @@ export class AssistSession {
   private async renderAmbientDocState(): Promise<string | undefined> {
     if (!this.docStateEnabled || !this.bridge.captureDocState) return undefined;
     try {
-      const snapshot = await this.bridge.captureDocState();
+      const snapshot = await this.toolOperation('context:snapshot', {}, () =>
+        this.bridge.captureDocState!(),
+      );
       return snapshot ? renderDocState(snapshot) : undefined;
     } catch (err) {
+      if (err instanceof HookBlockedError || this.task?.signal?.aborted) throw err;
       console.warn(
         '[assist] captureDocState failed; skipping <doc_state> for this command turn',
         err,
@@ -1490,6 +1696,32 @@ export class AssistSession {
    * session id, citations, and provenance exactly as {@link ask} does. No ephemeral context-loop
    * parts are injected here — the loop carries its own `<doc_state>`/result blocks in the query.
    */
+  private async *modelStream(
+    request: Parameters<StreamAssistClient['stream']>[0],
+    options: StreamOptionsWithGrounding,
+  ): AsyncGenerator<SseEvent> {
+    const context = {
+      ...this.hookContext(),
+      ...(options.signal ? { signal: options.signal } : {}),
+    };
+    const route = options.skillRoute ?? 'default';
+    await this.hooks.run('model:request', { query: request.query ?? '', route }, context);
+    if (this.task) this.task.modelTurns++;
+    let text = '';
+    for await (const event of this.client.stream(request, options)) {
+      await this.hooks.run('model:event', { event }, context);
+      if (event.type === 'token') text += event.text;
+      yield event;
+      // Error/policy events remain visible, but must never fall through into command parsing
+      // or a successful task receipt just because the transport ended normally.
+      if (event.type === 'error' || (event.type === 'policy' && event.verdict === 'block')) {
+        if (this.task) this.task.status = event.type === 'error' ? 'failed' : 'blocked';
+        return;
+      }
+    }
+    await this.hooks.run('model:response', { text, route }, context);
+  }
+
   private async *streamTurn(
     query: string,
     signal?: AbortSignal,
@@ -1501,7 +1733,7 @@ export class AssistSession {
       query,
       unit: { ...this.options.unit, surfaceContext: this.surfaceContext() },
     };
-    for await (const event of this.client.stream(
+    for await (const event of this.modelStream(
       req,
       this.streamOptions({ grounding, signal, skillRoute }),
     )) {
@@ -1558,6 +1790,18 @@ export class AssistSession {
    * checks in its own case below), not a bounded in-memory artifact.
    */
   private async runWorkspaceIntent(
+    intent: WorkspaceIntent,
+    shareCtx?: {
+      approveShare?: RunCommandsOptions['approveShare'];
+      turnProvenance?: ProvenancePayload;
+    },
+  ): Promise<{ label: string; result: WorkspaceResult }> {
+    return this.toolOperation(`workspace:${intent.workspace}`, intent, () =>
+      this.runWorkspaceIntentCore(intent, shareCtx),
+    );
+  }
+
+  private async runWorkspaceIntentCore(
     intent: WorkspaceIntent,
     shareCtx?: {
       approveShare?: RunCommandsOptions['approveShare'];
@@ -1699,6 +1943,7 @@ export class AssistSession {
           // human approval, an arbitrarily long window another share (a different turn, a different
           // surface's session) could have used to create this same name. This narrows the race to
           // the two network calls immediately below, not the full approval-latency window.
+          this.task?.signal?.throwIfAborted();
           const stillFree = await this.options.sharedStore.list();
           if (stillFree.some((f) => f.name === intent.name)) {
             return {
@@ -1709,6 +1954,7 @@ export class AssistSession {
               },
             };
           }
+          this.task?.signal?.throwIfAborted();
           await this.options.sharedStore.write(intent.name, capped.text);
           // Every other write in this repo carries agent id/sources/identity/timestamp/content
           // hash (see docs/CONVENTIONS.md); `/shared` has no per-file metadata channel of its own
@@ -1789,12 +2035,18 @@ export class AssistSession {
    * capability or a thrown read becomes a corrective `{ error }` result, never a thrown loop.
    */
   private async runReadIntent(intent: ReadIntent): Promise<{ label: string; result: unknown }> {
+    return this.toolOperation(intent.read, intent, () => this.runReadIntentCore(intent));
+  }
+
+  private async runReadIntentCore(intent: ReadIntent): Promise<{ label: string; result: unknown }> {
     try {
       switch (intent.read) {
         case 'outline': {
           if (!this.bridge.captureDocState)
             return { label: 'outline', result: { error: 'outline not supported here' } };
-          const snapshot = await this.bridge.captureDocState();
+          const snapshot = await this.toolOperation('context:snapshot', {}, () =>
+            this.bridge.captureDocState!(),
+          );
           return {
             label: 'outline',
             result: snapshot ? renderDocState(snapshot) : { outline: null },
@@ -1806,7 +2058,9 @@ export class AssistSession {
             if (!this.bridge.captureDocState) {
               return { label: 'read', result: { error: 'whole-document read not supported here' } };
             }
-            const snapshot = await this.bridge.captureDocState();
+            const snapshot = await this.toolOperation('context:snapshot', {}, () =>
+              this.bridge.captureDocState!(),
+            );
             return {
               label: 'read',
               result: snapshot ? renderDocState(snapshot) : { document: null },
@@ -1949,7 +2203,7 @@ export class AssistSession {
   }
 
   private async contextRefs(kind?: ContextKind): Promise<ContextRef[]> {
-    const refs = await this.bridge.listContext();
+    const refs = await this.toolOperation('context:list', {}, () => this.bridge.listContext());
     if (!kind) return refs;
     if (kind === 'table' && this.bridge.surface === 'excel') {
       return refs.filter((ref) => ref.kind === 'table' || ref.kind === 'range');
@@ -1962,7 +2216,7 @@ export class AssistSession {
   ): Promise<{ ref: ContextRef; found: boolean } | undefined> {
     const trimmed = selector.trim();
     if (!trimmed) return undefined;
-    const refs = await this.bridge.listContext();
+    const refs = await this.toolOperation('context:list', {}, () => this.bridge.listContext());
     const found = refs.find((ref) => matchesContextSelector(ref, trimmed));
     if (found) return { ref: found, found: true };
     const synthetic = syntheticContextRef(this.bridge.surface, trimmed);
@@ -1991,6 +2245,17 @@ export class AssistSession {
     provenance: ProvenancePayload | undefined,
     approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
   ): Promise<ActuationResult> {
+    const result = await this.applyRequestCore(request, provenance, approveWrite);
+    if (!this.task?.effects.some((r) => r.changeId === result.changeId))
+      await this.recordEffect(request, result);
+    return result;
+  }
+
+  private async applyRequestCore(
+    request: ActuationRequest,
+    provenance: ProvenancePayload | undefined,
+    approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
+  ): Promise<ActuationResult> {
     // Finding #4: provenance is bound to the turn that emitted this command and passed in
     // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
     // A turn with no provenance stamps none (rather than inheriting a previous turn's). Durable
@@ -2003,7 +2268,9 @@ export class AssistSession {
     // content) is NEVER actuated without explicit per-write approval. No approver ⇒ blocked, per the
     // DocBridge "never called without user confirmation" contract. The trigger gate runs after, as a
     // second, independent line of defense.
-    const approved = approveWrite ? await approveWrite(stamped) : false;
+    const approved = approveWrite
+      ? await approveWrite(snapshot(stamped) as ActuationRequest)
+      : false;
     if (!approved) {
       return {
         ok: false,
@@ -2013,6 +2280,8 @@ export class AssistSession {
       };
     }
     try {
+      await this.hooks.run('effect:before', { request: stamped }, this.hookContext());
+      this.task?.signal?.throwIfAborted();
       const triggers = this.options.triggers;
       if (triggers) {
         const gate = await triggers.gate({ type: 'pre-actuation', request: stamped });
@@ -2025,15 +2294,24 @@ export class AssistSession {
           };
         }
       }
+      this.task?.signal?.throwIfAborted();
       const result = await this.bridge.actuate(stamped);
-      if (triggers) void triggers.dispatch({ type: 'post-actuation', request: stamped, result });
+      await this.recordEffect(stamped, result);
       return result;
     } catch (err) {
       return {
         ok: false,
         changeId: stamped.changeId,
         kind: stamped.kind,
-        error: { code: 'actuate_failed', message: errMsg(err) },
+        error: {
+          code:
+            err instanceof HookBlockedError
+              ? 'hook_blocked'
+              : this.task?.signal?.aborted
+                ? 'cancelled'
+                : 'actuate_failed',
+          message: errMsg(err),
+        },
       };
     }
   }

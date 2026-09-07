@@ -61,6 +61,12 @@ export class ContextModel {
   observe(event: HostEvent): CommitHint {
     if (eventOrigin(event) === 'remote') return {};
     switch (event.type) {
+      case 'mail-received':
+        this.note(`Active received message: ${clip(event.id, 200)}`);
+        return { commit: 'fold' };
+      case 'mail-compose':
+        this.note(`Active mail draft${event.id ? `: ${clip(event.id, 200)}` : ''}`);
+        return { commit: 'fold' };
       case 'comment-added':
         this.note(`Comment ${event.commentId}${event.text ? `: ${clip(event.text)}` : ''}`);
         return { commit: 'fold' };

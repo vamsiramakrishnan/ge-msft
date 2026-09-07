@@ -17,6 +17,10 @@ import {
 import { detectSurface, surfaceFromHost } from '../host.js';
 import { NaaAuthClient } from '../auth-client.js';
 import { composeSession } from '../compose.js';
+import { createApplicationRuntime } from '../runtime-extensions.js';
+import { connectPanelRuntime } from '../panel-runtime.js';
+
+let disposePanelRuntime: (() => void) | undefined;
 import { PanelController } from '../controller.js';
 import { App } from './components/App.js';
 import { selectBridge, isSupportedSurface } from './select-bridge.js';
@@ -413,6 +417,9 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
       ...(notebookIdFromEnv(env) ? { notebookId: notebookIdFromEnv(env) } : {}),
     });
 
+    disposePanelRuntime?.();
+    const runtime = createApplicationRuntime();
+    disposePanelRuntime = runtime.dispose;
     recordAuthDebug('compose.start');
     const { session, tokens, client, warmUp, availableAgents, availableDataStores } =
       await composeSession({
@@ -420,6 +427,9 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
         auth,
         bridge: prepared.bridge,
         unit,
+        hooks: runtime.hooks,
+        triggers: runtime.triggers,
+        primeOnHostEvent: false,
         // Self-provision our skills as the signed-in user (client-direct, ADR-0001). Detect-only
         // from env alone (compares the [rev:<sha>] marker); best-effort — never blocks the session.
         warmUpSkills: warmUpSkillsFromEnv(env),
@@ -440,6 +450,27 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
     await applyBootCatalogRouting(client, catalogClient);
     const controller = new PanelController(session, prepared.bridge);
     controller.setDiscoveredCatalog(availableAgents, availableDataStores);
+    const panelRuntime = connectPanelRuntime({
+      session,
+      bridge: prepared.bridge,
+      controller,
+      triggers: runtime.triggers,
+    });
+    const suspend = (): void => {
+      panelRuntime.stop();
+      controller.cancel();
+    };
+    const resume = (): void => panelRuntime.start();
+    window.addEventListener('pagehide', suspend);
+    window.addEventListener('pageshow', resume);
+    disposePanelRuntime = () => {
+      window.removeEventListener('pagehide', suspend);
+      window.removeEventListener('pageshow', resume);
+      panelRuntime.dispose();
+      controller.cancel();
+      runtime.dispose();
+    };
+    panelRuntime.start();
 
     // Narrow the quick-action bar + `/` palette to what THIS surface can actually run (ADR-0006).
     const rawCapabilities = await prepared.bridge.getCapabilities();
@@ -462,6 +493,8 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
     // The selection was re-grounded as @this by the bridge; the query is a fixed template.
     if (prepared.pendingSeed) void controller.send(askSelectionQuery(prepared.pendingSeed));
   } catch (err) {
+    disposePanelRuntime?.();
+    disposePanelRuntime = undefined;
     const detail = err instanceof Error ? err.message : String(err);
     recordAuthDebug('finishBoot.error', summarizeAuthError(err));
     if (isInteractionInProgressError(err)) {

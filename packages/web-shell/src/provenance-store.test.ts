@@ -62,3 +62,16 @@ describe('ProvenanceStore', () => {
     expect(store.list()[0]?.ok).toBe(false);
   });
 });
+
+it('preserves a detached host inverse receipt for a later explicit undo operation', () => {
+  const store = new ProvenanceStore();
+  const inverse = { op: 'restore-values' as const, range: 'A1', values: [['Before']] };
+  const record = store.record({
+    ok: true,
+    changeId: asChangeId('inverse'),
+    kind: 'write-cells',
+    inverse,
+  });
+  inverse.values[0]![0] = 'Mutated after recording';
+  expect(record.inverse).toEqual({ op: 'restore-values', range: 'A1', values: [['Before']] });
+});

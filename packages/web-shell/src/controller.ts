@@ -518,10 +518,25 @@ export class PanelController {
   // ---- context tray -------------------------------------------------------
 
   /** Load the attachable-context chips (preserving which are already attached). */
-  async refreshContext(): Promise<void> {
+  private contextRefreshVersion = 0;
+
+  async refreshContext(options: { whenIdle?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+    const version = ++this.contextRefreshVersion;
+    const canCommit = (): boolean =>
+      version === this.contextRefreshVersion &&
+      !options.signal?.aborted &&
+      (!options.whenIdle ||
+        !(
+          this.state.busy ||
+          this.state.pendingPlan ||
+          this.state.pendingWrite ||
+          this.state.pendingShare ||
+          this.state.pendingCommandPlan
+        ));
     try {
-      const attachedIds = new Set(this.state.chips.filter((c) => c.attached).map((c) => c.id));
       const refs = await this.lister.listContext();
+      if (!canCommit()) return;
+      const attachedIds = new Set(this.state.chips.filter((c) => c.attached).map((c) => c.id));
       this.refs.clear();
       const chips = refs.map((r): ContextChip => {
         this.refs.set(r.id, r);
@@ -538,7 +553,7 @@ export class PanelController {
       });
       this.set({ chips });
     } catch (err) {
-      this.set({ error: errorText(err) });
+      if (canCommit()) this.set({ error: errorText(err) });
     }
   }
 
@@ -1195,9 +1210,14 @@ export class PanelController {
 
   // ---- event-driven inputs (wire to the Orchestrator) ---------------------
 
+  /** Diagnostic metadata only; hooks never put source content or raw exception bodies here. */
+  readonly onRuntimeNotice = (text: string): void => {
+    this.addStep('activity', text);
+  };
+
   /** Every host event constructs working context (no model call). */
-  readonly onContext = (event: HostEvent): void => {
-    void this.session.ingest(event);
+  readonly onContext = (event: HostEvent): Promise<void> => {
+    return this.session.ingest(event);
   };
 
   /** A rare, ignorable ambient suggestion chip. */
@@ -1208,7 +1228,10 @@ export class PanelController {
       ...(s.detail ? { detail: s.detail } : {}),
       ...(s.query ? { query: s.query } : {}),
     };
-    this.set({ suggestions: [...this.state.suggestions, suggestion] });
+    const remaining = this.state.suggestions.filter(
+      (item) => item.title !== s.title || item.query !== s.query,
+    );
+    this.set({ suggestions: [...remaining.slice(-7), suggestion] });
   };
 
   /** An opt-in automated turn (e.g. accepting a suggestion). */

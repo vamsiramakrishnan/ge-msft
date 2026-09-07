@@ -184,11 +184,16 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
       openGate = resolve;
     });
     let gateSawRequest: ActuationRequest | undefined;
+    let sawGate!: () => void;
+    const gateEntered = new Promise<void>((resolve) => {
+      sawGate = resolve;
+    });
     registry.register({
       id: 'deferred-approval',
       on: 'pre-actuation',
       handle: async (e) => {
         if (e.type === 'pre-actuation') gateSawRequest = e.request;
+        sawGate();
         await gateOpened; // hold the effect until the test opens the gate
         return CONTINUE;
       },
@@ -203,9 +208,8 @@ describe('INTERPLAY: triggers + runtime + fake host — the actuation gate holds
       .apply('write-cells', writeParams(), asChangeId('gate-write-1'))
       .then((r) => (result = r));
 
-    // Give the gate a chance to run and suspend on `gateOpened`.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Synchronize with gate entry, independently of the number of lifecycle-hook awaits.
+    await gateEntered;
 
     // OBSERVABLE: the gate received the real request, but the host cell is STILL EMPTY — held.
     expect(gateSawRequest?.kind).toBe('write-cells');

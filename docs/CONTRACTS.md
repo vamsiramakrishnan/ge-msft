@@ -10,6 +10,12 @@
 
 The authoritative boundary between the surface-agnostic core and the per-surface bridges (and the shape of every Gemini Enterprise call). These live in `packages/contracts` as TypeScript types + Zod schemas and are imported by both the core and the bridges. Change them deliberately and update both sides. (Specialist A2A agents, where used, mirror the `Finding` and `UnitDescriptor` shapes.)
 
+
+The in-process extension boundary is defined by `RuntimeHookPayloads`, `RuntimeExtensionApi`, and
+`RunOutcome` in `packages/runtime`. See [Runtime extensions](RUNTIME-EXTENSIONS.md) for phase payloads,
+allowed decisions, cancellation, and validation. These typed, compiled extension APIs do not add a
+network protocol; provider context still crosses the existing `ResolvedContextSchema` boundary.
+
 ---
 
 ## Intents

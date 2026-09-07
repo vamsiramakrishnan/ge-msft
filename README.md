@@ -233,6 +233,7 @@ docs/              ADRs, API notes, mockups, status and architecture docs
 ## Read next
 
 - [`docs/STATUS.md`](docs/STATUS.md): implemented surface and known gaps
+- [Runtime extensions](docs/RUNTIME-EXTENSIONS.md): message hooks, context providers, event reactions, and outcome verification
 - [`setup/README.md`](setup/README.md): setup path
 - [`setup/07-deployment-methods-matrix.md`](setup/07-deployment-methods-matrix.md): deployment choices
 - [`setup/08-hosting-origin-and-release.md`](setup/08-hosting-origin-and-release.md): hosting boundary

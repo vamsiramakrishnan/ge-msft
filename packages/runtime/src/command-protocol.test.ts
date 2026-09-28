@@ -13,7 +13,12 @@ import type { StreamAssistClient, StreamOptions } from '@ge/gemini-client';
 import type { AssistRequest } from '@ge/contracts';
 import { TriggerRegistry } from '@ge/triggers';
 import { AssistSession, type CommandLoopEvent } from './assist-session.js';
-import { compileCommand, renderCommandHelp, renderGrammarPrompt } from './command-protocol.js';
+import {
+  compileCommand,
+  normalizeCommentId,
+  renderCommandHelp,
+  renderGrammarPrompt,
+} from './command-protocol.js';
 import type { DocBridge } from './bridge.js';
 import { asChangeId } from '@ge/contracts';
 
@@ -115,6 +120,27 @@ describe('compileCommand', () => {
       { surface: 'excel', mintChangeId: mint },
     );
     expect(bad).toMatchObject({ error: expect.stringContaining('recognized property') });
+  });
+
+  it('normalizes a quoted or ref-prefixed reply id to the bare host comment id', () => {
+    for (const written of [
+      '1891186488',
+      '"1891186488"',
+      "'1891186488'",
+      'word:comment:1891186488',
+      '"word:comment:1891186488"',
+      'comment:1891186488',
+      'xl:comment:1891186488',
+    ]) {
+      const c = compileCommand(
+        { verb: 'reply', commentId: written, text: 'ok' },
+        { surface: 'word', mintChangeId: () => asChangeId('cid') },
+      );
+      expect(c).toMatchObject({
+        request: { params: { target: { commentId: '1891186488' } } },
+      });
+    }
+    expect(normalizeCommentId('{3f2a}')).toBe('{3f2a}');
   });
 
   it('compiles `reply` → comment-reply with a commentId target (Zod-valid, changeId minted once)', () => {

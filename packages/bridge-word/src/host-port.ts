@@ -29,6 +29,28 @@ const MAX_SEARCH_HITS = 8;
  */
 export const MAX_FIND_REPLACEMENTS = 100;
 
+/** Cap comment threads read into context so a heavily reviewed document can't blow the budget. */
+export const MAX_READ_COMMENTS = 50;
+
+/** One reply in a Word comment thread. */
+export interface WordCommentReply {
+  readonly authorName: string;
+  readonly content: string;
+}
+
+/**
+ * A comment thread read from the document: the comment, the text it is anchored on, and its
+ * replies. All of it is untrusted document content — the runtime carries it as data.
+ */
+export interface WordComment {
+  readonly id: string;
+  readonly authorName: string;
+  readonly content: string;
+  readonly resolved: boolean;
+  readonly anchorText: string;
+  readonly replies: readonly WordCommentReply[];
+}
+
 /** A paragraph read from the document body (text + the built-in style name for heading level). */
 export interface WordParagraph {
   readonly text: string;
@@ -174,6 +196,12 @@ export interface WordHost {
    * unsupported host / no hits yields `[]`.
    */
   searchText(query: string, matchCase: boolean): Promise<WordSearchHit[]>;
+
+  /**
+   * Read up to {@link MAX_READ_COMMENTS} comment threads — author, text, the anchored range's text
+   * and the replies. Read-only. Never throws; a host without the comments API yields `[]`.
+   */
+  readComments(): Promise<WordComment[]>;
 
   /** Bring an addressable Word object into view without changing document content. */
   revealContext(ref: ContextRef): Promise<void>;
@@ -385,6 +413,42 @@ export class OfficeWordHost implements WordHost {
     }
   }
 
+  async readComments(): Promise<WordComment[]> {
+    // `Body.getComments`, `Comment.getRange` and `Comment.replies` → WordApi 1.4.
+    if (!isSet('WordApi', '1.4')) return [];
+    try {
+      return await Word.run(async (ctx) => {
+        const comments = ctx.document.body.getComments();
+        comments.load('items/id,items/authorName,items/content,items/resolved');
+        await ctx.sync();
+        // Queue every thread's anchor text + replies, then read them back in ONE more sync, so the
+        // cost is two round-trips whatever the comment count.
+        const threads = comments.items.slice(0, MAX_READ_COMMENTS).map((comment) => {
+          const range = comment.getRange();
+          range.load('text');
+          const replies = comment.replies;
+          replies.load('items/authorName,items/content');
+          return { comment, range, replies };
+        });
+        await ctx.sync();
+        return threads.map(({ comment, range, replies }) => ({
+          id: hostCommentId(comment.id),
+          authorName: comment.authorName ?? '',
+          content: comment.content ?? '',
+          resolved: comment.resolved === true,
+          anchorText: range.text ?? '',
+          replies: replies.items.map((r) => ({
+            authorName: r.authorName ?? '',
+            content: r.content ?? '',
+          })),
+        }));
+      });
+    } catch {
+      // Comments unavailable / host quirk — the read degrades to nothing, never throws.
+      return [];
+    }
+  }
+
   async revealContext(ref: ContextRef): Promise<void> {
     if (ref.surface !== 'word') return;
 
@@ -472,7 +536,7 @@ export class OfficeWordHost implements WordHost {
       const comments = ctx.document.body.getComments();
       comments.load('items/id');
       await ctx.sync();
-      const comment = comments.items.find((c) => c.id === commentId);
+      const comment = comments.items.find((c) => hostCommentId(c.id) === commentId);
       if (!comment) return;
       comment.getRange().select();
       await ctx.sync();
@@ -554,7 +618,7 @@ export class OfficeWordHost implements WordHost {
       const comments = ctx.document.body.getComments();
       comments.load('items/id');
       await ctx.sync();
-      const comment = comments.items.find((c) => c.id === commentId);
+      const comment = comments.items.find((c) => hostCommentId(c.id) === commentId);
       if (!comment) return { status: 'gone' };
       comment.reply(reply);
       if (resolve) comment.resolved = true;
@@ -951,6 +1015,15 @@ function wordContentControlId(ref: ContextRef): string | undefined {
       'word:content-control:',
     )
   );
+}
+
+/**
+ * A host comment id as the string the rest of the add-in compares. The typings say `string`, but
+ * Word on the web returns a number, so a strict `===` against the listed id never matched and
+ * every reply failed as "comment gone" even with the id in hand.
+ */
+function hostCommentId(id: unknown): string {
+  return String(id).trim();
 }
 
 function wordCommentId(ref: ContextRef): string | undefined {

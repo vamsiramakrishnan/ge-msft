@@ -243,7 +243,7 @@ export function compileCommand(
       // ADR-0006: reply to an existing comment by its host-opaque id. The bridge re-resolves the
       // comment and posts the reply (optionally resolving it); Word/Excel advertise comment-reply.
       return compileWrite(WRITE_VERB_TO_KIND.reply, ctx, {
-        target: { commentId: cmd.commentId },
+        target: { commentId: normalizeCommentId(cmd.commentId) },
         text: cmd.text,
       });
     case 'slide':
@@ -1169,4 +1169,19 @@ function surfaceNoun_(surface: Surface): string {
     case 'teams':
       return 'Teams conversation';
   }
+}
+
+/**
+ * The bare host comment id from what a model writes after `reply`. Models echo the id the way they
+ * saw it — quoted (`"1891186488"`) or as the ref id (`word:comment:1891186488`, `xl:comment:…`) —
+ * and an unnormalized id never matches a host comment, so the reply fails as "comment gone".
+ */
+export function normalizeCommentId(raw: string): string {
+  let id = raw.trim();
+  const quoted = /^(["'])(.*)\1$/.exec(id);
+  if (quoted) id = (quoted[2] ?? '').trim();
+  for (const prefix of ['word:comment:', 'xl:comment:', 'comment:']) {
+    if (id.toLowerCase().startsWith(prefix)) return id.slice(prefix.length).trim();
+  }
+  return id;
 }

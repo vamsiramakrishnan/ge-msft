@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OfficeWordHost, type WordHandlers } from './host-port.js';
+import { MAX_READ_COMMENTS, OfficeWordHost, type WordHandlers } from './host-port.js';
 
 /**
  * Direct tests for the REAL {@link OfficeWordHost} adapter — the bridge's only un-faked seam. It
@@ -26,8 +26,15 @@ interface InstallOpts {
   searchHits?: Record<string, string[]>;
   /** match text → containing-paragraph text, surfaced via `paragraphs.getFirstOrNullObject()`. */
   contextParas?: Record<string, string | undefined>;
-  /** Existing comments for `getComments()`. */
-  comments?: Array<{ id: string }>;
+  /** Existing comments for `getComments()` (thread fields are optional; ids are required). */
+  comments?: Array<{
+    id: string;
+    authorName?: string;
+    content?: string;
+    resolved?: boolean;
+    anchorText?: string;
+    threadReplies?: Array<{ authorName: string; content: string }>;
+  }>;
   /** Requirement-set support map (e.g. { WordApi: 6 }). Defaults to a modern host. */
   requirements?: Record<string, number>;
   /** Force `Word.run` to reject (simulate an unsupported host / batch failure). */
@@ -139,9 +146,34 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
   }
 
   class FakeCommentProxy {
-    constructor(private readonly target: { id: string; replies: string[]; resolved?: boolean }) {}
+    constructor(
+      private readonly target: {
+        id: string;
+        replies: string[];
+        resolved?: boolean;
+        authorName?: string;
+        content?: string;
+        anchorText?: string;
+        threadReplies?: Array<{ authorName: string; content: string }>;
+      },
+    ) {}
     get id(): string {
       return this.target.id;
+    }
+    get authorName(): string | undefined {
+      return this.target.authorName;
+    }
+    get content(): string | undefined {
+      return this.target.content;
+    }
+    get resolved(): boolean | undefined {
+      return this.target.resolved;
+    }
+    get replies(): { items: Array<{ authorName: string; content: string }>; load(): void } {
+      return { items: this.target.threadReplies ?? [], load: () => undefined };
+    }
+    getRange(): { text: string; load(): void; select(): void } {
+      return { text: this.target.anchorText ?? '', load: () => undefined, select: () => undefined };
     }
     reply(text: string): void {
       rec.replies.push({ id: this.target.id, text });
@@ -575,12 +607,81 @@ describe('OfficeWordHost.replyToComment', () => {
     expect(rec.resolved).toEqual(['cmt-2']);
   });
 
+  it('matches a comment whose host id comes back as a number (Word on the web)', async () => {
+    // The typings say string; the web host returns 1891186488 as a number.
+    const rec = setup({ comments: [{ id: 1891186488 as unknown as string }] });
+    const out = await new OfficeWordHost().replyToComment('1891186488', 'Q1 2027', false);
+    expect(out).toEqual({ status: 'replied', location: 'comment:1891186488' });
+    expect(rec.replies).toHaveLength(1);
+    await expect(new OfficeWordHost().readComments()).resolves.toMatchObject([
+      { id: '1891186488' },
+    ]);
+  });
+
   it('returns gone when the comment id no longer exists, writing nothing', async () => {
     const rec = setup({ comments: [{ id: 'other' }] });
     const out = await new OfficeWordHost().replyToComment('missing', 'hi', true);
     expect(out).toEqual({ status: 'gone' });
     expect(rec.replies).toHaveLength(0);
     expect(rec.resolved).toHaveLength(0);
+  });
+});
+
+/* ─────────────────────────────── readComments ───────────────────────────── */
+
+describe('OfficeWordHost.readComments', () => {
+  it('reads each thread — author, text, state, anchored text and replies — in two syncs', async () => {
+    const rec = setup({
+      comments: [
+        {
+          id: 'cmt-1',
+          authorName: 'Dana',
+          content: 'Is this right?',
+          resolved: false,
+          anchorText: '99.5%',
+          threadReplies: [{ authorName: 'Lee', content: 'Yes' }],
+        },
+        { id: 'cmt-2', content: 'Fixed', resolved: true },
+      ],
+    });
+    const before = rec.syncCount;
+    const threads = await new OfficeWordHost().readComments();
+    expect(rec.syncCount - before).toBe(2);
+    expect(threads).toEqual([
+      {
+        id: 'cmt-1',
+        authorName: 'Dana',
+        content: 'Is this right?',
+        resolved: false,
+        anchorText: '99.5%',
+        replies: [{ authorName: 'Lee', content: 'Yes' }],
+      },
+      {
+        id: 'cmt-2',
+        authorName: '',
+        content: 'Fixed',
+        resolved: true,
+        anchorText: '',
+        replies: [],
+      },
+    ]);
+  });
+
+  it('caps the read at MAX_READ_COMMENTS threads', async () => {
+    setup({
+      comments: Array.from({ length: MAX_READ_COMMENTS + 5 }, (_, i) => ({ id: `c${i}` })),
+    });
+    await expect(new OfficeWordHost().readComments()).resolves.toHaveLength(MAX_READ_COMMENTS);
+  });
+
+  it('returns [] below WordApi 1.4 (no comments API)', async () => {
+    setup({ requirements: { WordApi: 3 }, comments: [{ id: 'c1' }] });
+    await expect(new OfficeWordHost().readComments()).resolves.toEqual([]);
+  });
+
+  it('returns [] (never throws) when the batch fails', async () => {
+    setup({ wordRunThrows: true, comments: [{ id: 'c1' }] });
+    await expect(new OfficeWordHost().readComments()).resolves.toEqual([]);
   });
 });
 

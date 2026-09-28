@@ -100,7 +100,13 @@ const EXCEL_CHART_CREATE_RE =
 const EXCEL_CHART_CONVERT_RE =
   /^\s*(?:please\s+)?(?:turn|convert)\b[\s\S]*\b(?:into|to)\b[\s\S]*\b(?:chart|graph|visuali[sz]ation)\b/i;
 const OFFICE_ACTION_REQUEST_RE =
-  /^\s*(?:(?:ok(?:ay)?|yes|yeah|yep|sure|alright|great|cool)[\s,!.]+)*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:help\s+me\s+)?(?:update|fill|populate|insert|add|apply|place|write|create|make|build|generate|draft|rewrite|revise|edit|review|comment|flag|mark|turn|convert|visuali[sz]e)\b/i;
+  /^\s*(?:(?:ok(?:ay)?|yes|yeah|yep|sure|alright|great|cool|hey|hi|hello)[\s,!.]+)*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:help\s+me\s+)?(?:update|fill|populate|insert|add|apply|place|write|create|make|build|generate|draft|rewrite|revise|edit|review|comment|reply|respond|flag|mark|turn|convert|visuali[sz]e)\b/i;
+/**
+ * Answering an existing comment thread is a write (`comment-reply`), however it is phrased —
+ * "answer Adele's comment", "can you resolve this thread", "address the comment on the SLA".
+ */
+const COMMENT_ACTION_RE =
+  /\b(?:reply|respond|answer|resolve|address)\b[\s\S]*\b(?:comment|comments|thread)\b/i;
 const WORD_REWRITE_RE =
   /^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:rewrite|revise|tighten|edit|replace|improve)\b[\s\S]*\b(?:selection|selected text|paragraph|text|wording|clause|sentence)\b/i;
 const WORD_REVIEW_RE =
@@ -181,7 +187,7 @@ export function shouldUsePlannerForFreeText(
   const raw = inv.raw.trim();
   if (!raw || raw.startsWith('/')) return false;
   if (!hasActuatingIntent(allowedIntents)) return false;
-  return OFFICE_ACTION_REQUEST_RE.test(raw);
+  return OFFICE_ACTION_REQUEST_RE.test(raw) || COMMENT_ACTION_RE.test(raw);
 }
 
 /**

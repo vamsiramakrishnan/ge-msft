@@ -40,6 +40,9 @@ interface CommentSeed {
   content: string;
   replies: string[];
   resolved: boolean;
+  authorName?: string;
+  /** Authored replies the read path loads (write-path replies land in `replies`). */
+  threadReplies?: Array<{ authorName: string; content: string }>;
 }
 /** A native Table the bridge minted via `tables.add`, keyed on the host-minted name. */
 interface TableSeed {
@@ -610,6 +613,12 @@ class FakeNamedItemCollection {
 
 class FakeReplies {
   constructor(private readonly target: CommentSeed) {}
+  get items(): Array<{ authorName: string; content: string }> {
+    return this.target.threadReplies ?? [];
+  }
+  load(): this {
+    return this;
+  }
   add(text: string): void {
     this.target.replies.push(text);
   }
@@ -618,6 +627,18 @@ class FakeComment {
   constructor(private readonly target: CommentSeed) {}
   get id(): string {
     return this.target.id;
+  }
+  get authorName(): string | undefined {
+    return this.target.authorName;
+  }
+  get content(): string {
+    return this.target.content;
+  }
+  get resolved(): boolean {
+    return this.target.resolved;
+  }
+  getLocation(): { address: string; load(): void } {
+    return { address: this.target.cell, load: () => undefined };
   }
   get replies(): FakeReplies {
     return new FakeReplies(this.target);
@@ -949,6 +970,82 @@ describe('ExcelBridge.listContext (host wiring)', () => {
       preview: 'Blank selection',
     });
     expect(refs.map((r) => r.kind)).toEqual(['range', 'range', 'sheet']);
+  });
+});
+
+describe('ExcelBridge comment threads (read)', () => {
+  function seedWithComments(): ExcelSeed {
+    const seed = salesSeed();
+    seed.comments = [
+      {
+        id: 'cmt-1',
+        cell: 'Sales!C2',
+        content: 'Is 300 final?',
+        replies: [],
+        resolved: false,
+        authorName: 'Dana',
+        threadReplies: [{ authorName: 'Lee', content: 'Pending Q3 close' }],
+      },
+      { id: 'cmt-2', cell: 'Sales!A4', content: 'Fixed', replies: [], resolved: true },
+    ];
+    return seed;
+  }
+
+  it('lists each thread as a revealable comment ref carrying its host id', async () => {
+    active = installExcel(seedWithComments());
+    const bridge = new ExcelBridge();
+    const comments = (await bridge.listContext()).filter((r) => r.kind === 'comment');
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toMatchObject({
+      id: 'xl:comment:cmt-1',
+      surface: 'excel',
+      title: 'Comment by Dana on Sales!C2',
+      preview: 'Is 300 final?',
+      anchor: { matchText: 'Sales!C2', locator: 'range:Sales!C2' },
+    });
+    expect(comments[1]?.title).toBe('Comment by Unknown author on Sales!A4 (resolved)');
+    expect(bridge.canRevealContext(comments[0]!)).toBe(true);
+  });
+
+  it('resolves a comment ref to its thread text, and a vanished one to nothing', async () => {
+    active = installExcel(seedWithComments());
+    const bridge = new ExcelBridge();
+    const ref: ContextRef = {
+      id: 'xl:comment:cmt-1',
+      kind: 'comment',
+      surface: 'excel',
+      title: 'Comment',
+    };
+    const ctx = await bridge.resolveContext(ref);
+    expect(ctx).toHaveLength(1);
+    for (const c of ctx) expect(() => ResolvedContextSchema.parse(c)).not.toThrow();
+    expect(ctx[0]?.value).toEqual({
+      as: 'text',
+      mimeType: 'text/markdown',
+      text: [
+        'Comment thread (commentId: cmt-1, open)',
+        'On cell: Sales!C2',
+        '"Dana": "Is 300 final?"',
+        '  Reply from "Lee": "Pending Q3 close"',
+      ].join('\n'),
+    });
+    await expect(bridge.resolveContext({ ...ref, id: 'xl:comment:gone' })).resolves.toEqual([]);
+  });
+
+  it('reads no comments below ExcelApi 1.10 (no comments API)', async () => {
+    active = installExcel(seedWithComments(), { apiVersion: 9 });
+    const refs = await new ExcelBridge().listContext();
+    expect(refs.some((r) => r.kind === 'comment')).toBe(false);
+  });
+
+  it('treats state as unknown on ExcelApi 1.10 — no open/resolved claim', async () => {
+    active = installExcel(seedWithComments(), { apiVersion: 10 });
+    const bridge = new ExcelBridge();
+    const comments = (await bridge.listContext()).filter((r) => r.kind === 'comment');
+    expect(comments[1]?.title).toBe('Comment by Unknown author on Sales!A4');
+    const [ctx] = await bridge.resolveContext(comments[0]!);
+    const text = ctx?.value.as === 'text' ? ctx.value.text : '';
+    expect(text.split('\n')[0]).toBe('Comment thread (commentId: cmt-1)');
   });
 });
 

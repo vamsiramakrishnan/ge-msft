@@ -1,4 +1,4 @@
-import type { ResolvedContext } from '@ge/contracts';
+import type { ContextRef, ResolvedContext } from '@ge/contracts';
 import {
   native,
   toContextNative,
@@ -6,7 +6,7 @@ import {
   type NativeContent,
   type ToContextOptions,
 } from '@ge/content';
-import type { WordParagraph } from './host-port.js';
+import type { WordComment, WordParagraph } from './host-port.js';
 
 /** A re-resolved search hit at the host boundary: the matched text + a short surrounding hint. */
 export interface WordSearchHit {
@@ -132,4 +132,64 @@ export function searchHitsToContext(
     });
   }
   return out;
+}
+
+/** Longest anchored-text excerpt carried with a comment, so one huge range can't flood a turn. */
+const MAX_COMMENT_ANCHOR_CHARS = 500;
+
+function commentAuthor(name: string): string {
+  return name.trim() || 'Unknown author';
+}
+
+/**
+ * Host text as a single JSON-quoted line: newlines and quotes are escaped, so a comment body can't
+ * forge a builder-owned line (a fake thread header or "Reply from …") or break out of its quotes.
+ */
+function quoted(text: string): string {
+  return JSON.stringify(text);
+}
+
+/** The host comment id a `comment` ref points at (its typed hostRef, else its `word:comment:` id). */
+export function commentIdFromRef(ref: ContextRef): string | undefined {
+  if (ref.hostRef?.type === 'word.comment') return ref.hostRef.commentId;
+  const prefix = 'word:comment:';
+  return ref.id.startsWith(prefix) ? ref.id.slice(prefix.length) || undefined : undefined;
+}
+
+/**
+ * Comment threads → attachable `comment` refs, one per thread. The typed `hostRef` carries the host
+ * id the `reply <commentId> "text"` verb needs; the anchor lets a selector match the commented text.
+ */
+export function commentsToRefs(comments: readonly WordComment[]): ContextRef[] {
+  return comments.map((c) => {
+    const anchorText = c.anchorText.trim().slice(0, 120);
+    return {
+      id: `word:comment:${c.id}`,
+      kind: 'comment',
+      surface: 'word',
+      title: `Comment by ${commentAuthor(c.authorName)}${c.resolved ? ' (resolved)' : ''}`,
+      preview: c.content.slice(0, 120),
+      ...(anchorText ? { anchor: { matchText: anchorText, locator: `comment:${c.id}` } } : {}),
+      hostRef: { type: 'word.comment', commentId: c.id },
+    };
+  });
+}
+
+/**
+ * One comment thread → a single text part: the id to reply with, its state, the commented text, the
+ * comment and each reply in order. Host text is JSON-quoted onto its own line (see {@link quoted}).
+ */
+export function commentToContext(comment: WordComment): ResolvedContext[] {
+  const anchor = comment.anchorText.trim().slice(0, MAX_COMMENT_ANCHOR_CHARS);
+  const lines = [
+    `Comment thread (commentId: ${comment.id}, ${comment.resolved ? 'resolved' : 'open'})`,
+    ...(anchor ? [`On text: ${quoted(anchor)}`] : []),
+    `${quoted(commentAuthor(comment.authorName))}: ${quoted(comment.content)}`,
+    ...comment.replies.map(
+      (r) => `  Reply from ${quoted(commentAuthor(r.authorName))}: ${quoted(r.content)}`,
+    ),
+  ];
+  const [ref] = commentsToRefs([comment]);
+  if (!ref) return [];
+  return [{ ref, value: { as: 'text', text: lines.join('\n'), mimeType: 'text/markdown' } }];
 }

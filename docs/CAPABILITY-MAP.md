@@ -28,7 +28,7 @@ the **React/Vite/manifest shell** over the web-shell core. See `STATUS.md`.
 | table / range / sheet / named range (values+formulas) | Excel | ✅ | `bridge-excel` range/used-range + workbook tables/names → native table block and openable refs |
 | mail item / subject / from / body | Outlook | ✅ | `bridge-outlook` (string path; reads active item) |
 | transcript window | Teams | ✅ | `teams` bridge (RSC-consented, injected) |
-| comment / thread | Word, Excel | ✅ | comment-reply actuation + `comment-added` events |
+| comment / thread | Word, Excel | ✅ | existing threads (author, text, anchored text/cell, replies) listed as attachable `comment` refs with their ids; comment-reply actuation + `comment-added` events |
 | slide / shape | PowerPoint | ✅ | `bridge-powerpoint` (selected slides → shapes' text) |
 | page / outline | OneNote | ✅ | `bridge-onenote` (active page title + outline rich text; web-only) |
 | calendar event (active item) | Outlook | 🟡 | Office.js appointment read not yet in the bridge |

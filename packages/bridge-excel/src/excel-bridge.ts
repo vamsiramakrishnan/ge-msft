@@ -25,10 +25,14 @@ import { buildDocStateSnapshot } from '@ge/content';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
 import {
+  commentIdFromRef,
+  commentsToRefs,
+  commentToContext,
   rangeToContext,
   searchUsedRange,
   selectionValuesToContext,
   usedRangeToBlocks,
+  type ExcelComment,
 } from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
 import {
@@ -86,6 +90,12 @@ export class ExcelBridge implements DocBridge {
   }
 
   async listContext(): Promise<ContextRef[]> {
+    const [refs, comments] = await Promise.all([this.listRangeContext(), readComments()]);
+    // Existing comment threads, so a reply can target one by its host id (`reply <commentId> …`).
+    return [...refs, ...commentsToRefs(comments)];
+  }
+
+  private async listRangeContext(): Promise<ContextRef[]> {
     return Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       const sel = ctx.workbook.getSelectedRange();
@@ -159,6 +169,12 @@ export class ExcelBridge implements DocBridge {
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.kind === 'comment') {
+      const commentId = commentIdFromRef(ref);
+      if (commentId === undefined) return [];
+      const comment = (await readComments()).find((c) => c.id === commentId);
+      return comment ? commentToContext(comment) : [];
+    }
     if (ref.kind === 'selection' || ref.kind === 'range') {
       const selector = ref.kind === 'selection' && ref.live ? undefined : excelSelectorFromRef(ref);
       return Excel.run(async (ctx) => {
@@ -965,7 +981,7 @@ export class ExcelBridge implements DocBridge {
       // First sync is required: we must read back the comment ids to locate the target proxy
       // before the second (write) sync replies on it — a genuine read-then-write dependency.
       await ctx.sync();
-      const comment = comments.items.find((c) => c.id === commentId);
+      const comment = comments.items.find((c) => String(c.id).trim() === commentId);
       if (!comment) {
         return {
           ok: false,
@@ -1072,6 +1088,53 @@ function previewOf(values: string[][]): string {
     .map((c) => String(c ?? ''))
     .join(' | ')
     .slice(0, 120);
+}
+
+/** Cap comment threads read into context so a heavily reviewed workbook can't blow the budget. */
+export const MAX_READ_COMMENTS = 50;
+
+/**
+ * Read up to {@link MAX_READ_COMMENTS} workbook comment threads — author, text, cell and replies —
+ * in two syncs whatever the count. `workbook.comments`, `getLocation` and `replies` → ExcelApi 1.10;
+ * `resolved` → 1.11, so it is only loaded where it exists. Read-only; never throws (an unsupported
+ * host or a batch failure yields `[]`, so a comment read can't break the context list).
+ */
+async function readComments(): Promise<ExcelComment[]> {
+  if (!isSet('ExcelApi', '1.10')) return [];
+  const withResolved = isSet('ExcelApi', '1.11');
+  try {
+    return await Excel.run(async (ctx) => {
+      const comments = ctx.workbook.comments;
+      comments.load(
+        withResolved
+          ? 'items/id,items/authorName,items/content,items/resolved'
+          : 'items/id,items/authorName,items/content',
+      );
+      await ctx.sync();
+      const threads = comments.items.slice(0, MAX_READ_COMMENTS).map((comment) => {
+        const cell = comment.getLocation();
+        cell.load('address');
+        const replies = comment.replies;
+        replies.load('items/authorName,items/content');
+        return { comment, cell, replies };
+      });
+      await ctx.sync();
+      return threads.map(({ comment, cell, replies }) => ({
+        // Stringified: hosts can return a number despite the typings (see Word's hostCommentId).
+        id: String(comment.id).trim(),
+        authorName: comment.authorName ?? '',
+        content: comment.content ?? '',
+        resolved: withResolved ? comment.resolved === true : undefined,
+        address: cell.address ?? '',
+        replies: replies.items.map((r) => ({
+          authorName: r.authorName ?? '',
+          content: r.content ?? '',
+        })),
+      }));
+    });
+  } catch {
+    return [];
+  }
 }
 
 function excelSelectorFromRef(ref: ContextRef): string | undefined {

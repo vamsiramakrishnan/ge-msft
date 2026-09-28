@@ -1646,6 +1646,20 @@ describe('WordBridge orchestration (against a fake host)', () => {
       expect(second?.version).toBe(2);
     });
 
+    it('carries the live selection so a selection rewrite targets what the user selected', async () => {
+      const host = new FakeWordHost();
+      host.paragraphs = [{ text: 'We will ship it soon.', styleBuiltIn: 'Normal' }];
+      host.selectionText = 'We will ship it soon.';
+      const bridge = new WordBridge(host);
+      expect((await bridge.captureDocState())?.selection).toEqual({
+        kind: 'selection',
+        title: 'Selection',
+        preview: 'We will ship it soon.',
+      });
+      host.selectionText = '  ';
+      expect((await bridge.captureDocState())?.selection).toBeUndefined();
+    });
+
     it('returns undefined for an empty document', async () => {
       const host = new FakeWordHost();
       host.paragraphs = [];

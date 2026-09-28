@@ -5,6 +5,7 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSelection,
   DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
@@ -167,13 +168,22 @@ export class WordBridge implements DocBridge {
    * are omitted (no cheap port read); the runtime renders + wraps this as untrusted data.
    */
   async captureDocState(): Promise<DocStateSnapshot | undefined> {
-    const paras = await this.host.readParagraphs();
+    const [paras, selText] = await Promise.all([
+      this.host.readParagraphs(),
+      this.host.readSelectionText(),
+    ]);
     if (paras.length === 0) return undefined;
     this.docStateVersion += 1;
+    // The live selection rides along (as Excel's does), so "rewrite my selection" targets what the
+    // user actually selected instead of a sentence the model picks from the whole document.
+    const selection = selText.trim()
+      ? ({ kind: 'selection', title: 'Selection', preview: selText } satisfies DocStateSelection)
+      : undefined;
     return buildDocStateSnapshot({
       surface: 'word',
       version: this.docStateVersion,
       blocks: paragraphsToBlocks(paras),
+      ...(selection ? { selection } : {}),
     });
   }
 

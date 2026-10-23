@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { AssistRequest, ResolvedContext, SseEvent } from '@ge/contracts';
 import { StreamAssistClient } from './stream-assist.js';
+import { WifExchangeError } from './wif.js';
 import type { GeminiClientConfig } from './config.js';
 
 const ASSISTANT = { project: 'proj', location: 'eu', engine: 'eng1' };
@@ -57,6 +58,18 @@ describe('StreamAssistClient — network and failure paths', () => {
       code: 'network',
       message: 'Failed to fetch',
     });
+  });
+
+  it('yields an auth_exchange error event when the WIF token exchange fails', async () => {
+    const failing = {
+      getAccessToken: () => Promise.reject(new WifExchangeError(400, '{"error":"invalid_grant"}')),
+      invalidate: vi.fn(),
+    };
+    const f = vi.fn();
+    const client = new StreamAssistClient(failing, cfg(), f as never, noSleep);
+    const events = await collect(client.stream(assistReq()));
+    expect(f).not.toHaveBeenCalled();
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'auth_exchange' })]);
   });
 
   it('maps an exhausted transient 503 to an http_503 error event', async () => {

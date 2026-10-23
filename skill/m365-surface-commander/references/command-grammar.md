@@ -114,13 +114,13 @@ that support it (see [capability-map.md](capability-map.md)).
 
 | Command   | Effect             | Apps        | Usage                                                                                                 |
 | --------- | ------------------ | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `set`     | write a cell       | Excel       | `set <A1> <value\|=formula>` — e.g. `set Sales!F2 =C2-D2`                                             |
+| `set`     | write a cell or fill a range | Excel | `set <A1\|A1:A50> <value\|=formula>` — e.g. `set Sales!F2 =C2-D2`; `set Sales!F2:F57 =C2-D2` fills down (refs shift per row) |
 | `grid`    | write a cell grid  | Excel       | `grid <range> = "a\tb\nc\td"` — write a rectangular literal TSV grid as one change                    |
 | `suggest` | tracked change     | Word        | `suggest "old text" => "new text"` (anchored on exact text)                                           |
 | `comment` | add a comment      | Word, Excel | `comment <cell> "text"` or `comment "anchor" "text"`                                                  |
-| `format`  | format cells       | Excel       | `format <range> k=v …` — keys: `bold italic fill numberFormat`                                        |
+| `format`  | format cells       | Excel       | `format <range> k=v …` — keys: `bold italic fill numberFormat fontColor align valign border borderColor` |
 | `reply`   | reply to a comment | Word, Excel | `reply <commentId> "text"`                                                                            |
-| `slide`   | insert a slide     | PowerPoint  | `slide "Title" "bullet" …` or `slide "Title" ($rows \| select a,b)`                                   |
+| `slide`   | insert a slide     | PowerPoint  | `slide "Title" "bullet" … [at=N]` or `slide "Title" ($rows \| select a,b)` (`at=2` → new slide 2)     |
 | `page`    | append a page      | OneNote     | `page "Title" "body"`                                                                                 |
 | `mail`    | stage a reply      | Outlook     | `mail "body"` — reviewable, never auto-sent                                                           |
 | `compose` | draft a new email  | Outlook     | `compose "Subject" "body"` — recipients left to the user                                              |
@@ -139,7 +139,7 @@ approval. Do not ask the model to write raw PPTX base64 in the CLI.
 
 | Command | Meaning                                                                  |
 | ------- | ------------------------------------------------------------------------ |
-| `done`  | The whole task is complete.                                              |
+| `done`  | The whole task is complete. `done "<answer>"` shows the answer to a question. |
 | `help`  | List available commands, or `help <command>` for one generated playbook. |
 
 `<command> -h` and `<command> --help` are aliases for `help <command>`. Use targeted help before

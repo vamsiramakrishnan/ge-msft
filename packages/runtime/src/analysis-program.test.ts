@@ -74,6 +74,29 @@ describe('typed artifact bindings', () => {
   });
 });
 
+describe('binding snapshots', () => {
+  it('restores the names bound before a repaired turn and drops the ones it added', () => {
+    const bindings = new AnalysisBindings();
+    bindings.bind('kept', A);
+    const before = bindings.snapshot();
+    bindings.bind('added', B);
+    bindings.restore(before);
+    expect(bindings.entries()).toEqual([['kept', A]]);
+    // The name the repaired turn used is free again for the corrected program.
+    expect(() => bindings.bind('added', B)).not.toThrow();
+  });
+
+  it('says how to bind an analyze input when the binding is unknown', () => {
+    expect(() =>
+      new AnalysisBindings().resolve({
+        kind: 'query',
+        inputs: ['$raw'],
+        sql: 'SELECT * FROM $raw',
+      }),
+    ).toThrow(/let \$raw = analyze \{"kind":"capture"/);
+  });
+});
+
 describe('SDK analysis program compiler', () => {
   it('retains compatibility exports as the authoritative shared schema instances', () => {
     expect(AnalysisActionSchema).toBe(SharedActionSchema);

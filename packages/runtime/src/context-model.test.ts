@@ -77,6 +77,38 @@ describe('ContextModel — constructs the working-context brief from events', ()
     expect(text).toContain('anchor_drift');
   });
 
+  it('leaves write outcomes out of the brief when asked, keeping host events', () => {
+    // Isolated command turns never mark the brief sent, so earlier tasks' outcomes piled up there.
+    const m = new ContextModel('powerpoint');
+    m.observe({ type: 'post-actuation', request: req, result: okResult });
+    m.note('Comment c7: please check the totals');
+    const text = m.pendingBrief({ withoutActuations: true })?.entries[0]?.value;
+    expect(text).toMatchObject({ as: 'text' });
+    expect(text && 'text' in text ? text.text : '').toContain('Comment c7');
+    expect(text && 'text' in text ? text.text : '').not.toContain('Applied');
+    expect(textOf(m)).toContain('Applied tracked-change (c1)');
+
+    const onlyWrites = new ContextModel('powerpoint');
+    onlyWrites.observe({ type: 'post-actuation', request: req, result: okResult });
+    expect(onlyWrites.pendingBrief({ withoutActuations: true })).toBeUndefined();
+
+    // An uncertain outcome is kept: a later task must know the write may have landed.
+    onlyWrites.observe({
+      type: 'post-actuation',
+      request: { ...req, changeId: asChangeId('c9') },
+      result: {
+        ok: false,
+        changeId: asChangeId('c9'),
+        kind: 'tracked-change',
+        recoveryPending: true,
+        error: { code: 'outcome_unknown', message: 'lost receipt' },
+      },
+    });
+    const kept = onlyWrites.pendingBrief({ withoutActuations: true })?.entries[0]?.value;
+    expect(kept && 'text' in kept ? kept.text : '').toContain('outcome_unknown');
+    expect(kept && 'text' in kept ? kept.text : '').not.toContain('Applied');
+  });
+
   it('primes (sends now) when a meeting ends', () => {
     const m = new ContextModel('teams');
     expect(m.observe({ type: 'meeting-ended', id: 'mtg-9' })).toEqual({ commit: 'prime' });

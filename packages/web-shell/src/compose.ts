@@ -1,4 +1,5 @@
 import type { ContextKind, ReleaseProfileName, UnitDescriptor } from '@ge/contracts';
+import { rulesFor, type PromptRule } from './brand.js';
 import { asSessionId, filterManifestForReleaseProfile, releaseProfile } from '@ge/contracts';
 import type {
   AssistantPath,
@@ -50,6 +51,13 @@ export interface ShellConfig {
   proxyUrl?: string;
   /** Release profile that narrows capabilities before UI/model/executor exposure. */
   releaseProfile?: ReleaseProfileName;
+  /** Branded assistant name the model calls itself; unset keeps the engine's default persona. */
+  assistantName?: string;
+  /** Brand writing rules sent with the name on every turn; only the open app's are kept. */
+  assistantRules?: readonly PromptRule[];
+  /** The brand's email opening for Outlook drafts (e.g. "Halo", not "Yth."). */
+  /** The brand's main colour: the header row of a PowerPoint table the model adds without one. */
+  accentColor?: string;
 }
 
 /**
@@ -140,6 +148,10 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
       ...(config.widget ? { widget: config.widget } : {}),
       identity: identity.username,
       ...(config.modelId ? { modelId: config.modelId } : {}),
+      ...(config.assistantName ? { assistantName: config.assistantName } : {}),
+      ...(rulesFor(config.assistantRules, bridge.surface).length
+        ? { assistantRules: rulesFor(config.assistantRules, bridge.surface) }
+        : {}),
       ...(config.skills?.length ? { skills: config.skills } : {}),
       ...(config.skillMentions?.length ? { skillMentions: config.skillMentions } : {}),
       ...(config.plannerSkills?.length ? { plannerSkills: config.plannerSkills } : {}),
@@ -209,6 +221,7 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
 
   const session = new AssistSession(bridge, client, {
     unit,
+    ...(config.accentColor ? { tableHeaderFill: config.accentColor } : {}),
     recoveryOwner: identity.oid ?? identity.username,
     evidence: new EvidencePipeline({
       search: new SearchClient(
@@ -255,4 +268,23 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
   });
 
   return { session, tokens, client, warmUp, availableAgents, availableDataStores };
+}
+
+/**
+ * A user-visible line when a configured skill bundle in Gemini Enterprise is older than this app
+ * (`stale`: its `[rev:]` marker differs from the build's recorded hash) or absent (`missing`).
+ * Undefined when every skill matches, none is configured, or the check itself failed.
+ */
+export function skillDriftNotice(warmUp: ComposedSession['warmUp']): string | undefined {
+  const name = (w: ComposedSession['warmUp'][number]): string =>
+    'agentId' in w ? w.agentId : (w.agent.displayName ?? w.agent.name ?? 'skill');
+  const stale = warmUp.filter((w) => w.action === 'stale').map(name);
+  const missing = warmUp.filter((w) => w.action === 'missing').map(name);
+  const parts = [
+    ...(stale.length ? [`older than this app: ${stale.join(', ')}`] : []),
+    ...(missing.length ? [`not found: ${missing.join(', ')}`] : []),
+  ];
+  return parts.length
+    ? `Model instructions out of date (${parts.join('; ')}). Ask your admin to run bun run ge:skills.`
+    : undefined;
 }

@@ -13,7 +13,6 @@ import {
   FIXTURE_PLAN,
   FIXTURE_PENDING_WRITE,
   FIXTURE_PROPOSALS,
-  FIXTURE_SKILLS,
   FIXTURE_CONVERSATIONS,
   FIXTURE_ERROR,
   PREVIEW_SURFACES,
@@ -36,7 +35,6 @@ interface Toggles {
   chips: boolean;
   messages: boolean;
   suggestions: boolean;
-  skills: boolean;
   steps: boolean;
   plan: boolean;
   write: boolean;
@@ -49,7 +47,6 @@ const ALL_ON: Toggles = {
   chips: true,
   messages: true,
   suggestions: true,
-  skills: true,
   steps: true,
   plan: true,
   write: true,
@@ -62,7 +59,6 @@ const README_CAPTURE: Toggles = {
   chips: true,
   messages: true,
   suggestions: true,
-  skills: true,
   steps: true,
   plan: true,
   write: false,
@@ -94,7 +90,6 @@ function buildState(t: Toggles): PanelState {
     availableAgents: [],
     availableDataStores: [],
     conversations: FIXTURE_CONVERSATIONS,
-    ...(t.skills ? { skills: FIXTURE_SKILLS } : {}),
     ...(t.write ? { pendingWrite: FIXTURE_PENDING_WRITE } : {}),
     ...(t.plan ? { pendingPlan: FIXTURE_PLAN } : {}),
     busy: t.busy,
@@ -136,6 +131,12 @@ export function makeMockController(state: PanelState): PanelController {
       log('invokeSkill')(name, args),
     refreshConversations: async () => log('refreshConversations')(),
     resumeConversation: (name: string) => log('resumeConversation')(name),
+    newConversation: log('newConversation'),
+    attachResumeStore: () => undefined,
+    finishResume: async () => undefined,
+    dismissResume: log('dismissResume'),
+    undoChanges: async () => undefined,
+    retryLast: async () => undefined,
     reveal: async (id: string) => log('reveal')(id),
     revealLocation: async (surface: Surface, target: string) =>
       log('revealLocation')(surface, target),
@@ -156,7 +157,6 @@ const TOGGLE_LABELS: ReadonlyArray<[keyof Toggles, string]> = [
   ['chips', 'Context'],
   ['messages', 'Thread'],
   ['suggestions', 'Suggestions'],
-  ['skills', 'Skills'],
   ['steps', 'Run steps'],
   ['plan', 'Plan'],
   ['write', 'Write'],
@@ -176,9 +176,13 @@ function Preview(): JSX.Element {
 
   // A fresh mock per (surface, toggles) so `getState` reflects the toolbar. `App` re-renders on its
   // own prop change; the mock's `subscribe` is a no-op because the harness is the source of truth.
+  const resume = params.get('resume') === '1';
   const controller = useMemo(
-    () => (interactive ? makeDemoController(surface) : makeMockController(buildState(toggles))),
-    [toggles, surface, interactive],
+    () =>
+      interactive
+        ? makeDemoController(surface, { resume })
+        : makeMockController(buildState(toggles)),
+    [toggles, surface, interactive, resume],
   );
   useEffect(() => () => controller.cancel(), [controller]);
 
@@ -190,6 +194,7 @@ function Preview(): JSX.Element {
         style={{ width: frameWidth, height: frameHeight }}
       >
         <App
+          diagnosticsScope="preview"
           key={`${surface}-${interactive}`}
           controller={controller}
           surface={surface}
@@ -293,7 +298,6 @@ function Preview(): JSX.Element {
                 chips: false,
                 messages: true,
                 suggestions: false,
-                skills: false,
                 steps: false,
                 plan: false,
                 write: false,

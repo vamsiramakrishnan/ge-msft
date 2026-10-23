@@ -9,6 +9,7 @@ import {
 } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
 import { ExcelBridge } from './excel-bridge.js';
+import { chartAreas } from './actuate-plan.js';
 
 /**
  * Self-contained, in-memory **Excel host simulator** for the bridge-excel package. It models ONLY
@@ -40,6 +41,9 @@ interface CommentSeed {
   content: string;
   replies: string[];
   resolved: boolean;
+  authorName?: string;
+  /** Authored replies the read path loads (write-path replies land in `replies`). */
+  threadReplies?: Array<{ authorName: string; content: string }>;
 }
 /** A native Table the bridge minted via `tables.add`, keyed on the host-minted name. */
 interface TableSeed {
@@ -56,6 +60,10 @@ interface ChartSeed {
   seriesBy: string;
   sourceAddress: string;
   title?: string;
+  /** Category (X-axis) source set on series 0 via `setXAxisValues`. */
+  xAxis?: string;
+  /** Series added after `charts.add` via `series.add` + `setValues`/`setXAxisValues`. */
+  extraSeries?: Array<{ name?: string; values?: string; xAxis?: string }>;
 }
 /** One conditional-format rule appended to a range's CF collection. */
 interface CfSeed {
@@ -75,6 +83,8 @@ interface ExcelSeed {
   tables: TableSeed[];
   /** Charts minted via `charts.add`, in mint order. */
   charts: ChartSeed[];
+  /** Make the next chart-series write throw (a host failure after `charts.add`). */
+  failSeries?: boolean;
   /** Conditional-format rules per range address (ordinal = index within the array). */
   conditionalFormats: Map<string, CfSeed[]>;
   /** Monotonic counters so each mint gets a deterministic host-assigned name. */
@@ -183,9 +193,29 @@ class FakeRange {
     this.pendingFormulas = value;
   }
   numberFormat: unknown[][] = [];
+  private readonly edges = new Map<string, Record<string, string>>();
+  private autofitted = false;
   readonly format = {
-    font: { bold: undefined as boolean | undefined, italic: undefined as boolean | undefined },
+    protection: { locked: true, load(_props?: string): void {} },
+    font: {
+      bold: undefined as boolean | undefined,
+      italic: undefined as boolean | undefined,
+      color: undefined as string | undefined,
+      size: undefined as number | undefined,
+    },
     fill: { color: undefined as string | undefined },
+    horizontalAlignment: undefined as string | undefined,
+    verticalAlignment: undefined as string | undefined,
+    wrapText: undefined as boolean | undefined,
+    borders: {
+      getItem: (edge: string): Record<string, string> => {
+        if (!this.edges.has(edge)) this.edges.set(edge, {});
+        return this.edges.get(edge)!;
+      },
+    },
+    autofitColumns: (): void => {
+      this.autofitted = true;
+    },
   };
 
   constructor(
@@ -276,6 +306,17 @@ class FakeRange {
       ...(this.format.font.italic !== undefined ? { italic: this.format.font.italic } : {}),
       ...(this.format.fill.color !== undefined ? { fill: this.format.fill.color } : {}),
       ...(nf !== undefined ? { numberFormat: String(nf) } : {}),
+      ...(this.format.font.color !== undefined ? { fontColor: this.format.font.color } : {}),
+      ...(this.format.font.size !== undefined ? { fontSize: this.format.font.size } : {}),
+      ...(this.format.horizontalAlignment !== undefined
+        ? { horizontalAlignment: this.format.horizontalAlignment }
+        : {}),
+      ...(this.format.verticalAlignment !== undefined
+        ? { verticalAlignment: this.format.verticalAlignment }
+        : {}),
+      ...(this.format.wrapText !== undefined ? { wrapText: this.format.wrapText } : {}),
+      ...(this.edges.size > 0 ? { borders: Object.fromEntries(this.edges) } : {}),
+      ...(this.autofitted ? { autofit: true } : {}),
     };
     if (Object.keys(facets).length > 0) {
       const addr = `${this.sheetName}!${this.a1}`;
@@ -376,11 +417,58 @@ class FakeChartTitle {
     this.target.title = v;
   }
 }
+/** Resolve a fake range's address immediately (the fake host has no deferred series writes). */
+function addressOf(range: FakeRange): string {
+  range.load('address');
+  range.flushLoads();
+  return range.address;
+}
+class FakeChartSeries {
+  constructor(
+    private readonly onSet: (key: 'values' | 'xAxis', address: string) => void,
+    private readonly fail = false,
+  ) {}
+  setValues(range: FakeRange): void {
+    if (this.fail) throw new Error('fake-excel: series write failed');
+    this.onSet('values', addressOf(range));
+  }
+  setXAxisValues(range: FakeRange): void {
+    this.onSet('xAxis', addressOf(range));
+  }
+}
+class FakeChartSeriesCollection {
+  constructor(
+    private readonly target: ChartSeed,
+    private readonly fail = false,
+  ) {}
+  getItemAt(index: number): FakeChartSeries {
+    if (index !== 0) throw new Error('fake-excel: only series 0 exists before series.add');
+    return new FakeChartSeries((key, address) => {
+      if (key === 'xAxis') this.target.xAxis = address;
+    });
+  }
+  add(name?: string): FakeChartSeries {
+    const entry: { name?: string; values?: string; xAxis?: string } = name ? { name } : {};
+    (this.target.extraSeries ??= []).push(entry);
+    return new FakeChartSeries((key, address) => {
+      entry[key] = address;
+    }, this.fail);
+  }
+}
 class FakeChart {
-  constructor(private readonly target: ChartSeed) {}
+  constructor(
+    private readonly target: ChartSeed,
+    private readonly seed?: ExcelSeed,
+  ) {}
   private loaded = false;
   get title(): FakeChartTitle {
     return new FakeChartTitle(this.target);
+  }
+  get series(): FakeChartSeriesCollection {
+    return new FakeChartSeriesCollection(this.target, this.seed?.failSeries === true);
+  }
+  delete(): void {
+    if (this.seed) this.seed.charts = this.seed.charts.filter((c) => c !== this.target);
   }
   load(props?: string): this {
     if (!props || props.includes('name')) this.loaded = true;
@@ -406,7 +494,7 @@ class FakeChartCollection {
     const name = `Chart ${++this.seed.chartCounter}`;
     const target: ChartSeed = { name, sheet: this.sheetName, chartType, seriesBy, sourceAddress };
     this.seed.charts.push(target);
-    return new FakeChart(target);
+    return new FakeChart(target, this.seed);
   }
 }
 
@@ -522,9 +610,18 @@ class FakeNamedItem {
   }
 }
 
+const protectedSheets = new Set<string>();
+/** While true, every sync is rejected like Excel with a cell in edit mode (nothing commits). */
+let cellEditMode = false;
+
 class FakeWorksheet {
   get id(): string {
     return `sheet:${this.name}`;
+  }
+  readonly visibility = 'Visible';
+  /** Sheets named in `protectedSheets` are protected (Review → Protect Sheet). */
+  get protection(): { protected: boolean; load(_props?: string): void } {
+    return { protected: protectedSheets.has(this.name), load() {} };
   }
   constructor(
     private readonly seed: ExcelSeed,
@@ -583,14 +680,15 @@ class FakeWorksheetCollection {
   readonly onChanged = new EventSink<{ source?: string }>();
   readonly onSelectionChanged = new EventSink<{ address: string }>();
   constructor(private readonly seed: ExcelSeed) {}
-  load(): this {
-    return this;
-  }
-  get items(): FakeWorksheet[] {
-    return this.seed.sheets.map((sheet) => this.getItem(sheet.name));
-  }
   getActiveWorksheet(): FakeWorksheet {
     return new FakeWorksheet(this.seed, this.seed.activeSheet);
+  }
+  get items(): FakeWorksheet[] {
+    // Through `getItem`, which the context wraps to track loads until the next sync.
+    return this.seed.sheets.map((s) => this.getItem(s.name));
+  }
+  load(_props?: string): this {
+    return this;
   }
   getItem(name: string): FakeWorksheet {
     byName(this.seed, name);
@@ -616,6 +714,12 @@ class FakeNamedItemCollection {
 
 class FakeReplies {
   constructor(private readonly target: CommentSeed) {}
+  get items(): Array<{ authorName: string; content: string }> {
+    return this.target.threadReplies ?? [];
+  }
+  load(): this {
+    return this;
+  }
   add(text: string): void {
     this.target.replies.push(text);
   }
@@ -624,6 +728,18 @@ class FakeComment {
   constructor(private readonly target: CommentSeed) {}
   get id(): string {
     return this.target.id;
+  }
+  get authorName(): string | undefined {
+    return this.target.authorName;
+  }
+  get content(): string {
+    return this.target.content;
+  }
+  get resolved(): boolean {
+    return this.target.resolved;
+  }
+  getLocation(): { address: string; load(): void } {
+    return { address: this.target.cell, load: () => undefined };
   }
   get replies(): FakeReplies {
     return new FakeReplies(this.target);
@@ -679,13 +795,38 @@ class FakeWorkbook {
   }
 }
 
+/** `selection: CHART_SELECTED` = a chart (not cells) is selected, as right after inserting one. */
+const CHART_SELECTED = '<chart>';
+
 class FakeContext {
   readonly workbook: FakeWorkbook;
   private readonly touched: FakeRange[] = [];
+  private invalidSelection = false;
   constructor(seed: ExcelSeed) {
     this.workbook = trackRanges(new FakeWorkbook(seed), this.touched);
+    const getSelected = this.workbook.getSelectedRange.bind(this.workbook);
+    this.workbook.getSelectedRange = () => {
+      if (seed.selection === CHART_SELECTED) {
+        // Like Excel: the call queues fine; the sync rejects the whole batch.
+        this.invalidSelection = true;
+        return this.workbook.worksheets.getActiveWorksheet().getRange('A1');
+      }
+      return getSelected();
+    };
   }
   sync(): Promise<void> {
+    if (cellEditMode)
+      return Promise.reject(
+        Object.assign(new Error('The cell is being edited.'), {
+          code: 'InvalidOperationInCellEditMode',
+        }),
+      );
+    if (this.invalidSelection)
+      return Promise.reject(
+        Object.assign(new Error('The current selection is invalid for this operation.'), {
+          code: 'InvalidSelection',
+        }),
+      );
     for (const r of this.touched) r.flushLoads();
     for (const r of this.touched) r.commit();
     return Promise.resolve();
@@ -912,7 +1053,7 @@ describe('ExcelBridge.listContext (host wiring)', () => {
     expect(refs).toHaveLength(3);
     expect(refs[0]).toMatchObject({ kind: 'range', surface: 'excel', live: true });
     expect(refs[0]?.id).toBe('xl:Sales!A2:C2');
-    expect(refs[0]?.preview).toBe('1 × 3 cells'); // metadata only; no eager values load
+    expect(refs[0]?.preview).toContain('East'); // selection A2:C2 = East,Alice,300
     expect(refs[1]).toMatchObject({
       id: 'xl:named:SalesTable',
       kind: 'range',
@@ -924,6 +1065,32 @@ describe('ExcelBridge.listContext (host wiring)', () => {
     expect(refs[2]).toMatchObject({ kind: 'sheet', surface: 'excel' });
     expect(refs[2]?.id).toBe('xl:Sales!A1:C4');
     expect(refs[2]?.live).toBeUndefined();
+  });
+
+  it('does not load the values of a huge selection (Office caps a response at ~5 MB)', async () => {
+    const seed = salesSeed();
+    seed.selection = 'Sales!A1:Z1000'; // 26,000 cells: over the read budget, like a whole column
+    active = installExcel(seed);
+    const real = Object.getOwnPropertyDescriptor(FakeRange.prototype, 'values')!.get!;
+    const values = vi.spyOn(FakeRange.prototype, 'values', 'get').mockImplementation(function (
+      this: FakeRange,
+    ) {
+      const { rows, cols } = parseA1((this as unknown as { a1: string }).a1);
+      if (rows * cols > 10_000)
+        throw new Error('The response payload size has exceeded the limit.');
+      return real.call(this) as string[][];
+    });
+    try {
+      const refs = await new ExcelBridge().listContext();
+      expect(refs[0]?.id).toBe('xl:Sales!A1:Z1000');
+      // The user is told, on the chip, that the values were not read.
+      expect(refs[0]?.notice).toMatch(/26,000 cells\) is too large to read/);
+      // And the model is told too, in the snapshot's selection.
+      const snapshot = await new ExcelBridge().captureDocState();
+      expect(snapshot?.selection?.preview).toMatch(/too large to read/);
+    } finally {
+      values.mockRestore();
+    }
   });
 
   it('lists workbook tables as openable table refs', async () => {
@@ -952,9 +1119,85 @@ describe('ExcelBridge.listContext (host wiring)', () => {
       id: 'xl:Empty!A1',
       kind: 'range',
       live: true,
-      preview: '1 × 1 cells',
+      preview: 'Blank selection',
     });
     expect(refs.map((r) => r.kind)).toEqual(['range', 'range', 'sheet']);
+  });
+});
+
+describe('ExcelBridge comment threads (read)', () => {
+  function seedWithComments(): ExcelSeed {
+    const seed = salesSeed();
+    seed.comments = [
+      {
+        id: 'cmt-1',
+        cell: 'Sales!C2',
+        content: 'Is 300 final?',
+        replies: [],
+        resolved: false,
+        authorName: 'Dana',
+        threadReplies: [{ authorName: 'Lee', content: 'Pending Q3 close' }],
+      },
+      { id: 'cmt-2', cell: 'Sales!A4', content: 'Fixed', replies: [], resolved: true },
+    ];
+    return seed;
+  }
+
+  it('lists each thread as a revealable comment ref carrying its host id', async () => {
+    active = installExcel(seedWithComments());
+    const bridge = new ExcelBridge();
+    const comments = (await bridge.listContext()).filter((r) => r.kind === 'comment');
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toMatchObject({
+      id: 'xl:comment:cmt-1',
+      surface: 'excel',
+      title: 'Comment by Dana on Sales!C2',
+      preview: 'Is 300 final?',
+      anchor: { matchText: 'Sales!C2', locator: 'range:Sales!C2' },
+    });
+    expect(comments[1]?.title).toBe('Comment by Unknown author on Sales!A4 (resolved)');
+    expect(bridge.canRevealContext(comments[0]!)).toBe(true);
+  });
+
+  it('resolves a comment ref to its thread text, and a vanished one to nothing', async () => {
+    active = installExcel(seedWithComments());
+    const bridge = new ExcelBridge();
+    const ref: ContextRef = {
+      id: 'xl:comment:cmt-1',
+      kind: 'comment',
+      surface: 'excel',
+      title: 'Comment',
+    };
+    const ctx = await bridge.resolveContext(ref);
+    expect(ctx).toHaveLength(1);
+    for (const c of ctx) expect(() => ResolvedContextSchema.parse(c)).not.toThrow();
+    expect(ctx[0]?.value).toEqual({
+      as: 'text',
+      mimeType: 'text/markdown',
+      text: [
+        'Comment thread (commentId: cmt-1, open)',
+        'On cell: Sales!C2',
+        '"Dana": "Is 300 final?"',
+        '  Reply from "Lee": "Pending Q3 close"',
+      ].join('\n'),
+    });
+    await expect(bridge.resolveContext({ ...ref, id: 'xl:comment:gone' })).resolves.toEqual([]);
+  });
+
+  it('reads no comments below ExcelApi 1.10 (no comments API)', async () => {
+    active = installExcel(seedWithComments(), { apiVersion: 9 });
+    const refs = await new ExcelBridge().listContext();
+    expect(refs.some((r) => r.kind === 'comment')).toBe(false);
+  });
+
+  it('treats state as unknown on ExcelApi 1.10 — no open/resolved claim', async () => {
+    active = installExcel(seedWithComments(), { apiVersion: 10 });
+    const bridge = new ExcelBridge();
+    const comments = (await bridge.listContext()).filter((r) => r.kind === 'comment');
+    expect(comments[1]?.title).toBe('Comment by Unknown author on Sales!A4');
+    const [ctx] = await bridge.resolveContext(comments[0]!);
+    const text = ctx?.value.as === 'text' ? ctx.value.text : '';
+    expect(text.split('\n')[0]).toBe('Comment thread (commentId: cmt-1)');
   });
 });
 
@@ -1026,8 +1269,7 @@ describe('ExcelBridge.captureDocState (ADR-0003 outline)', () => {
     expect(() => DocStateSnapshotSchema.parse(first)).not.toThrow();
     expect(first.surface).toBe('excel');
     expect(first.version).toBe(1);
-    expect(first.title).toBe('2 worksheets');
-    expect(first.inventory.map((item) => item.title)).toContain('Sales');
+    expect(first.title).toBe('Sales');
     // Selection (A2:C2) has content → a selection summary is present.
     expect(first.selection).toBeDefined();
     // Named ranges read because ExcelApi >= 1.7.
@@ -1035,6 +1277,28 @@ describe('ExcelBridge.captureDocState (ADR-0003 outline)', () => {
 
     const second = await bridge.captureDocState();
     expect(second?.version).toBe(2);
+  });
+
+  it('lists every worksheet with its used range, so another sheet can be read', async () => {
+    active = installExcel(salesSeed());
+    const snap = await new ExcelBridge().captureDocState();
+    const sheets = snap?.inventory.filter((i) => i.kind === 'sheet');
+    expect(sheets).toEqual([
+      { kind: 'sheet', id: 'range:Sales!A1:C4', title: 'Sales', summary: 'active sheet' },
+      { kind: 'sheet', id: 'range:Empty!A1', title: 'Empty', summary: 'empty' },
+    ]);
+  });
+
+  it('still snapshots and lists context while a chart (not cells) is selected', async () => {
+    active = installExcel({ ...salesSeed(), selection: CHART_SELECTED });
+    const bridge = new ExcelBridge();
+    const snapshot = await bridge.captureDocState();
+    expect(snapshot?.title).toBe('Sales');
+    expect(snapshot?.selection).toBeUndefined();
+    expect(snapshot).toBeDefined();
+    const refs = await bridge.listContext();
+    expect(refs.some((r) => r.live)).toBe(false); // no selection chip
+    expect(refs.length).toBeGreaterThan(0); // the used range is still listed
   });
 
   it('omits named ranges on a host below ExcelApi 1.7', async () => {
@@ -1050,9 +1314,8 @@ describe('ExcelBridge.captureDocState (ADR-0003 outline)', () => {
     active = installExcel(seed);
     const snap = await new ExcelBridge().captureDocState();
     expect(snap).toBeDefined();
-    // Empty sheets remain addressable, without loading cell values for a preview.
-    expect(snap?.selection?.title).toBe('Empty!A1');
-    expect(snap?.inventory.find((item) => item.title === 'Empty')?.summary).toBe('Empty worksheet');
+    // No used-range content → no table blocks → no selection summary.
+    expect(snap?.selection).toBeUndefined();
   });
 });
 
@@ -1259,6 +1522,63 @@ describe('ExcelBridge.actuate write-cells (reversible, address-anchored)', () =>
     }
   });
 
+  it('keeps +, - and @ text literal so Excel never evaluates it as a formula (security review)', async () => {
+    active = installExcel(salesSeed());
+    const writes = vi.spyOn(FakeRange.prototype, 'values', 'set');
+    try {
+      await new ExcelBridge().actuate(
+        writeCells({
+          target: { range: 'Sales!A2' },
+          cells: [["+cmd|' /C calc'!A0", '-1+WEBSERVICE("x")', '@SUM(A1)', '-5', '+1.5e3']],
+        }),
+      );
+      expect(writes).toHaveBeenCalledWith([
+        ["'+cmd|' /C calc'!A0", '\'-1+WEBSERVICE("x")', "'@SUM(A1)", '-5', '+1.5e3'],
+      ]);
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('keeps month-name dates as text, so labels still match the data (live 2026-10-17)', async () => {
+    active = installExcel(salesSeed());
+    const writes = vi.spyOn(FakeRange.prototype, 'values', 'set');
+    try {
+      await new ExcelBridge().actuate(
+        writeCells({
+          target: { range: 'Sales!A2' },
+          cells: [['Jan 2026', 'Mar-26', '1 Januari 2026', 'Jakarta', 'March']],
+        }),
+      );
+      expect(writes).toHaveBeenCalledWith([
+        ["'Jan 2026", "'Mar-26", "'1 Januari 2026", 'Jakarta', 'March'],
+      ]);
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('keeps set/grid text that Excel would convert as text (UAT 2026-10-16)', async () => {
+    // UAT row 11: a retyped leads table lost the 0 and + of phone numbers, and 02/06/2026 became
+    // 6 February. Plain numbers still go in as numbers so formulas over them keep working.
+    active = installExcel(salesSeed());
+    const writes = vi.spyOn(FakeRange.prototype, 'values', 'set');
+    try {
+      const res = await new ExcelBridge().actuate(
+        writeCells({
+          target: { range: 'Sales!A2' },
+          cells: [['081234567807', '+6281234567801', '02/06/2026', '4111111111111111', '100']],
+        }),
+      );
+      expect(res).toMatchObject({ ok: true, verification: { status: 'verified' } });
+      expect(writes).toHaveBeenCalledWith([
+        ["'081234567807", "'+6281234567801", "'02/06/2026", "'4111111111111111", '100'],
+      ]);
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
   it('still refuses unsafe explicit formulas before touching the host', async () => {
     active = installExcel(salesSeed());
     const before = structuredClone(active.seed.sheets);
@@ -1306,6 +1626,45 @@ describe('ExcelBridge.actuate write-cells (reversible, address-anchored)', () =>
     expect(active.seed.sheets[0]?.values[1]).toEqual(['EAST', 'ALICE', '999']);
     // No provenance payload → flagged unattributed.
     expect(res.provenanceMissing).toBe(true);
+  });
+
+  it.each([
+    ['write-cells', writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['x', 'y', 'z']] })],
+    ['format-cells', formatCells({ target: { range: 'Sales!A2:C2' }, format: { bold: true } })],
+  ])('refuses %s on a protected sheet before writing', async (_kind, request) => {
+    active = installExcel(salesSeed());
+    const before = structuredClone(active.seed.sheets[0]?.values);
+    protectedSheets.add('Sales');
+    try {
+      const res = await new ExcelBridge().actuate(request);
+      expect(res).toMatchObject({
+        ok: false,
+        location: 'Sales!A2:C2',
+        error: { code: 'host_refused', reason: 'protected' },
+      });
+      expect(active.seed.sheets[0]?.values).toEqual(before);
+    } finally {
+      protectedSheets.clear();
+    }
+  });
+
+  it.each([
+    ['write-cells', writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['x', 'y', 'z']] })],
+    ['format-cells', formatCells({ target: { range: 'Sales!A2:C2' }, format: { bold: true } })],
+  ])('refuses %s while a cell is being edited, before writing', async (_kind, request) => {
+    active = installExcel(salesSeed());
+    const before = structuredClone(active.seed.sheets[0]?.values);
+    cellEditMode = true;
+    try {
+      const res = await new ExcelBridge().actuate(request);
+      expect(res).toMatchObject({
+        ok: false,
+        error: { code: 'host_refused', reason: 'edit_mode' },
+      });
+      expect(active.seed.sheets[0]?.values).toEqual(before);
+    } finally {
+      cellEditMode = false;
+    }
   });
 
   it('rejects with no_anchor when target.range is absent (before any write)', async () => {
@@ -1492,6 +1851,63 @@ describe('ExcelBridge.actuate format-cells', () => {
     });
   });
 
+  it('applies font color and size, alignment, wrap, all six borders and autofit', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatCells(
+        {
+          target: { range: 'Sales!A1:C3' },
+          format: {
+            fontColor: '#FFFFFF',
+            fontSize: 12,
+            align: 'center',
+            wrap: true,
+            border: 'thin',
+            borderColor: '#D3D3D3',
+            autofit: true,
+          },
+        },
+        'chg-fmt-2',
+      ),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'Sales!A1:C3' });
+    expect(active.seed.formats.get('Sales!A1:C3')).toEqual({
+      fontColor: '#FFFFFF',
+      fontSize: 12,
+      horizontalAlignment: 'Center',
+      wrapText: true,
+      borders: {
+        EdgeTop: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+        EdgeBottom: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+        EdgeLeft: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+        EdgeRight: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+        InsideHorizontal: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+        InsideVertical: { style: 'Continuous', weight: 'Thin', color: '#D3D3D3' },
+      },
+      autofit: true,
+    });
+  });
+
+  it('border=none clears every edge', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatCells({ target: { range: 'Sales!A1:C3' }, format: { border: 'none' } }, 'chg-fmt-3'),
+    );
+    expect(res).toMatchObject({ ok: true });
+    const borders = active.seed.formats.get('Sales!A1:C3')?.borders as Record<string, unknown>;
+    expect(Object.values(borders)).toHaveLength(6);
+    for (const edge of Object.values(borders)) expect(edge).toEqual({ style: 'None' });
+  });
+
+  it('applies vertical alignment', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      formatCells({ target: { range: 'Sales!A1:C3' }, format: { valign: 'center' } }, 'chg-fmt-4'),
+    );
+    expect(res).toMatchObject({ ok: true });
+    expect(active.seed.formats.get('Sales!A1:C3')).toEqual({ verticalAlignment: 'Center' });
+  });
+
   it('rejects with no_anchor when no target.range', async () => {
     active = installExcel(salesSeed());
     const res = await new ExcelBridge().actuate(formatCells({ format: { bold: true } }));
@@ -1618,6 +2034,95 @@ describe('ExcelBridge.actuate insert-chart (ADR-0007 chart verb)', () => {
       sourceAddress: 'Project schedule!B5:D30',
       title: 'Task Progress',
     });
+  });
+
+  it('charts non-adjacent columns: first area is the categories, the rest are series', async () => {
+    // Live 2026-09-30: for "a bar chart of Total by Product" the model emitted
+    // `chart bar Sheet2!C1:C11,Sheet2!G1:G11`, which `getRange` rejects (docs/COMMAND-RELIABILITY.md).
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      insertChart(
+        { chart: { chartType: 'bar', sourceRange: 'Sales!A1:A4,Sales!C1:C4', seriesBy: 'auto' } },
+        'chg-areas',
+      ),
+    );
+    expect(res.ok).toBe(true);
+    expect(active.seed.charts[0]).toMatchObject({
+      chartType: 'BarClustered',
+      seriesBy: 'Columns',
+      sourceAddress: 'Sales!C1:C4', // the value column, header included (becomes the series name)
+      xAxis: 'Sales!A2:A4', // the categories, without their header
+    });
+    expect(res.inverse).toEqual({ op: 'delete-object', objectType: 'chart', name: 'Chart 1' });
+  });
+
+  it('adds a series for each further value area', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      insertChart(
+        {
+          chart: {
+            chartType: 'column',
+            sourceRange: 'Sales!A1:A4,Sales!B1:B4,Sales!C1:C4',
+            seriesBy: 'auto',
+          },
+        },
+        'chg-areas-3',
+      ),
+    );
+    expect(res.ok).toBe(true);
+    const chart = active.seed.charts[0]!;
+    expect(chart.sourceAddress).toBe('Sales!B1:B4');
+    expect(chart.extraSeries).toEqual([
+      { values: 'Sales!C2:C4', xAxis: 'Sales!A2:A4', name: expect.any(String) },
+    ]);
+  });
+
+  it('removes a multi-area chart whose series step fails, leaving no orphan', async () => {
+    const seed = salesSeed();
+    seed.failSeries = true;
+    active = installExcel(seed);
+    await expect(
+      new ExcelBridge().actuate(
+        insertChart(
+          {
+            chart: {
+              chartType: 'column',
+              sourceRange: 'Sales!A1:A4,Sales!B1:B4,Sales!C1:C4',
+              seriesBy: 'auto',
+            },
+          },
+          'chg-areas-fail',
+        ),
+      ),
+    ).rejects.toThrow('series write failed');
+    expect(seed.charts).toHaveLength(0);
+  });
+
+  it('keeps a defined name as one source instead of reading cell addresses out of it', () => {
+    // Security review: `FY24_Q3` was scanned as the areas FY24 and Q3.
+    expect(chartAreas('FY24_Q3')).toEqual({
+      areas: [{ address: 'FY24_Q3', body: 'FY24_Q3', topLeft: 'FY24_Q3' }],
+    });
+    expect(chartAreas('Revenue')).toMatchObject({ areas: [{ address: 'Revenue' }] });
+    expect(chartAreas("'Sales, 2024'!A1:A4,'Sales, 2024'!C1:C4")).toMatchObject({
+      sheetName: 'Sales, 2024',
+      areas: [{ address: 'A1:A4' }, { address: 'C1:C4' }],
+    });
+    expect(chartAreas('Sheet2!C1:C11,junk')).toEqual({ error: 'not an A1 range: junk' });
+  });
+
+  it('refuses areas on different worksheets', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      insertChart(
+        { chart: { chartType: 'bar', sourceRange: 'Sales!A1:A4,Other!C1:C4', seriesBy: 'auto' } },
+        'chg-areas-x',
+      ),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('invalid_target');
+    expect(active.seed.charts).toHaveLength(0);
   });
 
   it('maps each agent chart type to its Excel.ChartType', async () => {

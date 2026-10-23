@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { BRAND_ICONS } from '../brand/brand.mjs';
 import {
+  BRAND,
+  alphaProfile,
+  prodProfile,
   cleanDir,
   copyDir,
   copyFile,
@@ -10,6 +14,9 @@ import {
   generatedOneNoteManifestPath,
   generatedOfficeXmlManifestPath,
   packageDir,
+  parseArgs,
+  profileFromArgs,
+  releaseConfig,
   repoRoot,
   rootVersion,
   sha256File,
@@ -18,55 +25,58 @@ import {
   writeJson,
 } from './common.mjs';
 
-const profile = 'development';
+// Packages the development profile (default) or the production profile.
+const profile = profileFromArgs({ profile: 'development', ...parseArgs() });
+if (profile === alphaProfile) {
+  console.error('Use bun run package:alpha for the alpha profile.');
+  process.exit(1);
+}
+const isDev = profile !== prodProfile;
+const surfaces = isDev
+  ? ['word', 'excel', 'powerpoint', 'outlook', 'onenote']
+  : releaseConfig(profile).surfaces;
+const hasDocumentHost = surfaces.some((s) => ['word', 'excel', 'powerpoint'].includes(s));
+const label = isDev ? 'development' : 'production';
 const manifest = generatedManifestPath(profile);
-const oneNoteManifest = generatedOneNoteManifestPath(profile);
-const officeXmlSurfaces = ['word', 'excel', 'powerpoint', 'outlook'];
+const oneNoteManifest = surfaces.includes('onenote') ? generatedOneNoteManifestPath(profile) : null;
+// Per-app XML manifests are for Upload Add-in testing, so only development ships them.
+const officeXmlSurfaces = isDev ? ['word', 'excel', 'powerpoint', 'outlook'] : [];
 const officeXmlManifests = officeXmlSurfaces.map((surface) => ({
   surface,
   path: generatedOfficeXmlManifestPath(profile, surface),
 }));
-const centralizedOfficeManifest = generatedOfficeXmlManifestPath(profile, 'office');
-const centralizedOutlookManifest = generatedOfficeXmlManifestPath(profile, 'outlook');
+const centralizedOfficeManifest = hasDocumentHost
+  ? generatedOfficeXmlManifestPath(profile, 'office')
+  : null;
+const centralizedOutlookManifest = surfaces.includes('outlook')
+  ? generatedOfficeXmlManifestPath(profile, 'outlook')
+  : null;
 const web = join(repoRoot, 'packages', 'web-shell', 'dist-web');
-const publicDir = join(repoRoot, 'packages', 'web-shell', 'public');
-const requiredIcons = [
-  'icon-color.png',
-  'icon-outline.png',
-  'icon-16.png',
-  'icon-32.png',
-  'icon-64.png',
-  'icon-80.png',
-];
+// The brand's icons (brands/<GE_BRAND>/icons), the same files the web build serves.
+const iconDir = BRAND.iconsDir;
+const requiredIcons = BRAND_ICONS;
 
-if (!existsSync(manifest)) {
-  console.error(`Generated development manifest missing: ${manifest}`);
-  process.exit(1);
-}
-if (!existsSync(oneNoteManifest)) {
-  console.error(`Generated development OneNote manifest missing: ${oneNoteManifest}`);
-  process.exit(1);
-}
-for (const { surface, path } of officeXmlManifests) {
-  if (!existsSync(path)) {
-    console.error(`Generated development ${surface} XML manifest missing: ${path}`);
+const expected = [
+  ['manifest', manifest],
+  ['OneNote manifest', oneNoteManifest],
+  ...officeXmlManifests.map(({ surface, path }) => [`${surface} XML manifest`, path]),
+  ['centralized Office XML manifest', centralizedOfficeManifest],
+  ['centralized Outlook XML manifest', centralizedOutlookManifest],
+];
+for (const [what, path] of expected) {
+  if (path && !existsSync(path)) {
+    console.error(`Generated ${label} ${what} missing: ${path}`);
     process.exit(1);
   }
-}
-if (!existsSync(centralizedOfficeManifest)) {
-  console.error(
-    `Generated development centralized Office XML manifest missing: ${centralizedOfficeManifest}`,
-  );
-  process.exit(1);
 }
 if (!existsSync(web)) {
   console.error(`Built web shell missing: ${web}. Run bun run build first.`);
   process.exit(1);
 }
 for (const icon of requiredIcons) {
-  const iconPath = join(publicDir, icon);
+  const iconPath = join(iconDir, icon);
   if (!existsSync(iconPath)) {
-    console.error(`Development icon missing: ${iconPath}`);
+    console.error(`${label} icon missing: ${iconPath}`);
     process.exit(1);
   }
 }
@@ -80,39 +90,53 @@ const webDir = join(outDir, 'web');
 cleanDir(outDir);
 
 copyFile(manifest, join(m365Dir, 'manifest.json'));
-for (const icon of requiredIcons) copyFile(join(publicDir, icon), join(m365Dir, icon));
-copyFile(oneNoteManifest, join(oneNoteDir, 'onenote.manifest.xml'));
+for (const icon of requiredIcons) copyFile(join(iconDir, icon), join(m365Dir, icon));
+if (oneNoteManifest) copyFile(oneNoteManifest, join(oneNoteDir, 'onenote.manifest.xml'));
 for (const { surface, path } of officeXmlManifests) {
   copyFile(path, join(xmlDir, `${surface}.manifest.xml`));
 }
-copyFile(centralizedOfficeManifest, join(centralizedDir, 'office.manifest.xml'));
-copyFile(centralizedOutlookManifest, join(centralizedDir, 'outlook.manifest.xml'));
+if (centralizedOfficeManifest) {
+  copyFile(centralizedOfficeManifest, join(centralizedDir, 'office.manifest.xml'));
+}
+if (centralizedOutlookManifest) {
+  copyFile(centralizedOutlookManifest, join(centralizedDir, 'outlook.manifest.xml'));
+}
 copyDir(web, webDir);
 
 const commandsChunk = walk(join(webDir, 'assets')).find((file) => /commands-.*\.js$/.test(file));
 if (commandsChunk) copyFile(commandsChunk, join(webDir, 'assets', 'commands.js'));
 
-const releaseNotes = [
-  `# Gemini Enterprise Development Sideload Package v${rootVersion()}`,
-  '',
-  'Profile: development',
-  'Unified package surfaces: Word, Excel, PowerPoint, Outlook',
-  'Companion package: OneNote legacy XML manifest',
-  'Centralized deployment: centralized/office.manifest.xml + centralized/outlook.manifest.xml',
-  '',
-  'This package is for local/end-to-end development and is not a production alpha artifact.',
-  'Run the web shell with `bun run --filter @ge/web-shell dev` while sideloading this package.',
-  '',
-].join('\n');
+const releaseNotes = isDev
+  ? [
+      `# ${BRAND.name} Development Sideload Package v${rootVersion()}`,
+      '',
+      'Profile: development',
+      'Unified package surfaces: Word, Excel, PowerPoint, Outlook',
+      'Companion package: OneNote legacy XML manifest',
+      'Centralized deployment: centralized/office.manifest.xml + centralized/outlook.manifest.xml',
+      '',
+      'This package is for local/end-to-end development and is not a production alpha artifact.',
+      'Run the web shell with `bun run --filter @ge/web-shell dev` while sideloading this package.',
+      '',
+    ].join('\n')
+  : [
+      `# ${BRAND.name} Production Package v${rootVersion()}`,
+      '',
+      `Profile: ${profile}`,
+      `Apps: ${surfaces.join(', ')}`,
+      'Upload m365/ (unified package) or centralized/ through the Microsoft 365 admin center.',
+      oneNoteManifest ? 'OneNote ships separately: onenote/onenote.manifest.xml.' : '',
+      '',
+    ].join('\n');
 writeFileSync(join(outDir, 'README.md'), releaseNotes);
 
-const zipPath = join(repoRoot, 'dist', 'release', `development-m365-v${rootVersion()}.zip`);
+const zipPath = join(repoRoot, 'dist', 'release', `${profile}-m365-v${rootVersion()}.zip`);
 createZip(walk(m365Dir), m365Dir, zipPath);
 const centralizedZipPath = join(
   repoRoot,
   'dist',
   'release',
-  `development-office-centralized-v${rootVersion()}.zip`,
+  `${profile}-office-centralized-v${rootVersion()}.zip`,
 );
 createZip(walk(centralizedDir), centralizedDir, centralizedZipPath);
 
@@ -126,7 +150,7 @@ writeChecksums(
     centralizedOfficeManifest,
     centralizedOutlookManifest,
     ...officeXmlManifests.map((x) => x.path),
-  ],
+  ].filter(Boolean),
   checksumPath,
 );
 
@@ -141,7 +165,8 @@ const officeXml = Object.fromEntries(
     },
   ]),
 );
-writeJson(join(repoRoot, 'dist', 'release', 'development-artifact.json'), {
+const sha = (path) => (path ? sha256File(path) : null);
+writeJson(join(repoRoot, 'dist', 'release', `${profile}-artifact.json`), {
   profile,
   version: rootVersion(),
   m365Package: zipPath,
@@ -149,15 +174,15 @@ writeJson(join(repoRoot, 'dist', 'release', 'development-artifact.json'), {
   m365Manifest: manifest,
   m365ManifestSha256: sha256File(manifest),
   oneNoteManifest,
-  oneNoteManifestSha256: sha256File(oneNoteManifest),
+  oneNoteManifestSha256: sha(oneNoteManifest),
   officeXml,
   centralizedDeployment: {
     package: centralizedZipPath,
     packageSha256: sha256File(centralizedZipPath),
     officeManifest: join(centralizedDir, 'office.manifest.xml'),
-    officeManifestSha256: sha256File(centralizedOfficeManifest),
+    officeManifestSha256: sha(centralizedOfficeManifest),
     outlookManifest: join(centralizedDir, 'outlook.manifest.xml'),
-    outlookManifestSha256: sha256File(centralizedOutlookManifest),
+    outlookManifestSha256: sha(centralizedOutlookManifest),
   },
   manifestVersion: m365Manifest.version,
   webBuild: webDir,
@@ -165,7 +190,7 @@ writeJson(join(repoRoot, 'dist', 'release', 'development-artifact.json'), {
 
 console.log(`packaged ${zipPath}`);
 console.log(`sha256 ${sha256File(zipPath)}`);
-console.log(`onenote ${join(oneNoteDir, 'onenote.manifest.xml')}`);
-console.log(`office xml ${xmlDir}`);
+if (oneNoteManifest) console.log(`onenote ${join(oneNoteDir, 'onenote.manifest.xml')}`);
+if (officeXmlManifests.length) console.log(`office xml ${xmlDir}`);
 console.log(`centralized office xml ${centralizedDir}`);
 console.log(`centralized package ${centralizedZipPath}`);

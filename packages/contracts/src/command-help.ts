@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FORMAT_KEYS_USAGE } from './command-grammar.js';
 
 export const CommandHelpEntrySchema = z.object({
   command: z.string(),
@@ -39,7 +40,7 @@ export const COMMAND_HELP = {
       'Never invent artifact IDs or use arbitrary files, URLs or SQL extensions.',
       'Do not use this command for recovery or undo.',
       'Only capture, query, reconcile, filter, and inspect can bind artifacts. Variables resolve only in artifact reference fields, never in arbitrary text.',
-      'finish when=verified must end a closed cmd block. It never bypasses approval and cannot claim verification for unsupported effects.',
+      'finish when=verified must end a closed cmd block. It never bypasses approval; it succeeds only when every effect landed, and a readback must match wherever the host returns one.',
     ],
     failureModes: [
       'Stale sources require capture and recomputation.',
@@ -290,7 +291,19 @@ export const COMMAND_HELP = {
     'tail <path> [n]',
     'you need only the last n lines (default 10) of a saved artifact or document entry, not the whole file',
   ),
-  set: genericWrite('set', 'set <A1> <value|=formula>', 'you need to write one Excel cell'),
+  set: {
+    ...genericWrite(
+      'set',
+      'set <A1|A1:A50> <value|=formula>',
+      'you need to write one Excel cell, or fill a whole range with one formula',
+    ),
+    examples: ['set Sales!F2 =C2-D2', 'set Sales!F2:F57 =C2-D2'],
+    doNot: [
+      'Do not write before reading.',
+      'Do not use unavailable verbs.',
+      'Do not write a formula cell by cell: set the whole range once; references shift per row like Excel fill-down.',
+    ],
+  },
   grid: {
     command: 'grid',
     useWhen:
@@ -341,39 +354,65 @@ export const COMMAND_HELP = {
     'comment <cell> "text" OR comment "anchor" "text"',
     'you need to attach a comment to one cell or exact content anchor',
   ),
-  format: genericWrite('format', 'format <range> k=v ...', 'you need to format an Excel range'),
+  format: {
+    ...genericWrite(
+      'format',
+      `format <range> key=value ... (not JSON) — keys: ${FORMAT_KEYS_USAGE}`,
+      'you need to format an Excel range: font color/size, fill, alignment, borders, wrap, column widths, number formats',
+    ),
+    // A concrete line first: command cards show the first example free of `<placeholders>`.
+    examples: [
+      'format Sheet1!A1:H1 bold=true fontColor=#FFFFFF fill=#1F4E79 align=center',
+      'format Sheet1!A1:H10 border=thin borderColor=#D3D3D3 autofit=true',
+      'format Sheet1!G2:G10 numberFormat="#,##0.00" align=right',
+    ],
+  },
   reply: genericWrite(
     'reply',
     'reply <commentId> "text"',
     'you need to reply to an existing comment id',
   ),
-  slide: genericWrite(
-    'slide',
-    'slide "Title" "bullet" ... OR slide "Title" (<table expr>)',
-    'you need to insert a new PowerPoint slide',
-  ),
+  slide: {
+    ...genericWrite(
+      'slide',
+      'slide "Title" "bullet" ... [at=N] OR slide "Title" (<table expr>) [at=N]',
+      'you need to add a new PowerPoint slide with a title and bullet points; at=N inserts it as slide N (at=2 → the new second slide), otherwise it is added at the end. For a native TABLE on a new slide use /add-table-slide slide=new title="…" rows="a\\tb\\nc\\td" instead (slide would flatten rows into bullets)',
+    ),
+    // A concrete line first: command cards show the first example free of `<placeholders>`.
+    examples: [
+      'slide "Q4 plan" "Hire 5 engineers" "Ship firmware 4.2"',
+      'slide "Agenda" "Goals" "Timeline" at=2',
+      'slide "Title" "bullet" ... [at=N] OR slide "Title" (<table expr>) [at=N]',
+    ],
+  },
   shape: {
     command: 'shape',
     useWhen:
-      'the user wants to revise text inside one existing PowerPoint shape or text box, not create a new slide',
+      'the user wants to change the text of one existing PowerPoint shape or text box, e.g. retitle a slide (pp:shape:<n>:title), not create a new slide; also to fill an existing slide whose layout title/body placeholders are empty (a blank "Title and Content" slide): write the title into pp:shape:<n>:title and the list into the body placeholder, one item per line',
+    // <slide> = slide id, slide number or last; <shape> = shape id or title (no shape numbers).
     syntax: 'shape <pp:shape:slideId:shapeId> "new text"',
     discovery: [
+      'read slide:<n>',
       'list shape',
       'properties <pp:shape:slideId:shapeId>',
       'open <pp:shape:slideId:shapeId>',
       'inspect <pp:shape:slideId:shapeId>',
     ],
     sequence: [
-      'List or inspect shape refs.',
+      'For the slide title use pp:shape:<n>:title; otherwise read slide:<n> (lists each shape id) or list shape.',
       'Open the exact shape if the user needs visual confirmation.',
       'Emit one shape command with the smallest replacement text.',
       'Wait for preview, approval, and result before done.',
     ],
     examples: [
+      'shape pp:shape:1:title "FY26 Plan"',
       'shape pp:shape:s2:s2-shape-1 "Q4 outlook improved; hiring remains gated by margin."',
+      'shape pp:shape:2:3 "1. Latar belakang\\n2. Roadmap\\n3. Monitoring"',
     ],
     doNot: [
-      'Do not use a bare shape id.',
+      'Do not use a bare shape id; name the slide too (pp:shape:<slide>:<shape>).',
+      'Do not add a text box over a slide whose title/body placeholders are empty; write into the placeholders (the bridge refuses the text box).',
+      'Do not guess a shape number: pp:shape:1:1 means shape id 1, not the first shape.',
       'Do not rewrite the whole slide to change one text box.',
       'Do not mutate a chart/table/image as plain text.',
     ],
@@ -385,8 +424,9 @@ export const COMMAND_HELP = {
   'insert-text': {
     command: '/insert-text',
     useWhen:
-      'the user asks to insert a small amount of plain text in Word without using tracked changes',
-    syntax: '/insert-text text="..." [match="exact anchor"] [contextHint="..."]',
+      'the user asks to insert a small amount of text in Word without using tracked changes, at the cursor ("pada lokasi kursor") or after an anchor, optionally formatted (bold, font, size) in the same command',
+    syntax:
+      '/insert-text text="..." [match="exact anchor"] [contextHint="..."] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]',
     discovery: [
       'search <exact anchor text>',
       'inspect <word:paragraph:N>',
@@ -394,10 +434,14 @@ export const COMMAND_HELP = {
     ],
     sequence: [
       'Read or search the exact insertion anchor, unless the user explicitly wants the current selection.',
-      'Use match/contextHint when anchoring after existing text; omit them only for current-selection insertion.',
+      'Use match/contextHint when anchoring after existing text; omit them for "at the cursor" / current-selection insertion.',
+      'Put the requested formatting on the same command (bold=true font=Arial size=16); never a second style command for it.',
       'Emit one /insert-text command and wait for preview, approval, and result.',
     ],
-    examples: ['/insert-text text=" Effective July 1." match="This agreement begins"'],
+    examples: [
+      '/insert-text text=" Effective July 1." match="This agreement begins"',
+      '/insert-text text="AI COE" bold=true font=Arial size=16',
+    ],
     doNot: [
       'Do not use for rewrites; use suggest or /replace-selection.',
       'Do not invent anchor text.',
@@ -478,8 +522,9 @@ export const COMMAND_HELP = {
   chart: {
     command: 'chart',
     useWhen:
-      'you need to create an Office-native Excel chart from a verified range or derived summary table',
-    syntax: 'chart <column|bar|line|pie|scatter|area> <range> [title="..."] [series=rows|columns]',
+      'you need an Excel chart; chart only the label column and its value column(s), listing separate areas for non-adjacent columns (C1:C11,G1:G11), never a whole multi-column table',
+    syntax:
+      'chart <column|bar|line|pie|scatter|area> <range> [title="..."] [series=rows|columns] [x=<col> by=<col> value=<col>]',
     discovery: [
       'read <source-range>',
       'read adjacent label/header columns when the selection is unlabeled',
@@ -488,12 +533,15 @@ export const COMMAND_HELP = {
     sequence: [
       'Read the live source range before choosing a chart.',
       'Classify the question: trend, ranking, part-to-whole, correlation, or schedule/text summary.',
+      'For long data (one row per group per period, e.g. Branch + Month + Complaints) and a trend or comparison per group, use x=<period column> by=<group column> value=<number column> on the whole data range: the pane builds a live summary table next to the data and charts it, in one approval. Never type the totals yourself.',
       'For schedules, calendars, sparse ranges, and text grids, first create a small summary table with grid/spill, then chart that summary range.',
       'Choose the chart type by rubric: bar for ranked categories or long labels; column for short categories; line for ordered dates/times; scatter for numeric X/Y; pie only for <=6 non-negative parts of one meaningful total; area only for cumulative trends.',
       'Preview chart type, range, title, and series orientation, then wait for approval.',
     ],
     examples: [
+      'chart bar Sheet2!C1:C11,Sheet2!G1:G11 title="Total by product"',
       'chart column Report!A1:B11 title="Top regions"',
+      'chart line \'Branch Performance\'!A1:H25 x=Month by=Branch value=Complaints title="Complaints per branch"',
       'chart bar \'Daily schedule\'!K6:L18 title="Weekly Hours by Activity" series=columns',
     ],
     doNot: [

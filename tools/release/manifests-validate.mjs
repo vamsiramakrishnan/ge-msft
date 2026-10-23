@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  prodProfile,
   generatedManifestPath,
   generatedOneNoteManifestPath,
   generatedOfficeXmlManifestPath,
   officeXmlVersion,
   parseArgs,
   profileFromArgs,
+  releaseConfig,
   validateGeneratedManifest,
 } from './common.mjs';
 
@@ -41,7 +43,12 @@ function validateXmlManifest(path, checks) {
   if (!existsSync(path)) return [`Generated XML manifest not found: ${path}`];
   const xml = readFileSync(path, 'utf8');
   const errors = [];
-  for (const token of ['REPLACE_', 'example.com']) {
+  // Production must not point Office at a local or plain-http origin.
+  const forbidden =
+    profile === prodProfile
+      ? ['REPLACE_', 'example.com', 'localhost', 'DefaultValue="http://', '<AppDomain>http://']
+      : ['REPLACE_', 'example.com'];
+  for (const token of forbidden) {
     if (xml.includes(token)) errors.push(`${path} contains forbidden token ${token}`);
   }
   if (/\{\{[^}]+\}\}/.test(xml)) {
@@ -56,8 +63,8 @@ function validateXmlManifest(path, checks) {
   return errors;
 }
 
-if (profile === 'development') {
-  const xmlChecks = [
+if (profile === 'development' || profile === prodProfile) {
+  const allXmlChecks = [
     {
       path: generatedOneNoteManifestPath(profile),
       checks: [
@@ -125,6 +132,17 @@ if (profile === 'development') {
       ],
     },
   ];
+  // Production validates only the XML manifests it generates for its chosen apps.
+  const prodSurfaces = profile === prodProfile ? releaseConfig(profile).surfaces : [];
+  const wanted = (path) => {
+    if (profile !== prodProfile) return true;
+    if (path.endsWith('.office.manifest.xml'))
+      return prodSurfaces.some((s) => ['word', 'excel', 'powerpoint'].includes(s));
+    if (path.endsWith('.outlook.manifest.xml')) return prodSurfaces.includes('outlook');
+    if (path.endsWith('.onenote.manifest.xml')) return prodSurfaces.includes('onenote');
+    return false;
+  };
+  const xmlChecks = allXmlChecks.filter(({ path }) => wanted(path));
   const xmlErrors = xmlChecks.flatMap(({ path, checks }) => validateXmlManifest(path, checks));
   if (xmlErrors.length > 0) {
     for (const error of xmlErrors) console.error(error);

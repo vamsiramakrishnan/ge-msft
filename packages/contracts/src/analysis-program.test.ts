@@ -92,10 +92,13 @@ describe('artifact bindings and verified completion', () => {
   );
 
   it('rejects completion in a truncated fence or plain marker while preserving legacy recovery', () => {
+    expect(parseProgramBlock('cmd\nfinish when=verified').entries).toContainEqual({
+      error: 'finish when=verified requires a closed cmd fence',
+    });
+    expect(
+      parseProgramBlock('```cmd\nset S!A1 5\nfinish when=verified\nset').entries,
+    ).toContainEqual({ error: 'finish when=verified requires a closed cmd fence' });
     for (const marker of ['```cmd', 'cmd']) {
-      expect(parseProgramBlock(`${marker}\nfinish when=verified`).entries).toContainEqual({
-        error: 'finish when=verified requires a closed cmd fence',
-      });
       expect(parseProgramBlock(`${marker}\nread S!A1`).entries).toEqual([
         { verb: 'read', selector: 'S!A1' },
       ]);
@@ -111,25 +114,41 @@ describe('artifact bindings and verified completion', () => {
   });
 
   it('never retains prefix writes when verified completion is truncated', () => {
-    expect(parseProgramBlock('```cmd\nset S!A1 5\nfinish when=verified').entries).toEqual([
-      { error: 'finish when=verified requires a closed cmd fence' },
+    const entries = parseProgramBlock('```cmd\nset S!A1 5\nfinish when=verif').entries;
+    expect(entries.every((entry) => 'error' in entry)).toBe(true);
+    expect(entries).toContainEqual({ error: 'finish when=verified requires a closed cmd fence' });
+  });
+
+  it('accepts an unclosed block whose last line is the finish (nothing after it can be lost)', () => {
+    // Live 2026-10-17: Gemini left the block unclosed three times and the run stopped.
+    expect(parseProgramBlock('```cmd\nset S!A1 5\nfinish when=verified\n').entries).toEqual([
+      { verb: 'set', cell: 'S!A1', value: '5' },
+      { kind: 'verified-finish' },
+    ]);
+  });
+
+  it.each([
+    'Leading explanation\n```cmd\nset S!A1 5\nfinish when=verified\n```',
+    '```cmd\nset S!A1 5\nfinish when=verified\n```\nTrailing explanation',
+    '```cmd\nset S!A1 5\nfinish when=verified\n```\n# trailing comment',
+  ])('accepts prose around one verified block when it holds no other fence', (response) => {
+    expect(parseProgramBlock(response).entries).toEqual([
+      { verb: 'set', cell: 'S!A1', value: '5' },
+      { kind: 'verified-finish' },
     ]);
   });
 
   it.each([
     '```cmd\nset S!A1 5\nfinish when=verified\n```\n```cmd\nset S!A2 6\n```',
     '```cmd\nset S!A1 5\n```\n```cmd\nset S!A2 6\nfinish when=verified\n```',
-    'Leading explanation\n```cmd\nset S!A1 5\nfinish when=verified\n```',
-    '```cmd\nset S!A1 5\nfinish when=verified\n```\nTrailing explanation',
-    '```cmd\nset S!A1 5\nfinish when=verified\n```\n# trailing comment',
+    '```cmd\nset S!A1 5\nfinish when=verified\n```\nSee ```this``` note',
     '```cmd\nanalyze {"kind":"query","inputs":["a_id"],"sql":"SELECT \'```\' FROM a_id"}\nfinish when=verified\n```',
   ])('rejects ambiguous verified response framing without retaining prefix effects', (response) => {
     const result = parseProgramBlock(response);
     expect(result.found).toBe(true);
     expect(result.entries).toEqual([
       {
-        error:
-          'finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences',
+        error: 'finish when=verified requires exactly one cmd fence with no embedded fences',
       },
     ]);
   });

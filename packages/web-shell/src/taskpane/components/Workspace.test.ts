@@ -6,7 +6,6 @@ import { quickActionsForSurface } from '@ge/contracts';
 import { Composer, parseComposerInput } from './Composer.js';
 import { ActionLibrary, filterActions } from './ActionLibrary.js';
 import { invocationToSeed } from './quick-action-seed.js';
-import { invocationToGrounding } from './App.js';
 import { ContextStrip } from './ContextStrip.js';
 import { MessageThread } from './MessageThread.js';
 import { makeDemoController } from '../preview-interactive.js';
@@ -71,51 +70,29 @@ function mountComposer(extra = {}): ReturnType<typeof vi.fn> {
 }
 
 describe('structured workspace interactions', () => {
-  it('routes picked intent and output controls into the invocation, preserving the original request', () => {
-    const invoke = mountComposer();
-    change('[aria-label="Task intent"]', 'rewrite');
-    change('[aria-label="Response format"]', 'Decision brief');
-    change('[aria-label="Writing style"]', 'Executive');
-    change('textarea', 'Preserve the 99.9% commitment.');
+  it('routes a typed verb and the Settings response controls into the invocation', () => {
+    const invoke = mountComposer({
+      answerOptions: { format: 'Decision brief', style: 'Executive' },
+    });
+    change('textarea', '/rewrite Preserve the 99.9% commitment.');
     submit();
     expect(invoke).toHaveBeenCalledOnce();
     expect(invocationToSeed(invoke.mock.calls[0]![0])).toMatch(/^\/rewrite Preserve/);
     expect(invoke.mock.calls[0]![0]).toMatchObject({
       intent: 'rewrite',
-      raw: 'Preserve the 99.9% commitment.',
       scope: { kind: 'selection' },
     });
     expect(invocationToSeed(invoke.mock.calls[0]![0])).toContain(
       'Output format: Decision brief. Writing style: Executive.',
     );
   });
-  it('carries a source picker id into real request grounding, then clears per-request picks', () => {
-    const id = 'projects/p/locations/global/collections/default_collection/dataStores/policy';
-    const invoke = mountComposer({
-      mentionOptions: { datastore: [{ id, label: 'Policy library' }] },
-    });
-    click('.composer-source-results button');
-    expect(container.querySelector('.composer-picked')?.textContent).toContain('Policy library');
-    change('textarea', 'What changed?');
-    submit();
-    const invocation = invoke.mock.calls[0]![0];
-    expect(invocation.raw).toBe('What changed?');
-    expect(invocationToGrounding(invocation)?.dataStoreSpecs).toEqual([{ dataStore: id }]);
-    expect(container.querySelector('.composer-picked')).toBeNull();
+  it('has no + Sources picker under the ask box', () => {
+    mountComposer({ mentionOptions: { datastore: [{ id: 'store-1', label: 'Policies' }] } });
+    expect(container.querySelector('[aria-label="Add sources to this request"]')).toBeNull();
+    expect(container.textContent).not.toContain('+ Sources');
   });
-  it('removes a picked source from grounding before submission', () => {
-    const invoke = mountComposer({
-      mentionOptions: { datastore: [{ id: 'store-1', label: 'Policies' }] },
-    });
-    click('.composer-source-results button');
-    click('.composer-picked button');
-    change('textarea', 'Question');
-    submit();
-    expect(invoke.mock.calls[0]![0].mentions).toEqual([]);
-  });
-  it('typed verbs override the intent control and an unsupported verb cannot inherit a write', () => {
+  it('an unsupported typed verb cannot become a write', () => {
     const invoke = mountComposer();
-    change('[aria-label="Task intent"]', 'rewrite');
     change('textarea', '/summarize the document');
     submit();
     expect(invoke.mock.calls[0]![0].intent).toBe('summarize');
@@ -124,8 +101,7 @@ describe('structured workspace interactions', () => {
     expect(invoke.mock.calls[1]![0].intent).toBeUndefined();
   });
   it('leaves pasted programs byte-for-byte intact despite response preferences', () => {
-    const invoke = mountComposer();
-    change('[aria-label="Response format"]', 'Comparison table');
+    const invoke = mountComposer({ answerOptions: { format: 'Comparison table' } });
     change('textarea', 'suggest "before" => "after"');
     submit();
     expect(invoke.mock.calls[0]![0].instruction).toBe('suggest "before" => "after"');
@@ -195,6 +171,7 @@ describe('structured workspace interactions', () => {
         onRefresh: vi.fn(),
       }),
     );
+    click('.context-strip-toggle');
     click('.smart-chip-remove');
     expect(toggle).not.toHaveBeenCalled();
   });
@@ -210,30 +187,35 @@ describe('structured workspace interactions', () => {
           },
         ],
         onInsertArtifact: vi.fn(),
-        onFollowUp: vi.fn(),
       }),
     );
     expect(container.querySelector('.md-artifact-insert')).toBeNull();
     expect(container.querySelector('.answer-actions')).toBeNull();
   });
-  it('allows answer follow-ups without an Excel insertion destination', () => {
-    const follow = vi.fn();
+  it('offers only Copy answer under an answer, and nothing under a clarifying question', () => {
     mount(
       createElement(MessageThread, {
         surface: 'excel',
-        messages: [{ id: 'a', role: 'assistant', text: 'Analysis complete.' }],
-        onFollowUp: follow,
+        messages: [
+          { id: 'a', role: 'assistant', text: 'Analysis complete.' },
+          {
+            id: 'b',
+            role: 'assistant',
+            text: 'Before I plan this, I need one detail.',
+            clarifying: true,
+          },
+        ],
         insertArtifactDisabledReason: 'Select a destination range first.',
       }),
     );
-    const button = [
-      ...container.querySelectorAll<HTMLButtonElement>('.answer-actions button'),
-    ].find((b) => b.textContent === 'Decision brief')!;
-    act(() => button.click());
-    expect(follow).toHaveBeenCalledOnce();
+    const groups = container.querySelectorAll('.answer-actions');
+    expect(groups).toHaveLength(1);
+    expect([...groups[0]!.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Copy answer',
+    ]);
   });
   it('uses a live controller in the demo and suspends execution at the real approval coordinator', async () => {
-    const controller = makeDemoController('word');
+    const controller = makeDemoController('word', { pace: 0 });
     await controller.refreshContext();
     const id = controller.getState().chips[0]!.id;
     await controller.attach(id);

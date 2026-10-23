@@ -1,3 +1,4 @@
+import { assessActuationResult, type ActuationResult } from '@ge/contracts';
 import type { Trigger, TriggerRegistry } from '@ge/triggers';
 import type { RuntimeHook, RuntimeHookPhase, RuntimeHooks } from './hooks.js';
 
@@ -60,7 +61,11 @@ export function installRuntimeExtensions(
   }
 }
 
-/** An actual verifier: a parsed `done` does not make failed effects or an exhausted loop successful. */
+/**
+ * An actual verifier: a parsed `done` does not make failed effects or an exhausted loop successful.
+ * A policy-'blocked' task can still carry failed (not uncertain) effects, so a guard that cares
+ * about writes should read `outcome.effects`, not the status alone.
+ */
 export const completedEffectsExtension: RuntimeExtension = {
   id: 'core.outcomes',
   setup(api) {
@@ -69,12 +74,22 @@ export const completedEffectsExtension: RuntimeExtension = {
       on: 'task:verify',
       mode: 'guard',
       handle({ outcome }) {
-        if (outcome.status === 'incomplete')
+        if (outcome.status === 'incomplete') {
+          // Only warn that changes may have applied when a write ran or its outcome is unknown; a
+          // task stopped before any write landed says so (live 2026-10-14: "0 changes applied").
+          const mayHaveApplied = outcome.effects.some((result) =>
+            // A read-only view of the receipt; the assessment only reads it.
+            ['verified', 'unverified', 'uncertain'].includes(
+              assessActuationResult(result as ActuationResult),
+            ),
+          );
           return {
             kind: 'block',
-            reason:
-              'The task did not complete all its operations. Review the execution results before continuing. Some changes may already have applied.',
+            reason: mayHaveApplied
+              ? 'The task did not complete all its operations. Review the execution results before continuing. Some changes may already have applied.'
+              : 'The task did not complete all its operations. No changes were applied.',
           };
+        }
         return { kind: 'continue' };
       },
     });

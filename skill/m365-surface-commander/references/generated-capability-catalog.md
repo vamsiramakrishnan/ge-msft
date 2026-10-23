@@ -21,11 +21,11 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | excel | implemented | `format` | `format-cells` | Excel cell formatting | ExcelApi 1.1 | apply safe visual formatting to an exact worksheet range |
 | excel | implemented | `cf` | `format-conditional` | Excel conditional formatting | ExcelApi 1.6 | add one safe conditional-format rule to an exact worksheet range |
 | excel | implemented | `chart` | `insert-chart` | Excel native chart insertion | ExcelApi 1.1 | create an Office-native chart over an exact worksheet range |
+| excel | implemented | `/sort-range` | `sort-range` | Excel native sort | ExcelApi 1.2 | sort a range or table in place using Excel sort semantics |
 | excel | implemented | `set/grid/spill` | `write-cells` | Excel cell and grid writes | ExcelApi 1.1 | write scalar cells, literal rectangular grids, or composed table results into Excel |
 | excel | promotable | `/filter-range` | `filter-range` | Excel native filter | ExcelApi 1.2 | apply an AutoFilter/table filter without deleting or rewriting rows |
 | excel | promotable | `/format-chart` | `format-chart` | Excel chart formatting | ExcelApi 1.1 | retitle or restyle an existing chart without recreating its data source |
 | excel | promotable | `/insert-pivot` | `insert-pivot` | Excel native PivotTable | ExcelApi 1.8 | summarize a table/range by row, column, value, or filter fields without hand-building formulas |
-| excel | promotable | `/sort-range` | `sort-range` | Excel native sort | ExcelApi 1.2 | sort a range or table in place using Excel sort semantics |
 | onenote | catalog-only | `/create-section` | `create-section` | OneNote section creation | OneNoteApi 1.1 | create a new notebook section after explicit user confirmation |
 | onenote | implemented | `page` | `append-page` | OneNote synthesized page | OneNoteApi 1.1 | create a new grounded page in the active notebook section |
 | onenote | promotable | `/add-note-tag` | `add-note-tag` | OneNote note tag | OneNoteApi 1.1 | mark an existing paragraph as to-do, important, question, or similar native OneNote tag |
@@ -34,16 +34,16 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | onenote | promotable | `/set-page-title` | `set-page-title` | OneNote page title | OneNoteApi 1.1 | rename the active OneNote page with a reversible title edit |
 | outlook | catalog-only | `/add-categories` | `add-categories` | Outlook category assignment | Mailbox 1.8 | apply existing mailbox categories to a message or draft |
 | outlook | catalog-only | `/compose-appointment` | `compose-appointment` | Outlook appointment compose | Mailbox 1.1 | open a meeting/appointment draft from grounded details without auto-sending invites |
-| outlook | implemented | `/add-attachment` | `add-attachment` | Outlook draft attachment | Mailbox 1.8 | attach a generated or approved file to a draft without sending mail |
+| outlook | implemented | `/add-attachment` | `add-attachment` | Outlook draft attachment | Mailbox 1.8 | attach a file to a draft being written, without sending mail (on a received message, reply with the file instead: mail "reply text" attach="name.docx" text="file text"). A file the user describes ("a Word file titled X containing Y") is name="X.docx" text="Y": the pane builds a real Word file (or a text file for .txt). Never write base64 yourself; base64= is only for a file the host returned |
 | outlook | implemented | `compose` | `create-mail` | Outlook new draft | Mailbox 1.6 | open a new grounded draft without adding recipients or sending |
 | outlook | implemented | `mail` | `reply-mail` | Outlook reviewable reply draft | Mailbox 1.1 | stage a reply draft for the current message without sending it |
 | outlook | implemented | `/set-body` | `set-body` | Outlook draft body update | Mailbox 1.3 | replace the body of an open draft while leaving send control with the user |
 | outlook | implemented | `/set-recipients` | `set-recipients` | Outlook draft recipients | Mailbox 1.1 | set or add recipients on an open draft while preserving final send control |
 | outlook | implemented | `/set-subject` | `set-subject` | Outlook draft subject | Mailbox 1.1 | replace the subject of an open draft without sending |
 | powerpoint | catalog-only | `/apply-slide-layout` | `apply-slide-layout` | PowerPoint slide layout application | PowerPointApi 1.8 | apply an existing deck layout to a specific slide without recreating the slide |
-| powerpoint | implemented | `/add-shape` | `add-shape` | PowerPoint shape/textbox insertion | PowerPointApi 1.4 | add a text box, geometric shape, or line to an addressed slide with explicit geometry |
-| powerpoint | implemented | `/add-table-slide` | `add-table-slide` | PowerPoint native slide table | PowerPointApi 1.8 | insert a small native table onto a slide instead of flattening it into text |
-| powerpoint | implemented | `/format-shape` | `format-shape` | PowerPoint shape formatting | PowerPointApi 1.4 | change fill, line, font, or z-order for one addressed shape |
+| powerpoint | implemented | `/add-shape` | `add-shape` | PowerPoint shape/textbox insertion | PowerPointApi 1.4 | add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command — never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, …); fill=#RRGGBB colours it |
+| powerpoint | implemented | `/add-table-slide` | `add-table-slide` | PowerPoint native slide table | PowerPointApi 1.8 | add a native table (rows and columns) to a new slide (slide=new title="…", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A "3x3" (N×M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so ("3 data rows"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there |
+| powerpoint | implemented | `/format-shape` | `format-shape` | PowerPoint shape formatting | PowerPointApi 1.4 | change the colour of one addressed shape (fill/background, text colour, outline) or its font or z-order, e.g. make a title blue with white text |
 | powerpoint | implemented | `slide` | `insert-slide` | PowerPoint slide insertion | PowerPointApi 1.2 | add a grounded title-and-bullets slide to the active deck |
 | powerpoint | implemented | `shape` | `set-shape-text` | PowerPoint shape text replacement | PowerPointApi 1.4 | replace text in one addressed slide shape without rewriting the whole slide |
 | powerpoint | promotable | `/insert-image` | `insert-image` | PowerPoint image insertion | PowerPointApi 1.4 | place a generated or grounded image onto a slide as an image object |
@@ -60,14 +60,14 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | word | implemented | `/insert-content-control` | `insert-content-control` | Word content-control insertion | WordApi 1.1 | create a new plain, rich-text, or tagged content control at a resolved Word range |
 | word | implemented | `/insert-hyperlink` | `insert-hyperlink` | Word screened hyperlink | WordApi 1.4 | add or update a hyperlink on exact Word text after URL safety screening |
 | word | implemented | `/insert-ooxml` | `insert-ooxml` | Word screened OOXML insertion | WordApi 1.1 | insert a screened rich Word fragment where plain text is insufficient |
-| word | implemented | `/insert-table` | `insert-table` | Word native table insertion | WordApi 1.3 | insert a small grounded table into a Word document |
-| word | implemented | `/insert-text` | `insert-text` | Word plain-text insertion | WordApi 1.1 | insert grounded plain text at the current selection or after an exact anchor |
+| word | implemented | `/insert-table` | `insert-table` | Word native table insertion | WordApi 1.3 | insert a small grounded table into a Word document: "at the cursor" (pada lokasi kursor) = no match= (it goes after the cursor's paragraph); match="exact text" only when the user names a place. Empty rows the user asks for are tab-only lines |
+| word | implemented | `/insert-text` | `insert-text` | Word plain-text insertion | WordApi 1.1 | insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text |
 | word | implemented | `/replace-selection` | `replace-selection` | Word selection replacement | WordApi 1.1 | replace the current Word selection after previewing prior and new text |
 | word | implemented | `suggest` | `tracked-change` | Word tracked rewrite | WordApi 1.1 | replace exact existing text as a reviewable tracked change |
 
 ## Implemented live capabilities
 
-- **excel:** `add-comment`, `comment-reply`, `create-table`, `format-cells`, `format-conditional`, `insert-chart`, `write-cells`
+- **excel:** `add-comment`, `comment-reply`, `create-table`, `format-cells`, `format-conditional`, `insert-chart`, `sort-range`, `write-cells`
 - **onenote:** `append-page`
 - **outlook:** `add-attachment`, `create-mail`, `reply-mail`, `set-body`, `set-recipients`, `set-subject`
 - **powerpoint:** `add-shape`, `add-table-slide`, `format-shape`, `insert-slide`, `set-shape-text`

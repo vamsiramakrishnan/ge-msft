@@ -25,6 +25,7 @@ to the user for a one-tap confirm before anything runs.
 | `step`       |    yes     |   yes (≥1)    | One intention, in order. Executor-shaped but natural language. One reviewable change per step.                                                                      |
 | `exclude`    |    yes     |      no       | An explicit carve-out — something to leave unchanged.                                                                                                               |
 | `clarify`    |    yes     |      no       | A question to ask the user before executing. Any `clarify` line blocks dispatch until resolved.                                                                     |
+| `changes`    |     no     | yes (new plans) | `yes` / `no` — does the user want the document, email or deck changed? A question or analysis is `no`; "answer X and leave a note" is `yes`. The add-in routes on it. |
 | `confidence` |     no     |      no       | `high` / `medium` / `low` — your read of how well-specified the request is.                                                                                         |
 
 `plan` and `end` lines are optional brackets; the fence itself delimits the block. Lines

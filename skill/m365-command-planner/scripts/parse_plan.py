@@ -32,6 +32,7 @@ ALL_KEYS = SCALAR_KEYS | LIST_KEYS | BRACKETS
 INTENTS = set(_LANGUAGE["intents"])
 SURFACES = set(_LANGUAGE["surfaces"])
 CONFIDENCE = set(_LANGUAGE["confidence"])
+CHANGES = set(_LANGUAGE["changes"])
 CONTEXT_HINTS = set(_LANGUAGE["contextHints"])
 
 _FENCE = re.compile(r"```plan[^\S\n]*\r?\n([\s\S]*?)```", re.IGNORECASE)
@@ -76,6 +77,8 @@ def parse_line(line: str):
         return {"error": f"unknown intent '{rest}' — expected one of {sorted(INTENTS)}"}
     if key == "surface" and rest.lower() not in SURFACES:
         return {"error": f"unknown surface '{rest}' — expected one of {sorted(SURFACES)}"}
+    if key == "changes" and rest.lower() not in CHANGES:
+        return {"error": f"changes must be yes|no — got '{rest}'"}
     if key == "confidence" and rest.lower() not in CONFIDENCE:
         return {"error": f"confidence must be high|medium|low — got '{rest}'"}
     if key == "context" and rest.lower() not in CONTEXT_HINTS:
@@ -104,7 +107,9 @@ def parse_plan(model_text: str):
         key, val = rec
         if key == "bracket":
             continue
-        if key in SCALAR_KEYS:
+        if key == "changes":
+            plan[key] = val.lower() == "yes"
+        elif key in SCALAR_KEYS:
             plan[key] = val.lower() if key in ("surface", "confidence") else val
         elif key == "context":
             plan[key].append(val.lower())
@@ -179,6 +184,13 @@ confidence low
 ```""")
     if paused["errors"] or not paused["plan"]["needs_clarification"]:
         failures.append("Cross-surface clarification must remain supported")
+
+    stated = parse_plan("```plan\nintent ask\nsurface excel\nchanges no\nstep filter rows where Region is Kalimantan\n```")
+    if stated["errors"] or stated["plan"]["changes"] is not False:
+        failures.append(f"changes no was not parsed: {stated}")
+    bad = parse_plan("```plan\nintent ask\nsurface excel\nchanges maybe\nstep answer\n```")
+    if not any("changes must be yes|no" in e for e in bad["errors"]):
+        failures.append("changes maybe was accepted")
 
     print(
         json.dumps(

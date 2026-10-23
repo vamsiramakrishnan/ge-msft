@@ -1,4 +1,5 @@
 import { StrictMode } from 'react';
+import { getOfficeLoginHint } from './office-login-hint.js';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   filterManifestForReleaseProfile,
@@ -16,9 +17,10 @@ import {
 } from '@ge/gemini-client';
 import { detectSurface, surfaceFromHost } from '../host.js';
 import { NaaAuthClient } from '../auth-client.js';
-import { composeSession } from '../compose.js';
+import { composeSession, skillDriftNotice } from '../compose.js';
 import { createApplicationRuntime } from '../runtime-extensions.js';
 import { connectPanelRuntime } from '../panel-runtime.js';
+import { brand } from '../brand.js';
 
 let disposePanelRuntime: (() => void) | undefined;
 import { PanelController } from '../controller.js';
@@ -39,10 +41,12 @@ import {
   authOptionsFromEnv,
   msalConfigFromEnv,
   notebookIdFromEnv,
+  paneModelId,
   releaseProfileFromEnv,
   warmUpSkillsFromEnv,
   type RawEnv,
 } from './config.js';
+import { diagnosticsScope } from '../saved-diagnostics.js';
 import './styles.css';
 import './workspace.css';
 
@@ -176,24 +180,6 @@ function listenForAskSelectionSeeds(surface: Surface, controller: PanelControlle
   }
 }
 
-async function getOfficeLoginHint(): Promise<string | undefined> {
-  try {
-    const officeAuth = (
-      globalThis as {
-        Office?: {
-          auth?: {
-            getAuthContext?: () => Promise<{ userPrincipalName?: string | null }>;
-          };
-        };
-      }
-    ).Office?.auth;
-    const upn = (await officeAuth?.getAuthContext?.())?.userPrincipalName?.trim();
-    return upn || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function hasMsalAccount(msal: {
   getActiveAccount(): unknown;
   getAllAccounts?(): unknown[];
@@ -219,7 +205,7 @@ function msalRedirectUri(): string {
 function renderSignInPrompt(startInteractive: AuthStart): void {
   fatal(
     'Sign in required',
-    'Use your Microsoft 365 account to start Gemini Enterprise in this Office document.',
+    `Use your Microsoft 365 account to start ${brand.name} in this Office document.`,
     {
       label: 'Sign in',
       onClick: (button) => {
@@ -261,7 +247,7 @@ function runAuthAttempt(start: AuthStart, button: HTMLButtonElement): void {
   start()
     .catch((err: unknown) => {
       recordAuthDebug('ui.signInUnhandledError', summarizeAuthError(err));
-      fatal('Could not start Gemini Enterprise', errorMessage(err));
+      fatal(`Could not start ${brand.name}`, errorMessage(err));
     })
     .finally(() => window.clearTimeout(timeout));
 }
@@ -387,7 +373,7 @@ async function boot(opts: BootOptions = {}): Promise<void> {
     } else if (!opts.interactiveAuth && isRecoverableAuthBootstrapError(err)) {
       renderSignInPrompt(() => boot({ interactiveAuth: true }));
     } else {
-      fatal('Could not start Gemini Enterprise', detail);
+      fatal(`Could not start ${brand.name}`, detail);
     }
   }
 }
@@ -446,10 +432,16 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
       dataStores: availableDataStores.length,
       connectors: [...new Set(availableDataStores.map((d) => d.connector))].join(','),
     });
-    const catalogClient = new DiscoveryCatalogClient(tokens, config);
+    // The catalog sends no prompts, so it gets no brand writing rules.
+    const { assistantRules: _rules, ...catalogConfig } = config;
+    const catalogClient = new DiscoveryCatalogClient(tokens, catalogConfig);
     await applyBootCatalogRouting(client, catalogClient);
+    const initialModelId = paneModelId(config.modelId);
+    client.setModelId(initialModelId);
     const controller = new PanelController(session, prepared.bridge);
     controller.setDiscoveredCatalog(availableAgents, availableDataStores);
+    const drift = skillDriftNotice(warmUp);
+    if (drift) controller.onRuntimeNotice(drift);
     const panelRuntime = connectPanelRuntime({
       session,
       bridge: prepared.bridge,
@@ -480,13 +472,21 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
       : rawCapabilities;
     const allowedIntents = intentsForManifest(capabilities);
 
+    // Saved diagnostics are kept per signed-in account (a hash of its id, never the raw id).
+    const identity = await auth.getIdentity().catch(() => undefined);
+    const savedScope = identity
+      ? await diagnosticsScope(identity.oid ?? identity.username)
+      : undefined;
+
     mount(
       <App
         controller={controller}
         surface={prepared.surface}
         allowedIntents={allowedIntents}
-        catalogClient={catalogClient}
-        onCatalogRouting={(routing) => client.configureRouting(routing)}
+        initialModelId={initialModelId}
+        onModelChange={(modelId) => client.setModelId(modelId)}
+        {...(savedScope ? { diagnosticsScope: savedScope } : {})}
+        {...(identity?.displayName ? { userName: identity.displayName } : {})}
       />,
     );
     listenForAskSelectionSeeds(prepared.surface, controller);
@@ -505,7 +505,7 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
     } else if (!opts.interactiveAuth && isRecoverableAuthBootstrapError(err)) {
       renderSignInPrompt(() => finishBoot(prepared, { interactiveAuth: true }));
     } else {
-      fatal('Could not start Gemini Enterprise', detail);
+      fatal(`Could not start ${brand.name}`, detail);
     }
   }
 }

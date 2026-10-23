@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {
   alphaManifest,
+  alphaProfile,
+  prodProfile,
   developmentManifest,
   ensureDir,
   generatedManifestPath,
@@ -17,34 +19,49 @@ import {
   writeJson,
 } from './common.mjs';
 import { dirname, join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 
 const args = parseArgs();
 const profile = profileFromArgs(args);
 
+// Clear this profile's previous output first, so a failed run can't leave stale manifests behind
+// that look current.
+const manifestsDir = join(repoRoot, 'dist', 'manifests');
+if (existsSync(manifestsDir)) {
+  for (const file of readdirSync(manifestsDir)) {
+    if (file.startsWith(`${profile}.`)) rmSync(join(manifestsDir, file));
+  }
+}
+
 try {
   const cfg = releaseConfig(profile);
-  const manifest = profile === 'development' ? developmentManifest(cfg) : alphaManifest(cfg);
+  const manifest = profile === alphaProfile ? alphaManifest(cfg) : developmentManifest(cfg);
   const out = generatedManifestPath(profile);
   ensureDir(dirname(out));
   writeJson(out, manifest);
   console.log(`generated ${out}`);
+  const write = (path, text) => {
+    writeFileSync(path, text);
+    console.log(`generated ${path}`);
+  };
+  ensureDir(join(repoRoot, 'dist', 'manifests'));
   if (profile === 'development') {
-    const oneNoteOut = generatedOneNoteManifestPath(profile);
-    ensureDir(join(repoRoot, 'dist', 'manifests'));
-    writeFileSync(oneNoteOut, oneNoteManifest(cfg));
-    console.log(`generated ${oneNoteOut}`);
+    write(generatedOneNoteManifestPath(profile), oneNoteManifest(cfg));
     for (const surface of ['word', 'excel', 'powerpoint']) {
-      const xmlOut = generatedOfficeXmlManifestPath(profile, surface);
-      writeFileSync(xmlOut, taskPaneXmlManifest(cfg, surface));
-      console.log(`generated ${xmlOut}`);
+      write(generatedOfficeXmlManifestPath(profile, surface), taskPaneXmlManifest(cfg, surface));
     }
-    const officeOut = generatedOfficeXmlManifestPath(profile, 'office');
-    writeFileSync(officeOut, multiHostOfficeXmlManifest(cfg));
-    console.log(`generated ${officeOut}`);
-    const outlookOut = generatedOfficeXmlManifestPath(profile, 'outlook');
-    writeFileSync(outlookOut, outlookXmlManifest(cfg));
-    console.log(`generated ${outlookOut}`);
+    write(generatedOfficeXmlManifestPath(profile, 'office'), multiHostOfficeXmlManifest(cfg));
+    write(generatedOfficeXmlManifestPath(profile, 'outlook'), outlookXmlManifest(cfg));
+  } else if (profile === prodProfile) {
+    // Production ships the unified package plus centralized-deployment XML for the chosen apps.
+    const has = (s) => cfg.surfaces.includes(s);
+    if (['word', 'excel', 'powerpoint'].some(has)) {
+      write(generatedOfficeXmlManifestPath(profile, 'office'), multiHostOfficeXmlManifest(cfg));
+    }
+    if (has('outlook')) {
+      write(generatedOfficeXmlManifestPath(profile, 'outlook'), outlookXmlManifest(cfg));
+    }
+    if (has('onenote')) write(generatedOneNoteManifestPath(profile), oneNoteManifest(cfg));
   }
 } catch (err) {
   if (err?.code === 'BLOCKED_EXTERNAL') {

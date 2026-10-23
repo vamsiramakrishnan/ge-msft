@@ -14,27 +14,55 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateNamedRange,
+  DocStateSelection,
   DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
+import { buildDocStateSnapshot, type DocStateSheet } from '@ge/content';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
 import { isSet } from './capabilities-runtime.js';
-import { rangeToContext, searchUsedRange, selectionValuesToContext } from './capture.js';
+import {
+  commentIdFromRef,
+  commentsToRefs,
+  commentToContext,
+  rangeToContext,
+  searchUsedRange,
+  selectionValuesToContext,
+  usedRangeToBlocks,
+  type ExcelComment,
+} from './capture.js';
 import { commentAdded, deriveOrigin, documentChanged, selectionChanged } from './events.js';
 import {
+  chartAreas,
   formatSourceComment,
   planAddComment,
   planConditional,
   planCreateTable,
   planFormatCells,
+  planSortRange,
+  sortKeyIndex,
+  sortVerified,
+  formulasStayInRow,
   planInsertChart,
   planWriteCells,
   splitFormulaGrid,
+  type ChartArea,
 } from './actuate-plan.js';
 import { provenanceRecord } from './provenance-record.js';
 import { readExcelPage } from './document-reader.js';
+
+/** Outside and inside edges, so `border=` draws a full grid over the range. */
+const BORDER_EDGES = [
+  'EdgeTop',
+  'EdgeBottom',
+  'EdgeLeft',
+  'EdgeRight',
+  'InsideHorizontal',
+  'InsideVertical',
+] as const;
 
 /**
  * The Excel `DocBridge`. The ONLY place Office.js (`Excel.run`) is touched. Reads via the
@@ -49,6 +77,7 @@ export class ExcelBridge implements DocBridge {
     {
       'write-cells': (host, request) => host.applyWriteCells(request),
       'format-cells': (host, request) => host.applyFormatCells(request),
+      'sort-range': (host, request) => host.applySortRange(request),
       'create-table': (host, request) => host.applyCreateTable(request),
       'insert-chart': (host, request) => host.applyInsertChart(request),
       'format-conditional': (host, request) => host.applyConditional(request),
@@ -80,10 +109,15 @@ export class ExcelBridge implements DocBridge {
   }
 
   async listContext(): Promise<ContextRef[]> {
+    const [refs, comments] = await Promise.all([this.listRangeContext(), readComments()]);
+    // Existing comment threads, so a reply can target one by its host id (`reply <commentId> …`).
+    return [...refs, ...commentsToRefs(comments)];
+  }
+
+  private async listRangeContext(): Promise<ContextRef[]> {
+    const selected = await readSelectedRange();
     return Excel.run(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-      const sel = ctx.workbook.getSelectedRange();
-      sel.load('address,rowCount,columnCount');
       // valuesOnly: true — exclude cells that only ever had formatting applied (a common cause of
       // spurious blank rows/columns bloating the used range beyond the real data).
       const used = sheet.getUsedRange(true);
@@ -105,14 +139,24 @@ export class ExcelBridge implements DocBridge {
       }
 
       const refs: ContextRef[] = [];
-      refs.push({
-        id: `xl:${sel.address}`,
-        kind: 'range',
-        surface: 'excel',
-        title: sel.address,
-        preview: `${sel.rowCount} × ${sel.columnCount} cells`,
-        live: true,
-      });
+      // No chip while a chart or shape (not cells) is selected.
+      if (selected) {
+        refs.push({
+          id: `xl:${selected.address}`,
+          kind: 'range',
+          surface: 'excel',
+          title: selected.address,
+          preview: selected.skippedCells
+            ? 'Too large to read'
+            : hasContent(selected.values)
+              ? previewOf(selected.values)
+              : 'Blank selection',
+          ...(selected.skippedCells
+            ? { notice: tooLargeNotice(selected.address, selected.skippedCells) }
+            : {}),
+          live: true,
+        });
+      }
       for (const { name, range } of tableRanges) {
         refs.push({
           id: `xl:table:${name}`,
@@ -152,10 +196,20 @@ export class ExcelBridge implements DocBridge {
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.kind === 'comment') {
+      const commentId = commentIdFromRef(ref);
+      if (commentId === undefined) return [];
+      const comment = (await readComments()).find((c) => c.id === commentId);
+      return comment ? commentToContext(comment) : [];
+    }
     if (ref.kind === 'selection' || ref.kind === 'range') {
       const selector = ref.kind === 'selection' && ref.live ? undefined : excelSelectorFromRef(ref);
+      if (!selector) {
+        const selected = await readSelectedRange();
+        return selected ? selectionValuesToContext(selected.address, selected.values) : [];
+      }
       return Excel.run(async (ctx) => {
-        const sel = selector ? resolveReadRange(ctx, selector) : ctx.workbook.getSelectedRange();
+        const sel = resolveReadRange(ctx, selector);
         if (!sel) return [];
         sel.load('address,values,isNullObject');
         await ctx.sync();
@@ -216,54 +270,115 @@ export class ExcelBridge implements DocBridge {
    * current selection address and named ranges. Content is pulled separately on demand.
    * Version increments per capture; it is not a document revision or freshness proof.
    */
-  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+  documentKey(): string | undefined {
+    try {
+      return Office.context?.document?.url || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Every sheet name, VeryHidden included and uncapped (see {@link DocBridge.listSheetNames}). */
+  async listSheetNames(): Promise<string[]> {
     return Excel.run(async (ctx) => {
       const sheets = ctx.workbook.worksheets;
-      sheets.load('items/id,items/name');
-      const selection = ctx.workbook.getSelectedRange();
-      selection.load('address,rowCount,columnCount');
+      sheets.load('items/name');
+      await ctx.sync();
+      return sheets.items.map((s) => s.name);
+    });
+  }
+
+  async captureDocState(): Promise<DocStateSnapshot | undefined> {
+    // `getUsedRangeOrNullObject` → ExcelApi 1.4 (typings l.37235): degrades on an empty sheet
+    // instead of throwing. On an older host (<1.4) fall back to `getUsedRange` (1.1).
+    const hasNullObj = isSet('ExcelApi', '1.4');
+    // `workbook.names` is ExcelApi 1.1, but `NamedItem.formula` (the A1 reference text) is 1.7;
+    // gate the named-ranges read on 1.7 so we only emit a name when we can give its range.
+    const wantNames = isSet('ExcelApi', '1.7');
+
+    const selected = await readSelectedRange();
+    const captured = await Excel.run(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+      sheet.load('name');
+      // valuesOnly: true — see listContext's used-range read for why.
+      const used = hasNullObj ? sheet.getUsedRangeOrNullObject(true) : sheet.getUsedRange(true);
+      used.load('address,values,isNullObject');
+
       const names = ctx.workbook.names;
-      const wantNames = isSet('ExcelApi', '1.7');
       if (wantNames) names.load('items/name,items/type,items/formula');
+      const allSheets = ctx.workbook.worksheets;
+      allSheets.load('items/name,items/visibility');
+
       await ctx.sync();
-      const ranges = sheets.items.slice(0, 60).map((sheet) => {
-        const used = isSet('ExcelApi', '1.4')
-          ? sheet.getUsedRangeOrNullObject(true)
-          : sheet.getUsedRange(true);
-        used.load('address,rowCount,columnCount,isNullObject');
-        return { sheet, used };
+
+      // Every sheet's used range, so a request about another sheet can name and read it.
+      // `visibility` is ExcelApi 1.1; the null-object read needs 1.4, older hosts list names only.
+      // A VeryHidden sheet is set by code, not the user (often lookup/config data): never listed.
+      const listed = allSheets.items
+        .filter((s) => s.visibility !== 'VeryHidden')
+        .slice(0, MAX_LISTED_SHEETS);
+      const sheetUsed = hasNullObj
+        ? listed.map((s) => s.getUsedRangeOrNullObject(true).load('address,isNullObject'))
+        : [];
+      if (sheetUsed.length > 0) await ctx.sync();
+      const sheets: DocStateSheet[] = listed.map((s, i) => {
+        const u = sheetUsed[i] as { address: string; isNullObject?: boolean } | undefined;
+        return {
+          name: s.name,
+          ...(u && u.isNullObject !== true ? { usedAddress: u.address } : {}),
+          ...(s.name === sheet.name ? { active: true } : {}),
+          ...(s.visibility !== 'Visible' ? { hidden: true } : {}),
+        };
       });
-      await ctx.sync();
-      const namedRanges = wantNames
+
+      const usedEmpty = hasNullObj && (used as { isNullObject?: boolean }).isNullObject === true;
+      const usedAddress = usedEmpty ? '' : used.address;
+      const usedValues = usedEmpty ? [] : (used.values as string[][]);
+      const namedRanges: DocStateNamedRange[] = wantNames
         ? names.items
             .filter((n) => n.type === 'Range')
             .slice(0, 60)
             .map((n) => ({ name: n.name, range: stripLeadingEquals(String(n.formula)) }))
         : [];
       return {
-        surface: 'excel',
-        version: ++this.docStateVersion,
-        capturedAt: new Date().toISOString(),
-        title: `${sheets.items.length} worksheets`,
-        outline: [],
-        inventory: ranges.map(({ sheet, used }) => ({
-          kind: 'sheet',
-          id: sheet.id,
-          title: sheet.name,
-          summary: used.isNullObject
-            ? 'Empty worksheet'
-            : `${used.address}: ${used.rowCount} rows × ${used.columnCount} columns`,
-        })),
-        selection: {
-          kind: 'range',
-          title: selection.address,
-          preview: `${selection.rowCount} × ${selection.columnCount} cells`,
-        },
-        ...(namedRanges.length ? { namedRanges } : {}),
-        ...(sheets.items.length > 60 || (wantNames && names.items.length > 60)
-          ? { truncated: true }
-          : {}),
+        title: sheet.name,
+        usedAddress,
+        usedValues,
+        selAddress: selected?.address ?? '',
+        selValues: selected?.values ?? [],
+        selSkippedCells: selected?.skippedCells,
+        namedRanges,
+        sheets,
       };
+    });
+
+    const blocks = captured.usedAddress
+      ? usedRangeToBlocks(captured.usedAddress, captured.usedValues)
+      : [];
+
+    this.docStateVersion += 1;
+    const selection = captured.selSkippedCells
+      ? ({
+          kind: 'range',
+          title: captured.selAddress,
+          preview: `[values not included: ${tooLargeNotice(captured.selAddress, captured.selSkippedCells)}]`,
+        } satisfies DocStateSelection)
+      : hasContent(captured.selValues)
+        ? ({
+            kind: 'range',
+            title: captured.selAddress,
+            preview: previewOf(captured.selValues),
+          } satisfies DocStateSelection)
+        : undefined;
+
+    return buildDocStateSnapshot({
+      surface: 'excel',
+      version: this.docStateVersion,
+      title: captured.title,
+      blocks,
+      ...(selection ? { selection } : {}),
+      ...(captured.namedRanges.length > 0 ? { namedRanges: captured.namedRanges } : {}),
+      sheets: captured.sheets,
     });
   }
 
@@ -440,7 +555,8 @@ export class ExcelBridge implements DocBridge {
     }
     const target = rangeForGrid(plan.address, plan.values.length, plan.values[0]!.length);
     // Use the same normalized grid for dimensions and host values. Explicit typed strings stay
-    // literal; only cellFormulas (or legacy `=` cells) may enter Excel's formula channel.
+    // literal; only cellFormulas (or legacy `=` cells) may enter Excel's formula channel. Legacy
+    // text that Excel would turn into a different value stays literal too.
     const explicit = req.params.cellValues !== undefined;
     const formulaCells = formulasForRequest(req);
     const grid = splitFormulaGrid(formulaCells);
@@ -448,7 +564,9 @@ export class ExcelBridge implements DocBridge {
       row.map((v, c) =>
         formulaCells[r]?.[c]?.startsWith('=')
           ? null
-          : explicit && typeof v === 'string' && v !== ''
+          : typeof v === 'string' &&
+              v !== '' &&
+              (explicit || EXCEL_CONVERTS.test(v) || FORMULA_LIKE.test(v))
             ? `'${v}`
             : (v ?? ''),
       ),
@@ -478,6 +596,8 @@ export class ExcelBridge implements DocBridge {
           ? ctx.workbook.worksheets.getItem(sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
+      const refused = await protectedSheetRefusal(ctx, sheet, range, req, true);
+      if (refused) return refused;
       const before = await snapshotRange(range, ctx, await excelDocumentId());
       const pinned: CellRequest = {
         ...req,
@@ -614,6 +734,8 @@ export class ExcelBridge implements DocBridge {
           ? ctx.workbook.worksheets.getItem(sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
+      const refused = await protectedSheetRefusal(ctx, sheet, range, req, false);
+      if (refused) return refused;
       // Each facet maps to one `range.format.*` write, applied only when present in the plan. All
       // four are ExcelApi 1.1 (typings: `RangeFont.bold` l.42865, `.italic` l.42879,
       // `RangeFill.color` l.42619, `Range.numberFormat` l.38249, `Range.format` l.38092), so no
@@ -622,13 +744,194 @@ export class ExcelBridge implements DocBridge {
       if (plan.italic !== undefined) range.format.font.italic = plan.italic;
       if (plan.fill !== undefined) range.format.fill.color = plan.fill;
       if (plan.numberFormat !== undefined) {
-        // `numberFormat` is a per-cell grid; a single code broadcasts across the whole range.
-        range.numberFormat = [[plan.numberFormat]];
+        // `numberFormat` is a per-cell grid that must match the range's shape: a 1×1 grid on a
+        // multi-cell range is rejected ("rows or columns … doesn't match"), so size it first.
+        range.load('rowCount,columnCount');
+        await ctx.sync();
+        const code = plan.numberFormat;
+        range.numberFormat = Array.from({ length: range.rowCount }, () =>
+          Array.from({ length: range.columnCount }, () => code),
+        );
       }
+      // Font color/size, alignment, wrap and borders are ExcelApi 1.1; autofitColumns is 1.2.
+      if (plan.fontColor !== undefined) range.format.font.color = plan.fontColor;
+      if (plan.fontSize !== undefined) range.format.font.size = plan.fontSize;
+      if (plan.horizontalAlignment !== undefined) {
+        range.format.horizontalAlignment = plan.horizontalAlignment;
+      }
+      if (plan.verticalAlignment !== undefined) {
+        range.format.verticalAlignment = plan.verticalAlignment;
+      }
+      if (plan.wrapText !== undefined) range.format.wrapText = plan.wrapText;
+      if (
+        plan.borderWeight !== undefined ||
+        plan.borderColor !== undefined ||
+        plan.outsideWeight !== undefined ||
+        plan.insideWeight !== undefined
+      ) {
+        for (const edge of BORDER_EDGES) {
+          // Outer and inner edges take their own weight when given (Excel draws them apart).
+          const own = edge.startsWith('Inside') ? plan.insideWeight : plan.outsideWeight;
+          const weight = own ?? plan.borderWeight;
+          // A colour alone draws every edge; with side weights it colours only those sides (L2).
+          const sided = plan.outsideWeight !== undefined || plan.insideWeight !== undefined;
+          if (weight === undefined && (plan.borderColor === undefined || sided)) continue;
+          const border = range.format.borders.getItem(edge);
+          if (weight === 'None') {
+            border.style = 'None';
+            continue;
+          }
+          border.style = 'Continuous';
+          if (weight !== undefined) border.weight = weight;
+          if (plan.borderColor !== undefined) border.color = plan.borderColor;
+        }
+      }
+      if (plan.autofit) range.format.autofitColumns();
       range.load('address');
       await ctx.sync();
       return { ok: true, changeId: req.changeId, kind: req.kind, location: range.address };
     });
+    if (result.ok) {
+      const flags = provFlags(req, await this.persistProvenance(req));
+      if (Object.keys(flags).length > 0) return { ...result, ...flags };
+    }
+    return result;
+  }
+
+  /**
+   * `sort-range` (WS4b): Excel's native in-place sort of one range by one key column (a header name
+   * or a column letter). Same guards as a cell write: protected sheet refused, the reviewed range
+   * pinned by hash, readback verified (the same rows, reordered, key in order), and the prior
+   * cells kept as the undo. A model that cannot sort rewrote whole tables in sorted order instead
+   * (Argon mx-xl-unsupported-05, 2026-10-19).
+   */
+  private async applySortRange(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planSortRange(req);
+    const fail = (code: string, message: string): ActuationResult => ({
+      ok: false,
+      changeId: req.changeId,
+      kind: req.kind,
+      error: { code, message },
+    });
+    if (!plan.address)
+      return fail('no_anchor', 'sort-range needs a range, e.g. range=Sales!A1:F21');
+    if (!plan.key) return fail('no_key', 'sort-range needs key=<header name or column letter>');
+    if (!isSet('ExcelApi', '1.2'))
+      return {
+        ...fail('unsupported_host', 'This host cannot sort ranges (ExcelApi < 1.2).'),
+        degraded: true,
+      };
+    const result: ActuationResult = await Excel.run(async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(plan.address as string);
+      const sheet =
+        sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const range = sheet.getRange(rangeAddress);
+      const refused = await protectedSheetRefusal(ctx, sheet, range, req, false);
+      if (refused) return refused;
+      const before = await snapshotRange(range, ctx, await excelDocumentId());
+      // Only the reviewed, captured range sorts: no pinned hash, no sort (review L5).
+      const expected = req.preconditions?.find((p) => p.locator === before.locator);
+      if (
+        !expected ||
+        expected.surface !== 'excel' ||
+        expected.documentId !== before.documentId ||
+        expected.hash !== before.hash
+      )
+        return fail('stale_target', 'The range changed after preview. Review a new plan.');
+      const firstColumn = /^\$?([A-Za-z]{1,3})/.exec(rangeAddress)?.[1] ?? 'A';
+      const header = before.values[0] ?? [];
+      const keyIndex = sortKeyIndex(plan.key, header, firstColumn, plan.hasHeaders);
+      if (keyIndex === undefined)
+        return fail(
+          'unknown_key',
+          `No column "${plan.key}" in ${before.locator}. Use a header name or a column letter inside the range.`,
+        );
+      // Rows already in order: the sort is done without moving anything, so formulas cannot change.
+      if (sortVerified(before.values, before.values, keyIndex, plan.ascending, plan.hasHeaders)) {
+        range.load('address');
+        await ctx.sync();
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: range.address,
+          verification: { status: 'verified', beforeHash: before.hash, afterHash: before.hash },
+          inverse: {
+            op: 'restore-cells' as const,
+            range: before.locator,
+            values: before.values,
+            formulas: before.formulas,
+          },
+        };
+      }
+      // A formula that uses another row would recalculate in its new row, so the reviewed values
+      // would not just move. Formulas that use only their own row move with it (Excel adjusts them).
+      const firstRow = Number(
+        /(\d+)/.exec(before.locator.slice(before.locator.lastIndexOf('!') + 1))?.[1],
+      );
+      if (
+        before.formulas?.some((row) => row.some((f) => String(f ?? '').startsWith('='))) &&
+        !(
+          firstRow > 0 && formulasStayInRow(before.formulas, firstRow, firstColumn, plan.hasHeaders)
+        )
+      )
+        return fail(
+          'has_formulas',
+          'This range has formulas that use other rows, and sorting would change their results. Sort a range of values, or sort it in Excel.',
+        );
+      // A range narrower than its table would split rows from their other columns (review M3).
+      if (isSet('ExcelApi', '1.7')) {
+        const region = range.getSurroundingRegion();
+        region.load('columnCount,rowCount');
+        await ctx.sync();
+        const width = before.values[0]?.length ?? 0;
+        if (region.columnCount > width)
+          return fail(
+            'partial_table',
+            `The data around ${before.locator} is ${region.columnCount} columns wide. Sort the whole table range so every row stays together.`,
+          );
+      }
+      range.sort.apply([{ key: keyIndex, ascending: plan.ascending }], false, plan.hasHeaders);
+      range.load('address');
+      await ctx.sync();
+      let verification: NonNullable<ActuationResult['verification']>;
+      try {
+        const after = await snapshotRange(range, ctx, before.documentId);
+        const ok =
+          sortVerified(before.values, after.values, keyIndex, plan.ascending, plan.hasHeaders) &&
+          !hasFormulaErrors(after);
+        verification = {
+          status: ok ? 'verified' : 'mismatch',
+          beforeHash: before.hash,
+          afterHash: after.hash,
+          ...(ok
+            ? {}
+            : { message: 'The rows changed in more than order, or the key is not in order.' }),
+        };
+      } catch {
+        verification = {
+          status: 'unknown',
+          beforeHash: before.hash,
+          message: 'The sort landed, but readback could not complete.',
+        };
+      }
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        verification,
+        inverse: {
+          op: 'restore-cells' as const,
+          range: before.locator,
+          values: before.values,
+          formulas: before.formulas,
+        },
+      };
+    });
+    // Durable provenance, as for every other Excel write (review M2).
     if (result.ok) {
       const flags = provFlags(req, await this.persistProvenance(req));
       if (Object.keys(flags).length > 0) return { ...result, ...flags };
@@ -731,19 +1034,46 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
+    const split = chartAreas(plan.address);
+    if ('error' in split) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'invalid_target', message: split.error },
+      };
+    }
+    // Non-adjacent columns (categories + values) need the series API (ExcelApi 1.7).
+    if (split.areas.length > 1 && !isSet('ExcelApi', '1.7')) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported_host',
+          message: 'This host cannot chart separate ranges (ExcelApi < 1.7).',
+        },
+      };
+    }
     const result = await Excel.run(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
-        sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
-          : ctx.workbook.worksheets.getActiveWorksheet();
+        split.sheetName !== undefined
+          ? ctx.workbook.worksheets.getItem(split.sheetName)
+          : sheetName !== undefined && split.areas.length === 1
+            ? ctx.workbook.worksheets.getItem(sheetName)
+            : ctx.workbook.worksheets.getActiveWorksheet();
       // `charts.add(type, sourceData, seriesBy)`. The host enums are erased to strings at runtime;
       // the plan already mapped the agent enums → the `Excel.ChartType`/`ChartSeriesBy` strings.
-      const chart = sheet.charts.add(
-        plan.chartType as Excel.ChartType,
-        sheet.getRange(rangeAddress),
-        plan.seriesBy as Excel.ChartSeriesBy,
-      );
+      const chart =
+        split.areas.length === 1
+          ? sheet.charts.add(
+              plan.chartType as Excel.ChartType,
+              sheet.getRange(rangeAddress),
+              plan.seriesBy as Excel.ChartSeriesBy,
+            )
+          : await addAreaChart(ctx, sheet, plan.chartType, split.areas);
       if (plan.title !== undefined) chart.title.text = plan.title;
       // Read back the MINTED chart name for the inverse identity.
       chart.load('name');
@@ -939,7 +1269,7 @@ export class ExcelBridge implements DocBridge {
       // First sync is required: we must read back the comment ids to locate the target proxy
       // before the second (write) sync replies on it — a genuine read-then-write dependency.
       await ctx.sync();
-      const comment = comments.items.find((c) => c.id === commentId);
+      const comment = comments.items.find((c) => String(c.id).trim() === commentId);
       if (!comment) {
         return {
           ok: false,
@@ -1009,6 +1339,32 @@ interface OfficeSettingsLike {
   saveAsync(callback?: (result: unknown) => void): void;
 }
 
+/** English and Bahasa month names and their short forms. */
+const MONTH =
+  '(?:jan(?:uary|uari)?|feb(?:ruary|ruari)?|mar(?:ch|et)?|apr(?:il)?|may|mei|june?|juni|july?|juli|' +
+  'aug(?:ust)?|agu(?:stus)?|ags|sep(?:t|tember)?|o[ck]t(?:ober)?|nov(?:ember)?|de[cs](?:ember)?)';
+
+/**
+ * Text Excel would store as a different value: a leading zero or plus (phone numbers, IDs), more
+ * than 15 digits (past Excel's precision), or a day/month date the locale can read with day and
+ * month swapped. UAT 2026-10-16: retyped leads lost the 0 and + of their phone numbers, and
+ * `02/06/2026` became 6 February.
+ */
+const EXCEL_CONVERTS = new RegExp(
+  '^(?:0\\d+|\\+[\\d\\s-]+|\\d{16,}|\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}' +
+    // A month name with a year or a day: Excel on the web stores "Jan 2026" as a date (live
+    // 2026-10-17: a summary labelled "Jan 2026" no longer matched the data's text, every total was 0).
+    `|${MONTH}[\\s./,-]+\\d{1,4}|\\d{1,2}[\\s./-]+${MONTH}(?:[\\s./,-]+\\d{2,4})?)$`,
+  'i',
+);
+
+/**
+ * Text Excel may evaluate like a typed formula: a leading `+`, `-` or `@` (`+cmd|' /C calc'!A0`,
+ * `-1+WEBSERVICE(…)`), or a tab/CR before one. Only `=` cells pass the unsafe-formula guard, so
+ * these stay literal; a plain signed number (`-5`, `+1.5e3`) is still written as a number.
+ */
+const FORMULA_LIKE = /^(?![+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?%?$)[+\-@\t\r]/;
+
 /** Normalize an Office `AsyncResult.status` to `'succeeded'`/`'failed'` (enum value or string). */
 function asyncStatus(result: unknown): string {
   const status = (result as { status?: unknown } | undefined)?.status;
@@ -1031,6 +1387,71 @@ function provFlags(
 /** A NamedItem.formula is an A1 reference like "=Sheet1!$A$1:$D$9"; drop the leading `=`. */
 function stripLeadingEquals(formula: string): string {
   return formula.startsWith('=') ? formula.slice(1) : formula;
+}
+
+/** True if any cell in the grid carries a non-empty value. */
+function hasContent(values: string[][]): boolean {
+  return values.some((row) => row.some((cell) => String(cell ?? '').trim().length > 0));
+}
+
+/** A short preview from the first row of a grid. */
+function previewOf(values: string[][]): string {
+  const first = values[0];
+  if (!first) return '';
+  return first
+    .map((c) => String(c ?? ''))
+    .join(' | ')
+    .slice(0, 120);
+}
+
+/** Cap comment threads read into context so a heavily reviewed workbook can't blow the budget. */
+export const MAX_READ_COMMENTS = 50;
+
+/** Sheets listed in the snapshot; a workbook with more lists the first ones only. */
+const MAX_LISTED_SHEETS = 30;
+
+/**
+ * Read up to {@link MAX_READ_COMMENTS} workbook comment threads — author, text, cell and replies —
+ * in two syncs whatever the count. `workbook.comments`, `getLocation` and `replies` → ExcelApi 1.10;
+ * `resolved` → 1.11, so it is only loaded where it exists. Read-only; never throws (an unsupported
+ * host or a batch failure yields `[]`, so a comment read can't break the context list).
+ */
+async function readComments(): Promise<ExcelComment[]> {
+  if (!isSet('ExcelApi', '1.10')) return [];
+  const withResolved = isSet('ExcelApi', '1.11');
+  try {
+    return await Excel.run(async (ctx) => {
+      const comments = ctx.workbook.comments;
+      comments.load(
+        withResolved
+          ? 'items/id,items/authorName,items/content,items/resolved'
+          : 'items/id,items/authorName,items/content',
+      );
+      await ctx.sync();
+      const threads = comments.items.slice(0, MAX_READ_COMMENTS).map((comment) => {
+        const cell = comment.getLocation();
+        cell.load('address');
+        const replies = comment.replies;
+        replies.load('items/authorName,items/content');
+        return { comment, cell, replies };
+      });
+      await ctx.sync();
+      return threads.map(({ comment, cell, replies }) => ({
+        // Stringified: hosts can return a number despite the typings (see Word's hostCommentId).
+        id: String(comment.id).trim(),
+        authorName: comment.authorName ?? '',
+        content: comment.content ?? '',
+        resolved: withResolved ? comment.resolved === true : undefined,
+        address: cell.address ?? '',
+        replies: replies.items.map((r) => ({
+          authorName: r.authorName ?? '',
+          content: r.content ?? '',
+        })),
+      }));
+    });
+  } catch {
+    return [];
+  }
 }
 
 function excelSelectorFromRef(ref: ContextRef): string | undefined {
@@ -1104,6 +1525,99 @@ function resolveReadRange(ctx: Excel.RequestContext, selector: string): Excel.Ra
 }
 
 /** Split "Sheet1!A1:B3" into its worksheet name and range address. */
+/**
+ * A chart over separate areas: the first is the categories, each later one a series. Excel takes a
+ * text first row as the series name, so each value area is charted with its header when it has
+ * one, and the categories are set without theirs.
+ */
+async function addAreaChart(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  chartType: string,
+  areas: readonly ChartArea[],
+): Promise<Excel.Chart> {
+  const [categories, ...values] = areas as [ChartArea, ...ChartArea[]];
+  const firsts = values.map((area) => sheet.getRange(area.topLeft));
+  firsts.forEach((cell) => cell.load('values'));
+  await ctx.sync();
+  const header = firsts.map((cell) => {
+    const v = cell.values[0]?.[0];
+    return typeof v === 'string' && v.trim() !== '' && Number.isNaN(Number(v)) ? v : undefined;
+  });
+  const hasHeader = header.every((h) => h !== undefined);
+  const xValues = sheet.getRange(hasHeader ? categories.body : categories.address);
+  const chart = sheet.charts.add(
+    chartType as Excel.ChartType,
+    sheet.getRange(values[0]!.address),
+    'Columns' as Excel.ChartSeriesBy,
+  );
+  // Commit the chart first: Office.js batches are not transactional, and a series failure in the
+  // same batch left a chart with no recorded name, so no undo and no provenance (security review).
+  chart.load('name');
+  await ctx.sync();
+  try {
+    chart.series.getItemAt(0).setXAxisValues(xValues);
+    values.slice(1).forEach((area, i) => {
+      const series = chart.series.add(header[i + 1]);
+      series.setValues(sheet.getRange(hasHeader ? area.body : area.address));
+      series.setXAxisValues(xValues);
+    });
+    await ctx.sync();
+  } catch (error) {
+    chart.delete();
+    await ctx.sync();
+    throw error;
+  }
+  return chart;
+}
+
+/**
+ * A protected sheet refuses the write, so say so before trying: a certain non-write the user can
+ * fix (Review → Unprotect Sheet). Values may still go into cells the owner unlocked; formatting
+ * is refused either way (the default protection). ExcelApi 1.2; older hosts skip the check.
+ */
+async function protectedSheetRefusal(
+  ctx: Excel.RequestContext,
+  sheet: Excel.Worksheet,
+  range: Excel.Range,
+  req: ActuationRequest,
+  unlockedCellsAllowed: boolean,
+): Promise<ActuationResult | undefined> {
+  if (!isSet('ExcelApi', '1.2')) return undefined;
+  sheet.protection.load('protected');
+  range.load('address');
+  if (unlockedCellsAllowed) range.format.protection.load('locked');
+  try {
+    await ctx.sync();
+  } catch (error) {
+    // Still only reads here: a cell being edited refuses every call, so this is a certain
+    // non-write the user can fix (press Enter or Esc). After a write is queued the same error is
+    // never mapped: it may follow a landed write (security review 2026-10-16).
+    if ((error as { code?: unknown } | null)?.code !== 'InvalidOperationInCellEditMode')
+      throw error;
+    return {
+      ok: false,
+      changeId: req.changeId,
+      kind: req.kind,
+      error: {
+        code: 'host_refused',
+        reason: 'edit_mode',
+        message: 'A cell is being edited in Excel.',
+      },
+    };
+  }
+  if (!sheet.protection.protected) return undefined;
+  // `locked` is null when the range mixes locked and unlocked cells: treat that as locked.
+  if (unlockedCellsAllowed && range.format.protection.locked === false) return undefined;
+  return {
+    ok: false,
+    changeId: req.changeId,
+    kind: req.kind,
+    location: range.address,
+    error: { code: 'host_refused', reason: 'protected', message: 'The sheet is protected.' },
+  };
+}
+
 export function parseAddress(address: string): { sheetName?: string; rangeAddress: string } {
   const bang = address.lastIndexOf('!');
   if (bang < 0) return { rangeAddress: address };
@@ -1122,3 +1636,45 @@ function stripSheetQuotes(name: string): string {
 
 /** Actual dispatch keys; conformance checks these against the advertised capabilities. */
 export const HANDLED_ACTUATIONS: readonly ActuationKind[] = ExcelBridge.handledActuations;
+
+/**
+ * The selected cell range, or undefined while the selection is not cells: with a chart, shape or
+ * picture selected (e.g. right after inserting a chart) Excel rejects `getSelectedRange` with
+ * InvalidSelection ("The current selection is invalid for this operation."). Read in its own batch
+ * so that rejection cannot fail the caller's other reads. Any other error still throws.
+ */
+interface SelectedRange {
+  address: string;
+  values: string[][];
+  /** Cells in the selection; set when it was over the read budget and its values were not loaded. */
+  skippedCells?: number;
+}
+
+/** The note shown to the user (chip) and the model (snapshot) when a selection is too large to read. */
+function tooLargeNotice(address: string, cells: number): string {
+  return (
+    `Your selection (${address}, ${cells.toLocaleString('en-US')} cells) is too large to read. ` +
+    `The assistant can see where it is, but not its values. Select up to ` +
+    `${MAX_READ_CELLS.toLocaleString('en-US')} cells.`
+  );
+}
+
+async function readSelectedRange(): Promise<SelectedRange | undefined> {
+  try {
+    return await Excel.run(async (ctx) => {
+      const sel = ctx.workbook.getSelectedRange();
+      // Size first: a whole-column selection is over a million cells, and loading its values breaks
+      // Office's ~5 MB response cap ("The response payload size has exceeded the limit").
+      sel.load('address,rowCount,columnCount');
+      await ctx.sync();
+      if (!withinReadBudget(sel.rowCount, sel.columnCount))
+        return { address: sel.address, values: [], skippedCells: sel.rowCount * sel.columnCount };
+      sel.load('values');
+      await ctx.sync();
+      return { address: sel.address, values: sel.values as string[][] };
+    });
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === 'InvalidSelection') return undefined;
+    throw error;
+  }
+}

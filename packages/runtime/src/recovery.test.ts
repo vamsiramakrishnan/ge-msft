@@ -168,6 +168,20 @@ describe('unresolved write footprints', () => {
     },
   );
 
+  it('reports cells an unresolved write still blocks, so a new summary can go elsewhere', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const request = await recovery.prepare(f.request());
+    const cells = await f.bridge.captureCells!(request.params.target!.range!);
+    expect(await recovery.isBlocked(cells)).toBe(false);
+    await recovery.execute(request, async () => {
+      throw new Error('host disconnected');
+    });
+    expect(await recovery.isBlocked(cells)).toBe(true);
+    f.switchDocument('other-doc');
+    expect(await recovery.isBlocked(await f.bridge.captureCells!(cells.locator))).toBe(false);
+  });
+
   it('does not block the same address in a different document', async () => {
     const f = spatialFixture();
     const recovery = new RecoveryCoordinator(f.bridge, 'owner');
@@ -411,5 +425,137 @@ describe('durable recovery and verified writes', () => {
     const recovery = new RecoveryCoordinator(f.bridge, 'owner');
     await expect(recovery.inspect()).rejects.toThrow();
     expect(f.landed()).toBe(0);
+  });
+});
+
+describe('a full recovery history', () => {
+  async function write(
+    recovery: RecoveryCoordinator,
+    request: ActuationRequest,
+    actuate?: () => Promise<never>,
+  ) {
+    const prepared = await recovery.prepare(request);
+    const bridge = (recovery as unknown as { bridge: DocBridge }).bridge;
+    return recovery.execute(prepared, actuate ?? (() => bridge.actuate(prepared)));
+  }
+  const interrupted = async () => {
+    throw new Error('host disconnected');
+  };
+
+  it('frees the oldest finished receipt instead of refusing the next write', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const ids: string[] = [];
+    for (let i = 1; i <= 32; i++) {
+      const request = f.request(`Main!A${i}`, [[i]]);
+      ids.push(request.changeId);
+      expect(await write(recovery, request)).toMatchObject({ ok: true });
+    }
+    expect(await write(recovery, f.request('Main!A33', [[33]]))).toMatchObject({ ok: true });
+    const kept = recovery.list().map((r) => r.id);
+    expect(kept).toHaveLength(32);
+    expect(kept).not.toContain(ids[0]);
+    expect(kept).toContain(ids[31]);
+    expect(f.saved()).toHaveLength(32);
+  });
+
+  it('keeps the receipt an undo restores, even when it is the oldest', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const first = f.request('Main!A1', [[1]]);
+    await write(recovery, first);
+    for (let i = 2; i <= 32; i++) await write(recovery, f.request(`Main!A${i}`, [[i]]));
+    const undo = await recovery.prepare(await recovery.request(first.changeId, true));
+    expect(await recovery.execute(undo, () => f.bridge.actuate(undo))).toMatchObject({ ok: true });
+    expect(recovery.list().find((r) => r.id === first.changeId)).toMatchObject({ state: 'undone' });
+  });
+
+  it('checks unfinished receipts once, then frees the ones that turn out finished', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    for (let i = 1; i <= 32; i++)
+      await write(recovery, f.request(`Main!A${i}`, [[i]]), interrupted);
+    expect(recovery.list().every((r) => r.state === 'uncertain')).toBe(true);
+    // The cells still hold their reviewed input: each interrupted write did not land.
+    expect(await write(recovery, f.request('Main!A40', [[40]]))).toMatchObject({ ok: true });
+    expect(recovery.list()).toHaveLength(32);
+  });
+
+  it('refuses in one plain sentence when every receipt is still unconfirmed', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    for (let i = 1; i <= 32; i++)
+      await write(recovery, f.request(`Main!A${i}`, [[i]]), interrupted);
+    f.edit(500); // cells now differ from both the input and the output: outcome unknown
+    await expect(write(recovery, f.request('Main!A40', [[40]]))).rejects.toThrow(
+      'This workbook has too many unconfirmed changes. Copy the data into a new workbook and try again.',
+    );
+    expect(f.saved()).toHaveLength(32);
+  });
+
+  it('frees the oldest finished receipts to stay under the 2 MiB storage limit', async () => {
+    const f = spatialFixture();
+    const save = f.bridge.recoveryStorage!.save;
+    f.bridge.recoveryStorage!.save = async (owner, value) => {
+      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 2 * 1024 * 1024)
+        throw new Error(
+          'Recovery history is full. Resolve or discard older records before writing.',
+        );
+      await save(owner, value);
+    };
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const big = (n: number): CellValue[][] =>
+      Array.from({ length: 100 }, () => Array.from({ length: 10 }, () => `${n}`.padEnd(400, 'x')));
+    const ids: string[] = [];
+    for (let i = 1; i <= 8; i++) {
+      const request = f.request('Main!A1:J100', big(i));
+      ids.push(request.changeId);
+      expect(await write(recovery, request)).toMatchObject({ ok: true });
+    }
+    const kept = recovery.list().map((r) => r.id);
+    expect(kept).not.toContain(ids[0]);
+    expect(kept).toContain(ids[7]);
+  });
+
+  it('frees a finished receipt before any re-read, so an unreadable sheet cannot pin it', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const finished = f.request('Main!A1', [[1]]);
+    await write(recovery, finished);
+    for (let i = 2; i <= 32; i++)
+      await write(recovery, f.request(`Main!A${i}`, [[i]]), interrupted);
+    f.edit(500); // the unresolved ones stay unknown after the re-read
+    const capture = f.bridge.captureCells!;
+    f.bridge.captureCells = async (locator) => {
+      if (locator === 'Main!A1') throw new Error('sheet deleted');
+      return capture(locator);
+    };
+    // The finished receipt is freed first, so the next write fits without any re-read.
+    expect(await write(recovery, f.request('Main!A40', [[40]]))).toMatchObject({ ok: true });
+    expect(recovery.list().some((r) => r.id === finished.changeId)).toBe(false);
+  });
+
+  it('leaves the stored history untouched when a write is refused for room', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    for (let i = 1; i <= 32; i++)
+      await write(recovery, f.request(`Main!A${i}`, [[i]]), interrupted);
+    f.edit(500);
+    const before = recovery.list();
+    await expect(write(recovery, f.request('Main!A40', [[40]]))).rejects.toThrow('unconfirmed');
+    expect(recovery.list().map((r) => [r.id, r.state])).toEqual(before.map((r) => [r.id, r.state]));
+  });
+
+  it('refuses one write too large to keep an undo copy, and keeps earlier receipts', async () => {
+    const f = spatialFixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    await write(recovery, f.request('Main!A1', [[1]]));
+    const huge = Array.from({ length: 400 }, () =>
+      Array.from({ length: 10 }, () => 'x'.repeat(500)),
+    );
+    await expect(write(recovery, f.request('Main!A1:J400', huge))).rejects.toThrow(
+      'This range is too large to keep an undo copy.',
+    );
+    expect(recovery.list()).toHaveLength(1);
   });
 });

@@ -101,7 +101,8 @@ Phrased as preferences because the agent should internalize them, not just avoid
 - **Prefer federated connector mode for ad-hoc sources;** reserve ingestion mode for large stable corpora.
 - **Scope every read and write to the signed-in user's identity end to end.** Prefer delegated Microsoft permissions over org-wide, and `Sites.Selected` over all-sites.
 - **Pin the `discoveryengine` endpoint region to the tenant's residency commitment.** Any optional proxy and its egress must honor the same policy.
+- **Every task-pane UI change follows `packages/web-shell/DESIGN.md` (the Pane Standard).** Use the `ui-change` skill: tokens only, one button system (`.btn` + modifiers), the `.field` recipe, and screenshots at 320/360/480px before reporting done. `bun run lint` includes the design check.
 
 ## Definition of done (every task)
 
-`bun run typecheck` clean · `bun run test` green · `bun run lint` clean · acceptance criteria in `docs/BUILD-PLAN.md` met · `security-reviewer` run if the task touched auth/credentials/guardrails/provenance · the task checked off in the build plan.
+`bun run typecheck` clean · `bun run test` green · `bun run lint` clean · acceptance criteria in `docs/BUILD-PLAN.md` met · `security-reviewer` run if the task touched auth/credentials/guardrails/provenance · UI changes screenshot-checked against `DESIGN.md` · the task checked off in the build plan.

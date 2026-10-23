@@ -293,7 +293,9 @@ by each host's capability manifest. Plan review shows change/target counts along
 Request source selections reach `ResolvedGrounding.dataStoreSpecs`; display labels are never used as
 resource identifiers. The source picker offers connected, addressable sources only. Document content
 is attached through Context; ambient document capture remains the session's responsibility. Pins
-persist only catalog IDs in browser storage. Request text and selected sources stay in memory.
+persist only catalog IDs in browser storage. Request text and selected sources stay in memory, except
+saved diagnostics: the typed question with its content-free diagnostics, per user, 20 entries / 7 days
+(ADR-0012 amendment).
 
 Insertion controls are absent from streaming, failed, or cancelled answers. Other action and context
 controls lock during a turn or approval. Pending proposal application also checks this state at the

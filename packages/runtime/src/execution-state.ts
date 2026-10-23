@@ -179,6 +179,9 @@ export class ExecutionState {
       ...(effect.provenanceMissing !== undefined
         ? { provenanceMissing: effect.provenanceMissing }
         : {}),
+      ...(effect.provenanceUnsupported !== undefined
+        ? { provenanceUnsupported: effect.provenanceUnsupported }
+        : {}),
       ...(effect.error ? { error: this.disclose(`effect-error:${index}`, effect.error) } : {}),
       receipt: this.retain(`effect:${index}`, effect),
     }));

@@ -7,6 +7,7 @@ import {
   type WifConfig,
 } from '@ge/gemini-client';
 import type { ShellConfig } from '../compose.js';
+import { brand, type Brand } from '../brand.js';
 import type { NaaAuthOptions } from '../auth-client.js';
 import { ReleaseProfileNameSchema, type ReleaseProfileName } from '@ge/contracts';
 
@@ -171,7 +172,7 @@ function parseEnv(env: RawEnv): z.infer<typeof RawEnvShape> {
     ...(env.VITE_GE_WIDGET_SERVER_TOKEN
       ? { VITE_GE_WIDGET_SERVER_TOKEN: env.VITE_GE_WIDGET_SERVER_TOKEN.trim() }
       : {}),
-    ...(env.VITE_GE_MODEL_ID ? { VITE_GE_MODEL_ID: env.VITE_GE_MODEL_ID.trim() } : {}),
+    ...(env.VITE_GE_MODEL_ID?.trim() ? { VITE_GE_MODEL_ID: env.VITE_GE_MODEL_ID.trim() } : {}),
     ...(env.VITE_GE_SKILL_IDS ? { VITE_GE_SKILL_IDS: splitList(env.VITE_GE_SKILL_IDS) } : {}),
     ...(env.VITE_GE_COMMAND_PLANNER_SKILL
       ? { VITE_GE_COMMAND_PLANNER_SKILL: env.VITE_GE_COMMAND_PLANNER_SKILL.trim() }
@@ -331,13 +332,35 @@ export function wifFromEnv(env: RawEnv): WifConfig {
   };
 }
 
-export function shellConfigFromEnv(env: RawEnv): ShellConfig {
+/**
+ * The model id from env, or undefined when blank: then no `generationSpec.modelId` is sent and the
+ * Gemini Enterprise assistant's own default model answers. That default is also the recommended
+ * setting: on 2026-10-01 the same command prompt took 6–7 s and always produced a command on it,
+ * against 19–57 s, prose and a Model Armor block on gemini-3.8-flash.
+ */
+export function modelIdFromEnv(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}
+
+/** The one model the pane offers besides the engine default. */
+export const PANE_MODEL_ID = 'gemini-4-argon';
+
+/** The pane sends Argon for any configured model id; blank keeps the engine default. */
+export function paneModelId(modelId: string | undefined): string | undefined {
+  return modelId?.trim() ? PANE_MODEL_ID : undefined;
+}
+
+export function shellConfigFromEnv(env: RawEnv, b: Brand = brand): ShellConfig {
   const parsed = parseEnv(env);
+  const modelId = modelIdFromEnv(parsed.VITE_GE_MODEL_ID);
   return {
     assistant: assistantFromEnv(env),
+    ...(b.promptName ? { assistantName: b.promptName } : {}),
+    ...(b.promptRules?.length ? { assistantRules: b.promptRules } : {}),
+    ...(b.accentColor ? { accentColor: b.accentColor } : {}),
     ...(widgetFromEnv(env) ? { widget: widgetFromEnv(env) } : {}),
     wif: wifFromEnv(env),
-    ...(parsed.VITE_GE_MODEL_ID ? { modelId: parsed.VITE_GE_MODEL_ID } : {}),
+    ...(modelId ? { modelId } : {}),
     ...(parsed.VITE_GE_SKILL_IDS?.length ? { skills: skillsFromEnv(env) } : {}),
     ...(parsed.VITE_GE_SKILL_IDS?.length ? { skillMentions: skillMentionsFromEnv(env) } : {}),
     ...(parsed.VITE_GE_COMMAND_PLANNER_SKILL ? { plannerSkills: plannerSkillsFromEnv(env) } : {}),

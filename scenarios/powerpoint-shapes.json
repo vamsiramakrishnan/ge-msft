@@ -1,0 +1,116 @@
+[
+  {
+    "id": "pptshape-body-slide-2",
+    "surface": "powerpoint",
+    "title": "Replace a body placeholder on a non-first slide",
+    "prompt": "On slide 2, replace the bullet points with: Budget approved, Hiring paused",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Plan", "type": "Placeholder", "placeholderType": "Title" },
+            { "text": "Board meeting", "type": "Placeholder", "placeholderType": "Body" }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            { "text": "Status", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Budget pending\nHiring open",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            { "text": "Next steps", "type": "Placeholder", "placeholderType": "Title" },
+            { "text": "Review in Q1", "type": "Placeholder", "placeholderType": "Body" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "set-shape-text": 1 }, "documentIncludes": ["Budget approved"] }
+  },
+  {
+    "id": "pptshape-format-and-retitle",
+    "surface": "powerpoint",
+    "title": "Format and retitle in one request (live 2026-10-02 shape)",
+    "prompt": "Make the title on slide 2 bold and change it to Roadmap 2027",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "FY26 Plan", "type": "Placeholder", "placeholderType": "Title" }]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            { "text": "Roadmap", "type": "Placeholder", "placeholderType": "Title" },
+            { "text": "Phase 1\nPhase 2", "type": "Placeholder", "placeholderType": "Body" }
+          ]
+        }
+      ],
+      "selectedIndices": [1]
+    },
+    "expect": {
+      "applied": { "format-shape": 1, "set-shape-text": 1 },
+      "documentIncludes": ["Roadmap 2027"]
+    }
+  },
+  {
+    "id": "pptshape-textbox-note",
+    "surface": "powerpoint",
+    "title": "Edit a free text box among placeholders",
+    "prompt": "Change the note on slide 3 that says Draft to Final version",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "Overview", "type": "Placeholder", "placeholderType": "Title" }]
+        },
+        {
+          "id": "s2",
+          "shapes": [{ "text": "Details", "type": "Placeholder", "placeholderType": "Title" }]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            { "text": "Summary", "type": "Placeholder", "placeholderType": "Title" },
+            { "text": "Three key wins", "type": "Placeholder", "placeholderType": "Body" },
+            { "text": "Draft", "type": "TextBox" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "set-shape-text": 1 }, "documentIncludes": ["Final version"] }
+  },
+  {
+    "id": "pptshape-subtitle",
+    "surface": "powerpoint",
+    "title": "Edit the subtitle (not the title)",
+    "prompt": "Change the subtitle on slide 1 to Board meeting, November 2026",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Board meeting, October 2026",
+              "type": "Placeholder",
+              "placeholderType": "Subtitle"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "set-shape-text": 1 }, "documentIncludes": ["November 2026"] }
+  }
+]

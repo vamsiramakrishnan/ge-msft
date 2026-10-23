@@ -195,14 +195,20 @@ export type ParsedCommand =
   | { verb: 'suggest'; oldText: string; newText: string }
   | { verb: 'comment'; selector: string; text: string; textExpr?: ParsedExpr }
   | { verb: 'format'; range: string; props: Record<string, string> }
-  | { verb: 'reply'; commentId: string; text: string; textExpr?: ParsedExpr }
+  | { verb: 'reply'; commentId: string; text: string; textExpr?: ParsedExpr; resolve?: true }
   // ADR-0006 CLI parity effect verbs — now composition-bearing: the free-text slot accepts a
   // `( <pipeline> )` / `$var` expression (evaluated at dry-run) as well as a quoted literal. The
   // anchor slots (title/subject) stay literal. `slide` bullets accept a table expression whose rows
   // become bullets (`bulletsExpr`).
-  | { verb: 'slide'; title: string; bullets: string[]; bulletsExpr?: ParsedExpr }
+  | { verb: 'slide'; title: string; bullets: string[]; bulletsExpr?: ParsedExpr; at?: number }
   | { verb: 'page'; title: string; body: string; bodyExpr?: ParsedExpr }
-  | { verb: 'mail'; body: string; bodyExpr?: ParsedExpr }
+  | {
+      verb: 'mail';
+      body: string;
+      bodyExpr?: ParsedExpr;
+      /** A file opened with the reply: `attach="name.docx" text="file text"`. */
+      attachment?: { name: string; text: string };
+    }
   | { verb: 'post'; text: string; textExpr?: ParsedExpr }
   | { verb: 'compose'; subject: string; body: string; bodyExpr?: ParsedExpr }
   // ADR-0007 host-native Excel kinds — literal range + props (no free-text/expression slot in this
@@ -221,7 +227,7 @@ export type ParsedCommand =
   // runtime compiles into the kind's `ActuationParams`. Per-surface availability is checked at
   // compile, not here (the parser stays structural).
   | { verb: 'invoke'; kind: string; props: Record<string, string>; args: string[] }
-  | { verb: 'done' }
+  | { verb: 'done'; message?: string }
   | { verb: 'help'; topic?: string };
 
 export type WorkspaceSource =
@@ -306,12 +312,14 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     commentId: z.string(),
     text: z.string(),
     textExpr: z.lazy(() => ParsedExprSchema).optional(),
+    resolve: z.literal(true).optional(),
   }),
   z.object({
     verb: z.literal('slide'),
     title: z.string(),
     bullets: z.array(z.string()),
     bulletsExpr: z.lazy(() => ParsedExprSchema).optional(),
+    at: z.number().int().positive().optional(),
   }),
   z.object({
     verb: z.literal('page'),
@@ -323,6 +331,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     verb: z.literal('mail'),
     body: z.string(),
     bodyExpr: z.lazy(() => ParsedExprSchema).optional(),
+    attachment: z.object({ name: z.string(), text: z.string() }).optional(),
   }),
   z.object({
     verb: z.literal('post'),
@@ -361,7 +370,7 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
     props: z.record(z.string()),
     args: z.array(z.string()),
   }),
-  z.object({ verb: z.literal('done') }),
+  z.object({ verb: z.literal('done'), message: z.string().optional() }),
   z.object({ verb: z.literal('help'), topic: z.string().optional() }),
 ]);
 
@@ -407,6 +416,28 @@ export function extractCommandBlock(modelText: string): string | null {
   return plainMatch ? plainMatch[1]!.trim() : null;
 }
 
+/**
+ * Drop the engine's own follow-up block from the end of a reply. Gemini Enterprise's assistant
+ * prompt asks for a closing ```suggested_questions block on every turn; it is never executable.
+ * It is removed only when it is the last block AND directly follows a closed fence, so it cannot
+ * cut lines out of a program or turn an unclosed program into a complete one.
+ */
+export function stripFollowUpBlock(modelText: string): string {
+  const lines = modelText.trimEnd().split('\n');
+  const bare = (line: string | undefined) => /^```[^\S\n]*$/.test((line ?? '').trimEnd());
+  if (lines.length < 3 || !bare(lines[lines.length - 1])) return modelText;
+  // The fence line that opens the last block: the nearest fence line above the closing one.
+  let open = lines.length - 2;
+  while (open >= 0 && !lines[open]!.startsWith('```')) open--;
+  if (open < 0 || !/^```suggested_questions[^\S\n]*$/i.test(lines[open]!.trimEnd()))
+    return modelText;
+  let above = open - 1;
+  while (above >= 0 && lines[above]!.trim() === '') above--;
+  if (!bare(lines[above])) return modelText;
+  const offset = lines.slice(0, open).reduce((n, line) => n + line.length + 1, 0);
+  return modelText.slice(0, offset).trimEnd();
+}
+
 /* ───────────────────────────── line parsing ───────────────────────────── */
 
 /**
@@ -448,14 +479,17 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'outline':
       return { verb: 'outline' };
     case 'done':
-      return { verb: 'done' };
+      return parseDone(rest);
     case 'help':
       return { verb: 'help', ...(rest ? { topic: rest } : {}) };
 
     case 'read': {
       // An address reads a range. Empty/document selectors read the first bounded document
       // page; document:<cursor> continues. EOF does not imply prior pages were read.
-      return { verb: 'read', selector: rest };
+      // A wrapping pair of DOUBLE quotes is not part of an Excel address (sheet names are quoted
+      // with single quotes): `read "Branch Performance!A1:F21"` read nothing.
+      const quoted = rest.length >= 2 && rest.startsWith('"') && rest.endsWith('"');
+      return { verb: 'read', selector: quoted ? rest.slice(1, -1).trim() : rest };
     }
 
     case 'ls': {
@@ -488,7 +522,10 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'list': {
       if (rest === '') return { verb: 'list' };
       const kind = rest.toLowerCase();
-      const parsed = ContextKindSchema.safeParse(kind);
+      // Accept the plural the model often writes (`list comments` → `comment`).
+      const parsed = ContextKindSchema.safeParse(
+        ContextKindSchema.safeParse(kind).success ? kind : kind.replace(/s$/, ''),
+      );
       if (!parsed.success) {
         return {
           error: `unknown context kind "${rest}" — supported: ${ContextKindSchema.options.join(', ')}`,
@@ -581,12 +618,15 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
     case 'set': {
       const split = splitFirstArg(rest);
       if (!split) {
-        return { error: 'set needs a cell and a value — usage: set <A1> <value|=formula>' };
+        return { error: 'set needs a cell and a value — usage: set <A1|A1:A50> <value|=formula>' };
       }
       const cell = split.arg;
-      const value = unquoteSetValue(split.tail.trim());
+      const raw = split.tail.trim();
+      const value = unquoteSetValue(raw);
+      // `set I2 ""` clears the cell (the model writes it for a first month with no previous one).
+      if (raw === '""' && cell !== '') return { verb: 'set', cell, value: '' };
       if (cell === '' || value === '') {
-        return { error: 'set needs a cell and a value — usage: set <A1> <value|=formula>' };
+        return { error: 'set needs a cell and a value — usage: set <A1|A1:A50> <value|=formula>' };
       }
       // ADR-0005 Phase 2: the value may be an effect-arg EXPRESSION (`$var` or `( <pipeline> )`)
       // evaluated against the env at dry-run; otherwise it is a LITERAL (commas/spaces/`=SUM(A1,
@@ -961,6 +1001,13 @@ function parseComment(rest: string): ParsedCommand | CommandParseError {
   return { verb: 'comment', selector, text: body.value };
 }
 
+/** Every `format` key and the values it takes — shown to the model and in corrective errors. */
+export const FORMAT_KEYS_USAGE =
+  'bold=true|false italic=true|false fill=#RRGGBB fontColor=#RRGGBB fontSize=6-96 ' +
+  'align=left|center|right|justify valign=top|center|bottom wrap=true|false border=thin|medium|thick|none ' +
+  'borderOutside=thin|medium|thick|none borderInside=thin|medium|thick|none ' +
+  'borderColor=#RRGGBB autofit=true numberFormat="<Excel code>" (quote any value with spaces)';
+
 /**
  * `format <range> k=v k=v ...` — first token is the A1/NamedRange; the rest are `key=value`
  * pairs, each split on the FIRST `=` only so values may carry `# $ , . %` unquoted
@@ -969,6 +1016,20 @@ function parseComment(rest: string): ParsedCommand | CommandParseError {
  */
 function parseFormat(rest: string): ParsedCommand | CommandParseError {
   const usage = 'format needs a range and at least one key=value — usage: format <range> k=v ...';
+  // Models sometimes write the style as JSON (`format <range> {"bold":true,…}`): flatten it into
+  // key=value props, and fall back to the key=value guidance if it can't be read.
+  const json = rest.indexOf('{');
+  if (json >= 0) {
+    const flattened = parseJsonFormat(rest, usage);
+    if (!('error' in flattened)) return flattened;
+    const range = rest.slice(0, json).trim() || '<range>';
+    return {
+      error:
+        `format JSON couldn't be read (malformed, or no format keys) — use key=value pairs, not JSON — ` +
+        `e.g. format ${range} bold=true fontColor=#FFFFFF ` +
+        `fill=#1F4E79 align=center. Keys: ${FORMAT_KEYS_USAGE}`,
+    };
+  }
   const { positional, props } = tokenizeArgs(rest);
   if (positional.length === 0) return { error: usage };
 
@@ -985,6 +1046,56 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
 }
 
 /**
+ * A model-written JSON format — `format A1:H1 {"font":{"bold":true},…}` or
+ * `format {"range":"A1:H1","style":{…}}` — flattened to the same `key=value` props the plain form
+ * produces. Mirrors `_parse_json_format` in skill/…/parse_commands.py; keep the two in step.
+ */
+function parseJsonFormat(rest: string, usage: string): ParsedCommand | CommandParseError {
+  const brace = rest.indexOf('{');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rest.slice(brace));
+  } catch {
+    return { error: 'format JSON is malformed (usage: format <range> k=v)' };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { error: usage };
+  }
+  const obj = parsed as Record<string, unknown>;
+  const range =
+    rest.slice(0, brace).trim() || (typeof obj.range === 'string' ? obj.range.trim() : '');
+  if (!range || /\s/.test(range)) return { error: usage };
+  const styleValue = obj.style ?? obj.format;
+  const style = (
+    typeof styleValue === 'object' && styleValue !== null ? styleValue : obj
+  ) as Record<string, unknown>;
+
+  const props: Record<string, string> = {};
+  const field = (v: unknown, key: string): unknown =>
+    typeof v === 'object' && v !== null ? (v as Record<string, unknown>)[key] : undefined;
+  const put = (key: string, v: unknown): void => {
+    const text = typeof v === 'boolean' ? String(v) : typeof v === 'number' ? String(v) : v;
+    if (typeof text === 'string' && !(key in props)) props[key] = text;
+  };
+  const first = (...values: unknown[]): unknown => values.find((v) => v !== undefined);
+
+  for (const key of ['bold', 'italic', 'fill', 'numberFormat', 'fontColor', 'borderColor']) {
+    put(key, style[key]);
+  }
+  put('bold', field(style.font, 'bold'));
+  put('italic', field(style.font, 'italic'));
+  put('fontColor', field(style.font, 'color'));
+  put('fontColor', style.color);
+  put('fill', field(style.fill, 'color'));
+  put('align', first(style.horizontalAlignment, field(style.align, 'horizontal'), style.align));
+  put('valign', first(style.verticalAlignment, field(style.align, 'vertical')));
+  put('border', first(field(style.border, 'style'), style.border));
+  put('borderColor', field(style.border, 'color'));
+  if (Object.keys(props).length === 0) return { error: usage };
+  return { verb: 'format', range, props };
+}
+
+/**
  * Split the first command argument while respecting Excel's single-quoted sheet prefix:
  * `'Daily schedule'!B2` remains one selector. A fully quoted selector (`"Sales Q1"!A1`) is accepted
  * too. Used by verbs whose remainder is free text, so generic tokenization would lose spacing.
@@ -992,19 +1103,26 @@ function parseFormat(rest: string): ParsedCommand | CommandParseError {
 function splitFirstArg(rest: string): { arg: string; tail: string } | undefined {
   const s = rest.trimStart();
   if (!s) return undefined;
-  const m = /^"([^"]*)"(\S*)|'([^']*)'(\S*)|(\S+)/.exec(s);
+  const m = new RegExp(`^"([^"]*)"(\\S*)|(${QUOTED_SHEET_TOKEN})|(\\S+)`).exec(s);
   if (!m) return undefined;
-  const arg =
-    m[1] !== undefined
-      ? `${m[1]}${m[2] ?? ''}`
-      : m[3] !== undefined
-        ? `'${m[3]}'${m[4] ?? ''}`
-        : m[5]!;
+  const arg = m[1] !== undefined ? `${m[1]}${m[2] ?? ''}` : (m[3] ?? m[4]!);
   return { arg, tail: s.slice(m[0]!.length) };
 }
 
+/**
+ * A token that starts with an Excel single-quoted sheet name (`'Branch Performance'!A1:B9`, `''`
+ * escapes a quote). Later areas may quote their sheet too (`'A B'!A1,'A B'!C1`), so the token runs
+ * on through further quoted segments instead of stopping at the space inside the second name
+ * (UAT 2026-10-16: every chart on 'Branch Performance' failed to build).
+ */
+const QUOTED_SHEET_TOKEN = `'(?:[^']|'')*'(?:[^\\s']+|'(?:[^']|'')*')*`;
+
 /** `set A1 "hello world"` is a scalar cell value, not a request to include quote characters. */
 function unquoteSetValue(value: string): string {
+  // A double-quoted value honours `\"` and `\\` (UAT 2026-10-16: the model wrote
+  // `set I3 "=IF(A3=A2,(F3-F2)/F2,\"\")"` and the backslashes reached the formula).
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"'))
+    return value.slice(1, -1).replace(/\\(["\\])/g, '$1');
   return stripWrappingQuotes(value);
 }
 
@@ -1017,14 +1135,22 @@ function unquoteSetValue(value: string): string {
 function tokenizeArgs(rest: string): { positional: string[]; props: Record<string, string> } {
   const positional: string[] = [];
   const props: Record<string, string> = {};
-  const re = /(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|'([^']*)'(\S*)|(\S+)/g;
+  // Double-quoted values honour `\"`, `\\` and `\n` escapes (as {@link scanQuoted}), so a quoted
+  // value can carry quotes — an OOXML attribute (`ooxml="<w:pStyle w:val=\"Heading1\"/>"`) was
+  // otherwise cut at the first one — and line breaks.
+  const re = new RegExp(
+    `(\\w[\\w-]*)="((?:[^"\\\\]|\\\\.)*)"|(\\w[\\w-]*)=(${QUOTED_SHEET_TOKEN}|\\S+)|` +
+      `"((?:[^"\\\\]|\\\\.)*)"|(${QUOTED_SHEET_TOKEN})|(\\S+)`,
+    'g',
+  );
+  const unescape = (s: string): string =>
+    s.replace(/\\(["\\n])/g, (_, c: string) => (c === 'n' ? '\n' : c));
   let m: RegExpExecArray | null;
   while ((m = re.exec(rest)) !== null) {
-    if (m[1] !== undefined) props[m[1]] = m[2]!;
+    if (m[1] !== undefined) props[m[1]] = unescape(m[2]!);
     else if (m[3] !== undefined) props[m[3]] = m[4]!;
-    else if (m[5] !== undefined) positional.push(m[5]);
-    else if (m[6] !== undefined) positional.push(`'${m[6]}'${m[7] ?? ''}`);
-    else positional.push(m[8]!);
+    else if (m[5] !== undefined) positional.push(unescape(m[5]));
+    else positional.push(m[6] ?? m[7]!);
   }
   return { positional, props };
 }
@@ -1044,11 +1170,13 @@ function parseTable(rest: string): ParsedCommand | CommandParseError {
 /** ADR-0007 `chart <type> <range> [title="…"] [series=rows|columns]` — a chart over a source range. */
 function parseChart(rest: string): ParsedCommand | CommandParseError {
   const usage =
-    'chart needs a type and a range — usage: chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns]';
+    'chart needs a type and a range — usage: chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns] [x=<col> by=<col> value=<col>]';
   const { positional, props } = tokenizeArgs(rest);
   const chartType = positional[0];
-  const range = positional[1];
+  let range = positional[1];
   if (chartType === undefined || range === undefined) return { error: usage };
+  // The source may put a space after a comma (`C1:C9, G1:G9`); rejoin the areas split there.
+  for (let i = 2; range.endsWith(',') && positional[i] !== undefined; i++) range += positional[i];
   return { verb: 'chart', chartType: chartType.toLowerCase(), range, props };
 }
 
@@ -1174,7 +1302,8 @@ function nearestKind(kind: string): string | undefined {
  * which Word/Excel advertise. A missing id or body is a corrective error.
  */
 function parseReply(rest: string): ParsedCommand | CommandParseError {
-  const usage = 'reply needs a comment id and a quoted reply — usage: reply <commentId> "text"';
+  const usage =
+    'reply needs a comment id and a quoted reply — usage: reply <commentId> "text" [resolve]';
 
   // Skip leading whitespace.
   let i = 0;
@@ -1202,38 +1331,70 @@ function parseReply(rest: string): ParsedCommand | CommandParseError {
 
   const body = scanQuoted(rest, i);
   if (!body) return { error: usage };
-  // Anything after the closing quote (other than whitespace) is malformed.
-  if (rest.slice(body.end).trim() !== '') return { error: usage };
+  // After the closing quote: nothing, or `resolve` to also mark the thread resolved (the bridges
+  // always supported it; the verb could not ask, live 2026-10-15 mx-xl-reply-04). Else malformed.
+  const tail = rest.slice(body.end).trim();
+  if (tail === 'resolve') return { verb: 'reply', commentId, text: body.value, resolve: true };
+  if (tail !== '') return { error: usage };
   return { verb: 'reply', commentId, text: body.value };
 }
 
 /**
- * `slide "<title>" ["<bullet>" …]` OR `slide "<title>" (<table-expr>)` (`insert-slide`). The first
- * quoted string is the title; the bullets are EITHER zero-or-more quoted strings OR a single
- * composition expression (`( <pipeline> )` / `$var`) whose resulting table's rows become bullets at
- * dry-run (`bulletsExpr`). A missing/empty title or a non-quoted, non-expression tail is corrective.
+ * `done` or `done "<answer>"`: finish the task. The quoted answer is shown to the user as the reply,
+ * so a read-only question ("read the last row") ends with its answer, not a bare "Done".
+ */
+function parseDone(rest: string): ParsedCommand | CommandParseError {
+  // Never a corrective: `done — all 4 slides added` must still finish (a rejected done kept the loop
+  // running and the model adding slides). Only a quoted answer is shown; other trailing text is
+  // ignored, as it always was.
+  const t = rest.trim();
+  const message = t.startsWith('"') ? scanQuoted(t, 0) : null;
+  return message && message.value.trim() !== ''
+    ? { verb: 'done', message: message.value }
+    : { verb: 'done' };
+}
+
+/**
+ * `slide "<title>" ["<bullet>" …] [at=N]` OR `slide "<title>" (<table-expr>) [at=N]`
+ * (`insert-slide`). The first quoted string is the title; the bullets are EITHER zero-or-more quoted
+ * strings OR a single composition expression (`( <pipeline> )` / `$var`) whose resulting table's
+ * rows become bullets at dry-run (`bulletsExpr`). `at=N` (1-based, first or last) makes the new slide
+ * slide N; without it the slide is appended. A missing/empty title or a non-quoted, non-expression
+ * tail is corrective.
  */
 function parseSlide(rest: string): ParsedCommand | CommandParseError {
   const usage =
-    'slide needs a quoted title and bullets (quoted strings or a table expression) — usage: slide "Title" "bullet one" "bullet two"  OR  slide "Title" ($rows | select a,b)';
-  const t = rest.trim();
+    'slide needs a quoted title and bullets (quoted strings or a table expression), plus optional at=N for the position — usage: slide "Title" "bullet one" "bullet two" at=2  OR  slide "Title" ($rows | select a,b)';
+  let t = rest.trim();
+  let at: number | undefined;
+  const lead = /^at=(\S*)\s+/i.exec(t);
+  const trail = lead ? null : /\s+at=(\S*)$/i.exec(t);
+  const atMatch = lead ?? trail;
+  if (atMatch) {
+    const value = atMatch[1] ?? '';
+    if (!/^[1-9]\d*$/.test(value))
+      return { error: `slide at= must be a slide number (1 = first), got "${value}"` };
+    at = Number(value);
+    t = (lead ? t.slice(atMatch[0].length) : t.slice(0, atMatch.index)).trim();
+  }
+  const position = at === undefined ? {} : { at };
   if (!t.startsWith('"')) return { error: usage };
   const title = scanQuoted(t, 0);
   if (!title) return { error: usage };
   if (title.value === '') return { error: 'slide title cannot be empty' };
 
   const tail = t.slice(title.end).trim();
-  if (tail === '') return { verb: 'slide', title: title.value, bullets: [] };
+  if (tail === '') return { verb: 'slide', title: title.value, bullets: [], ...position };
   // Expression bullets: a parenthesized pipeline or a bare `$var` (quoted bullets always start `"`).
   if (tail.startsWith('(') || tail.startsWith('$')) {
     const expr = parseEffectArg(tail);
     if (expr === undefined) return { error: usage };
     if (isExprParseError(expr)) return expr;
-    return { verb: 'slide', title: title.value, bullets: [], bulletsExpr: expr };
+    return { verb: 'slide', title: title.value, bullets: [], bulletsExpr: expr, ...position };
   }
   const bullets = scanQuotedList(tail);
   if (!bullets) return { error: usage };
-  return { verb: 'slide', title: title.value, bullets };
+  return { verb: 'slide', title: title.value, bullets, ...position };
 }
 
 /**
@@ -1293,7 +1454,23 @@ function parsePage(rest: string): ParsedCommand | CommandParseError {
  */
 function parseMail(rest: string): ParsedCommand | CommandParseError {
   const usage =
-    'mail needs a quoted body or an expression — usage: mail "reply body text"  OR  mail ($draft | ...)';
+    'mail needs a quoted body or an expression — usage: mail "reply body text" [attach="name.docx" text="file text"]  OR  mail ($draft | ...)';
+  // A quoted body may be followed by a file to attach when the reply opens (UAT 2026-10-16 #22).
+  const lead = scanLeadingQuoted(rest);
+  if (lead && lead.tail.trim() !== '') {
+    const { positional, props } = tokenizeArgs(lead.tail);
+    const keys = Object.keys(props);
+    if (
+      positional.length > 0 ||
+      keys.some((k) => k !== 'attach' && k !== 'text') ||
+      props.attach === undefined ||
+      props.text === undefined
+    )
+      return { error: usage };
+    if (lead.value === '') return { error: 'mail body cannot be empty' };
+    if (props.attach.trim() === '') return { error: 'mail attach= needs a file name' };
+    return { verb: 'mail', body: lead.value, attachment: { name: props.attach, text: props.text } };
+  }
   const arg = parseBodyArg(rest, usage);
   if ('error' in arg) return arg;
   if ('expr' in arg) return { verb: 'mail', body: '', bodyExpr: arg.expr };
@@ -1357,7 +1534,7 @@ function scanQuotedList(s: string): string[] | null {
 
 /**
  * Scan a double-quoted string starting at `start` (which must index the opening `"`).
- * Honors `\"` (literal quote) and `\\` (literal backslash). Returns the unescaped value and
+ * Honors `\"` (quote), `\\` (backslash), `\n` (line break) and `\t` (tab). Returns the unescaped value and
  * the index just past the closing quote, or `null` if there is no well-formed quoted string.
  */
 export function scanQuoted(s: string, start: number): { value: string; end: number } | null {
@@ -1368,7 +1545,16 @@ export function scanQuoted(s: string, start: number): { value: string; end: numb
     const ch = s[i]!;
     if (ch === '\\' && i + 1 < s.length) {
       const next = s[i + 1]!;
-      value += next === '"' || next === '\\' ? next : `\\${next}`;
+      // `\n` / `\t` are line breaks and tabs: models write them in mail bodies and replies, and a
+      // literal "\n\n" reached Outlook drafts (UAT 2026-10-15). Other escapes stay as written.
+      value +=
+        next === '"' || next === '\\'
+          ? next
+          : next === 'n'
+            ? '\n'
+            : next === 't'
+              ? '\t'
+              : `\\${next}`;
       i += 2;
       continue;
     }
@@ -1574,13 +1760,28 @@ export function parseProgramBlock(
     options.requireCompleteFrame ||
     modelText.split('\n').some((line) => /^finish(?:\s|$)/i.test(line.trim()));
   if (requestsFinish) {
-    const closed = /^```cmd[^\S\n]*\r?\n[\s\S]*?^```[^\S\n]*(?:\r?\n|$)/im.test(modelText);
-    const singleFrame = /^```cmd[^\S\n]*\r?\n([\s\S]*?)\r?\n```$/i.exec(modelText.trim());
-    if (!closed) entries.push({ error: 'finish when=verified requires a closed cmd fence' });
-    else if (!singleFrame || singleFrame[1]!.includes('```'))
+    // One cmd block, and no other fence anywhere: prose around it cannot hide a second program.
+    // Live 2026-10-17, Gemini added a summary after the block, or left it unclosed, and every
+    // retry was refused until the run stopped. An unclosed block still counts only when its last
+    // line IS the finish: `finish` must be the final entry, so a stream cut there lost nothing.
+    const fences = modelText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('```'));
+    const lastLine = modelText.trim().split('\n').at(-1)?.trim() ?? '';
+    // Every ``` must be one of those fence lines: none inside a line (an embedded fence).
+    const embedded = modelText.split('```').length - 1 !== fences.length;
+    const opensCmd = /^```cmd$/i.test(fences[0] ?? '');
+    const closed =
+      !embedded &&
+      opensCmd &&
+      ((fences.length === 2 && fences[1] === '```') ||
+        (fences.length === 1 && /^finish\s+when=verified$/i.test(lastLine)));
+    if (fences.length <= 1 && !embedded && !closed)
+      entries.push({ error: 'finish when=verified requires a closed cmd fence' });
+    else if (!closed)
       entries.push({
-        error:
-          'finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences',
+        error: 'finish when=verified requires exactly one cmd fence with no embedded fences',
       });
   }
   // Independent writes may survive ordinary corrective errors. A program requesting verified
@@ -1794,7 +1995,11 @@ export function grammarFor(manifest: CapabilityManifest): VerbSpec[] {
   }
 
   specs.push(
-    { verb: 'done', usage: 'done', hint: 'finish — you have completed the task' },
+    {
+      verb: 'done',
+      usage: 'done  OR  done "<answer>"',
+      hint: 'finish — for a question, put the answer in quotes: done "The last row is Samarth, Pro, ₹1,999"',
+    },
     { verb: 'help', usage: 'help', hint: 'list the available commands' },
   );
   return specs;
@@ -1886,8 +2091,8 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'set':
       return {
         verb: 'set',
-        usage: 'set <A1> <value|=formula>',
-        hint: 'write one cell, e.g. set Sales!F2 =C2-D2',
+        usage: 'set <A1|A1:A50> <value|=formula>',
+        hint: 'write one cell, or fill a range with one formula (references shift per row, like Excel fill-down), e.g. set Sales!F2:F57 =C2-D2',
       };
     case 'grid':
       return {
@@ -1916,20 +2121,20 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'format':
       return {
         verb: 'format',
-        usage: 'format <range> k=v ...',
-        hint: 'format a range, e.g. format Sales!A16:C16 bold=true fill=#FFF2CC numberFormat=$#,##0.00',
+        usage: `format <range> key=value ... (not JSON) — keys: ${FORMAT_KEYS_USAGE}`,
+        hint: 'format a range, e.g. format Sales!A1:H1 bold=true fontColor=#FFFFFF fill=#1F4E79 align=center border=thin',
       };
     case 'reply':
       return {
         verb: 'reply',
-        usage: 'reply <commentId> "text"',
-        hint: 'reply to an existing comment by its id, e.g. reply {3f2a} "addressed in the redline"',
+        usage: 'reply <commentId> "text" [resolve]',
+        hint: 'reply to an existing comment by its id; add resolve to also mark it resolved, e.g. reply {3f2a} "addressed in the redline" resolve',
       };
     case 'slide':
       return {
         verb: 'slide',
-        usage: 'slide "Title" "bullet" ...  OR  slide "Title" (<table expr>)',
-        hint: 'add a slide; bullets can be a table expression, e.g. slide "Top accounts" ($rows | select name,arr)',
+        usage: 'slide "Title" "bullet" ... [at=N]  OR  slide "Title" (<table expr>) [at=N]',
+        hint: 'add a slide (at=N makes it slide N; default: the end); bullets can be a table expression, e.g. slide "Top accounts" ($rows | select name,arr) at=2',
       };
     case 'page':
       return {
@@ -1940,8 +2145,8 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'mail':
       return {
         verb: 'mail',
-        usage: 'mail "body"  OR  mail (<expr>)',
-        hint: 'stage a reviewable reply; body may compose, e.g. mail ($draft | head 1)',
+        usage: 'mail "body" [attach="name.docx" text="file text"]  OR  mail (<expr>)',
+        hint: 'stage a reviewable reply (with a file when attach= is given); body may compose, e.g. mail ($draft | head 1)',
       };
     case 'post':
       return {
@@ -1964,8 +2169,9 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'chart':
       return {
         verb: 'chart',
-        usage: 'chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns]',
-        hint: 'add a chart over a range, e.g. chart column Report!A1:B11 title="Top regions"',
+        usage:
+          'chart <column|bar|line|pie|scatter|area> <range> [title="…"] [series=rows|columns] [x=<col> by=<col> value=<col>]',
+        hint: 'add a chart over a range, e.g. chart column Report!A1:B11 title="Top regions"; one line per group from long data: chart line Data!A1:H25 x=Month by=Branch value=Complaints',
       };
     case 'cf':
       return {
@@ -1983,18 +2189,55 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
     case 'shape':
       return {
         verb: 'shape',
-        usage: 'shape <pp:shape:slideId:shapeId> "text"',
-        hint: 'replace text in one selected/addressed PowerPoint shape',
+        usage: 'shape <pp:shape:slide:shape> "text"',
+        hint: 'replace text in one PowerPoint shape, e.g. retitle a slide: shape pp:shape:1:title "New title" (slide = id, number or last; shape = id or title)',
       };
   }
 }
+
+/**
+ * The exact keys each specialized command reads (from its compile step in the runtime). Help cards
+ * and the grammar print these instead of `[key=value ...]`: an option the model never sees is an
+ * option it will not use (Argon mx-wd-findreplace-08 would not risk "calendar monthly" without
+ * matchWholeWord, 2026-10-19). Keep in step with `paramsFromInvoke` in runtime/command-protocol.ts.
+ */
+export const SPECIALIZED_SYNTAX: Partial<Record<ActuationKind, string>> = {
+  'insert-text':
+    '/insert-text text="..." [match="exact anchor text"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]',
+  'sort-range':
+    '/sort-range range=<Sheet!A1:F21> key=<header name or column letter> [order=ascending|descending] [headers=true|false]',
+  'replace-selection': '/replace-selection text="..."',
+  'insert-ooxml': '/insert-ooxml ooxml="<w:p>...</w:p>" [match="exact anchor text"]',
+  'fill-content-control': '/fill-content-control contentControlId=<id> text="..."',
+  'apply-style':
+    '/apply-style style="Heading 1" [match="exact paragraph text"] [builtIn=true|false]',
+  'insert-table':
+    '/insert-table rows="h1\\th2\\nv1\\tv2" [headers=true|false] [match="exact anchor text"] [replaceThrough="text in the last paragraph to turn into the table"]',
+  'insert-content-control':
+    '/insert-content-control type=richText|plainText [tag=<tag>] [title="..."] [match="exact anchor text"]',
+  'insert-hyperlink':
+    '/insert-hyperlink url=<https URL> [match="exact text to link"] [displayText="..."] [screenTip="..."]',
+  'find-replace':
+    '/find-replace find="..." replace="..." [matchCase=true|false] [matchWholeWord=true|false]',
+  'format-shape':
+    '/format-shape slide=<n> shape=<name|id> [fill=#RRGGBB] [line=#RRGGBB] [fontColor=#RRGGBB] [fontName=<name>] [fontSize=<pt>] [bold=true|false] [italic=true|false] [underline=true|false] [zOrder=front|back|forward|backward]',
+  'add-shape':
+    '/add-shape slide=<n> shapeType=textBox|geometric|line [geometryType=Rectangle|Ellipse|...] [text="..."] [fill=#RRGGBB] [connectorType=straight|elbow|curve] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]',
+  'add-table-slide':
+    '/add-table-slide slide=<n|new> rows="h1\\th2\\nv1\\tv2" [title="..."] [at=<n>] [headerFill=#RRGGBB] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]',
+  'add-attachment': '/add-attachment name="file.docx" text="file text"',
+  'set-body': '/set-body text="..." (or html="<p>...</p>")',
+  'set-recipients':
+    '/set-recipients to="a@x.com, b@y.com" [cc="..."] [bcc="..."] [recipientMode=set|add]',
+  'set-subject': '/set-subject subject="..."',
+};
 
 function specializedVerbSpec(kind: ActuationKind, surface: Surface): VerbSpec {
   const registry = registryEntryForKindAndSurface(kind, surface);
   if (registry) {
     return {
       verb: kind,
-      usage: `${registry.command} [key=value ...]`,
+      usage: SPECIALIZED_SYNTAX[kind] ?? `${registry.command} [key=value ...]`,
       hint: registry.useWhen,
     };
   }
@@ -2077,4 +2320,91 @@ function levenshtein(a: string, b: string): number {
     [prev, curr] = [curr, prev];
   }
   return prev[n]!;
+}
+
+/**
+ * Quote the workbook's own sheet names where a command wrote one unquoted before `!`
+ * (`Branch Performance!A1` → `'Branch Performance'!A1`). Without quotes the command splits at the
+ * space (retest 2026-10-20: sorts and writes failed prepare). Only names that need quotes and
+ * exist in `sheetNames` change; text inside double-quoted values is left alone.
+ */
+export function quoteSheetNames(text: string, sheetNames: readonly string[]): string {
+  // A name with = " ! could pass for command text (a sheet named `range=Sales`): never rewrite it.
+  const names = sheetNames
+    .filter((name) => /[^\w.]/.test(name) && !/[="!]/.test(name))
+    .sort((a, b) => b.length - a.length);
+  if (names.length === 0) return text;
+  const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Only where an argument or a reference starts: line start, a space, `=`, `(` or `,`.
+  const pattern = new RegExp(`(?<=^|[\\s=(,])(${names.map(escape).join('|')})!`, 'g');
+  // Line by line, outside "…" segments only (a quoted value is user text, not a reference).
+  return text
+    .split('\n')
+    .map((line) =>
+      line
+        .split(/("(?:[^"\\]|\\.)*")/)
+        .map((part, i) =>
+          i % 2 === 1
+            ? part
+            : part.replace(pattern, (_m, name: string) => `'${name.replace(/'/g, "''")}'!`),
+        )
+        .join(''),
+    )
+    .join('\n');
+}
+
+/**
+ * Use the workbook's real sheet name where a command wrote it without its stray leading or
+ * trailing spaces (`'Ringkasan Cabang'!A1` for a sheet named ` Ringkasan Cabang`): Excel would
+ * not find it (retest 2026-10-20). Only a name that is not a sheet itself and matches exactly
+ * one sheet after trimming changes; names with = " ! are never used, and quoted values stay as
+ * they are. Run before {@link quoteSheetNames}.
+ */
+export function canonicalSheetNames(text: string, sheetNames: readonly string[]): string {
+  // Excel compares sheet names case-insensitively by upper case; only ASCII spaces are "stray"
+  // (a non-breaking or ideographic space would make an invisible look-alike, so it never matches).
+  const fold = (name: string): string => name.toUpperCase();
+  const strip = (name: string): string => name.replace(/^ +| +$/g, '');
+  const usable = sheetNames.filter((name) => !/[="!]/.test(name));
+  const exact = new Set(sheetNames.map(fold));
+  const byTrim = new Map<string, string[]>();
+  for (const name of usable) {
+    const key = fold(strip(name));
+    byTrim.set(key, [...(byTrim.get(key) ?? []), name]);
+  }
+  const real = (written: string): string | undefined => {
+    if (exact.has(fold(written))) return undefined;
+    const hits = byTrim.get(fold(strip(written)));
+    return hits?.length === 1 ? hits[0] : undefined;
+  };
+  const quote = (name: string): string => `'${name.replace(/'/g, "''")}'!`;
+  const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Every name, longest first, so a bare `Data Cabang!` is never read as its last word `Cabang!`.
+  const candidates = [...new Set(usable.map(strip).filter(Boolean))].sort(
+    (a, b) => b.length - a.length,
+  );
+  const bare = candidates.length
+    ? new RegExp(`(?<=^|[\\s=(,])(${candidates.map(escape).join('|')})!`, 'gi')
+    : undefined;
+  return text
+    .split('\n')
+    .map((line) =>
+      line
+        .split(/("(?:[^"\\]|\\.)*")/)
+        .map((part, i) => {
+          if (i % 2 === 1) return part;
+          let out = part.replace(/'((?:[^']|'')+)'!/g, (match, inner: string) => {
+            const name = real(inner.replace(/''/g, "'"));
+            return name ? quote(name) : match;
+          });
+          if (bare)
+            out = out.replace(bare, (match, written: string) => {
+              const name = real(written);
+              return name ? quote(name) : match;
+            });
+          return out;
+        })
+        .join(''),
+    )
+    .join('\n');
 }

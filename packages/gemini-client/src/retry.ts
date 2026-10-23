@@ -106,6 +106,9 @@ export function defaultIsRetriable(err: unknown): boolean {
   if (err instanceof HttpError) {
     return err.status === 429 || (err.status >= 500 && err.status <= 599);
   }
+  // A cancel (the user's, or the idle watchdog's) is final: retrying an aborted request only waits
+  // out the backoff before failing again.
+  if (err instanceof Error && err.name === 'AbortError') return false;
   // A non-HttpError throw from fetch is a network/transport failure → transient.
   return true;
 }

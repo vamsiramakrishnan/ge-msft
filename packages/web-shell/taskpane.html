@@ -3,16 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Gemini Enterprise</title>
+    <title>%GE_BRAND_NAME%</title>
     <!-- Ramsian/Starlight type: Hanken Grotesk for our UI, JetBrains Mono for data, Newsreader for
          the host document's own voice (quoted source prose, redlines). CSS fallbacks keep the pane
          legible when the Office webview blocks external font loading. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap"
-      rel="stylesheet"
-    />
+    <link href="%GE_BRAND_FONT_STYLESHEET%" rel="stylesheet" />
     <!-- Office.js (host-injected at runtime in a real host; harmless when absent in a browser tab). -->
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   </head>

@@ -20,8 +20,10 @@ export { chunkBlocks, splitText } from './chunk.js';
 export { contextualizeChunk } from './contextualize.js';
 export {
   buildDocStateSnapshot,
+  commandRef,
   renderDocState,
   type BuildDocStateInput,
+  type DocStateSheet,
 } from './doc-state-builder.js';
 export { processContent, processNative, toContext, toContextNative } from './process.js';
 export {

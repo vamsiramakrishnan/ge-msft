@@ -73,6 +73,65 @@ afterEach(() => {
   container.remove();
 });
 
+describe('Composer — disclaimer under the ask box', () => {
+  it('says the assistant can make mistakes, in English by default', () => {
+    render();
+    const note = container.querySelector('.cb-disclaimer');
+    expect(note?.textContent).toMatch(/can make mistakes\. Check important information\./);
+  });
+
+  it('is in Indonesian when the browser language is Indonesian', () => {
+    const lang = vi.spyOn(navigator, 'language', 'get').mockReturnValue('id-ID');
+    try {
+      render();
+      expect(container.querySelector('.cb-disclaimer')?.textContent).toMatch(
+        /dapat membuat kesalahan\. Verifikasi informasi penting\./,
+      );
+    } finally {
+      lang.mockRestore();
+    }
+  });
+});
+
+describe('Composer — ready to type when the pane opens', () => {
+  it('puts the cursor in the ask box on open', () => {
+    render();
+    expect(document.activeElement).toBe(container.querySelector('#ask'));
+  });
+
+  it('takes the cursor once the box is enabled again (after a turn or an approval)', () => {
+    render({ busy: true });
+    const box = container.querySelector<HTMLTextAreaElement>('#ask')!;
+    expect(document.activeElement).not.toBe(box);
+    act(() => {
+      root.render(
+        createElement(Composer, {
+          busy: false,
+          onSend: vi.fn(),
+          onCancel: vi.fn(),
+          scopes: [SELECTION],
+        } as unknown as ComposerProps),
+      );
+    });
+    expect(document.activeElement).toBe(box);
+  });
+
+  it('puts it back when Office shows the pane again, unless another control has focus', () => {
+    render();
+    const box = container.querySelector<HTMLTextAreaElement>('#ask')!;
+    box.blur();
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(document.activeElement).toBe(box);
+
+    const other = document.createElement('button');
+    document.body.appendChild(other);
+    other.focus();
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(document.activeElement).toBe(other);
+    other.remove();
+  });
+});
+
 describe('Composer', () => {
   it('routes a non-empty submit to onSend when no onInvoke is given', () => {
     const { onSend } = render();
@@ -305,30 +364,25 @@ describe('Composer / and @ palette + scope control + structured submit', () => {
     expect(input().value).toBe('/review ');
   });
 
-  it('renders the surface scope segmented control with the default selected first', () => {
+  it('keeps the bottom simple: no intent picker, scope chips or keyboard hint', () => {
     render({ surface: 'word' });
-    const control = container.querySelector('[data-testid="scope-control"]')!;
-    const opts = [...control.querySelectorAll<HTMLButtonElement>('.scope-option')];
-    const expected = commandPaletteFor('word').scopeOptions;
-    expect(opts.map((o) => o.textContent)).toEqual(expected.map((o) => o.label));
-    expect(opts[0]?.getAttribute('data-selected')).toBe('true');
+    expect(container.querySelector('[aria-label="Task intent"]')).toBeNull();
+    expect(container.querySelector('[data-testid="scope-control"]')).toBeNull();
+    expect(container.textContent).not.toContain('Enter to send');
   });
 
-  it('picking a scope sets it on the submitted invocation', () => {
+  it('scopes every request to the live selection', () => {
     const onInvoke = vi.fn();
     render({ surface: 'word', onInvoke });
-    const opts = [
-      ...container.querySelectorAll<HTMLButtonElement>(
-        '[data-testid="scope-control"] .scope-option',
-      ),
-    ];
-    const docIdx = commandPaletteFor('word').scopeOptions.findIndex(
-      (o) => o.scope.kind === 'document',
-    );
-    act(() => opts[docIdx]?.click());
     type('/review the doc');
     submitForm();
-    expect(onInvoke.mock.calls[0]![0].scope.kind).toBe('document');
+    expect(onInvoke.mock.calls[0]![0].scope.kind).toBe('selection');
+  });
+
+  it('has no format and style button under the ask box (it lives in Settings)', () => {
+    render({ surface: 'word' });
+    expect(container.querySelector('[aria-label="Answer format and style"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Response format"]')).toBeNull();
   });
 
   it('routes a structured submit through onInvoke with the parsed intent + typed mentions', () => {

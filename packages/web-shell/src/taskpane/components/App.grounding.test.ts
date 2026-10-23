@@ -139,7 +139,7 @@ describe('<App/> onInvoke — structured grounding reaches the controller→sess
       r.render(createElement(App, { controller, surface: 'word' }));
     });
 
-    // Type `@this` and submit — a chat turn (no actuating verb) routes to send().
+    // An explicit read-only intent retains its direct chat route and structured grounding.
     const input = el.querySelector('textarea#ask') as HTMLTextAreaElement;
     const form = el.querySelector('form.comp') as HTMLFormElement;
     // React tracks the input value via its own setter; use the native setter so onChange fires.
@@ -148,7 +148,7 @@ describe('<App/> onInvoke — structured grounding reaches the controller→sess
       'value',
     )?.set;
     act(() => {
-      setNativeValue?.call(input, 'what is @this about?');
+      setNativeValue?.call(input, '/ask what is @this about?');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => {

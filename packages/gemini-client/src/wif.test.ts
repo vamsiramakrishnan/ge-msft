@@ -192,3 +192,106 @@ describe('WifTokenClient — transient failure handling', () => {
     await expect(wif.getAccessToken()).rejects.toThrow();
   });
 });
+
+describe('WifTokenClient — stale id token recovery', () => {
+  const STALE = JSON.stringify({
+    error: 'invalid_grant',
+    error_description: 'ID Token issued at 1790788565 is stale to sign-in.',
+  });
+
+  it('re-acquires a freshly issued id token once when the STS calls the cached one stale', async () => {
+    // Live 2026-10-01: MSAL kept serving a cached id token the STS rejected, so every request
+    // failed until sign-in, and reloading the task pane did not help.
+    const getIdToken = vi.fn(async (opts?: { forceRefresh?: boolean }) =>
+      opts?.forceRefresh ? 'fresh-id-token' : 'cached-id-token',
+    );
+    const bodies: string[] = [];
+    const f = vi.fn(async (_url: string, init?: { body?: string }) => {
+      bodies.push(init?.body ?? '');
+      return bodies.length === 1 ? new Response(STALE, { status: 400 }) : stsOk('goog-fresh');
+    });
+    const wif = new WifTokenClient(
+      { getIdToken },
+      { poolId: 'p', providerId: 'pr' },
+      f as never,
+      Date.now,
+      noSleep,
+    );
+    expect(await wif.getAccessToken()).toBe('goog-fresh');
+    expect(getIdToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(JSON.parse(bodies[1]!).subjectToken).toBe('fresh-id-token');
+  });
+
+  it('retries only once, and never for other 400s', async () => {
+    const getIdToken = vi.fn(async () => 'id-token');
+    const stale = vi.fn(async () => new Response(STALE, { status: 400 }));
+    const a = new WifTokenClient(
+      { getIdToken },
+      { poolId: 'p', providerId: 'pr' },
+      stale as never,
+      Date.now,
+      noSleep,
+    );
+    await expect(a.getAccessToken()).rejects.toThrow(/stale to sign-in/);
+    expect(stale).toHaveBeenCalledTimes(2);
+
+    const badAudience = vi.fn(
+      async () =>
+        new Response('{"error":"invalid_grant","error_description":"bad audience"}', {
+          status: 400,
+        }),
+    );
+    const b = new WifTokenClient(
+      { getIdToken },
+      { poolId: 'p', providerId: 'pr' },
+      badAudience as never,
+      Date.now,
+      noSleep,
+    );
+    await expect(b.getAccessToken()).rejects.toThrow(/bad audience/);
+    expect(badAudience).toHaveBeenCalledTimes(1);
+  });
+
+  it('hands a token fetched across invalidate() to the caller without caching it', async () => {
+    const holder: { wif?: WifTokenClient } = {};
+    const getIdToken = vi.fn(async (opts?: { forceRefresh?: boolean }) => {
+      if (opts?.forceRefresh) holder.wif?.invalidate(); // an invalidate lands during the forced refresh
+      return 'id-token';
+    });
+    let call = 0;
+    const f = vi.fn(async () => {
+      call += 1;
+      if (call === 1) return new Response(STALE, { status: 400 });
+      return stsOk(`goog-${call}`);
+    });
+    const wif = new WifTokenClient(
+      { getIdToken },
+      { poolId: 'p', providerId: 'pr' },
+      f as never,
+      Date.now,
+      noSleep,
+    );
+    holder.wif = wif;
+    expect(await wif.getAccessToken()).toBe('goog-2');
+    expect(await wif.getAccessToken()).toBe('goog-3'); // not served from cache
+  });
+
+  it('marks a failed exchange as a non-retriable HTTP error for outer retry policies', async () => {
+    const { defaultIsRetriable } = await import('./retry.js');
+    const f = vi.fn(
+      async () =>
+        new Response('{"error":"invalid_grant","error_description":"bad audience"}', {
+          status: 400,
+        }),
+    );
+    const wif = new WifTokenClient(
+      entra,
+      { poolId: 'p', providerId: 'pr' },
+      f as never,
+      Date.now,
+      noSleep,
+    );
+    const err = await wif.getAccessToken().catch((e: unknown) => e);
+    expect(defaultIsRetriable(err)).toBe(false);
+  });
+});

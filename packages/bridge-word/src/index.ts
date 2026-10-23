@@ -10,6 +10,8 @@ export {
   wordDocumentToContext,
   wordSelectionToContext,
   headingLevel,
+  commentsToRefs,
+  commentToContext,
   type WordElement,
 } from './capture.js';
 export {
@@ -27,11 +29,13 @@ export {
   documentChangedEvent,
   commentAddedEvent,
 } from './events.js';
-export { OfficeWordHost } from './host-port.js';
+export { OfficeWordHost, MAX_READ_COMMENTS } from './host-port.js';
 export type {
   WordHost,
   WordHandlers,
   WordParagraph,
+  WordComment,
+  WordCommentReply,
   WordEditArgs,
   WordCommentArgs,
   ChooseHit,

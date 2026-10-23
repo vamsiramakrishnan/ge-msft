@@ -5,6 +5,7 @@ import type {
   ActuationResult,
   CapabilityManifest,
   ContextRef,
+  DocStateSelection,
   DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
@@ -13,6 +14,9 @@ import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { buildDocStateSnapshot } from '@ge/content';
 import { WORD_CAPABILITIES } from './capabilities.js';
 import {
+  commentIdFromRef,
+  commentsToRefs,
+  commentToContext,
   paragraphsToBlocks,
   paragraphsToElements,
   searchHitsToContext,
@@ -43,7 +47,12 @@ import {
 } from './events.js';
 import { isSet } from './capabilities-runtime.js';
 import { documentOffset, type DocumentPage, type DocumentReadOptions } from '@ge/contracts';
-import { canRevealWordContext, OfficeWordHost, type WordHost } from './host-port.js';
+import {
+  canRevealWordContext,
+  MAX_TABLE_REPLACE_PARAGRAPHS,
+  OfficeWordHost,
+  type WordHost,
+} from './host-port.js';
 
 const MAX_LISTED_PARAGRAPHS = 12;
 
@@ -112,11 +121,12 @@ export class WordBridge implements DocBridge {
   }
 
   async listContext(): Promise<ContextRef[]> {
-    const [selText, paragraphs] = await Promise.all([
+    const [selText, paragraphs, comments] = await Promise.all([
       this.host.readSelectionText(),
       this.host.readParagraphPage
         ? this.host.readParagraphPage(0, MAX_LISTED_PARAGRAPHS)
         : this.host.readParagraphs(),
+      this.host.readComments(),
     ]);
     const refs: ContextRef[] = [];
     if (selText.trim()) {
@@ -147,6 +157,8 @@ export class WordBridge implements DocBridge {
         hostRef: { type: 'word.range', anchor },
       });
     }
+    // Existing comment threads, so a reply can target one by its host id (`reply <commentId> …`).
+    refs.push(...commentsToRefs(comments));
     refs.push({
       id: 'word:document',
       kind: 'document',
@@ -161,6 +173,12 @@ export class WordBridge implements DocBridge {
     if (ref.kind === 'selection') {
       const text = await this.host.readSelectionText();
       return wordSelectionToContext(text);
+    }
+    if (ref.kind === 'comment') {
+      const commentId = commentIdFromRef(ref);
+      if (commentId === undefined) return [];
+      const comment = (await this.host.readComments()).find((c) => c.id === commentId);
+      return comment ? commentToContext(comment) : [];
     }
     if (ref.kind === 'paragraph') {
       const paras = await this.host.readParagraphs();
@@ -180,16 +198,44 @@ export class WordBridge implements DocBridge {
    * document), and builds the surface-agnostic snapshot. Version increments per capture. Comments
    * are omitted (no cheap port read); the runtime renders + wraps this as untrusted data.
    */
+  documentKey(): string | undefined {
+    try {
+      return Office.context?.document?.url || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async captureDocState(): Promise<DocStateSnapshot | undefined> {
-    const paras = this.host.readParagraphPage
-      ? await this.host.readParagraphPage(0, 61)
-      : await this.host.readParagraphs();
+    const [paras, selText] = await Promise.all([
+      this.host.readParagraphPage ? this.host.readParagraphPage(0, 61) : this.host.readParagraphs(),
+      this.host.readSelectionText(),
+    ]);
     if (paras.length === 0) return undefined;
     this.docStateVersion += 1;
+    // The live selection rides along (as Excel's does), so "rewrite my selection" targets what the
+    // user actually selected instead of a sentence the model picks from the whole document.
+    // Nothing selected: still say where the cursor is, so "at the cursor" needs no guessed anchor
+    // (a table "at the cursor" otherwise went after a paragraph the model picked).
+    const cursor = selText.trim() ? undefined : await this.host.readCursorParagraph?.();
+    const selection = selText.trim()
+      ? ({ kind: 'selection', title: 'Selection', preview: selText } satisfies DocStateSelection)
+      : cursor !== undefined
+        ? ({
+            kind: 'selection',
+            title: 'Cursor (nothing selected)',
+            // Document text as quoted data only; the "at the cursor = no match=" rule is in the
+            // command cards, never next to document content.
+            preview: cursor.trim()
+              ? `cursor paragraph: ${JSON.stringify(cursor.trim().slice(0, 200))}`
+              : 'cursor paragraph: (empty)',
+          } satisfies DocStateSelection)
+        : undefined;
     const snapshot = buildDocStateSnapshot({
       surface: 'word',
       version: this.docStateVersion,
       blocks: paragraphsToBlocks(paras.slice(0, 60)),
+      ...(selection ? { selection } : {}),
     });
     if (paras.length > 60) snapshot.truncated = true;
     return snapshot;
@@ -234,12 +280,21 @@ export class WordBridge implements DocBridge {
     // The decision — which read-back hit to write on, and degrade to a panel item when none
     // match — lives here (host-free, hence testable). The port runs the search→insert batch and
     // calls back into `chooseAnchorIndex` with the live hit texts, re-resolving at apply-time.
-    const outcome = await this.host.applyTrackedChange(
+    let outcome = await this.host.applyTrackedChange(
       plan.matchText,
       { matchCase: false },
       plan.text,
       (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
     );
+    if (outcome.status === 'drift') {
+      // `body.search` can't match over 255 characters or across paragraphs, so a long or
+      // multi-paragraph selection never resolves. When the anchor IS the selected text, write the
+      // tracked change on the selection instead of failing the same way on every retry.
+      const anchor = plan.matchText;
+      outcome = await this.host.applyTrackedChangeToSelection(plan.text, (selected) =>
+        sameTextIgnoringWhitespace(selected, anchor),
+      );
+    }
     if (outcome.status === 'drift') {
       // Anchor drift: degrade to a panel item rather than render a broken edit.
       return {
@@ -379,6 +434,7 @@ export class WordBridge implements DocBridge {
       { matchCase: false },
       plan.text,
       (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+      plan.font,
     );
     if (outcome.status === 'drift') {
       return {
@@ -648,6 +704,18 @@ export class WordBridge implements DocBridge {
         },
       };
     }
+    // Replacing paragraphs needs both ends named; never fall back to inserting at the selection.
+    if (plan.replaceThrough !== undefined && !plan.anchored) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'no_anchor',
+          message: 'replaceThrough= needs match="<text in the first paragraph to replace>"',
+        },
+      };
+    }
     const outcome = await this.host.insertTable(
       plan.anchored ? plan.matchText : undefined,
       { matchCase: false },
@@ -655,7 +723,52 @@ export class WordBridge implements DocBridge {
       plan.rows[0]?.length ?? 0,
       plan.rows,
       (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+      plan.anchored ? plan.replaceThrough : undefined,
     );
+    if (outcome.status === 'untracked')
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        degraded: true,
+        error: {
+          code: 'unsupported_host',
+          message:
+            'Replacing paragraphs needs Track Changes (Word 2019+ / Microsoft 365, WordApi 1.6). Nothing was changed.',
+        },
+      };
+    if (outcome.status === 'blocked')
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'cannot_replace',
+          message: `The paragraphs to replace include ${outcome.reason}, which one tracked delete cannot remove cleanly. Nothing was changed.`,
+        },
+      };
+    if (outcome.status === 'unknown')
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'outcome_unknown',
+          message:
+            'The table may have been inserted without the paragraphs being removed. Check the document before trying again.',
+        },
+      };
+    if (outcome.status === 'too_long') {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'too_many_paragraphs',
+          message: `A table can replace at most ${MAX_TABLE_REPLACE_PARAGRAPHS} paragraphs; this run has ${outcome.paragraphs}. Narrow match= and replaceThrough=.`,
+        },
+      };
+    }
     if (outcome.status === 'drift') {
       return {
         ok: false,
@@ -955,3 +1068,18 @@ function provFlags(
 
 /** Actual dispatch keys; conformance checks these against the advertised capabilities. */
 export const HANDLED_ACTUATIONS: readonly ActuationKind[] = WordBridge.handledActuations;
+
+/**
+ * Paragraph marks come back as `\r` from Word but vanish or become spaces in model text, and the
+ * model may copy the `<doc_state>` entity escapes (`&quot;` …) instead of the characters.
+ */
+function sameTextIgnoringWhitespace(a: string, b: string): boolean {
+  const strip = (s: string): string =>
+    s
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, '');
+  return strip(a).length > 0 && strip(a) === strip(b);
+}

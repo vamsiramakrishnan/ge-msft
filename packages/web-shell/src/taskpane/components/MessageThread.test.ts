@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MessageThread, type MessageThreadProps } from './MessageThread.js';
+import { MessageThread, stripCommandBlocks, type MessageThreadProps } from './MessageThread.js';
 import type { ChatMessage } from '../../controller.js';
 
 /**
@@ -38,6 +38,160 @@ function openFirstCitation(): void {
 }
 
 describe('MessageThread', () => {
+  it('never shows the add-in command blocks a reply contains, only its prose', () => {
+    render([
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'Formatting the header row.\n```cmd\nformat Sheet1!A1:H1 bold=true\ndone\n```\nDone.',
+      },
+    ]);
+    expect(container.textContent).toContain('Formatting the header row.');
+    expect(container.textContent).toContain('Done.');
+    expect(container.textContent).not.toContain('format Sheet1!A1:H1');
+    expect(container.querySelector('.md-code')).toBeNull();
+    // Next to an answer, the "command blocks sent" note is noise.
+    expect(container.querySelector('.cmd-hidden-note')).toBeNull();
+  });
+
+  it('replaces a commands-only reply with a short note instead of the commands', () => {
+    render([{ id: 'a1', role: 'assistant', text: '```cmd\nset B2 100\n```' }]);
+    expect(container.textContent).not.toContain('set B2 100');
+    expect(container.querySelector('.cmd-hidden-note')?.textContent).toMatch(
+      /1 command block sent to the add-in/,
+    );
+  });
+
+  it('shows a lively working indicator without an elapsed counter while a step is slow', () => {
+    vi.useFakeTimers();
+    try {
+      render([{ id: 'a1', role: 'assistant', text: '', streaming: true, activity: 'Planning…' }]);
+      expect(container.querySelectorAll('.typing-dots > i').length).toBe(3);
+      act(() => vi.advanceTimersByTime(5000));
+      expect(container.querySelector('.message-activity')?.textContent).toBe('Planning…');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hides a fence of a let binding and done (live 2026-10-12)', () => {
+    const text = "```\nlet $data = read 'Branch Performance'!A1:Q49\ndone\n```";
+    expect(stripCommandBlocks(text)).toEqual({ text: '', hidden: 1 });
+  });
+
+  it('hides slash commands and an unclosed cmd fence in a finished reply (live 2026-10-13)', () => {
+    const cmd =
+      '/add-shape slide=2 shapeType=Star5 fill=#0F6CBD left=560 top=20 width=100 height=100';
+    expect(stripCommandBlocks('```cmd\n' + cmd + '\ndone')).toEqual({ text: '', hidden: 1 });
+    expect(stripCommandBlocks(cmd + '\ndone')).toEqual({ text: '', hidden: 1 });
+    expect(stripCommandBlocks('```cmd\n' + cmd + '\nAdded a star.').text).toBe('Added a star.');
+    expect(stripCommandBlocks('Use /rewrite to change the tone.').text).toBe(
+      'Use /rewrite to change the tone.',
+    );
+  });
+
+  it('hides command lines the grammar rejects (UAT 2026-10-16)', () => {
+    expect(stripCommandBlocks('set I2 "" finish when=verified').text).toBe('');
+    expect(stripCommandBlocks('finish when=verified finish when=verified').text).toBe('');
+    expect(stripCommandBlocks('```\nsave\n```\nAdded the column.').text).toBe('Added the column.');
+    // Prose that starts with a verb word but has no command structure stays.
+    expect(stripCommandBlocks('chart looks good now').text).toBe('chart looks good now');
+  });
+
+  it('copies an answer with the legacy command when the clipboard API is blocked', async () => {
+    Object.assign(navigator, {
+      clipboard: { writeText: () => Promise.reject(new Error('blocked')) },
+    });
+    const exec = vi.fn(() => true);
+    Object.assign(document, { execCommand: exec });
+    render([{ id: 'a1', role: 'assistant', text: 'The answer' }]);
+    const button = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Copy answer',
+    )!;
+    await act(async () => button.click());
+    expect(exec).toHaveBeenCalledWith('copy');
+    expect(container.textContent).toContain('Copied');
+  });
+
+  it('hides an unlabelled fence whose quoted bullets run onto a second line', () => {
+    const text =
+      '```\nslide "Support & Resources" "• Employee assistance\n• Leadership training"\n```\ndone "Added it."\n\nAdded it.';
+    expect(stripCommandBlocks(text)).toEqual({ text: 'Added it.', hidden: 2 });
+  });
+
+  it('shows a streaming reply bubble with only the loader before any text arrives', () => {
+    render([{ id: 'a1', role: 'assistant', text: '', streaming: true }]);
+    expect(container.querySelectorAll('.m.a').length).toBe(1);
+    expect(container.querySelectorAll('.typing-dots > i').length).toBe(3);
+    expect(container.querySelector('.caret')).toBeNull();
+  });
+
+  it('shows the loader instead of the caret while a working step runs', () => {
+    render([
+      { id: 'a1', role: 'assistant', text: 'Comparing', streaming: true, activity: 'Checking…' },
+    ]);
+    expect(container.querySelector('.message-activity')?.textContent).toBe('Checking…');
+    expect(container.querySelector('.caret')).toBeNull();
+  });
+
+  it('keeps the rest of a finished answer visible after an unclosed command fence', () => {
+    render([{ id: 'a1', role: 'assistant', text: 'Intro.\n```cmd\nset B2 100\nStill here.' }]);
+    expect(container.textContent).toContain('Still here.');
+  });
+
+  it('hides an unclosed command fence while the reply is still streaming', () => {
+    render([{ id: 'a1', role: 'assistant', text: 'Intro.\n```cmd\nset B2 1', streaming: true }]);
+    expect(container.textContent).toContain('Intro.');
+    expect(container.textContent).not.toContain('set B2 1');
+  });
+
+  it('hides commands the model narrates in an unlabelled fence or as bare lines', () => {
+    render([
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: [
+          '```',
+          'read Penjualan!B1:B44',
+          'read Penjualan!J1:J44',
+          '```',
+          'grid "Penjualan Bulanan!A1" = "Bulan\\tTotal"',
+          'chart column "Penjualan Bulanan!A1:B5" title="Total Penjualan"',
+          'done "Chart total penjualan per bulan telah berhasil dibuat."',
+          'The chart is on the Penjualan Bulanan sheet.',
+        ].join('\n'),
+      },
+    ]);
+    const text = container.textContent ?? '';
+    expect(text).toContain('The chart is on the Penjualan Bulanan sheet.');
+    for (const hidden of ['read Penjualan!B1', 'grid "Penjualan', 'chart column', 'done "Chart'])
+      expect(text).not.toContain(hidden);
+  });
+
+  it('keeps ordinary sentences that start with a command word', () => {
+    render([
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: 'Read the summary below for details.\nDone! The chart is ready.\nset the tone early.',
+      },
+    ]);
+    const text = container.textContent ?? '';
+    expect(text).toContain('Read the summary below for details.');
+    expect(text).toContain('Done! The chart is ready.');
+    expect(text).toContain('set the tone early.');
+  });
+
+  it('strips only exact cmd and plan fences', () => {
+    render([{ id: 'a1', role: 'assistant', text: '```cmd-notes\nkeep me\n```' }]);
+    expect(container.textContent).toContain('keep me');
+  });
+
+  it('still shows ordinary code blocks', () => {
+    render([{ id: 'a1', role: 'assistant', text: '```js\nconst x = 1;\n```' }]);
+    expect(container.querySelector('.md-code')?.textContent).toBe('const x = 1;');
+  });
+
   it('shows the grounded empty-state invitation when there are no messages', () => {
     render([]);
     expect(container.textContent).toContain('Ask about this document or selection');
@@ -231,11 +385,31 @@ describe('MessageThread', () => {
     expect(container.querySelector('.cite-detail')).toBeNull();
   });
 
-  it('renders a per-message error as an assertive alert', () => {
-    render([{ id: 'a-1', role: 'assistant', text: '', error: 'Stream dropped — retry.' }]);
-    const alert = container.querySelector('.msg-error[role="alert"]');
-    expect(alert).not.toBeNull();
-    expect(alert?.textContent).toContain('Stream dropped — retry.');
+  it('shows a failed answer as a plain alert, never the raw error (that is in diagnostics)', () => {
+    render([
+      {
+        id: 'a-1',
+        role: 'assistant',
+        text: '',
+        error: 'Stream dropped (PowerPoint: GeneralException)',
+      },
+    ]);
+    const alert = container.querySelector('.error-card[role="alert"]');
+    expect(alert?.textContent).toContain("That didn't finish");
+    expect(container.textContent).not.toContain('GeneralException');
+  });
+
+  it('says a policy block plainly and in the conversation language, without Try again', () => {
+    render(
+      [{ id: 'a-1', role: 'assistant', text: '', error: 'modelArmor jailbreak', blocked: true }],
+      {
+        language: 'id',
+        onRetry: () => undefined,
+      },
+    );
+    expect(container.textContent).toContain('Permintaan ini diblokir');
+    expect(container.textContent).not.toContain('modelArmor');
+    expect(container.querySelector('.error-card-retry')).toBeNull();
   });
 
   it('marks a cancelled turn distinctly and does not render an error', () => {

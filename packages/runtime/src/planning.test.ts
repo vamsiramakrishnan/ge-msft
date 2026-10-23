@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { ActuationRequest, ChangeId } from '@ge/contracts';
 import { approvalClassOf, isReversibleKind } from '@ge/contracts';
-import { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';
+import {
+  analyseEffectDependencies,
+  propagateFailure,
+  effectResources,
+  changesCoveredBy,
+} from './planning.js';
 
 const cid = (s: string) => s as ChangeId;
 
@@ -32,6 +37,76 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
     expect(plan[2]!.dependsOn).toEqual(['e1']); // chart ← spill (NOT chart ← table)
   });
 
+  it('a PowerPoint slide=last write depends on a preceding insert-slide; an addressed one does not', () => {
+    const pp = (
+      kind: ActuationRequest['kind'],
+      params: ActuationRequest['params'],
+      id: string,
+    ) => ({
+      ...req(kind, params, id),
+      surface: 'powerpoint' as const,
+    });
+    const plan = analyseEffectDependencies([
+      pp('insert-slide', { slide: { title: 'Q4 plan', bullets: [] } }, 'c1'),
+      pp('add-shape', { target: { slideId: 'last' }, shape: { shapeType: 'textBox' } }, 'c2'),
+      pp(
+        'add-table-slide',
+        { target: { slideId: 'slide:LAST' }, tableGrid: { hasHeaders: false, rows: [['a']] } },
+        'c3',
+      ),
+    ]);
+    expect(plan[1]!.dependsOn).toEqual(['e1']);
+    expect(plan[2]!.dependsOn).toEqual(['e1']);
+    // So a failed/uncertain insert skips the slide=last writes instead of running them.
+    expect(propagateFailure(plan, 'e1').skipped).toEqual(['e2', 'e3']);
+
+    // A write to an exact slide id does not depend on the insert.
+    const addressed = analyseEffectDependencies([
+      pp('insert-slide', { slide: { title: 'Q4 plan', bullets: [] } }, 'c1'),
+      pp('add-shape', { target: { slideId: '256#0' }, shape: { shapeType: 'textBox' } }, 'c2'),
+    ]);
+    expect(addressed[1]!.dependsOn).toEqual([]);
+  });
+
+  it('ties every relative-slide PowerPoint write to the step that adds a slide', () => {
+    const pp = (
+      kind: ActuationRequest['kind'],
+      params: ActuationRequest['params'],
+      id: string,
+    ) => ({
+      ...req(kind, params, id),
+      surface: 'powerpoint' as const,
+    });
+    // insert-slide, then shape writes addressed at the last slide (incl. pp:slide:last).
+    const plan = analyseEffectDependencies([
+      pp('insert-slide', { slide: { title: 'Risks', bullets: [] } }, 'c1'),
+      pp('set-shape-text', { target: { slideId: 'last', shapeId: 'title' }, text: 'x' }, 'c2'),
+      pp(
+        'format-shape',
+        { target: { slideId: 'last', shapeId: 'title' }, shapeFormat: { fill: '#000' } },
+        'c3',
+      ),
+      pp(
+        'add-shape',
+        { target: { slideId: 'pp:slide:last' }, shape: { shapeType: 'textBox' } },
+        'c4',
+      ),
+    ]);
+    expect(plan.slice(1).map((node) => node.dependsOn)).toEqual([['e1'], ['e1'], ['e1']]);
+    expect(propagateFailure(plan, 'e1').skipped).toEqual(['e2', 'e3', 'e4']);
+
+    // `/add-table-slide slide=new` creates the last slide, so a later slide=last write depends on it.
+    const table = analyseEffectDependencies([
+      pp(
+        'add-table-slide',
+        { target: { slideId: 'new' }, tableGrid: { hasHeaders: false, rows: [['a']] } },
+        'c1',
+      ),
+      pp('add-shape', { target: { slideId: 'last' }, shape: { shapeType: 'textBox' } }, 'c2'),
+    ]);
+    expect(table[1]!.dependsOn).toEqual(['e1']);
+  });
+
   it('a non-overlapping effect is independent', () => {
     const plan = analyseEffectDependencies([
       req('write-cells', { target: { range: 'Report!A1' }, cells: [['x']] }, 'c1'),
@@ -55,6 +130,21 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
     const { skipped, reason } = propagateFailure(plan, 'e1');
     expect(reason).toBe('prerequisite_failed');
     expect(skipped.sort()).toEqual(['e2', 'e3']); // table+chart skipped; the independent format (e4) is not
+  });
+
+  it('makes a multi-area chart depend on a write into any of its areas', () => {
+    // Security review L8: `Sheet2!C1:C11,Sheet2!G1:G11` did not parse, so the chart had no dependency.
+    const plan = analyseEffectDependencies([
+      req('write-cells', { target: { range: 'Sheet2!G2' }, cells: [['1']] }, 'c1'),
+      req(
+        'insert-chart',
+        {
+          chart: { chartType: 'bar', sourceRange: 'Sheet2!C1:C11,Sheet2!G1:G11', seriesBy: 'auto' },
+        },
+        'c2',
+      ),
+    ]);
+    expect(plan[1]!.dependsOn).toEqual(['e1']);
   });
 
   it('classifies approval authority + reversibility per kind', () => {
@@ -92,5 +182,65 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
       req('write-cells', { target: { range: 'Report!B2' }, cells }, 'c1'),
     );
     expect(writes).toEqual([{ kind: 'range', id: 'Report!B2:E4' }]);
+  });
+});
+
+describe('changesCoveredBy — cells an earlier effect of the batch produced', () => {
+  const at = (locator: string, values: unknown[][], formulas?: unknown[][]) => ({
+    locator,
+    values,
+    ...(formulas ? { formulas } : {}),
+  });
+  const before = at('S!A1:B2', [
+    ['a', 1],
+    ['b', 2],
+  ]);
+  const after = at('S!A1:B2', [
+    ['a', 9],
+    ['b', 2],
+  ]);
+
+  it('accepts a changed cell that holds what the batch wrote there', () => {
+    expect(changesCoveredBy(before, after, [at('S!B1', [[9]])])).toBe(true);
+    const quoted = { ...before, locator: "'My Sheet'!A1:B2" };
+    expect(
+      changesCoveredBy(quoted, { ...after, locator: quoted.locator }, [at('my sheet!B1', [[9]])]),
+    ).toBe(true);
+  });
+
+  it('refuses a changed cell that holds something else than the batch wrote', () => {
+    expect(changesCoveredBy(before, after, [at('S!B1', [[8]])])).toBe(false);
+  });
+
+  it('refuses a change outside every landed capture', () => {
+    const edited = at('S!A1:B2', [
+      ['a', 9],
+      ['x', 2],
+    ]);
+    expect(changesCoveredBy(before, edited, [at('S!B1', [[9]])])).toBe(false);
+  });
+
+  it('refuses a capture on another sheet, or one without a sheet', () => {
+    expect(changesCoveredBy(before, after, [at('T!B1', [[9]])])).toBe(false);
+    expect(changesCoveredBy(before, after, [at('B1', [[9]])])).toBe(false);
+    const obrien = { ...before, locator: "'O''Brien'!A1:B2" };
+    expect(
+      changesCoveredBy(obrien, { ...after, locator: obrien.locator }, [at('OBrien!B1', [[9]])]),
+    ).toBe(false);
+  });
+
+  it('counts a formula change as a change', () => {
+    const formula = at('S!A1:B2', before.values as unknown[][], [
+      ['', '=1'],
+      ['', ''],
+    ]);
+    expect(changesCoveredBy(before, formula, [])).toBe(false);
+  });
+
+  it('refuses a different shape, and captures with no changed cell', () => {
+    expect(changesCoveredBy(before, at('S!A1:B2', [['a', 1]]), [at('S!A1:B2', [['a', 1]])])).toBe(
+      false,
+    );
+    expect(changesCoveredBy(before, before, [at('S!B1', [[1]])])).toBe(false);
   });
 });

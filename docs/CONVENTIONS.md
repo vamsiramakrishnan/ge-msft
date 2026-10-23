@@ -52,5 +52,6 @@ and ownership rules below describe the code that ships.
 
 Use `.env.example` and the setup guide for configuration. Do not commit credentials, environment
 files, generated bundles, or build output. Keep bounded diagnostics free of bearer tokens and
-unnecessary document content. Use focused commits tied to the build plan; update contract ownership
+unnecessary document content. The only request text persisted on the client is saved diagnostics
+(the typed question, per user, 20 entries / 7 days; see the ADR-0012 amendment). Use focused commits tied to the build plan; update contract ownership
 docs and generated metadata when a boundary changes.

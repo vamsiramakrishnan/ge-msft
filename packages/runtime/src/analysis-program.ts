@@ -22,6 +22,14 @@ export class AnalysisBindings {
   entries(): readonly (readonly [string, string])[] {
     return [...this.values.entries()].map(([name, id]) => [name, id] as const);
   }
+  /** Capture the current names so a turn that is sent back for repair can leave none behind. */
+  snapshot(): ReadonlyMap<string, string> {
+    return new Map(this.values);
+  }
+  restore(snapshot: ReadonlyMap<string, string>): void {
+    this.values.clear();
+    for (const [name, id] of snapshot) this.values.set(name, id);
+  }
   bind(name: string, id: string): void {
     if (!ANALYSIS_BINDING_NAME_PATTERN.test(name) || name.length > 64)
       throw new Error('Invalid analysis binding name.');
@@ -35,7 +43,10 @@ export class AnalysisBindings {
     const ref = (value: string): string => {
       if (!value.startsWith('$')) return value;
       const found = this.values.get(value.slice(1));
-      if (!found) throw new Error(`Unknown artifact binding ${value}. Bind it before use.`);
+      if (!found)
+        throw new Error(
+          `Unknown artifact binding ${value}. Analyze inputs must come from let ${value} = analyze {"kind":"capture",...}; a read or pipeline result cannot be an analyze input.`,
+        );
       return found;
     };
     if (action.kind === 'reconcile')

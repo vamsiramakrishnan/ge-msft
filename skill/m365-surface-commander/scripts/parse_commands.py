@@ -79,6 +79,30 @@ def extract_command_block(text: str):
     return inner
 
 
+def strip_follow_up_block(text: str) -> str:
+    """Mirror of the TS `stripFollowUpBlock`: drop the engine's trailing ```suggested_questions
+    block, only when it is the last block and directly follows a closed fence."""
+    lines = text.rstrip().split("\n")
+
+    def bare(line):
+        return line is not None and re.fullmatch(r"```[^\S\n]*", line.rstrip()) is not None
+
+    if len(lines) < 3 or not bare(lines[-1]):
+        return text
+    opener = len(lines) - 2
+    while opener >= 0 and not lines[opener].startswith("```"):
+        opener -= 1
+    if opener < 0 or not re.fullmatch(r"```suggested_questions[^\S\n]*", lines[opener].rstrip(), re.I):
+        return text
+    above = opener - 1
+    while above >= 0 and lines[above].strip() == "":
+        above -= 1
+    if above < 0 or not bare(lines[above]):
+        return text
+    offset = sum(len(line) + 1 for line in lines[:opener])
+    return text[:offset].rstrip()
+
+
 def extract_command_block_meta(text: str):
     """Return `(inner, closed)`: the inner text of the first ```cmd fence (trimmed) and whether the
     fence was properly CLOSED with a trailing ```.
@@ -102,8 +126,16 @@ def _scan_quoted(rest: str):
     m = _QUOTED.match(rest.strip())
     if not m:
         return None
-    val = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+    # Mirrors scanQuoted: \" \\ \n \t decode; other escapes stay as written.
+    val = re.sub(
+        r'\\(["\\nt])',
+        lambda e: {'"': '"', "\\": "\\", "n": "\n", "t": "\t"}[e.group(1)],
+        m.group(1),
+    )
     return val, rest.strip()[m.end():].strip()
+
+
+_QUOTED_SHEET = r"'(?:[^']|'')*'(?:[^\s']+|'(?:[^']|'')*')*"
 
 
 def _split_first_arg(rest: str):
@@ -115,15 +147,13 @@ def _split_first_arg(rest: str):
     s = rest.lstrip()
     if not s:
         return None
-    m = re.match(r'"([^"]*)"(\S*)|\'([^\']*)\'(\S*)|(\S+)', s)
+    m = re.match(r'"([^"]*)"(\S*)|(' + _QUOTED_SHEET + r')|(\S+)', s)
     if not m:
         return None
     if m.group(1) is not None:
         arg = f"{m.group(1)}{m.group(2) or ''}"
-    elif m.group(3) is not None:
-        arg = f"'{m.group(3)}'{m.group(4) or ''}"
     else:
-        arg = m.group(5)
+        arg = m.group(3) if m.group(3) is not None else m.group(4)
     return arg, s[m.end():]
 
 
@@ -141,7 +171,20 @@ def _parse_grid_body(body: str):
 # value"` (with spaces) intact — mirrors the TS `tokenizeArgs` used by table/chart/cf. A
 # `key="quoted"` / `key=bare` match yields a prop; anything else is positional (a range, a chart
 # type, a bare CF mode like `databar`).
-_TOKENIZE = re.compile(r'(\w[\w-]*)="([^"]*)"|(\w[\w-]*)=(\S+)|"([^"]*)"|(\S+)')
+# Double-quoted values honour \", \\ and \n escapes (mirrors tokenizeArgs in command-grammar.ts).
+# A token starting with a single-quoted sheet name runs on through later quoted areas
+# ('A B'!A1,'A B'!C1); mirrors QUOTED_SHEET_TOKEN in command-grammar.ts.
+_TOKENIZE = re.compile(
+    r'(\w[\w-]*)="((?:[^"\\]|\\.)*)"|(\w[\w-]*)=(' + _QUOTED_SHEET + r'|\S+)|"((?:[^"\\]|\\.)*)"|('
+    + _QUOTED_SHEET
+    + r'|\S+)'
+)
+
+
+def _unescape(value: str) -> str:
+    # One escape-aware pass, mirroring scanQuoted/tokenizeArgs in command-grammar.ts: \" and \\
+    # are literal; \n is a line break (a command is one line), so \\n stays backslash + n.
+    return re.sub(r'\\(["\\n])', lambda m: "\n" if m.group(1) == "n" else m.group(1), value)
 
 
 def _tokenize_args(rest: str):
@@ -149,14 +192,60 @@ def _tokenize_args(rest: str):
     props = {}
     for m in _TOKENIZE.finditer(rest):
         if m.group(1) is not None:
-            props[m.group(1)] = m.group(2)
+            props[m.group(1)] = _unescape(m.group(2))
         elif m.group(3) is not None:
             props[m.group(3)] = m.group(4)
         elif m.group(5) is not None:
-            positional.append(m.group(5))
+            positional.append(_unescape(m.group(5)))
         else:
             positional.append(m.group(6))
     return positional, props
+
+
+def _parse_json_format(rest: str, usage: str):
+    """Mirror the TS parser: flatten a model's JSON format facets into key=value props."""
+    brace = rest.index("{")
+    try:
+        obj = json.loads(rest[brace:])
+    except ValueError:
+        return {"error": "format JSON is malformed (usage: format <range> k=v)"}
+    if not isinstance(obj, dict):
+        return {"error": usage}
+    rng = rest[:brace].strip() or (obj["range"] if isinstance(obj.get("range"), str) else "")
+    if not rng or re.search(r"\s", rng):
+        return {"error": usage}
+    style_value = obj.get("style", obj.get("format"))
+    style = style_value if isinstance(style_value, dict) else obj
+    props = {}
+
+    def field(v, key):
+        return v.get(key) if isinstance(v, dict) else None
+
+    def put(key, v):
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        elif isinstance(v, (int, float)):
+            v = str(v)
+        if isinstance(v, str) and key not in props:
+            props[key] = v
+
+    def first(*values):
+        return next((v for v in values if v is not None), None)
+
+    for key in ("bold", "italic", "fill", "numberFormat", "fontColor", "borderColor"):
+        put(key, style.get(key))
+    put("bold", field(style.get("font"), "bold"))
+    put("italic", field(style.get("font"), "italic"))
+    put("fontColor", field(style.get("font"), "color"))
+    put("fontColor", style.get("color"))
+    put("fill", field(style.get("fill"), "color"))
+    put("align", first(style.get("horizontalAlignment"), field(style.get("align"), "horizontal"), style.get("align")))
+    put("valign", first(style.get("verticalAlignment"), field(style.get("align"), "vertical")))
+    put("border", first(field(style.get("border"), "style"), style.get("border")))
+    put("borderColor", field(style.get("border"), "color"))
+    if not props:
+        return {"error": usage}
+    return {"verb": "format", "range": rng, "props": props}
 
 
 def _is_effect_expr(value: str) -> bool:
@@ -332,12 +421,20 @@ def verified_frame_error(text: str):
     if not any(re.match(r"^finish(?:\s|$)", line.strip(), re.IGNORECASE)
                for line in text.splitlines()):
         return None
-    if not _FENCE.search(text):
+    # Mirrors the TS grammar: one cmd block and no other fence; prose around it is fine. An
+    # unclosed block counts only when its last line is the finish (nothing after it can be lost).
+    fences = [line.strip() for line in text.split("\n") if line.strip().startswith("```")]
+    embedded = text.count("```") != len(fences)
+    last = text.strip().split("\n")[-1].strip() if text.strip() else ""
+    opens_cmd = bool(fences) and re.fullmatch(r"```cmd", fences[0], re.IGNORECASE) is not None
+    closed = (not embedded and opens_cmd and (
+        (len(fences) == 2 and fences[1] == "```")
+        or (len(fences) == 1 and re.fullmatch(r"finish\s+when=verified", last, re.IGNORECASE))))
+    if closed:
+        return None
+    if len(fences) <= 1 and not embedded:
         return "finish when=verified requires a closed cmd fence"
-    match = re.fullmatch(r"```cmd[^\S\n]*\r?\n([\s\S]*?)\r?\n```", text.strip(), re.IGNORECASE)
-    if not match or "```" in match.group(1):
-        return "finish when=verified requires exactly one cmd fence with no surrounding text or embedded fences"
-    return None
+    return "finish when=verified requires exactly one cmd fence with no embedded fences"
 
 
 
@@ -393,13 +490,23 @@ def parse_line(line: str):
 
     # No-argument verbs. Consume the FULL line: a trailing token is malformed input, not something
     # to silently drop (review Finding #8/#10 — a dropped `done`-block tail hid real parse failures).
-    if verb in ("outline", "done"):
+    if verb == "outline":
         if rest:
             return {"error": f"{verb} takes no arguments — got {rest!r} (usage: {verb})"}
         return {"verb": verb}
+
+    if verb == "done":
+        if not rest:
+            return {"verb": "done"}
+        # Never an error: trailing text after done still finishes; only a quoted answer is kept.
+        q = _scan_quoted(rest) if rest.strip().startswith('"') else None
+        return {"verb": "done", "message": q[0]} if q and q[0].strip() else {"verb": "done"}
     if verb == "help":
         return {"verb": "help", **({"topic": rest} if rest else {})}
     if verb == "read":
+        # A wrapping pair of double quotes is not part of an Excel address (TS: command-grammar.ts).
+        if len(rest) >= 2 and rest.startswith('"') and rest.endswith('"'):
+            rest = rest[1:-1].strip()
         return {"verb": "read", "selector": rest}  # empty ⇒ first bounded document page; follow next to EOF
     if verb == "search":
         if not rest:
@@ -432,6 +539,9 @@ def parse_line(line: str):
         if not rest:
             return {"verb": "list"}
         kind = rest.lower()
+        # Accept the plural the model often writes (`list comments` -> `comment`).
+        if kind not in CONTEXT_KINDS and kind.endswith("s"):
+            kind = kind[:-1]
         if kind not in CONTEXT_KINDS:
             supported = ", ".join(sorted(CONTEXT_KINDS))
             return {"error": f"unknown context kind '{rest}' — supported: {supported}"}
@@ -548,10 +658,10 @@ def parse_line(line: str):
     if verb == "set":
         sp = re.search(r"\s", rest)
         if not sp:
-            return {"error": "set needs a cell and a value — usage: set <A1> <value|=formula>"}
+            return {"error": "set needs a cell and a value — usage: set <A1|A1:A50> <value|=formula>"}
         cell, value = rest[: sp.start()], rest[sp.start():].strip()
         if not cell or not value:
-            return {"error": "set needs a cell and a value — usage: set <A1> <value|=formula>"}
+            return {"error": "set needs a cell and a value — usage: set <A1|A1:A50> <value|=formula>"}
         return {"verb": "set", "cell": cell, "value": value}
 
     if verb == "grid":
@@ -609,6 +719,8 @@ def parse_line(line: str):
 
     if verb == "format":
         usage = "format needs a range and at least one key=value — usage: format <range> k=v ..."
+        if "{" in rest:
+            return _parse_json_format(rest, usage)
         tokens = [t for t in re.split(r"\s+", rest) if t]
         if not tokens:
             return {"error": usage}
@@ -629,8 +741,12 @@ def parse_line(line: str):
         m = re.match(r"(\S+)\s+", rest)
         q = _QUOTED.search(rest)
         if not m or not q:
-            return {"error": 'reply needs a comment id and a quoted reply — usage: reply <id> "text"'}
-        return {"verb": "reply", "commentId": m.group(1), "text": q.group(1)}
+            return {"error": 'reply needs a comment id and a quoted reply — usage: reply <id> "text" [resolve]'}
+        out = {"verb": "reply", "commentId": m.group(1), "text": q.group(1)}
+        # `resolve` after the quoted text also marks the thread resolved (mirrors parseReply).
+        if rest[q.end():].strip() == "resolve":
+            out["resolve"] = True
+        return out
 
     if verb in ("page", "compose"):
         qs = _QUOTED.findall(rest)
@@ -644,13 +760,36 @@ def parse_line(line: str):
         if not q:
             return {"error": f'{verb} needs a quoted body/text'}
         slot = "body" if verb == "mail" else "text"
-        return {"verb": verb, slot: q[0]}
+        out = {"verb": verb, slot: q[0]}
+        # mail "reply" attach="name.docx" text="file text": a file opened with the reply.
+        # Mirrors parseMail: a tail is only attach= and text=, both present, after a non-empty body.
+        if verb == "mail" and q[1].strip():
+            positional, props = _tokenize_args(q[1])
+            if positional or set(props) - {"attach", "text"} or "attach" not in props or "text" not in props:
+                return {"error": 'mail needs a quoted body, then optionally attach="name.docx" text="file text"'}
+            if q[0] == "":
+                return {"error": "mail body cannot be empty"}
+            if not props["attach"].strip():
+                return {"error": "mail attach= needs a file name"}
+            out["attachment"] = {"name": props["attach"], "text": props["text"]}
+        return out
 
     if verb == "slide":
+        at = None
+        m = re.match(r"^at=(\S*)\s+", rest.strip(), re.I) or re.search(r"\s+at=(\S*)$", rest.strip(), re.I)
+        if m:
+            if not re.fullmatch(r"[1-9]\d*", m.group(1)):
+                return {"error": f'slide at= must be a slide number (1 = first), got "{m.group(1)}"'}
+            at = int(m.group(1))
+            t = rest.strip()
+            rest = t[m.end():] if m.start() == 0 else t[: m.start()]
         qs = _QUOTED.findall(rest)
         if not qs:
-            return {"error": 'slide needs a quoted title — usage: slide "Title" "bullet" ...'}
-        return {"verb": "slide", "title": qs[0], "bullets": qs[1:]}
+            return {"error": 'slide needs a quoted title — usage: slide "Title" "bullet" ... [at=N]'}
+        out = {"verb": "slide", "title": qs[0], "bullets": qs[1:]}
+        if at is not None:
+            out["at"] = at
+        return out
 
     if verb == "shape":
         q = _QUOTED.search(rest)
@@ -678,12 +817,19 @@ def parse_line(line: str):
     # ADR-0007 `chart <type> <range> [title="…"] [series=rows|columns]` — a chart over a range.
     if verb == "chart":
         usage = ("chart needs a type and a range — usage: chart "
-                 "<column|bar|line|pie|scatter|area> <range> [title=\"…\"] [series=rows|columns]")
+                 "<column|bar|line|pie|scatter|area> <range> [title=\"…\"] [series=rows|columns] "
+                 "[x=<col> by=<col> value=<col>]")
         positional, props = _tokenize_args(rest)
         if len(positional) < 2:
             return {"error": usage}
+        # The source may put a space after a comma (`C1:C9, G1:G9`); rejoin the areas split there.
+        rng = positional[1]
+        i = 2
+        while rng.endswith(",") and i < len(positional):
+            rng += positional[i]
+            i += 1
         return {"verb": "chart", "chartType": positional[0].lower(),
-                "range": positional[1], "props": props}
+                "range": rng, "props": props}
 
     # ADR-0007 `cf <range> <rule>` — one conditional-format rule. Tolerant of an inline operator
     # (`>1000`), a bare mode (`databar`/`colorscale`), or `top=N`. Only collects props.
@@ -798,13 +944,22 @@ done
     if block_is_complete(parse_block("```cmd\nread Sales!C2:C7\ndone")):
         failures.append("unclosed fence reported complete")
 
+    # The engine's trailing follow-up block is dropped only after a closed fence.
+    closed_cmd = "```cmd\nread Sales!C2:C7\ndone\n```"
+    follow = "```suggested_questions\n[\"Add a chart?\"]\n```"
+    if strip_follow_up_block(closed_cmd + "\n\n" + follow) != closed_cmd:
+        failures.append("trailing suggested_questions block after a closed fence was not dropped")
+    unclosed = "```cmd\nread Sales!C2:C7\ndone\n" + follow
+    if strip_follow_up_block(unclosed) != unclosed:
+        failures.append("follow-up block after an unclosed fence was dropped")
+
     # A clean, closed, done-bearing block IS complete.
     if not block_is_complete(parse_block("```cmd\nread Sales!C2:C7\ndone\n```")):
         failures.append("clean closed `done` block was NOT reported complete")
 
     # A no-arg verb with a trailing token is a reported error, not a silent drop.
-    if "error" not in (parse_line("done now please") or {}):
-        failures.append("`done now please` did not error on its trailing tokens")
+    if parse_line("done now please") != {"verb": "done"}:
+        failures.append("`done now please` did not finish (trailing text is ignored, as in the TS grammar)")
 
     ctx = parse_line("context analytical full-scope upload-preferred code-execution-preferred")
     if ctx != {
@@ -838,8 +993,22 @@ done
         failures.append("bare tail did not error")
     if "error" not in (parse_line("tail /work/notes.md abc") or {}):
         failures.append("tail with a non-numeric n did not error")
+    if parse_line('read "Branch Performance!A1:F21"') != {"verb": "read", "selector": "Branch Performance!A1:F21"}:
+        failures.append("read with a double-quoted selector kept its quotes")
     if parse_line('open "Sales!A1:C9"') != {"verb": "open", "selector": "Sales!A1:C9"}:
         failures.append("open selector did not parse")
+    if parse_line('mail "See attached" attach="a.docx" text="Hi"') != {
+        "verb": "mail", "body": "See attached", "attachment": {"name": "a.docx", "text": "Hi"}
+    }:
+        failures.append("mail with attach= did not parse")
+    for bad in ('mail "x" attach="a.docx" text="y" extra', 'mail "x" attach="a.docx" text="y" cc="z"',
+                'mail "" attach="a.docx" text="y"'):
+        if "error" not in (parse_line(bad) or {}):
+            failures.append(f"{bad} did not error")
+    if "error" not in (parse_line('mail "See attached" attach="a.docx"') or {}):
+        failures.append("mail attach= without text= did not error")
+    if parse_line("list comments") != {"verb": "list", "kind": "comment"}:
+        failures.append("plural list kind did not parse")
     if "error" not in (parse_line("list monster") or {}):
         failures.append("unknown list kind did not error")
     if parse_line("help shape") != {"verb": "help", "topic": "shape"}:
@@ -949,13 +1118,15 @@ done
     for tail in ("finish now", "finish when=verified\nread A1", "finish when=verified\nunknown"):
         records = parse_block("```cmd\nset A1 2\n" + tail + "\n```")["commands"]
         assert records and all("error" in rec for rec in records)
-    assert all("error" in rec for rec in parse_block("```cmd\nset A1 2\nfinish when=verified")["commands"])
+    assert all("error" in rec for rec in parse_block("```cmd\nset A1 2\nfinish when=verif")["commands"])
+    assert verified_frame_error("```cmd\nset A1 2\nfinish when=verified") is None
     assert not block_is_complete(parse_block("```cmd\nfinish when=verified\n```"))
     verified = "```cmd\nset S!A1 5\nfinish when=verified\n```"
     plain = "```cmd\nset S!A2 6\n```"
+    for response in ("Explanation\n" + verified, verified + "\nExplanation", verified + "\n# comment"):
+        assert verified_frame_error(response) is None
     for response in (verified + "\n" + plain, plain + "\n" + verified,
-                     "Explanation\n" + verified, verified + "\nExplanation",
-                     verified + "\n# comment", verified.replace("set S!A1 5", 'set S!A1 "```"')):
+                     verified.replace("set S!A1 5", 'set S!A1 "```"')):
         records = parse_block(response)["commands"]
         assert records and all("error" in rec for rec in records)
         assert verified_frame_error(response)

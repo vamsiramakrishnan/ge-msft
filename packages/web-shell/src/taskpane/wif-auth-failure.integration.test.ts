@@ -133,7 +133,7 @@ describe('WIF auth failure — interplay across gemini-client WIF · runtime · 
     expect(stsSpy.mock.results.every((r) => r.type === 'return')).toBe(true);
 
     // A degraded, surfaced UI state: the thread shows a role=alert error, not an answer.
-    const alert = ui!.container.querySelector('.msg-error[role="alert"]');
+    const alert = ui!.container.querySelector('.error-card[role="alert"]');
     expect(alert).not.toBeNull();
 
     // The controller never streamed any assistant answer text — the failure short-circuited it.
@@ -170,7 +170,7 @@ describe('WIF auth failure — interplay across gemini-client WIF · runtime · 
     expect(assistant?.error).toBeTruthy();
     expect((assistant?.text ?? '').trim()).toBe('');
     // Surfaced in the DOM as an alert (degraded), never an unhandled rejection.
-    expect(ui!.container.querySelector('.msg-error[role="alert"]')).not.toBeNull();
+    expect(ui!.container.querySelector('.error-card[role="alert"]')).not.toBeNull();
     expect(state.busy).toBe(false);
   });
 
@@ -203,7 +203,7 @@ describe('WIF auth failure — interplay across gemini-client WIF · runtime · 
     // The failed re-exchange degrades — never a stale/empty SILENT success.
     expect(assistant?.error).toBeTruthy();
     expect((assistant?.text ?? '').trim()).toBe('');
-    expect(ui!.container.querySelector('.msg-error[role="alert"]')).not.toBeNull();
+    expect(ui!.container.querySelector('.error-card[role="alert"]')).not.toBeNull();
     expect(state.busy).toBe(false);
   });
 

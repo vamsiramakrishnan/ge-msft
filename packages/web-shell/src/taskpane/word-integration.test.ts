@@ -7,6 +7,7 @@ import {
   mountStack,
   type WordSimulator,
   type MountedStack,
+  openPlanEffects,
 } from '../test-harness/index.js';
 
 /**
@@ -38,6 +39,7 @@ describe('Word full-stack integration', () => {
     await ui!.act(() => void ui!.controller.refreshContext());
     await ui!.flush();
 
+    await ui!.showSources();
     const text = ui!.container.textContent ?? '';
     // The seeded selection text previews on its chip; the whole-document chip is always present.
     expect(text).toContain('Selection');
@@ -62,6 +64,7 @@ describe('Word full-stack integration', () => {
     await ui!.waitFor((s) => s.pendingPlan !== undefined);
 
     // The approval card shows the verbatim suggest command (old => new), shown to the user exactly.
+    openPlanEffects(ui!.container);
     const cmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
     expect(cmd).toContain('suggest');
     expect(cmd).toContain('The SLA is 99.5%.');
@@ -74,8 +77,9 @@ describe('Word full-stack integration', () => {
 
     // The tracked change resolved against the seeded paragraph and rewrote it in place.
     const snap = sim.snapshot();
+    // Only the changed word is replaced (tracked), not the whole sentence (UAT #17).
     expect(snap.inserts.length).toBe(1);
-    expect(snap.inserts[0]?.anchor).toBe('The SLA is 99.5%.');
+    expect(snap.inserts[0]).toMatchObject({ anchor: '99.5%.', text: '~99.5% (source needed).' });
     expect(snap.bodyText).toContain('The SLA is ~99.5% (source needed).');
     // Tracked changes were turned on before the edit.
     expect(snap.changeTrackingMode).toBe('TrackAll');
@@ -151,5 +155,182 @@ describe('Word full-stack integration', () => {
     expect(snap.inserts.length).toBe(0);
     expect(snap.bodyText).toContain('The SLA is 99.5%.'); // unchanged
     expect(sim.office.customXmlParts.length).toBe(0); // no provenance for a rejected write
+  });
+
+  it('/insert-text with bold, font and size sets them on the inserted text (UAT #20)', async () => {
+    sim = installFakeWord();
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        '```cmd\n/insert-text text="AI COE" bold=true font=Arial size=16\n```',
+        '```cmd\ndone "Inserted."\n```',
+      ]),
+    });
+    await ui!.flush();
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('tulis AI COE bold, arial, 16');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    const insert = sim.snapshot().inserts.at(-1);
+    expect(insert?.text).toBe('AI COE');
+    expect(insert?.font).toEqual({ bold: true, name: 'Arial', size: 16 });
+  });
+
+  it('turns paragraphs into a table: one tracked edit replaces them (WS4b, Argon mx-wd-table-14)', async () => {
+    sim = installFakeWord(
+      wordSeed({
+        paragraphs: [
+          { text: 'Action items', styleBuiltIn: 'Heading2' },
+          { text: 'Budi - send the test results - 21 Oct', styleBuiltIn: 'Normal' },
+          { text: 'Rina - review the SLA - 24 Oct', styleBuiltIn: 'Normal' },
+          { text: 'Next steps follow.', styleBuiltIn: 'Normal' },
+        ],
+      }),
+    );
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        '```cmd\n/insert-table match="Budi - send" replaceThrough="Rina - review" rows="Owner\\tAction\\tDue\\nBudi\\tSend the test results\\t21 Oct\\nRina\\tReview the SLA\\t24 Oct" headers=true\n```',
+        '```cmd\ndone "Converted."\n```',
+      ]),
+    });
+    await ui!.flush();
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('turn the action items into a table: owner, action, due');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    const doc = sim.snapshot();
+    expect(doc.tables?.at(-1)?.[0]).toEqual(['Owner', 'Action', 'Due']);
+    const texts = doc.paragraphs.map((p) => p.text);
+    expect(texts).not.toContain('Budi - send the test results - 21 Oct');
+    expect(texts).not.toContain('Rina - review the SLA - 24 Oct');
+    expect(texts[0]).toBe('Action items');
+    expect(texts.at(-1)).toBe('Next steps follow.');
+    // The source paragraphs went out as tracked deletions (the user's own mode is restored after).
+    const removed = doc.inserts.filter((i) => i.text === '');
+    expect(removed.map((i) => i.anchor)).toEqual([
+      'Budi - send the test results - 21 Oct',
+      'Rina - review the SLA - 24 Oct',
+    ]);
+    expect(removed.every((i) => i.tracked)).toBe(true);
+  });
+
+  it('refuses to replace more than 50 paragraphs with a table (WS4b)', async () => {
+    const paragraphs = Array.from({ length: 60 }, (_, i) => ({
+      text: `Line ${i + 1}`,
+      styleBuiltIn: 'Normal',
+    }));
+    sim = installFakeWord(wordSeed({ paragraphs }));
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        '```cmd\n/insert-table match="Line 1" replaceThrough="Line 60" rows="A\\tB\\n1\\t2"\n```',
+        '```cmd\ndone "Too long."\n```',
+      ]),
+    });
+    await ui!.flush();
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('table everything');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    expect(sim.snapshot().paragraphs).toHaveLength(60);
+  });
+
+  it('find-replace honours matchWholeWord: "monthly" stays, each "month" changes once (WS5 T2b)', async () => {
+    sim = installFakeWord(
+      wordSeed({
+        paragraphs: [
+          { text: 'Fees are billed each month and reported monthly.', styleBuiltIn: 'Normal' },
+          { text: 'The month ends on the last day of the month.', styleBuiltIn: 'Normal' },
+        ],
+      }),
+    );
+    ui = mountStack({
+      surface: 'word',
+      client: scriptedClient([
+        '```cmd\n/find-replace find="month" replace="calendar month" matchWholeWord=true\n```',
+        '```cmd\ndone "Replaced."\n```',
+      ]),
+    });
+    await ui!.flush();
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('replace month with calendar month');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    expect(sim.snapshot().paragraphs.map((p) => p.text)).toEqual([
+      'Fees are billed each calendar month and reported monthly.',
+      'The calendar month ends on the last day of the calendar month.',
+    ]);
+  });
+
+  describe('replacing paragraphs with a table fails safe (security review H2, M1, M4)', () => {
+    const doc = (
+      extra: Partial<Record<'inTable' | 'sectionBreak' | 'lockedControl', boolean>> = {},
+    ) =>
+      wordSeed({
+        paragraphs: [
+          { text: 'Intro', styleBuiltIn: 'Normal' },
+          { text: 'Budi - send the test results', styleBuiltIn: 'Normal', ...extra },
+          { text: 'Rina - review the test results', styleBuiltIn: 'Normal' },
+          { text: 'Outro', styleBuiltIn: 'Normal' },
+        ],
+      });
+    const convert = async (cmd: string, task = 'make a table') => {
+      ui = mountStack({
+        surface: 'word',
+        client: scriptedClient([`\`\`\`cmd\n${cmd}\n\`\`\``, '```cmd\ndone "ok"\n```']),
+      });
+      await ui!.flush();
+      let run!: Promise<void>;
+      await ui!.act(() => {
+        run = ui!.controller.runCommands(task);
+      });
+      await ui!.waitFor((s) => s.pendingPlan !== undefined);
+      await ui!.act(() => ui!.controller.approvePlan());
+      await ui!.waitFor((s) => !s.busy);
+      await run;
+      return sim!.snapshot().paragraphs.map((p) => p.text);
+    };
+    const table = 'rows="A\\tB\\n1\\t2"';
+
+    it('refuses on a host that cannot force Track Changes (WordApi < 1.6)', async () => {
+      sim = installFakeWord(doc(), { WordApi: 5 });
+      const texts = await convert(`/insert-table match="Budi" replaceThrough="Rina" ${table}`);
+      expect(texts).toHaveLength(4);
+    });
+
+    it('ends at the nearest paragraph: end text in the start paragraph replaces only that one', async () => {
+      sim = installFakeWord(doc());
+      const texts = await convert(
+        `/insert-table match="Budi - send" replaceThrough="test results" ${table}`,
+      );
+      expect(texts).toEqual(['Intro', 'A\tB', '1\t2', 'Rina - review the test results', 'Outro']);
+    });
+
+    it.each(['inTable', 'sectionBreak', 'lockedControl'] as const)(
+      'refuses a run that crosses %s, changing nothing',
+      async (flag) => {
+        sim = installFakeWord(doc({ [flag]: true }));
+        const texts = await convert(`/insert-table match="Budi" replaceThrough="Rina" ${table}`);
+        expect(texts).toHaveLength(4);
+        expect(sim.snapshot().tables ?? []).toEqual([]);
+      },
+    );
   });
 });

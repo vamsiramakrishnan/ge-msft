@@ -28,6 +28,8 @@ export interface MountStackOptions {
   unit?: UnitDescriptor;
   /** Optional actuation gate / event registry wired into the session. */
   triggers?: TriggerRegistry;
+  /** The brand colour for a PowerPoint table header (as compose passes it from the build). */
+  tableHeaderFill?: string;
 }
 
 /** Accept either a raw client or the `{ client, queries }` wrapper from `scriptedClient`. */
@@ -60,6 +62,8 @@ export interface MountedStack {
    * warning-free. Use for the discrete user gestures the UI exposes (approve/reject/send/run-kickoff).
    */
   act(fn: () => void): Promise<void>;
+  /** Open the sources row and its full list, so every context chip's title is in the DOM. */
+  showSources(): Promise<void>;
   /** Unmount React + remove the container. Does NOT restore host globals (the simulator owns that). */
   unmount(): void;
 }
@@ -83,6 +87,7 @@ export function mountStack(opts: MountStackOptions): MountedStack {
   const session = new AssistSession(bridge, resolveClient(opts.client), {
     unit: opts.unit ?? bareUnit(opts.surface),
     ...(opts.triggers ? { triggers: opts.triggers } : {}),
+    ...(opts.tableHeaderFill ? { tableHeaderFill: opts.tableHeaderFill } : {}),
   });
   const controller = new PanelController(session, bridge);
 
@@ -127,6 +132,17 @@ export function mountStack(opts: MountStackOptions): MountedStack {
     });
   };
 
+  const showSources = async (): Promise<void> => {
+    await actGesture(() =>
+      container.querySelector<HTMLButtonElement>('.context-strip-toggle')?.click(),
+    );
+    await actGesture(() =>
+      [...container.querySelectorAll<HTMLButtonElement>('.context-strip .text-control')]
+        .find((b) => /^(Add|Manage) sources/.test(b.textContent ?? ''))
+        ?.click(),
+    );
+  };
+
   const unmount = (): void => {
     act(() => root.unmount());
     container.remove();
@@ -141,6 +157,20 @@ export function mountStack(opts: MountStackOptions): MountedStack {
     flush,
     waitFor,
     act: actGesture,
+    showSources,
     unmount,
   };
+}
+
+/**
+ * Open every collapsed effect in the plan-approval card, as a reviewer would. The card shows each
+ * effect's exact command only once the effect is opened, so tests that check the command call this
+ * first.
+ */
+export function openPlanEffects(container: ParentNode): void {
+  for (const head of container.querySelectorAll<HTMLButtonElement>(
+    '.plan-effect-head[aria-expanded="false"]',
+  )) {
+    act(() => head.click());
+  }
 }

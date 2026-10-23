@@ -6,7 +6,12 @@ import type {
   SseEvent,
 } from '@ge/contracts';
 import { asSessionId } from '@ge/contracts';
-import { GeminiClientConfig, streamAssistUrl, type GeminiSkillRoute } from './config.js';
+import {
+  GeminiClientConfig,
+  streamAssistUrl,
+  type GeminiSkillRoute,
+  rulesForRoute,
+} from './config.js';
 import {
   DeStreamAssistResponseSchema,
   type DeCitationSource,
@@ -19,6 +24,7 @@ import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './r
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 import { defaultFetch } from './de-fetch.js';
+import { WifExchangeError } from './wif.js';
 import type { ResolvedGrounding } from './resolve-grounding.js';
 import {
   ContextFileClient,
@@ -31,6 +37,8 @@ import {
   ConversationClient,
   type ConversationListResult,
   type ConversationSession,
+  PANE_INSTRUCTIONS_CLOSE,
+  PANE_INSTRUCTIONS_OPEN,
 } from './sessions.js';
 
 /** Supplies a valid Google access token (see WifTokenClient). */
@@ -43,6 +51,12 @@ export interface StreamOptions {
   /** Resume an existing conversation; otherwise the engine starts a fresh one. */
   session?: string;
   /**
+   * Ask once more, framed as a request, when the engine skips the message as not answer-seeking.
+   * Only for a chat question whose query is the user's own words: planner and command queries carry
+   * the protocol and document context, which must not be reframed.
+   */
+  retrySkipped?: boolean;
+  /**
    * Opt into Discovery Engine v1alpha sessionless execution: no session is created or resumed.
    * Existing session ids and uploaded session context files are incompatible. Default: false.
    */
@@ -54,11 +68,69 @@ export interface StreamOptions {
   /** Structured grounding selected by the composer/context UI. */
   grounding?: ResolvedGrounding;
   signal?: AbortSignal;
+  /**
+   * Abort the turn when the engine sends nothing for this long, before or during the stream
+   * (default {@link DEFAULT_IDLE_TIMEOUT_MS}). Only time spent waiting on the network counts: a
+   * consumer that is busy between reads does not. 0 disables it.
+   */
+  idleTimeoutMs?: number;
 }
+
+/** Long enough for a slow reasoning turn's first frame; short enough that a hang is not forever. */
+export const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
 
 type FetchLike = typeof fetch;
 
 class StreamRequestError extends Error {}
+
+class IdleTimeoutError extends Error {}
+
+/**
+ * Re-expose `body` so that each read must produce bytes within `ms`. The timer runs only while a
+ * read is pending (`highWaterMark: 0` → no read-ahead), so consumer work never counts as idle.
+ */
+function withIdleTimeout(
+  body: ReadableStream<Uint8Array>,
+  ms: number,
+  onIdle: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new IdleTimeoutError()), ms);
+        });
+        try {
+          const { done, value } = await Promise.race([reader.read(), idle]);
+          if (done) controller.close();
+          else controller.enqueue(value);
+        } catch (error) {
+          if (error instanceof IdleTimeoutError) {
+            onIdle();
+            void reader.cancel().catch(() => {});
+          }
+          controller.error(error);
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+function timeoutEvent(ms: number): SseEvent {
+  return {
+    type: 'error',
+    code: 'timeout',
+    message: `The assistant did not respond for ${Math.round(ms / 1000)} seconds. Try again.`,
+  };
+}
 
 /**
  * Calls Gemini Enterprise `:streamAssist` directly as the signed-in user and
@@ -66,6 +138,46 @@ class StreamRequestError extends Error {}
  * consume (tokens → citations → provenance → done). The engine owns grounding,
  * Model Armor, and agent routing; this client owns transport + mapping only.
  */
+/** Set by one streamAssist attempt when the engine skipped the message and wrote nothing. */
+interface AttemptOutcome {
+  skipped?: {
+    /** Only a not-answer-seeking skip is asked again; an unknown or new reason is not. */
+    retryable: boolean;
+    /** The chat session the skipped call opened, if any. */
+    session?: string;
+  };
+}
+
+const SKIPPED_ERROR: SseEvent = {
+  type: 'error',
+  code: 'assist_skipped',
+  message: 'The assistant did not answer this message. Try asking it as a question.',
+};
+
+/**
+ * Pass an attempt's events through, holding citations back until its first text: a skipped attempt
+ * has no text, and its citations must not join the answer that replaces it.
+ */
+async function* withoutSkippedCitations(
+  events: AsyncGenerator<SseEvent>,
+  outcome: AttemptOutcome,
+): AsyncGenerator<SseEvent> {
+  let held: SseEvent[] | undefined = [];
+  for await (const event of events) {
+    // The first text, or the attempt's own end, shows it was answered: release what was held.
+    if (held && (event.type === 'token' || event.type === 'provenance' || event.type === 'done')) {
+      yield* held;
+      held = undefined;
+    }
+    if (held && event.type === 'citation') held.push(event);
+    else yield event;
+  }
+  if (held && !outcome.skipped) yield* held;
+}
+
+/** Prepended to a skipped message when it is asked again, as the Gemini Enterprise web app does. */
+export const SKIP_RETRY_FRAME = 'Answer this briefly: ';
+
 export class StreamAssistClient {
   constructor(
     private readonly tokens: TokenSource,
@@ -78,6 +190,11 @@ export class StreamAssistClient {
      */
     private readonly retryOpts: RetryOptions = {},
   ) {}
+
+  /** Applies to subsequent turns; undefined returns model choice to the engine. */
+  setModelId(modelId: string | undefined): void {
+    this.config = { ...this.config, modelId: modelId?.trim() || undefined };
+  }
 
   configureRouting(
     update: Partial<
@@ -133,20 +250,98 @@ export class StreamAssistClient {
   }
 
   async *stream(req: AssistRequest, opts: StreamOptions = {}): AsyncGenerator<SseEvent> {
+    // streamAssist can skip a message it judges not answer-seeking ("hi", "thanks", "ok"): no text,
+    // no error. A chat question is asked once more, framed as a request, the way the Gemini Enterprise web app
+    // does. Any other skip, or a second one, is reported instead of ending in silence.
+    const first: AttemptOutcome = {};
+    yield* withoutSkippedCitations(this.attempt(req, opts, first), first);
+    if (!first.skipped) return;
+    const question = req.query?.trim();
+    if (!first.skipped.retryable || !opts.retrySkipped || !question || opts.signal?.aborted) {
+      yield SKIPPED_ERROR;
+      return;
+    }
+    const again: AttemptOutcome = {};
+    const retry = { ...req, query: `${SKIP_RETRY_FRAME}${question}` };
+    // The skipped call may have opened the chat session: keep the retry in it, not a second one.
+    const session = first.skipped.session ?? opts.session;
+    yield* withoutSkippedCitations(
+      this.attempt(retry, { ...opts, ...(session ? { session } : {}) }, again),
+      again,
+    );
+    if (again.skipped) yield SKIPPED_ERROR;
+  }
+
+  /** One streamAssist call: POST, then read the answer. A skipped answer sets `outcome.skipped`. */
+  private async *attempt(
+    req: AssistRequest,
+    opts: StreamOptions,
+    outcome: AttemptOutcome,
+  ): AsyncGenerator<SseEvent> {
     // Snapshot the mode before awaiting the POST; callers cannot change provenance semantics
     // by mutating their options while a response is in flight.
     const isSessionLess = opts.isSessionLess === true;
-    let res: Response;
+    const idleMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    // One signal for the whole turn: the caller's cancel, or our idle watchdog.
+    const turn = new AbortController();
+    const forwardAbort = (): void => turn.abort(opts.signal?.reason);
+    if (opts.signal?.aborted) forwardAbort();
+    opts.signal?.addEventListener('abort', forwardAbort, { once: true });
+    let timedOut = false;
     try {
-      res = await this.post(req, { ...opts, isSessionLess });
-    } catch (err) {
-      yield {
-        type: 'error',
-        code: err instanceof StreamRequestError ? 'invalid_request' : 'network',
-        message: errorMessage(err),
-      };
-      return;
+      let res: Response;
+      const postTimer =
+        idleMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              turn.abort();
+            }, idleMs)
+          : undefined;
+      try {
+        res = await this.post(req, { ...opts, isSessionLess, signal: turn.signal });
+      } catch (err) {
+        if (timedOut) {
+          yield timeoutEvent(idleMs);
+          return;
+        }
+        yield {
+          type: 'error',
+          code:
+            err instanceof StreamRequestError
+              ? 'invalid_request'
+              : err instanceof WifExchangeError
+                ? 'auth_exchange'
+                : 'network',
+          message: errorMessage(err),
+        };
+        return;
+      } finally {
+        clearTimeout(postTimer);
+      }
+      yield* this.readStream(
+        res,
+        opts,
+        isSessionLess,
+        idleMs,
+        () => {
+          timedOut = true;
+          turn.abort();
+        },
+        outcome,
+      );
+    } finally {
+      opts.signal?.removeEventListener('abort', forwardAbort);
     }
+  }
+
+  private async *readStream(
+    res: Response,
+    opts: StreamOptions,
+    isSessionLess: boolean,
+    idleMs: number,
+    onIdle: () => void,
+    outcome: AttemptOutcome = {},
+  ): AsyncGenerator<SseEvent> {
     if (!res.ok || !res.body) {
       const detail = await safeText(res);
       yield {
@@ -164,100 +359,132 @@ export class StreamAssistClient {
     const relatedQuestions: string[] = [];
     const emittedSupports = new Set<string>();
     let policyBlocked = false;
+    let skippedReasons: string[] | undefined;
 
-    for await (const chunk of parseJsonArrayStream(res.body)) {
-      const resp = DeStreamAssistResponseSchema.safeParse(chunk);
-      if (!resp.success) continue; // tolerate non-conforming keepalive/metadata frames
-      const data = resp.data;
-      if (!isSessionLess) session = data.sessionInfo?.session ?? session;
-      for (const skill of data.invokedSkills ?? []) {
-        const name = skill.displayName ?? skill.name;
-        if (name && !invokedSkills.includes(name)) invokedSkills.push(name);
-      }
-
-      // A policy block arrives as a structured verdict, not a generic failure;
-      // surface it once with a graceful message. Once blocked we suppress *all*
-      // answer output for the turn — Model Armor can block the generated answer,
-      // and the offending text may ride along in this or a later frame's replies,
-      // so we must not stream, cite, ground, or hash any of it through.
-      const policy = data.answer?.customerPolicyEnforcementResult;
-      if (!policyBlocked && policy?.verdict?.toUpperCase() === 'BLOCK') {
-        policyBlocked = true;
-        yield { type: 'policy', verdict: 'block', reason: policyReason() };
-      }
-      if (policyBlocked) continue;
-
-      if (data.answer?.state === 'FAILED') {
-        yield { type: 'error', code: 'assist_failed', message: 'The assistant could not answer.' };
-      }
-
-      for (const q of data.answer?.relatedQuestions ?? []) {
-        if (q && !relatedQuestions.includes(q)) relatedQuestions.push(q);
-      }
-
-      for (const reply of data.answer?.replies ?? []) {
-        const gc = reply.groundedContent;
-        const content = gc?.content;
-        const code = content?.executableCode?.code;
-        if (code && content?.thought !== true) {
-          yield { type: 'code-execution', language: 'python', code };
+    const body = idleMs > 0 ? withIdleTimeout(res.body, idleMs, onIdle) : res.body;
+    try {
+      for await (const chunk of parseJsonArrayStream(body)) {
+        const resp = DeStreamAssistResponseSchema.safeParse(chunk);
+        if (!resp.success) continue; // tolerate non-conforming keepalive/metadata frames
+        const data = resp.data;
+        if (!isSessionLess) session = data.sessionInfo?.session ?? session;
+        for (const skill of data.invokedSkills ?? []) {
+          const name = skill.displayName ?? skill.name;
+          if (name && !invokedSkills.includes(name)) invokedSkills.push(name);
         }
-        const codeResult = content?.codeExecutionResult;
-        if (codeResult && content?.thought !== true) {
+
+        // A policy block arrives as a structured verdict, not a generic failure;
+        // surface it once with a graceful message. Once blocked we suppress *all*
+        // answer output for the turn — Model Armor can block the generated answer,
+        // and the offending text may ride along in this or a later frame's replies,
+        // so we must not stream, cite, ground, or hash any of it through.
+        const policy = data.answer?.customerPolicyEnforcementResult;
+        const skipped =
+          data.answer?.state === 'SKIPPED' ? (data.answer.assistSkippedReasons ?? []) : undefined;
+        // A skip for a customer policy covers the query OR the answer, so it blocks even after text
+        // has streamed: nothing from this turn may be used, cited, hashed or run.
+        const policySkip = skipped?.includes('CUSTOMER_POLICY_VIOLATION') === true;
+        if (!policyBlocked && (policy?.verdict?.toUpperCase() === 'BLOCK' || policySkip)) {
+          policyBlocked = true;
+          yield { type: 'policy', verdict: 'block', reason: policyReason() };
+        }
+        if (policyBlocked) continue;
+
+        if (skipped) skippedReasons = [...(skippedReasons ?? []), ...skipped];
+
+        if (data.answer?.state === 'FAILED') {
           yield {
-            type: 'code-execution-result',
-            outcome: codeExecutionOutcome(codeResult.outcome),
-            ...(codeResult.output ? { output: codeResult.output } : {}),
+            type: 'error',
+            code: 'assist_failed',
+            message: 'The assistant could not answer.',
           };
         }
-        const text = content?.text;
-        if (text && content?.thought === true) {
-          const activity = activityText(text);
-          if (activity) yield { type: 'activity', text: activity };
-        } else if (text) {
-          accumulated += text;
-          yield { type: 'token', text };
+
+        for (const q of data.answer?.relatedQuestions ?? []) {
+          if (q && !relatedQuestions.includes(q)) relatedQuestions.push(q);
         }
-        const references = gc?.textGroundingMetadata?.references ?? [];
-        for (const ref of references) {
-          const dm = ref.documentMetadata;
-          if (!dm) continue;
-          const excerpt = ref.content ? truncateExcerpt(ref.content) : undefined;
-          const source: SourceRef = {
-            title: dm.title ?? dm.uri ?? dm.domain ?? 'Source',
-            ...(dm.uri ? { uri: dm.uri } : {}),
-            ...(dm.pageIdentifier ? { locator: dm.pageIdentifier } : {}),
-            ...(excerpt ? { excerpt } : {}),
-          };
-          const key = source.uri ?? `${source.title}#${source.locator ?? ''}`;
-          if (!citations.has(key)) {
-            citations.set(key, source);
-            yield { type: 'citation', source };
+
+        for (const reply of data.answer?.replies ?? []) {
+          const gc = reply.groundedContent;
+          const content = gc?.content;
+          const code = content?.executableCode?.code;
+          if (code && content?.thought !== true) {
+            yield { type: 'code-execution', language: 'python', code };
           }
-        }
-        // Grounding supports carry byte spans into the answer text; convert them
-        // against the accumulated answer so far and emit precise claim highlights.
-        const supports = gc?.textGroundingMetadata?.groundingSupports ?? [];
-        if (supports.length > 0) {
-          const mapper = new ByteOffsetMapper(accumulated);
-          for (const support of supports) {
-            const span = byteOffsetToCharIndex(mapper, support.startIndex, support.endIndex);
-            if (!span) continue;
-            const dedupeKey = `${span.start}:${span.end}`;
-            if (emittedSupports.has(dedupeKey)) continue;
-            emittedSupports.add(dedupeKey);
+          const codeResult = content?.codeExecutionResult;
+          if (codeResult && content?.thought !== true) {
             yield {
-              type: 'grounding-support',
-              start: span.start,
-              end: span.end,
-              ...(typeof support.groundingScore === 'number'
-                ? { score: support.groundingScore }
-                : {}),
-              sources: resolveSupportSources(support, references),
+              type: 'code-execution-result',
+              outcome: codeExecutionOutcome(codeResult.outcome),
+              ...(codeResult.output ? { output: codeResult.output } : {}),
             };
           }
+          const text = content?.text;
+          if (text && content?.thought === true) {
+            const activity = activityText(text);
+            if (activity) yield { type: 'activity', text: activity };
+          } else if (text) {
+            accumulated += text;
+            yield { type: 'token', text };
+          }
+          const references = gc?.textGroundingMetadata?.references ?? [];
+          for (const ref of references) {
+            const dm = ref.documentMetadata;
+            if (!dm) continue;
+            const excerpt = ref.content ? truncateExcerpt(ref.content) : undefined;
+            const source: SourceRef = {
+              title: dm.title ?? dm.uri ?? dm.domain ?? 'Source',
+              ...(dm.uri ? { uri: dm.uri } : {}),
+              ...(dm.pageIdentifier ? { locator: dm.pageIdentifier } : {}),
+              ...(excerpt ? { excerpt } : {}),
+            };
+            const key = source.uri ?? `${source.title}#${source.locator ?? ''}`;
+            if (!citations.has(key)) {
+              citations.set(key, source);
+              yield { type: 'citation', source };
+            }
+          }
+          // Grounding supports carry byte spans into the answer text; convert them
+          // against the accumulated answer so far and emit precise claim highlights.
+          const supports = gc?.textGroundingMetadata?.groundingSupports ?? [];
+          if (supports.length > 0) {
+            const mapper = new ByteOffsetMapper(accumulated);
+            for (const support of supports) {
+              const span = byteOffsetToCharIndex(mapper, support.startIndex, support.endIndex);
+              if (!span) continue;
+              const dedupeKey = `${span.start}:${span.end}`;
+              if (emittedSupports.has(dedupeKey)) continue;
+              emittedSupports.add(dedupeKey);
+              yield {
+                type: 'grounding-support',
+                start: span.start,
+                end: span.end,
+                ...(typeof support.groundingScore === 'number'
+                  ? { score: support.groundingScore }
+                  : {}),
+                sources: resolveSupportSources(support, references),
+              };
+            }
+          }
         }
       }
+    } catch (error) {
+      // The watchdog fired mid-stream: say so instead of leaving a spinner or a raw stream error.
+      if (error instanceof IdleTimeoutError) {
+        yield timeoutEvent(idleMs);
+        return;
+      }
+      throw error;
+    }
+
+    // A skipped answer with no text goes back to stream(), which decides whether to ask again.
+    // Nothing was answered, so no provenance record and no `done` yet.
+    if (!policyBlocked && skippedReasons && !accumulated.trim()) {
+      outcome.skipped = {
+        retryable: skippedReasons.includes('NON_ASSIST_SEEKING_QUERY_IGNORED'),
+        ...(session ? { session } : {}),
+      };
+      return;
     }
 
     // A blocked turn produced no usable answer; do not emit related questions or a
@@ -324,7 +551,9 @@ export class StreamAssistClient {
     } catch (err) {
       // Exhausted/non-retriable transient → surface a real (non-2xx, no body) Response
       // so stream()'s existing `!res.ok` branch maps it to an http_<status> error.
-      if (err instanceof HttpError) return new Response(null, { status: err.status });
+      // A failed WIF exchange is sign-in, not a Gemini status: let stream() report auth_exchange.
+      if (err instanceof HttpError && !(err instanceof WifExchangeError))
+        return new Response(null, { status: err.status });
       throw err; // a genuine network throw — stream() catches it as a network error.
     }
     // On 401 the federated token likely expired mid-cache; re-exchange once (distinct
@@ -332,7 +561,9 @@ export class StreamAssistClient {
     if (res.status === 401 && this.tokens.invalidate) {
       this.tokens.invalidate();
       res = await send().catch((err) =>
-        err instanceof HttpError ? new Response(null, { status: err.status }) : Promise.reject(err),
+        err instanceof HttpError && !(err instanceof WifExchangeError)
+          ? new Response(null, { status: err.status })
+          : Promise.reject(err),
       );
     }
     return res;
@@ -495,7 +726,12 @@ export function buildStreamAssistRequest(
   const skillSet = skillsForRoute(cfg, skillRoute);
   const mentionText = skillMentionText(skillSet.mentions);
   const out: Record<string, unknown> = {
-    query: buildQuery(req, attached, mentionText),
+    query: buildQuery(
+      req,
+      attached,
+      mentionText,
+      paneInstructions(cfg.assistantName, rulesForRoute(cfg.assistantRules, skillRoute)),
+    ),
   };
   if (isSessionLess) out.isSessionLess = true;
   else if (session) out.session = session;
@@ -536,14 +772,40 @@ function buildQuery(
   req: AssistRequest,
   attached: QueryPart[],
   mentionText?: string,
+  identity?: string,
 ): Record<string, unknown> {
   if (attached.length === 0) {
-    return { text: composeQuery(req, mentionText) };
+    const text = composeQuery(req, mentionText);
+    return { text: identity ? `${identity}\n\n${text}` : text };
   }
   const question = withSkillMention(req.query?.trim(), mentionText);
-  const parts: QueryPart[] = [...attached];
+  const parts: QueryPart[] = [...(identity ? [{ text: identity }] : []), ...attached];
   if (question) parts.push({ text: question });
   return { parts };
+}
+
+/** The brand's name line and writing rules, as one block of pane instructions; none when unset. */
+export function paneInstructions(
+  assistantName?: string,
+  rules: readonly string[] = [],
+): string | undefined {
+  const lines = [...(assistantName ? [identityText(assistantName)] : []), ...rules];
+  // With pane instructions in front, answers drifted into Bahasa for English questions and English
+  // emails (live 2026-10-15/16): the reply language is the user's, stated every time.
+  return lines.length
+    ? `${PANE_INSTRUCTIONS_OPEN}\n${[...lines, LANGUAGE_RULE].join('\n')}\n${PANE_INSTRUCTIONS_CLOSE}`
+    : undefined;
+}
+
+/** Sent with every block of pane instructions. */
+export const LANGUAGE_RULE = "Always reply in the language of the user's message.";
+
+/** The pane's instruction (not user or document content) naming the branded assistant. */
+export function identityText(assistantName: string): string {
+  return (
+    `Your name is ${assistantName}. Do not introduce yourself or say your name unless the user ` +
+    `asks who you are. If you refer to yourself, use ${assistantName}, never Gemini or Gemini Enterprise.`
+  );
 }
 
 function composeQuery(req: AssistRequest, mentionText?: string): string {

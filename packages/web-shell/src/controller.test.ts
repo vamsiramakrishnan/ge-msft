@@ -14,13 +14,17 @@ import { asChangeId, approvalClassOf, isReversibleKind } from '@ge/contracts';
 import type { AnalysisProgram, CommandLoopEvent, RunCommandsOptions } from '@ge/runtime';
 import type {
   AgentView,
+  ConversationSession,
   ConversationSummary,
   EngineDataStore,
   ResolvedGrounding,
 } from '@ge/gemini-client';
 import type { HostEvent } from '@ge/triggers';
 import {
+  CHAT_CHANGED_NOTHING,
+  claimsDocumentChange,
   PanelController,
+  redactForDiagnostics,
   type AssistLike,
   type ContextLister,
   type PlanEffect,
@@ -166,16 +170,29 @@ class FakeAssist implements AssistLike {
     }
   }
   /** F: the planner pre-stage result. Default → no plan (proposePlan degrades to the executor). */
-  planned: { plan: CommandPlan | null; errors: string[]; needsClarification: boolean } = {
+  planned: {
+    plan: CommandPlan | null;
+    errors: string[];
+    needsClarification: boolean;
+    failure?: { message: string; code?: string; blocked?: boolean };
+  } = {
     plan: null,
     errors: [],
     needsClarification: false,
   };
-  plannedQueue: { plan: CommandPlan | null; errors: string[]; needsClarification: boolean }[] = [];
+  plannedQueue: {
+    plan: CommandPlan | null;
+    errors: string[];
+    needsClarification: boolean;
+    failure?: { message: string; code?: string; blocked?: boolean };
+  }[] = [];
   planTasks: string[] = [];
-  plan(
-    task: string,
-  ): Promise<{ plan: CommandPlan | null; errors: string[]; needsClarification: boolean }> {
+  plan(task: string): Promise<{
+    plan: CommandPlan | null;
+    errors: string[];
+    needsClarification: boolean;
+    failure?: { message: string; code?: string; blocked?: boolean };
+  }> {
     this.planTasks.push(task);
     return Promise.resolve(this.plannedQueue.shift() ?? this.planned);
   }
@@ -344,6 +361,23 @@ class FakeAssist implements AssistLike {
   resumeSession(sessionIdOrName: string): void {
     this.resumedSession = sessionIdOrName;
   }
+  pastTurns: ConversationSession['turns'] | Error = [];
+  newSessions = 0;
+  getConversation(name: string): Promise<ConversationSession> {
+    if (this.pastTurns instanceof Error) return Promise.reject(this.pastTurns);
+    const id = name.split('/').pop() ?? name;
+    return Promise.resolve({
+      name,
+      id,
+      title: id,
+      turnCount: 0,
+      isPinned: false,
+      turns: this.pastTurns,
+    });
+  }
+  startNewSession(): void {
+    this.newSessions++;
+  }
 }
 
 function lister(refs: ContextRef[]): ContextLister {
@@ -357,6 +391,26 @@ function abortError(): Error {
 }
 
 describe('PanelController — context tray', () => {
+  it('carries a context notice (e.g. a selection too large to read) onto its chip', async () => {
+    const c = new PanelController(
+      new FakeAssist(),
+      lister([
+        { ...ref('xl:Sales!L:L', 'Sales!L:L'), notice: 'Your selection is too large to read.' },
+      ]),
+    );
+    await c.refreshContext();
+    expect(c.getState().chips[0]?.notice).toBe('Your selection is too large to read.');
+  });
+
+  it('keeps a failed background context refresh out of the pane, in diagnostics only (live 2026-10-17)', async () => {
+    const c = new PanelController(new FakeAssist(), {
+      listContext: () => Promise.reject(new Error('GeneralException')),
+    });
+    await c.refreshContext();
+    expect(c.getState().error).toBeUndefined();
+    expect(c.diagnostics({ surface: 'powerpoint' })).toContain('context_refresh');
+  });
+
   it('loads chips and attaches/detaches a specific ref', async () => {
     const assist = new FakeAssist();
     const c = new PanelController(assist, lister([ref('word:selection', 'Selection')]));
@@ -423,6 +477,235 @@ describe('PanelController — context tray', () => {
   });
 });
 
+describe('PanelController — a command answer that claims an unmade change', () => {
+  it('notes that nothing changed when no write landed', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'token', text: 'Successfully drafted and inserted the final slide.' }),
+      ev({ type: 'done', turn: 2 }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add a slide');
+    const reply = c.getState().messages.at(-1)!;
+    expect(reply.note).toMatch(/No change was made to your document/);
+  });
+
+  it('adds no note when a write landed', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'token', text: 'I have added the slide.' }),
+      ev({
+        type: 'write-result',
+        turn: 1,
+        changeId: 'w1',
+        result: { ok: true, changeId: asChangeId('w1'), kind: 'insert-slide' },
+      }),
+      ev({ type: 'done', turn: 2 }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add a slide');
+    expect(c.getState().messages.at(-1)!.note).toBeUndefined();
+  });
+});
+
+describe('PanelController — resume an interrupted task', () => {
+  const memoryStore = (initial?: { request: string; changes: string[] }) => {
+    let record = initial
+      ? { ...initial, doc: 'h', startedAt: new Date().toISOString() }
+      : undefined;
+    return {
+      read: () => record,
+      start: (request: string, doc: string) => {
+        record = { request, changes: [], doc, startedAt: new Date().toISOString() };
+      },
+      landed: (label: string) => {
+        if (record) record = { ...record, changes: [...record.changes, label] };
+      },
+      clear: () => {
+        record = undefined;
+      },
+      get record() {
+        return record;
+      },
+    };
+  };
+
+  it('offers a saved task and finishes only what is left', async () => {
+    const assist = new FakeAssist();
+    const seen: string[] = [];
+    const run = assist.runCommands.bind(assist);
+    assist.runCommands = (task: string, options?: RunCommandsOptions) => {
+      seen.push(task);
+      return run(task, options);
+    };
+    assist.commandScript = [ev({ type: 'done', turn: 1 })];
+    const c = new PanelController(assist, {
+      ...lister([]),
+      documentKey: () => 'https://x/deck.pptx',
+    });
+    const store = memoryStore({
+      request: 'Add 3 slides',
+      changes: ['Slide added: One', 'Slide added: Two'],
+    });
+    await c.attachResumeStore(store);
+    expect(c.getState().resume?.changes).toHaveLength(2);
+
+    await c.finishResume();
+    expect(c.getState().resume).toBeUndefined();
+    expect(seen[0]).toContain('Add 3 slides');
+    expect(seen[0]).toContain('changes in the list below are ALREADY in the');
+    expect(seen[0]).toContain('"Slide added: Two"');
+    expect(store.record).toBeUndefined(); // the finished run left nothing to resume
+  });
+
+  it('offers nothing when the host gives no document identity', async () => {
+    const c = new PanelController(new FakeAssist(), lister([]));
+    await c.attachResumeStore(memoryStore({ request: 'x', changes: [] }));
+    expect(c.getState().resume).toBeUndefined();
+  });
+
+  it('dismiss forgets the task', async () => {
+    const c = new PanelController(new FakeAssist(), { ...lister([]), documentKey: () => 'doc' });
+    const store = memoryStore({ request: 'x', changes: [] });
+    await c.attachResumeStore(store);
+    c.dismissResume();
+    expect(c.getState().resume).toBeUndefined();
+    expect(store.record).toBeUndefined();
+  });
+});
+
+describe('PanelController — result card', () => {
+  const landed = ev({
+    type: 'write-result',
+    turn: 1,
+    changeId: 'w1',
+    result: { ok: true, changeId: asChangeId('w1'), kind: 'write-cells', location: 'Sheet1!F2:F3' },
+  });
+
+  it('lists what landed in plain words, with Undo only where the journal can restore it', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [landed, ev({ type: 'done', turn: 2 })];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add totals');
+    const [change] = c.getState().messages.at(-1)!.changes!;
+    expect(change).toMatchObject({
+      kind: 'write-cells',
+      label: 'Cells Sheet1!F2:F3',
+      location: 'Sheet1!F2:F3',
+    });
+    expect(change!.undoable).toBeUndefined(); // no journal record: Office's own Undo instead
+  });
+
+  it('names a shape-text change by its first line, not a bare "Slide text"', async () => {
+    const assist = new FakeAssist();
+    const request = {
+      changeId: asChangeId('w2'),
+      kind: 'set-shape-text' as const,
+      surface: 'powerpoint' as const,
+      params: {
+        target: { slideId: '257#1', shapeId: '3' },
+        text: '1. Latar belakang\\n2. Roadmap',
+      },
+    };
+    assist.commandScript = [
+      ev({
+        type: 'plan-preview',
+        turn: 1,
+        dag: [],
+        approvalClasses: [],
+        effects: [
+          {
+            request,
+            command: 'shape pp:shape:257#1:3 "1. Latar belakang\\n2. Roadmap"',
+            approvalClass: approvalClassOf('set-shape-text'),
+            reversible: isReversibleKind('set-shape-text'),
+          },
+        ],
+      }),
+      ev({
+        type: 'write-result',
+        turn: 1,
+        changeId: 'w2',
+        result: {
+          ok: true,
+          changeId: asChangeId('w2'),
+          kind: 'set-shape-text',
+          location: 'shape:257#1:3',
+        },
+      }),
+      ev({ type: 'done', turn: 2 }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add a table of contents');
+    expect(c.getState().messages.at(-1)!.changes![0]!.label).toBe('Slide text: 1. Latar belakang');
+  });
+
+  it('undoes through the recovery journal and marks only what the journal undid', async () => {
+    const assist = new FakeAssist();
+    let state: 'applied' | 'undone' = 'applied';
+    const record = () => ({
+      id: 'w1',
+      createdAt: '',
+      state,
+      target: 'Sheet1!F2:F3',
+      rows: 2,
+      columns: 1,
+      canUndo: true,
+      canResume: false,
+    });
+    Object.assign(assist, { recovery: { durable: true, list: () => [record()] } });
+    const undoRuns: string[] = [];
+    Object.assign(assist, {
+      runAnalysis: async function* (action: { kind: string; id: string }) {
+        undoRuns.push(`${action.kind}:${action.id}`);
+        state = 'undone';
+        yield { type: 'done', turn: 1 };
+      },
+    });
+    assist.commandScript = [landed, ev({ type: 'done', turn: 2 })];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add totals');
+    const card = c.getState().messages.at(-1)!;
+    expect(card.changes![0]!.undoable).toBe(true);
+    await c.undoChanges(card.id);
+    expect(undoRuns).toEqual(['undo:w1']);
+    expect(c.getState().messages.find((m) => m.id === card.id)!.changes![0]!.undone).toBe(true);
+  });
+
+  it('says plainly when an Undo receipt was freed for later writes, and runs no restore', async () => {
+    const assist = new FakeAssist();
+    let records = [
+      {
+        id: 'w1',
+        createdAt: '',
+        state: 'applied' as const,
+        target: 'Sheet1!F2:F3',
+        rows: 2,
+        columns: 1,
+        canUndo: true,
+        canResume: false,
+      },
+    ];
+    Object.assign(assist, { recovery: { durable: true, list: () => records } });
+    const undoRuns: string[] = [];
+    Object.assign(assist, {
+      runAnalysis: async function* (action: { kind: string; id: string }) {
+        undoRuns.push(`${action.kind}:${action.id}`);
+        yield { type: 'done', turn: 1 };
+      },
+    });
+    assist.commandScript = [landed, ev({ type: 'done', turn: 2 })];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add totals');
+    const card = c.getState().messages.at(-1)!;
+    records = [];
+    await c.undoChanges(card.id);
+    expect(undoRuns).toEqual([]);
+    expect(c.getState().error).toBe('Undo is no longer available for this change.');
+    expect(c.getState().messages.find((m) => m.id === card.id)!.changes![0]!.undoable).toBe(false);
+  });
+});
+
 describe('PanelController — conversation history', () => {
   it('lists Discovery Engine sessions and can mark one as active', async () => {
     const assist = new FakeAssist();
@@ -449,9 +732,382 @@ describe('PanelController — conversation history', () => {
       active: false,
     });
 
-    c.resumeConversation(assist.conversations[0]!.name);
+    await c.resumeConversation(assist.conversations[0]!.name);
     expect(assist.resumedSession).toBe(assist.conversations[0]!.name);
     expect(c.getState().conversations.items[0]?.active).toBe(true);
+  });
+
+  it("loads a past session's questions and answers into the thread", async () => {
+    const assist = new FakeAssist();
+    assist.pastTurns = [
+      { userText: 'can you chart this?', answerText: 'Here is a chart.', answerHasMedia: true },
+      { userText: 'total for Q3?', answerText: '$1,023,000' },
+      { userText: 'and Q4?' },
+    ];
+    const c = new PanelController(assist, lister([]));
+
+    const loading = c.resumeConversation('sessions/s-1');
+    expect(c.getState().messages[0]).toMatchObject({ activity: 'Loading conversation…' });
+    await loading;
+
+    expect(c.getState().messages.map((m) => [m.role, m.text, m.note])).toEqual([
+      ['user', 'can you chart this?', undefined],
+      ['assistant', 'Here is a chart.', 'A chart or file in this answer is not shown in history.'],
+      ['user', 'total for Q3?', undefined],
+      ['assistant', '$1,023,000', undefined],
+      ['user', 'and Q4?', undefined],
+      ['assistant', '', 'No answer was saved for this question.'],
+    ]);
+  });
+
+  it('remembers which app a continued chat started in, and forgets it on a new chat', async () => {
+    const assist = new FakeAssist();
+    assist.conversations = [
+      {
+        name: 'sessions/ol',
+        id: 'ol',
+        title: 'Email',
+        turnCount: 1,
+        isPinned: false,
+        surface: 'outlook',
+      },
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.refreshConversations();
+    await c.resumeConversation('sessions/ol');
+    expect(c.getState().conversationFrom).toBe('outlook');
+    c.newConversation();
+    expect(c.getState().conversationFrom).toBeUndefined();
+  });
+
+  it('keeps the session when its earlier messages cannot be loaded', async () => {
+    const assist = new FakeAssist();
+    assist.pastTurns = new Error('403 Forbidden');
+    const c = new PanelController(assist, lister([]));
+
+    await c.resumeConversation('sessions/s-1');
+
+    expect(assist.resumedSession).toBe('sessions/s-1');
+    expect(c.getState().messages[0]?.error).toMatch(
+      /Could not load the earlier messages \(403 Forbidden\)/,
+    );
+  });
+
+  it('starts a new chat in place: clears the thread and drops the session', async () => {
+    const assist = new FakeAssist();
+    assist.pastTurns = [{ userText: 'hi', answerText: 'hello' }];
+    const c = new PanelController(assist, lister([]));
+    await c.resumeConversation('sessions/s-1');
+
+    c.newConversation();
+
+    expect(assist.newSessions).toBe(1);
+    expect(c.getState().messages).toEqual([]);
+    expect(JSON.parse(c.diagnostics({ surface: 'word' })).routes).toEqual([]);
+  });
+
+  it('keeps a message sent while the history was still loading', async () => {
+    const assist = new FakeAssist();
+    assist.pastTurns = [{ userText: 'old', answerText: 'old answer' }];
+    const c = new PanelController(assist, lister([]));
+
+    const loading = c.resumeConversation('sessions/s-1');
+    const sending = c.send('new question');
+    await loading;
+    await sending;
+
+    const texts = c.getState().messages.map((m) => m.text);
+    expect(texts.slice(0, 3)).toEqual(['old', 'old answer', 'new question']);
+    expect(c.getState().messages.some((m) => m.activity === 'Loading conversation…')).toBe(false);
+  });
+
+  it('does not switch away while a plan waits for the user, and drops a pending clarification', async () => {
+    const assist = new FakeAssist();
+    const c = new PanelController(assist, lister([]));
+    (c as unknown as { set(p: object): void }).set({
+      pendingCommandPlan: { id: 'p1' },
+      messages: [{ id: 'u-1', role: 'user', text: 'keep me' }],
+    });
+    c.newConversation();
+    await c.resumeConversation('sessions/s-1');
+    expect(assist.newSessions).toBe(0);
+    expect(assist.resumedSession).toBeUndefined();
+    expect(c.getState().messages).toHaveLength(1);
+
+    (c as unknown as { set(p: object): void }).set({
+      pendingCommandPlan: undefined,
+      pendingPlanClarification: { question: 'Which slide?' },
+    });
+    c.newConversation();
+    expect(c.getState().pendingPlanClarification).toBeUndefined();
+  });
+
+  it('a slow history load cannot overwrite a newer chat', async () => {
+    const assist = new FakeAssist();
+    assist.pastTurns = [{ userText: 'old', answerText: 'old answer' }];
+    const c = new PanelController(assist, lister([]));
+
+    const loading = c.resumeConversation('sessions/s-1');
+    c.newConversation();
+    await loading;
+
+    expect(c.getState().messages).toEqual([]);
+  });
+});
+
+describe('provenance warnings on write steps', () => {
+  const writeStep = async (result: Partial<ActuationResult>): Promise<string | undefined> => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({
+        type: 'write-result',
+        turn: 1,
+        changeId: 'w1',
+        result: { ok: true, changeId: asChangeId('w1'), kind: 'reply-mail', ...result },
+      }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('reply');
+    return c.getState().steps.find((s) => s.kind === 'write-result')?.text;
+  };
+
+  it('shows none where the host cannot store provenance (expected)', async () => {
+    expect(await writeStep({ provenanceUnsupported: true })).toBe('reply-mail — applied');
+  });
+
+  it('still warns when a host that can store it failed to, or the write was unattributed', async () => {
+    expect(await writeStep({ provenanceDropped: true })).toContain('⚠ provenance not recorded');
+    expect(await writeStep({ provenanceMissing: true })).toContain('⚠ unattributed');
+  });
+});
+
+describe('redactForDiagnostics', () => {
+  it.each([
+    // [input, what must never survive]
+    ['No occurrences of "the \\"Falcon\\" deal" were found.', 'Falcon'],
+    ['No occurrences of "line one\nCONFIDENTIAL line two" were found.', 'CONFIDENTIAL'],
+    ['not an A1 range: Salaries!A1:B9', 'Salaries'],
+    ["not an A1 range: 'Bob''s Team'!A1", 'Team'],
+    ['sed: invalid pattern — Project Falcon (', 'Falcon'],
+    ['Source changed: Layoffs2026!A1:F40', 'Layoffs'],
+    [
+      'https://discoveryengine.googleapis.com/v1/projects/123/sessions/s9 failed (403): {"error": "denied',
+      'projects/123',
+    ],
+    ['Graph GET /me/drive/special/approot:/Board%20Pay.xlsx:/content failed', 'Board'],
+    ['Shape id 2 not found. Shapes: id 2 (TextBox, title: \u201cCEO plan\u201d)', 'CEO'],
+    ['Write failed for boss@acme.com', 'boss@acme.com'],
+  ])('keeps the cause of %j but never its content', (input, secret) => {
+    const out = redactForDiagnostics(input);
+    expect(out).not.toContain(secret);
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+
+  it('keeps the host error code and HTTP status', () => {
+    expect(
+      redactForDiagnostics(
+        'PowerPoint did not confirm the new slide and its text (PowerPoint: GeneralException). Inspect the deck.',
+      ),
+    ).toBe(
+      'PowerPoint did not confirm the new slide and its text (PowerPoint: GeneralException). Inspect the deck.',
+    );
+    expect(redactForDiagnostics('https://x.example/a failed (403): {"error":"x"}')).toBe(
+      '[url] failed (403) […]',
+    );
+  });
+
+  it('stays fast on a huge input with no delimiters', () => {
+    const started = Date.now();
+    redactForDiagnostics('a'.repeat(200_000));
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+});
+
+describe('Copy diagnostics', () => {
+  it('records routes and steps but never document text, prompts or model output', async () => {
+    const SECRET = 'ACME-SALARY-98765';
+    const assist = new FakeAssist();
+    assist.script = [{ type: 'token', text: `The secret is ${SECRET}` }, { type: 'done' }];
+    assist.commandScript = [
+      ev({ type: 'turn-start', turn: 1 }),
+      ev({ type: 'activity', text: `Thinking about ${SECRET}` }),
+      ev({
+        type: 'command',
+        turn: 1,
+        command: { verb: 'read', selector: `'${SECRET}'!A1` },
+        compiled: { error: `no sheet named "${SECRET}"` },
+      }),
+      ev({ type: 'done', turn: 1, answer: SECRET, message: SECRET }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.send(`what is ${SECRET}?`);
+    await c.runCommands(`read ${SECRET}`);
+
+    const out = c.diagnostics({ surface: 'excel' });
+    expect(out).not.toContain(SECRET);
+    const parsed = JSON.parse(out) as {
+      surface: string;
+      routes: Array<{ route: string }>;
+      steps: Array<{ kind: string; text?: string }>;
+    };
+    expect(parsed.surface).toBe('excel');
+    expect(parsed.routes.map((r) => r.route)).toEqual(['chat', 'command']);
+    expect(parsed.steps.map((s) => s.kind)).toEqual(['turn-start', 'activity', 'command', 'done']);
+    expect(parsed.steps[1]?.text).toBeUndefined(); // model activity
+    expect(parsed.steps[2]?.text).toBeUndefined(); // compile error echoes values
+    // The error itself is exported, with the quoted document text redacted.
+    const errors = (JSON.parse(out) as { errors: Array<{ where: string; message: string }> })
+      .errors;
+    expect(errors).toContainEqual(
+      expect.objectContaining({ where: 'command', message: 'no sheet named […]' }),
+    );
+  });
+
+  it('exports write errors with their code and a redacted message', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'turn-start', turn: 1 }),
+      ev({
+        type: 'write-result',
+        turn: 1,
+        changeId: 'c1',
+        result: {
+          ok: false,
+          changeId: asChangeId('c1'),
+          kind: 'insert-slide',
+          recoveryPending: true,
+          error: {
+            code: 'outcome_unknown',
+            message:
+              'PowerPoint did not confirm the new slide "Ringkasan Q3" (PowerPoint: GeneralException). Mail me at boss@acme.com.',
+          },
+        },
+      }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('slides');
+    const errors = (
+      JSON.parse(c.diagnostics({ surface: 'powerpoint' })) as {
+        errors: Array<{ where: string; kind?: string; code?: string; message: string }>;
+      }
+    ).errors;
+    expect(errors[0]).toMatchObject({
+      where: 'write',
+      kind: 'insert-slide',
+      code: 'outcome_unknown',
+      message: 'PowerPoint did not confirm the new slide […] (PowerPoint: GeneralException)',
+    });
+  });
+
+  it("keeps the panel's own notices but drops model activity that looks like one", async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [ev({ type: 'activity', text: 'Task: review Acme Q3 margins' })];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('go');
+    c.onRuntimeNotice('Task blocked. 1 changes applied; 2 not applied.');
+    const steps = (
+      JSON.parse(c.diagnostics({ surface: 'outlook' })) as {
+        steps: Array<{ kind: string; text?: string }>;
+      }
+    ).steps;
+    expect(JSON.stringify(steps)).not.toContain('Acme');
+    expect(steps.at(-1)).toEqual({
+      kind: 'activity',
+      text: 'Task blocked. 1 changes applied; 2 not applied.',
+    });
+  });
+
+  it('records the planner verdict', async () => {
+    const assist = new FakeAssist();
+    assist.planned = { plan: null, errors: [], needsClarification: false };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/visualize revenue', undefined);
+    await tick();
+    const routes = (JSON.parse(c.diagnostics({ surface: 'excel' })) as { routes: unknown[] })
+      .routes;
+    expect(routes[0]).toMatchObject({ route: 'planner', verdict: 'no plan' });
+  });
+});
+
+describe('command route answers', () => {
+  it('shows the answer a `done "<answer>"` carries as the reply text', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'turn-start', turn: 1 }),
+      ev({ type: 'done', turn: 2, answer: '', message: 'The last row is Samarth\\nPlan: Pro' }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('read the last row');
+    const reply = c.getState().messages.at(-1);
+    expect(reply?.role).toBe('assistant');
+    expect(reply?.text).toBe('The last row is Samarth\nPlan: Pro');
+  });
+
+  it('says plainly that nothing was changed when a change plan ends with an answer (WS2)', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      ev({ type: 'done', turn: 1, answer: '', message: 'The slide is imported.', unchanged: true }),
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('add a summary slide');
+    expect(c.getState().messages.at(-1)?.text).toBe(
+      'The slide is imported.\n\nNo changes were made.',
+    );
+
+    const id = new FakeAssist();
+    id.commandScript = [
+      ev({ type: 'done', turn: 1, answer: '', message: 'Belum bisa.', unchanged: true }),
+    ];
+    const b = new PanelController(id, lister([]));
+    await b.runCommands('tambahkan slide ringkasan untuk data ini');
+    expect(b.getState().messages.at(-1)?.text).toBe(
+      'Belum bisa.\n\nTidak ada perubahan yang dibuat.',
+    );
+  });
+
+  it('a bare done still shows no invented text', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [ev({ type: 'done', turn: 1, answer: '' })];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('apply it');
+    expect(c.getState().messages.at(-1)?.text).toBe('');
+  });
+});
+
+describe('chat replies that claim a document change', () => {
+  it.each([
+    "I've created a chart that shows the MRR per plan.",
+    'Here is a bar chart visualizing the revenue breakdown:',
+    'I have updated the title on slide 2.',
+    'The header has been formatted bold.',
+    'I replied to the customer saying you will check.',
+    'Saya sudah membuat grafik pendapatan.',
+    'Judul telah diubah menjadi FY26.',
+  ])('flags: %s', (text) => {
+    expect(claimsDocumentChange(text)).toBe(true);
+  });
+  it.each([
+    'The SLA is 99.5% per the vendor policy.',
+    'Enterprise earns ₹15,998 per month; Pro ₹4,998.',
+    'To add a chart, select the data and choose Insert → Chart.',
+    'You could reply saying you will check by Friday.',
+    'Total pendapatan adalah Rp 21.995.',
+    'Here are the three trial users: Asha, Ravi, Meera.',
+  ])('leaves alone: %s', (text) => {
+    expect(claimsDocumentChange(text)).toBe(false);
+  });
+
+  it('adds the note under a chat answer that claims a change, and only then', async () => {
+    const assist = new FakeAssist();
+    assist.scriptFor = [
+      [{ type: 'token', text: "I've created a chart of MRR per plan." }, { type: 'done' }],
+      [{ type: 'token', text: 'Enterprise earns the most.' }, { type: 'done' }],
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.send('create a better chart of the subscriptions');
+    expect(c.getState().messages.at(-1)?.note).toBe(CHAT_CHANGED_NOTHING);
+    await c.send('which plan earns the most?');
+    expect(c.getState().messages.at(-1)?.note).toBeUndefined();
   });
 });
 
@@ -1378,6 +2034,118 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     expect(assist.runTasks[0]).toContain('exclude: the indemnity clause');
   });
 
+  it('stages a chat-labelled plan whose steps change the document as an edit (fix G)', async () => {
+    // Live 2026-09-30, REQ#563: the planner answered "In G12 put a formula that totals G2:G11" with
+    // `intent ask` and the step below; chat then claimed "The formula … has been placed in G12".
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: {
+        intent: 'ask',
+        surface: 'excel',
+        scope: { kind: 'range', ref: 'g12' },
+        ground: [],
+        context: ['inline-preferred'],
+        steps: ['add excel formula in G12 to sum range G2:G11'],
+        excludes: [],
+        clarify: [],
+      },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('In G12 put a formula that totals G2:G11', undefined);
+    expect(assist.asked).toEqual([]); // never answered by chat
+    expect(c.getState().pendingCommandPlan?.plan.intent).toBe('rewrite');
+  });
+
+  it('still answers a chat-labelled plan in chat when its steps change nothing', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: { ...wordPlan, intent: 'ask', steps: ['identify the region with the highest total'] },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('the region with the highest total', undefined);
+    await tick();
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+  });
+
+  it("routes by the plan's stated changes, whatever the intent label says (WS1)", async () => {
+    // u-xl-note-on-lowest: a question that also leaves a note is labelled ask but changes: yes.
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: {
+        ...wordPlan,
+        intent: 'ask',
+        surface: 'excel',
+        steps: ['find the region with the lowest total'],
+        changes: true,
+      },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('which region is lowest? leave a note on it', undefined);
+    expect(assist.asked).toEqual([]);
+    expect(c.getState().pendingCommandPlan?.plan.intent).toBe('rewrite');
+
+    // mx-xl-read-14: "filter rows" in an analysis step, but changes: no → answered, not staged.
+    const read = new FakeAssist();
+    read.planned = {
+      plan: {
+        ...wordPlan,
+        intent: 'ask',
+        surface: 'excel',
+        steps: ['filter rows where Region is Kalimantan and compare the totals'],
+        changes: false,
+      },
+      errors: [],
+      needsClarification: false,
+    };
+    const r = new PanelController(read, lister([]));
+    await r.proposePlan("which Kalimantan branch is lowest? don't change anything", undefined);
+    await tick();
+    expect(r.getState().pendingCommandPlan).toBeUndefined();
+    expect(read.runTasks).toEqual([]);
+  });
+
+  it('stages a write-intent plan that says changes: no, as a change (security review M3)', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: { ...wordPlan, intent: 'rewrite', changes: false },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('make the SLA 99.9%', undefined);
+    expect(assist.asked).toEqual([]);
+    expect(c.getState().pendingCommandPlan?.plan.changes).toBe(true);
+    expect(c.diagnostics({ surface: 'word' })).toContain('changes:conflict');
+  });
+
+  it('carries changes into the confirmed task, and logs the keyword fallback when absent', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: { ...wordPlan, changes: true },
+      errors: [],
+      needsClarification: false,
+    };
+    assist.commandScript = [{ plan: [planEffect('w1')] }];
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/rewrite the SLA', undefined);
+    c.confirmCommandPlan();
+    await tick();
+    await tick();
+    expect(assist.runTasks[0]).toMatch(/^intent: rewrite\n(?:.*\n)*changes: yes$/m);
+
+    const old = new FakeAssist();
+    old.planned = { plan: wordPlan, errors: [], needsClarification: false };
+    const o = new PanelController(old, lister([]));
+    await o.proposePlan('/rewrite the SLA', undefined);
+    expect(o.diagnostics({ surface: 'word' })).toContain('changes:guessed');
+  });
+
   it('cancel discards the plan and runs nothing', async () => {
     const assist = new FakeAssist();
     assist.planned = { plan: wordPlan, errors: [], needsClarification: false };
@@ -1443,6 +2211,87 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     );
   });
 
+  it('Change turns the plan into a question; the correction re-plans with the previous plan (UAT #23)', async () => {
+    const assist = new FakeAssist();
+    assist.plannedQueue = [
+      { plan: wordPlan, errors: [], needsClarification: false },
+      { plan: wordPlan, errors: [], needsClarification: false },
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('/rewrite the intro', undefined);
+    expect(c.getState().pendingCommandPlan).toBeDefined();
+
+    c.changeCommandPlan();
+    expect(c.getState().pendingCommandPlan).toBeUndefined();
+    expect(c.getState().pendingPlanClarification?.questions).toEqual([
+      'What should change in this plan?',
+    ]);
+    expect(assist.asked).toEqual([]); // nothing ran
+
+    c.answerPlanClarification('keep the first sentence');
+    await tick();
+    await tick();
+    expect(assist.planTasks[1]).toContain('/rewrite the intro');
+    expect(assist.planTasks[1]).toContain('Previous plan (the user wants it changed):\n1. ');
+    expect(assist.planTasks[1]).toContain('User correction:\nkeep the first sentence');
+    expect(c.getState().pendingCommandPlan?.plan).toEqual(wordPlan);
+  });
+
+  it('shows a Planning… placeholder while the planner runs, then removes it', async () => {
+    const assist = new FakeAssist();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    assist.plan = async (task: string) => {
+      assist.planTasks.push(task);
+      await gate;
+      return { plan: wordPlan, errors: [], needsClarification: false };
+    };
+    const c = new PanelController(assist, lister([]));
+
+    const planning = c.proposePlan('/rewrite the SLA', undefined);
+    const live = c.getState().messages.at(-1);
+    expect(live).toMatchObject({ role: 'assistant', streaming: true, activity: 'Planning…' });
+    release();
+    await planning;
+    expect(c.getState().messages.some((m) => m.id === live?.id)).toBe(false);
+    expect(c.getState().pendingCommandPlan?.plan).toEqual(wordPlan);
+  });
+
+  it('a slash write verb the planner calls "chat" still runs the executor, never plain chat', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      // Read-only steps: a change-describing "chat" plan is staged as an edit instead.
+      plan: { ...wordPlan, intent: 'ask', surface: 'excel', steps: ['look at the subscriptions'] },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+
+    await c.proposePlan(
+      '/visualize Can you create a better chart of the subscriptions?',
+      undefined,
+    );
+    await tick();
+    expect(assist.asked).toHaveLength(0);
+    expect(assist.runTasks[0]).toContain('/visualize Can you create a better chart');
+    expect(c.getState().messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('a free-text request the planner calls "chat" still goes to chat', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: { ...wordPlan, intent: 'ask', steps: ['answer from the SLA section'] },
+      errors: [],
+      needsClarification: false,
+    };
+    const c = new PanelController(assist, lister([]));
+
+    await c.proposePlan('add context about the SLA history', undefined);
+    await tick();
+    expect(assist.runTasks).toHaveLength(0);
+    expect(assist.asked).toHaveLength(1);
+  });
+
   it('degrades to the executor when the planner yields no parseable plan', async () => {
     const assist = new FakeAssist();
     assist.planned = { plan: null, errors: [], needsClarification: false };
@@ -1454,6 +2303,85 @@ describe('PanelController — planner pre-stage (EXPERIENCE.md §F)', () => {
     // No plan card; the executor ran directly (its gate staged).
     expect(c.getState().pendingCommandPlan).toBeUndefined();
     expect(c.getState().pendingPlan).toBeDefined();
+  });
+
+  it('shows an answer-only command run as one answer: no error, no failed run', async () => {
+    const assist = new FakeAssist();
+    assist.commandScript = [
+      { event: { type: 'token', text: 'Hello! How can I help?' } },
+      { event: { type: 'no-fence', turn: 1, rawSnippet: 'Hello!' } as CommandLoopEvent },
+      { event: { type: 'token', text: 'Hi! What would you like to do?' } },
+      {
+        event: {
+          type: 'done',
+          turn: 2,
+          answer: 'Hi! What would you like to do?',
+          answerOnly: true,
+        } as CommandLoopEvent,
+      },
+    ];
+    const c = new PanelController(assist, lister([]));
+    await c.runCommands('hii');
+    const last = c.getState().messages.at(-1)!;
+    expect(last).toMatchObject({ role: 'assistant', text: 'Hi! What would you like to do?' });
+    expect(last.error).toBeUndefined();
+    expect(last.note).toBeUndefined();
+    expect(c.getState().error).toBeUndefined();
+  });
+
+  it('stops with an error card when the planner call itself failed; the executor never runs', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: null,
+      errors: ['streamAssist failed (401)'],
+      needsClarification: false,
+      failure: { message: 'streamAssist failed (401)', code: 'http_401' },
+    };
+    assist.commandScript = [{ plan: [planEffect('w2')] }];
+    const runs = vi.spyOn(assist, 'runCommands');
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('hii', undefined);
+    await tick();
+    await tick();
+    expect(runs).not.toHaveBeenCalled();
+    const s = c.getState();
+    expect(s.pendingPlan).toBeUndefined();
+    expect(s.busy).toBe(false);
+    expect(s.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['hii']);
+    const last = s.messages.at(-1)!;
+    expect(last).toMatchObject({ role: 'assistant', error: 'streamAssist failed (401)' });
+    expect(last.streaming).toBeFalsy();
+    expect(JSON.parse(c.diagnostics({ surface: 'word' })).errors.at(-1)).toMatchObject({
+      code: 'http_401',
+    });
+  });
+
+  it('shows a blocked planner call as blocked, and runs nothing', async () => {
+    const assist = new FakeAssist();
+    assist.planned = {
+      plan: null,
+      errors: ['The planner request was blocked by policy.'],
+      needsClarification: false,
+      failure: { message: 'The planner request was blocked by policy.', blocked: true },
+    };
+    const runs = vi.spyOn(assist, 'runCommands');
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('something blocked', undefined);
+    await tick();
+    expect(runs).not.toHaveBeenCalled();
+    expect(c.getState().messages.at(-1)).toMatchObject({ role: 'assistant', blocked: true });
+  });
+
+  it('shows the question once when the planner yields no plan and the executor takes over', async () => {
+    const assist = new FakeAssist();
+    assist.planned = { plan: null, errors: [], needsClarification: false };
+    assist.commandScript = [{ plan: [planEffect('w2')] }];
+    const c = new PanelController(assist, lister([]));
+    await c.proposePlan('hii', undefined);
+    await tick();
+    await tick();
+    const asked = c.getState().messages.filter((m) => m.role === 'user');
+    expect(asked.map((m) => m.text)).toEqual(['hii']);
   });
 });
 

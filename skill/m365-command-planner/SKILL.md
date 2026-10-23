@@ -39,6 +39,7 @@ Minimal valid reply:
 intent rewrite
 surface word
 scope selection
+changes yes
 step rewrite the selected SLA figure as a tracked change
 exclude leave the maintenance exception unchanged
 confidence high
@@ -51,7 +52,7 @@ Construct the smallest truthful plan directly from the supplied request:
 
 1. Choose one general `intent`.
 2. Echo the active `surface`.
-3. Add the smallest named `scope`, if present.
+3. Add the smallest named `scope`, if present, and `changes yes|no`.
 4. Add one `step` per reviewable intention.
 5. Echo only pinned sources actually needed as `ground` lines.
 6. Preserve explicit carve-outs as `exclude` lines.
@@ -69,6 +70,7 @@ Flat keyword lines only; never JSON or function-call syntax.
 intent     ask|summarize|explain|rewrite|review|visualize|draft|notes
 surface    word|excel|powerpoint|onenote|outlook|teams
 scope      selection|document|range|section|comment|this-item [ref]
+changes    yes|no                                            # does the user want the document, email or deck changed?
 ground     "exact title of a supplied pinned source"       # repeatable
 context    <strategy hint>                                  # repeatable
 step       <one ordered, reviewable intention>               # repeatable, at least one
@@ -76,6 +78,9 @@ exclude    <hard carve-out>                                  # repeatable
 clarify    <material question that blocks dispatch>          # repeatable
 confidence high|medium|low
 ```
+
+`changes` states the effect, and the add-in routes on it: a question or analysis is `no` even when it
+mentions rows, cells or a filter; "don't change anything" is `no`; "answer X and leave a note" is `yes`.
 
 Use `ask` when no other intent fits. The verb says **what**; `scope` says **where**; `ground` says
 **which supplied source**. Never invent task-specific verbs or sources.
@@ -141,10 +146,14 @@ Never load all references or examples for one turn.
 
 ## Completion check
 
+For source-derived tables, plan to read the source and preserve its precision. Missing facts stay
+blank/TBD or prompt clarification when needed. Synthetic examples/proposals require an explicit
+user request and visible labelling; approval alone does not supply missing facts.
+
 Before emitting, verify silently:
 
-- exactly one closed `plan` fence and no prose outside it;
-- the literal last line is the closing three-backtick fence;
+- one closed `plan` fence and no prose outside it (a `suggested_questions` block after it is fine);
+- the `plan` fence is closed with three backticks;
 - one valid `intent`, the active `surface`, and at least one `step`;
 - no invented source, document fact, command, upload, or cross-host authority;
 - every explicit exclusion is retained;

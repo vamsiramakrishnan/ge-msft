@@ -3,6 +3,7 @@ import { asChangeId, type ActuationRequest } from '@ge/contracts';
 import {
   planFillContentControl,
   planInsertOoxml,
+  toOoxmlPackage,
   planInsertText,
   planReplaceSelection,
 } from './actuate-plan.js';
@@ -62,7 +63,7 @@ describe('planInsertOoxml (ADR-0007 insert-ooxml)', () => {
     expect(plan).toEqual({
       matchText: 'Summary',
       anchored: true,
-      ooxml: '<w:p/>',
+      ooxml: toOoxmlPackage('<w:p/>'), // wrapped: insertOoxml needs a full package
       hasOoxml: true,
     });
   });

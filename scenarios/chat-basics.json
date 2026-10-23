@@ -1,0 +1,115 @@
+[
+  {
+    "id": "cb-ol-reply-en",
+    "surface": "outlook",
+    "title": "an English email gets an English reply (no Halo, no Bahasa)",
+    "prompt": "Reply saying I will send the owners for both checks tomorrow.",
+    "clarification": "Send owners tomorrow.",
+    "seed": {
+      "subject": "Launch readiness",
+      "body": "<p>Hi team,</p><p>Please send owners for the two open checks by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 240000
+  },
+  {
+    "id": "cb-xl-greeting",
+    "surface": "excel",
+    "title": "a greeting gets a reply, not a failure",
+    "prompt": "hii",
+    "clarification": "NA",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sales",
+          "origin": "A1",
+          "values": [
+            ["Region", "Revenue"],
+            ["East", "300"],
+            ["West", "250"]
+          ]
+        }
+      ],
+      "selection": "Sales!A1:B3"
+    },
+    "expect": {
+      "notApplied": ["write-cells", "format-cells"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "cb-ol-thanks",
+    "surface": "outlook",
+    "title": "a thank-you does not fail (the planner may answer it or draft a thank-you reply)",
+    "prompt": "thanks",
+    "clarification": "NA",
+    "seed": {
+      "subject": "Launch readiness",
+      "body": "<p>Hi team,</p><p>Please send owners for the two open checks by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {},
+    "timeoutMs": 180000
+  },
+  {
+    "id": "cb-wd-who",
+    "surface": "word",
+    "title": "asked who it is, it answers ContosoAI",
+    "prompt": "siapa kamu?",
+    "clarification": "NA",
+    "seed": {
+      "paragraphs": [
+        {
+          "text": "Vendor Services Agreement",
+          "styleBuiltIn": "Heading1"
+        },
+        {
+          "text": "The Supplier will be paid within 45 days of a valid invoice.",
+          "styleBuiltIn": "Normal"
+        }
+      ]
+    },
+    "expect": {
+      "answerIncludes": ["ContosoAI"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "cb-wd-question",
+    "surface": "word",
+    "title": "a normal question gets an answer without a self-introduction",
+    "prompt": "What are the payment terms?",
+    "clarification": "NA",
+    "seed": {
+      "paragraphs": [
+        {
+          "text": "Vendor Services Agreement",
+          "styleBuiltIn": "Heading1"
+        },
+        {
+          "text": "Payment terms",
+          "styleBuiltIn": "Normal"
+        },
+        {
+          "text": "The Supplier will be paid within 45 days of a valid invoice.",
+          "styleBuiltIn": "Normal"
+        }
+      ]
+    },
+    "expect": {
+      "answerIncludes": ["45"]
+    },
+    "timeoutMs": 180000
+  }
+]

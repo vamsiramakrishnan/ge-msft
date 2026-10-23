@@ -100,12 +100,14 @@ export interface InsertTextPlan {
   anchored: boolean;
   text: string;
   hasText: boolean;
+  font?: NonNullable<ActuationRequest['params']['textFont']>;
 }
 
 export function planInsertText(req: ActuationRequest): InsertTextPlan {
   const p = req.params;
   const text = p.text ?? '';
   return {
+    ...(p.textFont ? { font: p.textFont } : {}),
     ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
     ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
     anchored: Boolean(p.target?.matchText),
@@ -146,7 +148,7 @@ export interface InsertOoxmlPlan {
 
 export function planInsertOoxml(req: ActuationRequest): InsertOoxmlPlan {
   const p = req.params;
-  const ooxml = p.ooxml ?? '';
+  const ooxml = toOoxmlPackage(p.ooxml ?? '');
   return {
     ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
     ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
@@ -219,6 +221,8 @@ export interface InsertTablePlan {
   anchored: boolean;
   rows: string[][];
   hasRows: boolean;
+  /** The last paragraph's text when the table replaces a run of paragraphs. */
+  replaceThrough?: string;
 }
 
 export function planInsertTable(req: ActuationRequest): InsertTablePlan {
@@ -230,6 +234,7 @@ export function planInsertTable(req: ActuationRequest): InsertTablePlan {
     anchored: Boolean(p.target?.matchText),
     rows,
     hasRows: rows.length > 0 && (rows[0]?.length ?? 0) > 0,
+    ...(p.tableGrid?.replaceThrough ? { replaceThrough: p.tableGrid.replaceThrough } : {}),
   };
 }
 
@@ -308,4 +313,100 @@ export function planFindReplace(req: ActuationRequest): FindReplacePlan {
     matchWholeWord: p.findReplace?.matchWholeWord ?? false,
     hasFindReplace: p.findReplace !== undefined && (p.findReplace.find ?? '').trim().length > 0,
   };
+}
+
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+const RELS_PART =
+  '<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml">' +
+  '<pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+  '</Relationships></pkg:xmlData></pkg:part>';
+
+/**
+ * `range.insertOoxml` accepts only a complete flat-OPC package (`pkg:package` with a `/_rels/.rels`
+ * part and a `/word/document.xml` part); anything less is rejected by Word and comes back as an
+ * uncertain outcome. Models usually write just the paragraph, so wrap what they give: a bare
+ * fragment (`<w:p>…`), a `<w:body>`, a `<w:document>`, or a package missing its `.rels` part.
+ */
+export function toOoxmlPackage(raw: string): string {
+  const xml = raw.trim().replace(/^<\?xml[^>]*\?>\s*/, '');
+  if (!xml) return '';
+  if (xml.startsWith('<pkg:package')) {
+    if (xml.includes('pkg:name="/_rels/.rels"')) return xml;
+    return xml.replace(/^<pkg:package[^>]*>/, (open) => open + RELS_PART);
+  }
+  const body = xml.startsWith('<w:body') ? xml : `<w:body>${xml}</w:body>`;
+  const document = xml.startsWith('<w:document')
+    ? xml
+    : `<w:document xmlns:w="${W_NS}">${body}</w:document>`;
+  return (
+    '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">' +
+    RELS_PART +
+    '<pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">' +
+    `<pkg:xmlData>${document}</pkg:xmlData></pkg:part></pkg:package>`
+  );
+}
+
+/** Replace old words `[start, end)` with `text` (words joined by single spaces). */
+export interface WordEdit {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * The smallest word-level edits that turn `oldText` into `newText`, so a tracked change marks only
+ * the words that changed (UAT 2026-10-16: a grammar fix deleted and re-inserted the whole
+ * sentence). Every edit replaces at least one old word: a pure insertion or deletion is widened to
+ * an unchanged neighbour, so no double spaces are left. Undefined when a word-level edit would not
+ * help (nothing in common, most words changed, or the texts are too long to compare).
+ */
+export function wordEdits(oldText: string, newText: string): WordEdit[] | undefined {
+  const a = oldText.split(/\s+/).filter(Boolean);
+  const b = newText.split(/\s+/).filter(Boolean);
+  if (a.length === 0 || b.length === 0 || a.length * b.length > 250_000) return undefined;
+  // Longest common subsequence of words.
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--)
+      lcs[i]![j] =
+        a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+  const common = lcs[0]![0]!;
+  if (common === 0 || common < a.length * 0.3) return undefined;
+  // Changed runs: [oldStart, oldEnd) → [newStart, newEnd).
+  const runs: Array<[number, number, number, number]> = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    const [i0, j0] = [i, j];
+    while (
+      (i < a.length || j < b.length) &&
+      !(i < a.length && j < b.length && a[i] === b[j] && lcs[i]![j] === lcs[i + 1]![j + 1]! + 1)
+    ) {
+      if (j < b.length && (i >= a.length || lcs[i]![j + 1]! >= lcs[i + 1]![j]!)) j++;
+      else i++;
+    }
+    runs.push([i0, i, j0, j]);
+  }
+  // Widen insertions/deletions to the unchanged word after (or before) them, then merge overlaps.
+  const widened = runs.map(([s, e, ns, ne]): [number, number, number, number] => {
+    if (s < e && ns < ne) return [s, e, ns, ne];
+    if (e < a.length && ne < b.length) return [s, e + 1, ns, ne + 1];
+    return [s - 1, e, ns - 1, ne];
+  });
+  if (widened.some(([s]) => s < 0)) return undefined;
+  const merged: Array<[number, number, number, number]> = [];
+  for (const run of widened) {
+    const last = merged.at(-1);
+    if (last && run[0] < last[1]) {
+      last[1] = Math.max(last[1], run[1]);
+      last[3] = Math.max(last[3], run[3]);
+    } else merged.push([...run]);
+  }
+  return merged.map(([s, e, ns, ne]) => ({ start: s, end: e, text: b.slice(ns, ne).join(' ') }));
 }

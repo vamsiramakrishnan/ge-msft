@@ -7,6 +7,7 @@ import {
   mountStack,
   type ExcelSimulator,
   type MountedStack,
+  openPlanEffects,
 } from '../test-harness/index.js';
 
 /**
@@ -108,6 +109,7 @@ describe('grammar ↔ orchestrator ↔ bridge effect parity', () => {
 
     // The dry-run resolved the pipeline over seeded data: the previewed write carries the COMPUTED
     // literal (550), not the raw `($east | sum revenue)` formula — pure compute fed the effect.
+    openPlanEffects(ui!.container);
     const planCmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
     expect(planCmd).toContain('set Summary!B2');
     expect(planCmd).toContain('550');
@@ -172,12 +174,14 @@ describe('grammar ↔ orchestrator ↔ bridge effect parity', () => {
   it('an UNKNOWN verb is rejected by the grammar — never an effect, never reaches the bridge', async () => {
     sim = installFakeExcel(paritySeed());
     // `destroy` is not in the grammar: `parseProgramBlock` yields a `CommandParseError` (did-you-mean)
-    // for it, so it can never become a plan slot or reach `bridge.actuate`. The valid `set` in the
-    // same block still forms a SINGLE-effect plan.
+    // for it, so it can never become a plan slot or reach `bridge.actuate`. A program with a failed
+    // line applies nothing (docs/COMMAND-RELIABILITY.md, fix D): the valid `set` is withheld and the
+    // error goes back to the model, whose corrected program then forms a SINGLE-effect plan.
     ui = mountStack({
       surface: 'excel',
       client: scriptedClient([
         '```cmd\n' + 'destroy Summary!B2\n' + 'set Summary!B2 42\n' + '```',
+        '```cmd\nset Summary!B2 42\n```',
         '```cmd\ndone\n```',
       ]),
     });
@@ -189,7 +193,8 @@ describe('grammar ↔ orchestrator ↔ bridge effect parity', () => {
     });
     await ui!.waitFor((s) => s.pendingPlan !== undefined);
 
-    // The malformed line never became an effect: the plan holds ONLY the valid `set`.
+    // Turn 1 staged nothing: it was sent back for repair. The plan is the corrected turn's only `set`.
+    expect(ui!.controller.getState().steps.some((step) => step.kind === 'repair')).toBe(true);
     const plan = ui!.controller.getState().pendingPlan!;
     expect(plan.effects).toHaveLength(1);
     expect(plan.effects[0]!.command).toContain('set Summary!B2');
@@ -236,14 +241,19 @@ describe('grammar ↔ orchestrator ↔ bridge effect parity', () => {
     sim = installFakeExcel(paritySeed());
     // The first effect resolves to a TABLE (`$east` is a filtered table — no scalar terminal), which
     // is not a valid single-cell write. The orchestrator's dry-run rejects it (a corrective `{error}`),
-    // so it forms NO plan slot and never reaches the bridge. The SECOND effect (a proper scalar sum)
-    // resolves fine — proving the pure pipeline that fed it still composed free.
+    // so it forms NO plan slot and never reaches the bridge. Because one line failed, the program's
+    // valid scalar write is withheld too (fix D) and the model re-emits the corrected program, whose
+    // single scalar sum resolves fine — proving the pure pipeline that fed it still composed free.
     ui = mountStack({
       surface: 'excel',
       client: scriptedClient([
         '```cmd\n' +
           'let $east = read Sales!A1:D4 | filter region=East\n' +
           'set Summary!B2 = ($east)\n' +
+          'set Summary!B2 = ($east | sum revenue)\n' +
+          '```',
+        '```cmd\n' +
+          'let $east = read Sales!A1:D4 | filter region=East\n' +
           'set Summary!B2 = ($east | sum revenue)\n' +
           '```',
         '```cmd\ndone\n```',
@@ -261,6 +271,7 @@ describe('grammar ↔ orchestrator ↔ bridge effect parity', () => {
     // dry-run (never a plan slot, never a bridge call).
     const plan = ui!.controller.getState().pendingPlan!;
     expect(plan.effects).toHaveLength(1);
+    openPlanEffects(ui!.container);
     const planCmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
     expect(planCmd).toContain('550');
 

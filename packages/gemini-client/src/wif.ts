@@ -12,7 +12,11 @@ import { defaultFetch } from './de-fetch.js';
 
 /** Supplies the signed-in user's Entra **OIDC id token** (e.g. from MSAL NAA). */
 export interface EntraTokenProvider {
-  getIdToken(): Promise<string>;
+  /**
+   * `forceRefresh` asks for a newly issued token instead of the cached one: the STS rejects an id
+   * token issued too long ago ("stale to sign-in") even while it is still unexpired.
+   */
+  getIdToken(opts?: { forceRefresh?: boolean }): Promise<string>;
 }
 
 export interface WifConfig {
@@ -93,6 +97,18 @@ export class WifTokenClient {
   private async exchange(): Promise<string> {
     const startEpoch = this.epoch;
     const idToken = await this.entra.getIdToken();
+    try {
+      return await this.exchangeWith(idToken, startEpoch);
+    } catch (err) {
+      // The STS refuses an id token issued too long before the exchange, even an unexpired one
+      // MSAL still serves from cache. Retry once with a newly issued token; reloading the task
+      // pane does not help because MSAL keeps serving the same cached token (live 2026-10-01).
+      if (!isStaleIdTokenError(err)) throw err;
+      return this.exchangeWith(await this.entra.getIdToken({ forceRefresh: true }), startEpoch);
+    }
+  }
+
+  private async exchangeWith(idToken: string, startEpoch: number): Promise<string> {
     const body: Record<string, string> = {
       grantType: TOKEN_EXCHANGE_GRANT,
       audience: this.audience(),
@@ -125,7 +141,8 @@ export class WifTokenClient {
     }, this.retryOpts);
     if (!res.ok) {
       const detail = await safeText(res);
-      throw new Error(`WIF token exchange failed (${res.status}): ${detail}`);
+      // A typed HTTP error: callers' retry policies see a deterministic 4xx and do not repeat it.
+      throw new WifExchangeError(res.status, detail);
     }
     const parsed = StsResponseSchema.parse(await res.json());
     // If invalidate() ran while this exchange was in flight, hand the freshly-fetched
@@ -144,4 +161,31 @@ async function safeText(res: Response): Promise<string> {
   } catch {
     return '<no body>';
   }
+}
+
+/** A non-retriable STS failure, carrying the parsed OAuth `error` and `error_description`. */
+export class WifExchangeError extends HttpError {
+  readonly stsError?: string;
+  readonly stsDescription?: string;
+  constructor(status: number, detail: string) {
+    super(status, `WIF token exchange failed (${status}): ${detail}`);
+    this.name = 'WifExchangeError';
+    try {
+      const body = JSON.parse(detail) as { error?: unknown; error_description?: unknown };
+      if (typeof body.error === 'string') this.stsError = body.error;
+      if (typeof body.error_description === 'string') this.stsDescription = body.error_description;
+    } catch {
+      // Not JSON: no structured fields.
+    }
+  }
+}
+
+/** The STS 400 for an id token issued too long ago (`invalid_grant` … "stale to sign-in"). */
+function isStaleIdTokenError(err: unknown): boolean {
+  return (
+    err instanceof WifExchangeError &&
+    err.status === 400 &&
+    err.stsError === 'invalid_grant' &&
+    /stale/i.test(err.stsDescription ?? '')
+  );
 }

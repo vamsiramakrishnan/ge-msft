@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DEFAULT_BRAND } from '../brand.js';
 import {
   assistantFromEnv,
   wifFromEnv,
@@ -16,6 +17,8 @@ import {
   warmUpSkillsFromEnv,
   widgetFromEnv,
   type RawEnv,
+  modelIdFromEnv,
+  paneModelId,
 } from './config.js';
 
 const SHA_A = 'a'.repeat(64);
@@ -118,6 +121,19 @@ describe('config from env', () => {
       scope: 'https://www.googleapis.com/auth/cloud-platform',
       userProject: 'billing-12345',
     });
+  });
+
+  it('names the assistant in the prompt only when the brand sets promptName', () => {
+    expect(shellConfigFromEnv(full).assistantName).toBeUndefined();
+    const custom = { ...DEFAULT_BRAND, assistantName: 'Contoso-AI', promptName: 'ContosoAI' };
+    expect(shellConfigFromEnv(full, custom).assistantName).toBe('ContosoAI');
+  });
+
+  it('passes the brand writing rules through only when the brand sets them', () => {
+    expect(shellConfigFromEnv(full).assistantRules).toBeUndefined();
+    const rules = ['Open Bahasa emails with "Halo", never "Yth."'];
+    const custom = { ...DEFAULT_BRAND, promptName: 'ContosoAI', promptRules: rules };
+    expect(shellConfigFromEnv(full, custom).assistantRules).toEqual(rules);
   });
 
   it('assembles the full shell config with release profile and no secrets', () => {
@@ -278,5 +294,29 @@ describe('config from env', () => {
       VITE_PROXY_URL: 'http://localhost:8080',
     };
     expect(shellConfigFromEnv(dev).proxyUrl).toBe('http://localhost:8080');
+  });
+});
+
+describe('paneModelId', () => {
+  it('sends Argon for any configured model and the engine default when blank', () => {
+    expect(paneModelId(undefined)).toBeUndefined();
+    expect(paneModelId('  ')).toBeUndefined();
+    expect(paneModelId('gemini-4-argon')).toBe('gemini-4-argon');
+    expect(paneModelId('gemini-3.5-flash')).toBe('gemini-4-argon');
+  });
+});
+
+describe('modelIdFromEnv', () => {
+  it.each([undefined, '', '  \t '])(
+    'uses the engine default through full config parsing for %j',
+    (value) => {
+      expect(shellConfigFromEnv({ ...full, VITE_GE_MODEL_ID: value }).modelId).toBeUndefined();
+    },
+  );
+
+  it('sends no model id when blank (the engine default answers) and honours an override', () => {
+    expect(modelIdFromEnv(undefined)).toBeUndefined();
+    expect(modelIdFromEnv('  ')).toBeUndefined();
+    expect(modelIdFromEnv('gemini-3.8-flash')).toBe('gemini-3.8-flash');
   });
 });

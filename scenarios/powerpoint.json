@@ -1,0 +1,183 @@
+[
+  {
+    "id": "ppt-read-slide-2",
+    "surface": "powerpoint",
+    "title": "Read slides / whole deck",
+    "prompt": "What is on slide 2?",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Board meeting, October 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            { "text": "Pricing changes", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Raise premium tier by 8%\nIntroduce annual billing discount\nRetire the legacy starter plan",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            { "text": "Next steps", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Finance sign-off by 15 Nov",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "answerIncludes": ["pricing"], "notApplied": ["insert-slide", "set-shape-text"] }
+  },
+  {
+    "id": "ppt-insert-one-slide",
+    "surface": "powerpoint",
+    "title": "Insert one slide",
+    "prompt": "Draft one slide titled Q4 outlook with 3 bullets",
+    "clarification": "Use sensible example bullets.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "insert-slide": 1 }, "documentIncludes": ["Q4 outlook"] }
+  },
+  {
+    "id": "ppt-insert-4-slide-deck",
+    "surface": "powerpoint",
+    "title": "Insert compiled multi-slide deck",
+    "prompt": "Create a 4-slide deck: problem, options, recommendation, next steps for moving to a 4-day week",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "Team offsite", "type": "Placeholder", "placeholderType": "Title" }]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "insert-slide": 1 } }
+  },
+  {
+    "id": "ppt-add-3-slides-topic",
+    "surface": "powerpoint",
+    "title": "Add N slides about a topic (live 2026-10-07: only one landed)",
+    "prompt": "add 3 slides about work life balance",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "Team offsite", "type": "Placeholder", "placeholderType": "Title" }]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "insert-slide": 3 } }
+  },
+  {
+    "id": "ppt-replace-shape-text",
+    "surface": "powerpoint",
+    "title": "Replace shape text (prompt filled in: sheet was cut off)",
+    "prompt": "Change the title on slide 1 to FY26 Annual Plan",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Board meeting, October 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "set-shape-text": 1 }, "documentIncludes": ["FY26 Annual Plan"] }
+  },
+  {
+    "id": "ppt-add-text-box",
+    "surface": "powerpoint",
+    "title": "Text box / shape (prompt filled in: sheet was cut off)",
+    "prompt": "Add a text box to slide 1 that says Draft for review",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "add-shape": 1 }, "documentIncludes": ["Draft for review"] }
+  },
+  {
+    "id": "ppt-format-shape",
+    "surface": "powerpoint",
+    "title": "Format shape (prompt filled in: sheet was cut off)",
+    "prompt": "Make the title on slide 1 bold and dark blue",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "FY26 Strategy Review", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Board meeting, October 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "format-shape": 1 } }
+  },
+  {
+    "id": "ppt-table-slide",
+    "surface": "powerpoint",
+    "title": "Table slide",
+    "prompt": "Add a slide with a table of 3 risks and their owners",
+    "clarification": "Use sensible example risks and owners.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Project status", "type": "Placeholder", "placeholderType": "Title" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "add-table-slide": 1 } }
+  }
+]

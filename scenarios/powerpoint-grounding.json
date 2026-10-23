@@ -1,0 +1,172 @@
+[
+  {
+    "id": "grounding-ppt-missing-facts",
+    "surface": "powerpoint",
+    "prompt": "Turn the action items on this slide into a native table with columns Action, Owner, Deadline.",
+    "seed": {
+      "slides": [
+        {
+          "id": "a",
+          "shapes": [
+            {
+              "type": "Placeholder",
+              "placeholderType": "Title",
+              "text": "Facilities actions"
+            },
+            {
+              "type": "Placeholder",
+              "placeholderType": "Body",
+              "text": "Install ventilation sensors\nService the backup generator by November\nReview accessibility"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "clarification": "Use only the facts in the slide; leave missing facts blank or mark them as unknown.",
+    "expect": {
+      "applied": {
+        "add-table-slide": 1
+      },
+      "tableColumns": {
+        "Owner": {
+          "allowed": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"]
+        },
+        "Deadline": {
+          "allowed": [
+            "",
+            "TBD",
+            "Unknown",
+            "Not provided",
+            "Not specified",
+            "Unspecified",
+            "-",
+            "November",
+            "by November"
+          ],
+          "includes": ["November"]
+        }
+      },
+      "tableRowCount": 3,
+      "tableRows": [
+        {
+          "Action": "ventilation",
+          "Owner": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"],
+          "Deadline": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"]
+        },
+        {
+          "Action": "generator",
+          "Owner": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"],
+          "Deadline": ["November", "by November"]
+        },
+        {
+          "Action": "accessibility",
+          "Owner": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"],
+          "Deadline": ["", "TBD", "Unknown", "Not provided", "Not specified", "Unspecified", "-"]
+        }
+      ]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "grounding-ppt-supplied-facts",
+    "surface": "powerpoint",
+    "prompt": "Convert the action items on this slide into a native table with columns Action, Owner, Deadline. Preserve the exact owner names and deadline text.",
+    "seed": {
+      "slides": [
+        {
+          "id": "a",
+          "shapes": [
+            {
+              "type": "Placeholder",
+              "placeholderType": "Title",
+              "text": "Facilities actions"
+            },
+            {
+              "type": "Placeholder",
+              "placeholderType": "Body",
+              "text": "Inspect ventilation | Owner: Mira Patel | Deadline: 14 November 2026\nTest backup generator | Owner: Evan Cole | Deadline: 20 November 2026"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "clarification": "Use only the facts in the slide; leave missing facts blank or mark them as unknown.",
+    "expect": {
+      "applied": {
+        "add-table-slide": 1
+      },
+      "tableColumns": {
+        "Owner": {
+          "allowed": ["Mira Patel", "Evan Cole"],
+          "includes": ["Mira Patel", "Evan Cole"]
+        },
+        "Deadline": {
+          "allowed": ["14 November 2026", "20 November 2026"],
+          "includes": ["14 November 2026", "20 November 2026"]
+        }
+      },
+      "tableRowCount": 2,
+      "tableRows": [
+        {
+          "Action": "ventilation",
+          "Owner": ["Mira Patel"],
+          "Deadline": ["14 November 2026"]
+        },
+        {
+          "Action": "generator",
+          "Owner": ["Evan Cole"],
+          "Deadline": ["20 November 2026"]
+        }
+      ]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "grounding-ppt-explicit-examples",
+    "surface": "powerpoint",
+    "prompt": "Create a new slide titled 'Training examples' with a native table with columns Risk, Owner, Due date and two fictional data rows. These are examples, not real assignments.",
+    "seed": {
+      "slides": [
+        {
+          "id": "a",
+          "shapes": [
+            {
+              "type": "Placeholder",
+              "placeholderType": "Title",
+              "text": "Facilities actions"
+            },
+            {
+              "type": "Placeholder",
+              "placeholderType": "Body",
+              "text": "Training workshop"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "clarification": "These are explicitly fictional examples. Use two populated fictional rows and keep the Training examples label.",
+    "expect": {
+      "applied": {
+        "add-table-slide": 1
+      },
+      "documentIncludes": ["Training examples"],
+      "tableColumns": {
+        "Risk": {
+          "nonEmpty": true
+        },
+        "Owner": {
+          "nonEmpty": true
+        },
+        "Due date": {
+          "nonEmpty": true
+        }
+      },
+      "tableRowCount": 2,
+      "insertedSlidePositions": [2]
+    },
+    "timeoutMs": 180000
+  }
+]

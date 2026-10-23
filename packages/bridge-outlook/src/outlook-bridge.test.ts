@@ -32,6 +32,7 @@ import { HANDLED_ACTUATIONS, OutlookBridge } from './outlook-bridge.js';
 
 interface ReplyFormCall {
   htmlBody?: string;
+  attachments?: Array<{ type: string; name: string; base64file?: string }>;
 }
 interface NewMessageFormCall {
   subject?: string;
@@ -118,6 +119,8 @@ function installOutlook(
     noNewMessageForm?: boolean;
     throwOnAdd?: boolean;
     throwOnRemove?: boolean;
+    /** The newest Mailbox requirement set the host supports (default 1.15). */
+    mailboxVersion?: number;
   } = {},
 ): Installed {
   const replyForms: ReplyFormCall[] = [];
@@ -160,14 +163,18 @@ function installOutlook(
       },
     });
 
-    const attachmentApi =
-      (transport: AttachmentAdded['transport']) =>
-      (
+    const attachmentApi = (transport: AttachmentAdded['transport']) =>
+      function (
+        this: unknown,
         value: string,
         name: string,
         options: { isInline?: boolean },
         cb: ResultCb<string>,
-      ): void => {
+      ): void {
+        // Like Office.js, the method needs its item as `this`; a detached call throws.
+        if (typeof this !== 'object' || this === null || !('body' in this)) {
+          throw new TypeError('add*AttachmentAsync called without its mail item');
+        }
         attachmentsAdded.push({
           transport,
           value,
@@ -269,8 +276,15 @@ function installOutlook(
         },
       };
 
+  const mailboxVersion = opts.mailboxVersion ?? 1.15;
   const office = {
-    context: { mailbox },
+    context: {
+      mailbox,
+      requirements: {
+        isSetSupported: (name: string, version?: string) =>
+          name === 'Mailbox' && Number(version ?? '1.1') <= mailboxVersion,
+      },
+    },
     CoercionType: { Html: 'html', Text: 'text' },
     AsyncResultStatus: { Succeeded: 'succeeded', Failed: 'failed' },
     EventType: { ItemChanged: 'olkItemSelectedChanged' },
@@ -517,7 +531,50 @@ describe('OutlookBridge.actuate reply-mail (reviewable reply form)', () => {
       kind: 'reply-mail',
       location: 'reply-form',
     });
-    expect(active.replyForms).toEqual([{ htmlBody: 'We can raise availability to 99.9%.' }]);
+    expect(active.replyForms).toEqual([{ htmlBody: '<p>We can raise availability to 99.9%.</p>' }]);
+  });
+
+  it('opens the reply form with a base64 file when the reply carries one (UAT #22b)', async () => {
+    active = installOutlook(readMail());
+    const res = await new OutlookBridge().actuate(
+      reply({
+        mail: { body: 'See attached.' },
+        attachment: { name: 'a.docx', base64: 'UEsDBA==' },
+      }),
+    );
+    expect(res).toMatchObject({ ok: true, location: 'reply-form+attachment' });
+    expect(active.replyForms).toEqual([
+      {
+        htmlBody: '<p>See attached.</p>',
+        attachments: [{ type: 'base64', name: 'a.docx', base64file: 'UEsDBA==' }],
+      },
+    ]);
+  });
+
+  it('opens nothing for a reply file that is not valid base64 or is too large', async () => {
+    active = installOutlook(readMail());
+    const bad = await new OutlookBridge().actuate(
+      reply({ mail: { body: 'x' }, attachment: { name: 'a.docx', base64: 'not base64!' } }),
+    );
+    expect(bad).toMatchObject({ ok: false, error: { code: 'invalid_attachment' } });
+    const big = await new OutlookBridge().actuate(
+      reply({ mail: { body: 'x' }, attachment: { name: 'a.docx', base64: 'A'.repeat(5_000_000) } }),
+    );
+    expect(big).toMatchObject({ ok: false, error: { code: 'attachment_too_large' } });
+    expect(active.replyForms).toEqual([]);
+  });
+
+  it('opens nothing and says so when Outlook is older than Mailbox 1.15', async () => {
+    active = installOutlook(readMail(), { mailboxVersion: 1.14 });
+    const res = await new OutlookBridge().actuate(
+      reply({
+        mail: { body: 'See attached.' },
+        attachment: { name: 'a.docx', base64: 'UEsDBA==' },
+      }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.error?.message).toContain('Nothing was opened');
+    expect(active.replyForms).toEqual([]);
   });
 
   it('rejects with no_item when there is no active mail to reply to (no form opened)', async () => {
@@ -555,7 +612,7 @@ describe('OutlookBridge.actuate create-mail (reviewable new draft)', () => {
       location: 'new-message-form',
     });
     expect(active.newMessageForms).toEqual([
-      { subject: 'Follow-up on Q3', htmlBody: 'Summary below.' },
+      { subject: 'Follow-up on Q3', htmlBody: '<p>Summary below.</p>' },
     ]);
   });
 
@@ -566,7 +623,7 @@ describe('OutlookBridge.actuate create-mail (reviewable new draft)', () => {
     );
     expect(active.newMessageForms[0]).toEqual({
       subject: 'Re: dates',
-      htmlBody: 'Confirming.',
+      htmlBody: '<p>Confirming.</p>',
       toRecipients: ['pat@acme.com'],
     });
   });
@@ -679,6 +736,20 @@ describe('OutlookBridge.actuate set-recipients (in-place draft edit)', () => {
       act('set-recipients', { mail: { to: ['a@acme.com'] } }),
     );
     expect(res).toMatchObject({ ok: false, error: { code: 'no_compose' } });
+    // The corrective still names the reply verb, for when the user asked for a reply.
+    expect(res.error?.message).toContain('mail "reply text"');
+  });
+
+  it('no_compose does not steer a draft edit into opening a reply (live 2026-10-14)', async () => {
+    // "Change the subject" of a draft opened in another window: the old corrective ("To reply to
+    // it, use mail …") made the model open an unrelated reply instead.
+    active = installOutlook(readMail());
+    const res = await new OutlookBridge().actuate(
+      act('set-subject', { mail: { subject: 'Pembekuan rilis - Jumat' } }),
+    );
+    expect(res).toMatchObject({ ok: false, error: { code: 'no_compose' } });
+    expect(res.error?.message).toContain('do not open a reply or a new message instead');
+    expect(res.error?.message).toContain('Only if the user asked to reply: mail "reply text"');
   });
 });
 

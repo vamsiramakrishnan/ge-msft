@@ -155,9 +155,11 @@ describe('bridge dispatch boundary', () => {
       );
       const result = await dispatcher.dispatch({}, input);
       expect(result).toMatchObject(
-        present ? { provenanceDropped: true } : { provenanceMissing: true },
+        present ? { provenanceUnsupported: true } : { provenanceMissing: true },
       );
-      expect(present ? result.provenanceMissing : result.provenanceDropped).toBeUndefined();
+      expect(present ? result.provenanceMissing : result.provenanceUnsupported).toBeUndefined();
+      // "Cannot store" is not "tried and failed".
+      expect(result.provenanceDropped).toBeUndefined();
     },
   );
 
@@ -178,5 +180,26 @@ describe('bridge dispatch boundary', () => {
       kind: 'write-cells',
       changeId: 'dispatch-1',
     });
+  });
+});
+
+describe('host refusals', () => {
+  const hostError = (code: string) => Object.assign(new Error(`office: ${code}`), { code });
+
+  // A statement-level code can follow an earlier statement that landed: never a known non-write.
+  // Cell edit mode too: a handler may have synced a write before it (security review 2026-10-16);
+  // the Excel bridge refuses it in its read-only pre-check instead.
+  it.each([
+    'InvalidOperationInCellEditMode',
+    'AccessDenied',
+    'MergedRangeConflict',
+    'ItemNotFound',
+    'ApiNotFound',
+    'GeneralException',
+  ])('rethrows %s so its outcome stays unknown', async (code) => {
+    const dispatcher = createBridgeDispatch('excel', {
+      'write-cells': () => Promise.reject(hostError(code)),
+    });
+    await expect(dispatcher.dispatch({}, request())).rejects.toThrow(code);
   });
 });

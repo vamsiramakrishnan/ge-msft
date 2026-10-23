@@ -21,6 +21,15 @@
  *     → `.getRange()` (named-range read).
  *   - `ctx.workbook.comments` → `.add(cellAddress, content)` (WRITE), `.load('items/id')` items {id},
  *     `.items[i].replies.add(text)` / `.resolved=`, `.onAdded` (event).
+ *   - `sheet.tables.add(address, hasHeaders)` (WRITE) → `.load('name')` (host-minted `TableN`,
+ *     readable only after sync) / `.getRange()`.
+ *   - `sheet.charts.add(type, sourceRange, seriesBy)` (WRITE) → `.title.text=`, `.load('name')`
+ *     (minted `Chart N`), `.series.getItemAt(i)` / `.series.add(name)` → `.setValues` /
+ *     `.setXAxisValues`, `.delete()`. The source is modelled as ONE implicit series (no seriesBy
+ *     splitting into per-column series).
+ *   - `range.conditionalFormats` → `.getCount()` (ClientResult, `.value` after sync), `.add(type)`
+ *     (WRITE, inserted at the TOP priority like the host) → `.cellValue.rule=` /
+ *     `.cellValue.format.fill.color=`, `.topBottom.rule=` / `.topBottom.format.fill.color=`.
  *   - `sheets.onChanged` / `sheets.onSelectionChanged` / `comments.onAdded` — `watch()` events.
  *
  * Out of fidelity scope (stubbed as no-ops, documented so callers know the boundary):
@@ -46,6 +55,8 @@ export interface SheetSeed {
   origin: string;
   /** Row-major grid of cell values; `''` is an empty cell. */
   values: string[][];
+  /** Review → Protect Sheet is on (every cell locked, the Excel default). */
+  protected?: boolean;
 }
 
 /** A workbook-scoped named range (`NamedItem`): a name → its A1 reference (no leading `=`). */
@@ -60,6 +71,40 @@ export interface TableSeed {
   name: string;
   /** Sheet-qualified A1, e.g. `"Sales!A1:D9"`. */
   range: string;
+  /** Set for a table created via `tables.add(address, hasHeaders)`. */
+  hasHeaders?: boolean;
+}
+
+/** One chart series: the A1 of its values / category (x-axis) ranges, plus its name if given. */
+export interface ChartSeriesSeed {
+  name?: string;
+  /** Sheet-qualified A1 of the series values. */
+  values?: string;
+  /** Sheet-qualified A1 of the category (x-axis) values. */
+  xValues?: string;
+}
+
+/** A chart created via `sheet.charts.add(type, sourceRange, seriesBy)`. */
+export interface ChartSeed {
+  /** Host-minted name, e.g. `"Chart 1"`. */
+  name: string;
+  sheet: string;
+  /** The `Excel.ChartType` string, e.g. `"ColumnClustered"`. */
+  type: string;
+  /** Sheet-qualified A1 of the `sourceData` range passed to `add`. */
+  source: string;
+  seriesBy?: string;
+  title?: string;
+  /** Series in host order; `series[0]` is the implicit series over `source`. */
+  series: ChartSeriesSeed[];
+}
+
+/** One conditional-format rule added via `range.conditionalFormats.add(type)`. */
+export interface ConditionalFormatSeed {
+  /** The `Excel.ConditionalFormatType` string, e.g. `"CellValue"`, `"DataBar"`. */
+  cfType: string;
+  cellValue?: { operator: string; formula1: string; formula2?: string; fill?: string };
+  topBottom?: { rank: number; type: string; fill?: string };
 }
 
 /** A cell comment (the `add(cellAddress, content)` shape Excel uses). */
@@ -89,6 +134,13 @@ export interface ExcelSeed {
    * so a `format-cells` effect is assertable.
    */
   formats: Map<string, RangeFormatSeed>;
+  /** Charts created via `sheet.charts.add` (in creation order; `chart.delete()` removes one). */
+  charts: ChartSeed[];
+  /**
+   * Conditional-format rules per sheet-qualified range address, in host priority order (index 0 is
+   * the top-priority rule — `add()` inserts there).
+   */
+  conditionalFormats: Map<string, ConditionalFormatSeed[]>;
 }
 
 /** The format facets a `format-cells` effect can set on a range. */
@@ -97,11 +149,21 @@ export interface RangeFormatSeed {
   italic?: boolean;
   fill?: string;
   numberFormat?: string;
+  fontColor?: string;
+  fontSize?: number;
+  horizontalAlignment?: string;
+  verticalAlignment?: string;
+  wrapText?: boolean;
+  borders?: Record<string, Record<string, string>>;
+  autofit?: boolean;
 }
 
 /** Find a sheet by name in the seed (throws on a typo so a mis-seeded test fails loudly). */
 function sheetByName(seed: ExcelSeed, name: string): SheetSeed {
-  const s = seed.sheets.find((x) => x.name === name);
+  // An address quotes a name with spaces: 'Branch Performance'!A1 (and doubles a quote inside).
+  const quoted = /^'(.*)'$/.exec(name);
+  const plain = quoted ? quoted[1]!.replace(/''/g, "'") : name;
+  const s = seed.sheets.find((x) => x.name === plain);
   if (!s) throw new Error(`fake-excel: no worksheet named "${name}"`);
   return s;
 }
@@ -119,6 +181,12 @@ export interface ExcelSnapshot {
   comments: ReadonlyArray<CommentSeed>;
   /** Recorded `format-cells` writes, keyed by the targeted range address. */
   formats: ReadonlyMap<string, RangeFormatSeed>;
+  /** All tables: seeded ones plus any created via `tables.add` (those carry `hasHeaders`). */
+  tables: ReadonlyArray<TableSeed>;
+  /** Charts created via `charts.add`. */
+  charts: ReadonlyArray<ChartSeed>;
+  /** Conditional-format rules keyed by range address, top priority first. */
+  conditionalFormats: ReadonlyMap<string, ReadonlyArray<ConditionalFormatSeed>>;
 }
 
 /** Event sinks the bridge's `watch()` registers; a test fires these to drive the trigger engine. */
@@ -129,6 +197,42 @@ export interface ExcelEvents {
 }
 
 /* ─────────────────────────── the fake object model ─────────────────────── */
+
+/** Anything a `context.sync()` must resolve: queued loads to flush, queued writes to commit. */
+interface Syncable {
+  flushLoads(): void;
+  commit(): void;
+}
+
+/** Registers host proxies created this batch so `sync()` flushes/commits them. */
+interface Tracker {
+  range(range: FakeRange): FakeRange;
+  object<T extends Syncable>(obj: T): T;
+}
+
+/** Load/sync gating for non-Range proxies (a prop is readable only after `load()` + `sync()`). */
+class LoadGate {
+  private readonly loaded = new Set<string>();
+  private readonly requested = new Set<string>();
+  constructor(private readonly kind: string) {}
+  load(props?: string): void {
+    for (const raw of (props ?? '').split(',')) {
+      const name = raw.trim();
+      if (name) this.requested.add(name);
+    }
+  }
+  flush(): void {
+    for (const p of this.requested) this.loaded.add(p);
+    this.requested.clear();
+  }
+  require(prop: string): void {
+    if (!this.loaded.has(prop))
+      throw new Error(
+        `fake-excel: ${this.kind} property "${prop}" is not loaded — call load('${prop}') then ` +
+          `context.sync() before reading it (Office.js PropertyNotLoaded).`,
+      );
+  }
+}
 
 /** The `Range` read properties subject to load-gating (mirrors office-addin-mock's PropertyNotLoaded). */
 const RANGE_READ_PROPS = ['address', 'values', 'rowCount', 'columnCount', 'isNullObject'] as const;
@@ -153,6 +257,25 @@ class FakeRange {
   get worksheet(): FakeWorksheet {
     return new FakeWorksheet(this.seed, this.sheetName);
   }
+  /** ExcelApi 1.7: the contiguous data around this range — the sheet's used range here. */
+  getSurroundingRegion(): FakeRange {
+    const region = new FakeRange(
+      this.seed,
+      this.sheetName,
+      stripSheet(usedAddress(sheetByName(this.seed, this.sheetName))),
+    );
+    // Joins the batch like any other range, so its loads resolve at the next sync.
+    return this.tracker ? this.tracker.range(region) : region;
+  }
+  /** Set by {@link registerRange}; lets child proxies (conditional formats) join the batch. */
+  tracker: Tracker | undefined;
+  get conditionalFormats(): FakeConditionalFormatCollection {
+    return new FakeConditionalFormatCollection(this.seed, this.qualifiedAddress(), this.tracker);
+  }
+  /** Fake-internal (not a host read): the sheet-qualified address, for recording a write's target. */
+  qualifiedAddress(): string {
+    return `${this.sheetName}!${this.rangeA1}`;
+  }
   // Private backings (materialized eagerly from the seed); read access is gated through getters.
   private _isNullObject = false;
   private _address = '';
@@ -174,9 +297,46 @@ class FakeRange {
     this.pendingFormulas = value;
   }
   numberFormat: unknown[][] = [];
+  private readonly edges = new Map<string, Record<string, string>>();
+  private autofitted = false;
+  /** Queued `range.sort.apply` (ExcelApi 1.2), applied to the seed grid at `sync()`. */
+  private pendingSort: { key: number; ascending: boolean; hasHeaders: boolean } | undefined;
+  readonly sort = {
+    apply: (
+      fields: Array<{ key: number; ascending?: boolean }>,
+      _matchCase?: boolean,
+      hasHeaders?: boolean,
+    ): void => {
+      const field = fields[0];
+      if (field)
+        this.pendingSort = {
+          key: field.key,
+          ascending: field.ascending !== false,
+          hasHeaders: hasHeaders === true,
+        };
+    },
+  };
   readonly format = {
-    font: { bold: undefined as boolean | undefined, italic: undefined as boolean | undefined },
+    protection: { locked: true, load(_props?: string): void {} },
+    font: {
+      bold: undefined as boolean | undefined,
+      italic: undefined as boolean | undefined,
+      color: undefined as string | undefined,
+      size: undefined as number | undefined,
+    },
     fill: { color: undefined as string | undefined },
+    horizontalAlignment: undefined as string | undefined,
+    verticalAlignment: undefined as string | undefined,
+    wrapText: undefined as boolean | undefined,
+    borders: {
+      getItem: (edge: string): Record<string, string> => {
+        if (!this.edges.has(edge)) this.edges.set(edge, {});
+        return this.edges.get(edge)!;
+      },
+    },
+    autofitColumns: (): void => {
+      this.autofitted = true;
+    },
   };
 
   /**
@@ -243,7 +403,9 @@ class FakeRange {
   }
   set values(grid: unknown[][]) {
     this._pendingValues = grid.map((row) =>
-      row.map((v) => (typeof v === 'string' && v.startsWith("'") ? v.slice(1) : v)),
+      row.map((v) =>
+        typeof v !== 'string' ? v : v.startsWith("'") ? v.slice(1) : (asTypedDate(v) ?? v),
+      ),
     ) as string[][];
   }
 
@@ -279,6 +441,26 @@ class FakeRange {
     this.commitFormat();
     const sheet = sheetByName(this.seed, this.sheetName);
     const span = parseA1(this.rangeA1);
+    if (this.pendingSort) {
+      const { key, ascending, hasHeaders } = this.pendingSort;
+      this.pendingSort = undefined;
+      const grid = readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
+      const head = hasHeaders ? grid.slice(0, 1) : [];
+      const num = (v: string) => (v.trim() !== '' ? Number(v) : Number.NaN);
+      const body = grid.slice(head.length).sort((a, b) => {
+        const [x, y] = [a[key] ?? '', b[key] ?? ''];
+        const order =
+          !Number.isNaN(num(x)) && !Number.isNaN(num(y))
+            ? num(x) - num(y)
+            : x.localeCompare(y, undefined, { sensitivity: 'base' });
+        return ascending ? order : -order;
+      });
+      [...head, ...body].forEach((row, r) =>
+        row.forEach((value, c) => writeCell(sheet, span.startRow + r, span.startCol + c, value)),
+      );
+      // The host re-reads values after a sort; a later load of this range sees the new order.
+      this._valuesCache = undefined;
+    }
     // A formula write takes precedence per cell (Excel routes `=` cells to `.formulas`); literal
     // cells fall through to `.values`. We record the resolved string into the seed grid.
     for (let r = 0; r < span.rows; r++) {
@@ -304,6 +486,17 @@ class FakeRange {
       ...(this.format.font.italic !== undefined ? { italic: this.format.font.italic } : {}),
       ...(this.format.fill.color !== undefined ? { fill: this.format.fill.color } : {}),
       ...(numberFormat !== undefined ? { numberFormat: String(numberFormat) } : {}),
+      ...(this.format.font.color !== undefined ? { fontColor: this.format.font.color } : {}),
+      ...(this.format.font.size !== undefined ? { fontSize: this.format.font.size } : {}),
+      ...(this.format.horizontalAlignment !== undefined
+        ? { horizontalAlignment: this.format.horizontalAlignment }
+        : {}),
+      ...(this.format.verticalAlignment !== undefined
+        ? { verticalAlignment: this.format.verticalAlignment }
+        : {}),
+      ...(this.format.wrapText !== undefined ? { wrapText: this.format.wrapText } : {}),
+      ...(this.edges.size > 0 ? { borders: Object.fromEntries(this.edges) } : {}),
+      ...(this.autofitted ? { autofit: true } : {}),
     };
     if (Object.keys(facets).length === 0) return;
     const prev = this.seed.formats.get(this._address) ?? {};
@@ -355,9 +548,256 @@ class FakeTableCollection {
   }
 }
 
+/** A table created by `sheet.tables.add` — committed into `seed.tables` at the next `sync()`. */
+class FakeAddedTable implements Syncable {
+  private readonly gate = new LoadGate('Table');
+  private record: TableSeed | undefined;
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly tracker: Tracker | undefined,
+    private readonly sheetName: string,
+    private readonly a1: string,
+    private readonly hasHeaders: boolean,
+  ) {}
+  get name(): string {
+    this.gate.require('name');
+    return this.record!.name;
+  }
+  load(props?: string): this {
+    this.gate.load(props);
+    return this;
+  }
+  getRange(): FakeRange {
+    const range = new FakeRange(this.seed, this.sheetName, this.a1);
+    return this.tracker ? this.tracker.range(range) : range;
+  }
+  flushLoads(): void {
+    this.gate.flush();
+  }
+  commit(): void {
+    if (this.record) return;
+    const taken = new Set(this.seed.tables.map((t) => t.name));
+    let n = 1;
+    while (taken.has(`Table${n}`)) n++;
+    this.record = {
+      name: `Table${n}`,
+      range: `${this.sheetName}!${this.a1}`,
+      hasHeaders: this.hasHeaders,
+    };
+    this.seed.tables.push(this.record);
+  }
+}
+
+class FakeWorksheetTableCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly sheetName: string,
+    private readonly tracker: Tracker | undefined,
+  ) {}
+  add(address: string, hasHeaders: boolean): FakeAddedTable {
+    // A sheet-qualified address lands the table on THAT sheet (like the host).
+    const bang = address.lastIndexOf('!');
+    const sheetName = bang >= 0 ? unquote(address.slice(0, bang)) : this.sheetName;
+    sheetByName(this.seed, sheetName);
+    const a1 = (bang >= 0 ? address.slice(bang + 1) : address).replace(/\$/g, '');
+    parseA1(a1); // throw on a malformed address, as the host would
+    const table = new FakeAddedTable(this.seed, this.tracker, sheetName, a1, hasHeaders);
+    return this.tracker ? this.tracker.object(table) : table;
+  }
+}
+
+class FakeChartSeries {
+  constructor(private readonly target: ChartSeriesSeed) {}
+  setValues(range: FakeRange): void {
+    this.target.values = range.qualifiedAddress();
+  }
+  setXAxisValues(range: FakeRange): void {
+    this.target.xValues = range.qualifiedAddress();
+  }
+}
+
+class FakeChartSeriesCollection {
+  constructor(private readonly series: ChartSeriesSeed[]) {}
+  getItemAt(index: number): FakeChartSeries {
+    const target = this.series[index];
+    if (!target) throw new Error(`fake-excel: ItemNotFound — no chart series at index ${index}`);
+    return new FakeChartSeries(target);
+  }
+  add(name?: string): FakeChartSeries {
+    const target: ChartSeriesSeed = name !== undefined ? { name } : {};
+    this.series.push(target);
+    return new FakeChartSeries(target);
+  }
+}
+
+/** A chart created by `sheet.charts.add` — committed into `seed.charts` at the next `sync()`. */
+class FakeChart implements Syncable {
+  private readonly gate = new LoadGate('Chart');
+  private committed = false;
+  private deleted = false;
+  readonly title = { text: undefined as string | undefined };
+  readonly series: FakeChartSeriesCollection;
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly record: ChartSeed,
+  ) {
+    this.series = new FakeChartSeriesCollection(record.series);
+  }
+  get name(): string {
+    this.gate.require('name');
+    return this.record.name;
+  }
+  load(props?: string): this {
+    this.gate.load(props);
+    return this;
+  }
+  delete(): void {
+    this.deleted = true;
+  }
+  flushLoads(): void {
+    this.gate.flush();
+  }
+  commit(): void {
+    if (this.deleted) {
+      const i = this.seed.charts.indexOf(this.record);
+      if (i >= 0) this.seed.charts.splice(i, 1);
+      return;
+    }
+    if (this.title.text !== undefined) this.record.title = this.title.text;
+    if (this.committed) return;
+    this.committed = true;
+    let n = 1;
+    while (this.seed.charts.some((c) => c.name === `Chart ${n}`)) n++;
+    this.record.name = `Chart ${n}`;
+    this.seed.charts.push(this.record);
+  }
+}
+
+class FakeChartCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly sheetName: string,
+    private readonly tracker: Tracker | undefined,
+  ) {}
+  add(type: string, sourceData: FakeRange, seriesBy?: string): FakeChart {
+    const source = sourceData.qualifiedAddress();
+    const record: ChartSeed = {
+      name: '',
+      sheet: this.sheetName,
+      type,
+      source,
+      ...(seriesBy !== undefined ? { seriesBy } : {}),
+      series: [{ values: source }],
+    };
+    const chart = new FakeChart(this.seed, record);
+    return this.tracker ? this.tracker.object(chart) : chart;
+  }
+}
+
+/** The `ClientResult<T>` shape: `.value` is readable only after the next `sync()`. */
+class FakeClientResult<T> implements Syncable {
+  private resolved = false;
+  constructor(private readonly compute: () => T) {}
+  private result: T | undefined;
+  get value(): T {
+    if (!this.resolved)
+      throw new Error('fake-excel: ClientResult.value read before context.sync() resolved it.');
+    return this.result as T;
+  }
+  flushLoads(): void {
+    if (this.resolved) return;
+    this.result = this.compute();
+    this.resolved = true;
+  }
+  commit(): void {}
+}
+
+/** A queued conditional-format rule; its sub-objects mirror the host's write-only rule shapes. */
+class FakeConditionalFormat implements Syncable {
+  private committed = false;
+  readonly cellValue = {
+    rule: undefined as { formula1: string; formula2?: string; operator: string } | undefined,
+    format: { fill: { color: undefined as string | undefined } },
+  };
+  readonly topBottom = {
+    rule: undefined as { rank: number; type: string } | undefined,
+    format: { fill: { color: undefined as string | undefined } },
+  };
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly address: string,
+    private readonly cfType: string,
+  ) {}
+  flushLoads(): void {}
+  commit(): void {
+    if (this.committed) return;
+    this.committed = true;
+    const cv = this.cellValue.rule;
+    const tb = this.topBottom.rule;
+    const cvFill = this.cellValue.format.fill.color;
+    const tbFill = this.topBottom.format.fill.color;
+    const rule: ConditionalFormatSeed = {
+      cfType: this.cfType,
+      ...(cv
+        ? {
+            cellValue: {
+              operator: cv.operator,
+              formula1: cv.formula1,
+              ...(cv.formula2 !== undefined ? { formula2: cv.formula2 } : {}),
+              ...(cvFill !== undefined ? { fill: cvFill } : {}),
+            },
+          }
+        : {}),
+      ...(tb
+        ? {
+            topBottom: {
+              rank: tb.rank,
+              type: tb.type,
+              ...(tbFill !== undefined ? { fill: tbFill } : {}),
+            },
+          }
+        : {}),
+    };
+    const list = this.seed.conditionalFormats.get(this.address) ?? [];
+    // `ConditionalFormatCollection.add` inserts at the first/top priority.
+    list.unshift(rule);
+    this.seed.conditionalFormats.set(this.address, list);
+  }
+}
+
+class FakeConditionalFormatCollection {
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly address: string,
+    private readonly tracker: Tracker | undefined,
+  ) {}
+  getCount(): FakeClientResult<number> {
+    const result = new FakeClientResult(
+      () => this.seed.conditionalFormats.get(this.address)?.length ?? 0,
+    );
+    return this.tracker ? this.tracker.object(result) : result;
+  }
+  add(type: string): FakeConditionalFormat {
+    const cf = new FakeConditionalFormat(this.seed, this.address, type);
+    return this.tracker ? this.tracker.object(cf) : cf;
+  }
+}
+
 class FakeWorksheet {
+  /** Set by the context's `wrapSheet`; lets `tables`/`charts` proxies join the batch. */
+  tracker: Tracker | undefined;
+  get tables(): FakeWorksheetTableCollection {
+    return new FakeWorksheetTableCollection(this.seed, this.name, this.tracker);
+  }
+  get charts(): FakeChartCollection {
+    return new FakeChartCollection(this.seed, this.name, this.tracker);
+  }
   get id(): string {
     return `sheet:${this.name}`;
+  }
+  readonly visibility = 'Visible';
+  get protection(): { protected: boolean; load(_props?: string): void } {
+    return { protected: sheetByName(this.seed, this.name).protected === true, load() {} };
   }
   constructor(
     private readonly seed: ExcelSeed,
@@ -402,18 +842,34 @@ class EventSink<A> {
   }
 }
 
+/**
+ * Real Excel reads text written through `values` like typed input: "Jan 2026" becomes a date
+ * (stored as its serial number) unless it starts with `'`. Modelled so the simulator catches what
+ * real Excel did on 2026-10-17 (a summary's month labels stopped matching the data's text).
+ */
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+function asTypedDate(text: string): string | undefined {
+  const m = /^([A-Za-z]{3})[a-z]*[\s-](\d{2}|\d{4})$/.exec(text.trim());
+  const month = m ? MONTHS.indexOf(m[1]!.toLowerCase()) : -1;
+  if (!m || month < 0) return undefined;
+  const year = m[2]!.length === 2 ? 2000 + Number(m[2]) : Number(m[2]);
+  const serial = (Date.UTC(year, month, 1) - Date.UTC(1899, 11, 30)) / 86_400_000;
+  return String(serial);
+}
+
 class FakeWorksheetCollection {
   readonly onChanged = new EventSink<{ source?: string }>();
   readonly onSelectionChanged = new EventSink<{ address: string }>();
   constructor(private readonly seed: ExcelSeed) {}
-  load(): this {
-    return this;
-  }
-  get items(): FakeWorksheet[] {
-    return this.seed.sheets.map((sheet) => this.getItem(sheet.name));
-  }
   getActiveWorksheet(): FakeWorksheet {
     return new FakeWorksheet(this.seed, this.seed.activeSheet);
+  }
+  get items(): FakeWorksheet[] {
+    // Through `getItem`, which the context wraps to track loads until the next sync.
+    return this.seed.sheets.map((s) => this.getItem(s.name));
+  }
+  load(_props?: string): this {
+    return this;
   }
   getItem(name: string): FakeWorksheet {
     sheetByName(this.seed, name); // throw on a typo
@@ -442,12 +898,28 @@ class FakeCommentReplies {
   add(text: string): void {
     this.target.replies.push(text);
   }
+  load(_props?: string): this {
+    return this;
+  }
+  get items(): Array<{ authorName: string; content: string }> {
+    return this.target.replies.map((content) => ({ authorName: '', content }));
+  }
 }
 
 class FakeComment {
   constructor(private readonly target: CommentSeed) {}
   get id(): string {
     return this.target.id;
+  }
+  get content(): string {
+    return this.target.content;
+  }
+  get authorName(): string {
+    return '';
+  }
+  /** The anchor cell (`Comment.getLocation()`, ExcelApi 1.10). */
+  getLocation(): { address: string; load(props?: string): void } {
+    return { address: this.target.cell, load() {} };
   }
   get replies(): FakeCommentReplies {
     return new FakeCommentReplies(this.target);
@@ -466,15 +938,18 @@ class FakeCommentCollection {
     source?: string;
     commentDetails: Array<{ commentId: string }>;
   }>();
-  private nextId = 1;
   constructor(private readonly seed: ExcelSeed) {}
   load(_props?: string): this {
     this.items = this.seed.comments.map((c) => new FakeComment(c));
     return this;
   }
   add(cellAddress: string, content: string): void {
+    // Unique across `Excel.run` batches (a fresh collection per context must not reuse ids).
+    const taken = new Set(this.seed.comments.map((c) => c.id));
+    let n = 1;
+    while (taken.has(`sim-comment-${n}`)) n++;
     this.seed.comments.push({
-      id: `sim-comment-${this.nextId++}`,
+      id: `sim-comment-${n}`,
       cell: cellAddress,
       content,
       replies: [],
@@ -505,8 +980,8 @@ class FakeWorkbook {
 /** The fake `Excel.RequestContext` — tracks ranges so queued writes commit on `sync()`. */
 class FakeRequestContext {
   readonly workbook: FakeWorkbook;
-  /** Every FakeRange handed out this batch; their queued writes commit on sync. */
-  private readonly touched: FakeRange[] = [];
+  /** Every proxy handed out this batch; their queued loads flush and writes commit on sync. */
+  private readonly touched: Syncable[] = [];
   constructor(seed: ExcelSeed) {
     this.workbook = trackRanges(new FakeWorkbook(seed), this.touched);
   }
@@ -523,7 +998,14 @@ class FakeRequestContext {
  * when the context syncs. Ranges are produced lazily by getters/methods, so we proxy the workbook
  * graph's range-returning calls to register each range into `touched`.
  */
-function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook {
+function trackRanges(workbook: FakeWorkbook, touched: Syncable[]): FakeWorkbook {
+  const tracker: Tracker = {
+    range: (range) => registerRange(range, touched),
+    object: (obj) => {
+      touched.push(obj);
+      return obj;
+    },
+  };
   const register = <T>(value: T): T => {
     if (value instanceof FakeRange) touched.push(value);
     return value;
@@ -535,6 +1017,7 @@ function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook
   const origGetItem = workbook.worksheets.getItem.bind(workbook.worksheets);
   const origActive = workbook.worksheets.getActiveWorksheet.bind(workbook.worksheets);
   const wrapSheet = (sheet: FakeWorksheet): FakeWorksheet => {
+    sheet.tracker = tracker;
     const gr = sheet.getRange.bind(sheet);
     sheet.getRange = (a1: string) => registerRange(gr(a1), touched);
     const gu = sheet.getUsedRange.bind(sheet);
@@ -571,8 +1054,15 @@ function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook
 }
 
 /** Register a range (and wrap its `getCell` so a cell-anchor read/write also commits). */
-function registerRange(range: FakeRange, touched: FakeRange[]): FakeRange {
+function registerRange(range: FakeRange, touched: Syncable[]): FakeRange {
   touched.push(range);
+  range.tracker = {
+    range: (r) => registerRange(r, touched),
+    object: (obj) => {
+      touched.push(obj);
+      return obj;
+    },
+  };
   const gc = range.getCell.bind(range);
   range.getCell = (r: number, c: number) => {
     const cell = gc(r, c);
@@ -708,6 +1198,11 @@ export function installFakeExcel(
       sheets: seed.sheets.map((s) => ({ name: s.name, values: s.values.map((r) => [...r]) })),
       comments: seed.comments.map((c) => ({ ...c, replies: [...c.replies] })),
       formats: new Map([...seed.formats].map(([k, v]) => [k, { ...v }])),
+      tables: seed.tables.map((t) => ({ ...t })),
+      charts: seed.charts.map((c) => ({ ...c, series: c.series.map((x) => ({ ...x })) })),
+      conditionalFormats: new Map(
+        [...seed.conditionalFormats].map(([k, v]) => [k, v.map((r) => structuredClone(r))]),
+      ),
     }),
     restore,
   };
@@ -735,6 +1230,8 @@ export function excelSeed(init: {
     namedRanges: init.namedRanges ?? [],
     comments: init.comments ?? [],
     formats: new Map<string, RangeFormatSeed>(),
+    charts: [],
+    conditionalFormats: new Map<string, ConditionalFormatSeed[]>(),
   };
 }
 

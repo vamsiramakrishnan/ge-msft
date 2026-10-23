@@ -5,7 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import type { UnitDescriptor } from '@ge/contracts';
 import { AssistSession } from '@ge/runtime';
 import { TeamsBridge } from '@ge/teams';
-import { scriptedClient } from '../test-harness/index.js';
+import { openPlanEffects, scriptedClient } from '../test-harness/index.js';
 import { PanelController } from '../controller.js';
 import { App } from './components/App.js';
 import { installFakeTeams, teamsSeed, type TeamsSimulator } from '../test-harness/fake-teams.js';
@@ -143,6 +143,15 @@ describe('Teams post-message full-stack interplay', () => {
     expect(chip).toBeDefined();
     // The chip is labelled with the captured meeting + previews the live transcript window.
     expect(chip?.title ?? '').toContain('Q3 Renewal Sync');
+    // The sources row starts closed: open it and its full list.
+    await ui!.act(() =>
+      ui!.container.querySelector<HTMLButtonElement>('.context-strip-toggle')?.click(),
+    );
+    await ui!.act(() =>
+      [...ui!.container.querySelectorAll<HTMLButtonElement>('.context-strip .text-control')]
+        .find((b) => /^(Add|Manage) sources/.test(b.textContent ?? ''))
+        ?.click(),
+    );
     const text = ui!.container.textContent ?? '';
     expect(text).toContain('Q3 Renewal Sync');
   });
@@ -168,6 +177,7 @@ describe('Teams post-message full-stack interplay', () => {
     expect(sim!.snapshot().stagedPosts.length).toBe(0);
 
     // The plan-approval card renders the verbatim post-message command + its text for review.
+    openPlanEffects(ui!.container);
     const planCmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
     expect(planCmd).toContain('post-message');
     expect(planCmd).toContain('addendum by Friday');

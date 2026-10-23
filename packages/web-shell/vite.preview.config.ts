@@ -1,3 +1,4 @@
+import { brandAssets } from './brand-assets.js';
 import { computeAssets } from './compute-assets.js';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -12,6 +13,7 @@ export default defineConfig({
   root: __dirname,
   plugins: [
     computeAssets(),
+    ...brandAssets(),
     react(),
     {
       name: 'preview-entry',

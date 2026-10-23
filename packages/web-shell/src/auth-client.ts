@@ -28,6 +28,8 @@ export interface MsalAuthResult {
 export interface MsalTokenRequest {
   scopes: string[];
   account?: MsalAccount;
+  /** Skip MSAL's cache and fetch newly issued tokens. */
+  forceRefresh?: boolean;
   loginHint?: string;
   prompt?: 'select_account' | 'login' | 'consent';
   overrideInteractionInProgress?: boolean;
@@ -68,8 +70,8 @@ export class NaaAuthClient implements AuthClient, EntraTokenProvider {
   ) {}
 
   /** The Entra id token that is the WIF subject. */
-  async getIdToken(): Promise<string> {
-    const res = await this.acquire(this.opts.idTokenScopes);
+  async getIdToken(opts: { forceRefresh?: boolean } = {}): Promise<string> {
+    const res = await this.acquire(this.opts.idTokenScopes, opts.forceRefresh === true);
     if (!res.idToken) {
       throw new Error('MSAL returned no id token for the WIF subject scopes.');
     }
@@ -120,11 +122,12 @@ export class NaaAuthClient implements AuthClient, EntraTokenProvider {
     return res;
   }
 
-  private async acquire(scopes: string[]): Promise<MsalAuthResult> {
+  private async acquire(scopes: string[], forceRefresh = false): Promise<MsalAuthResult> {
     const account = this.account();
     const firstInteractiveBootstrap = !account && this.opts.preferInteractive;
     const request = {
       scopes,
+      ...(forceRefresh ? { forceRefresh: true } : {}),
       ...(account ? { account } : {}),
       ...(!account && this.opts.loginHint ? { loginHint: this.opts.loginHint } : {}),
       ...(this.opts.overrideInteractionInProgress ? { overrideInteractionInProgress: true } : {}),

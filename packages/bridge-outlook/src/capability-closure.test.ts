@@ -80,3 +80,20 @@ describe('OutlookBridge dispatch admission', () => {
     });
   });
 });
+
+describe('Outlook substitutes', () => {
+  it('declares what can stand in for each draft edit refused on a received message', () => {
+    // A reply form takes only a body; a new message from a command takes a subject and a body.
+    const declared = Object.fromEntries(
+      OUTLOOK_CAPABILITIES.actuations.flatMap((a) =>
+        a.substitutes !== undefined ? [[a.kind, a.substitutes]] : [],
+      ),
+    );
+    expect(declared).toEqual({
+      'set-body': ['reply-mail', 'create-mail'],
+      'set-subject': ['create-mail'],
+      'set-recipients': [],
+      'add-attachment': [],
+    });
+  });
+});

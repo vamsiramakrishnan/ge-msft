@@ -21,7 +21,7 @@ Vite entry points. Actual host testing follows the setup guides.
 | `WorkspaceHome` | Three host-specific starting actions, filtered by capability closure |
 | `ActionLibrary` | Search, output filters, and pinned catalog actions |
 | `Composer` | Intent, scope, text, keyboard submission, and typed invocation |
-| `ComposerSources` | Named source search and request-scoped structured source picks |
+| `ComposerSources` | Mention key and label helpers (the `+ Sources` picker was removed) |
 | `QuickActionParamForm` | Required values and a preview of the resulting instructions |
 | `MessageThread` | Markdown, citations, host locations, completed-artifact insertion, copy and follow-up controls |
 | `CommandPlanCard` | Confirmation of the planner's proposed intent and steps |

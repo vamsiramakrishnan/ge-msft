@@ -15,6 +15,7 @@ import {
   type CellSnapshot,
 } from '@ge/contracts';
 import type { DocBridge } from './bridge.js';
+import { changesCoveredBy } from './planning.js';
 
 const RecordSchema = z.object({
   version: z.literal(1),
@@ -51,7 +52,21 @@ export interface RecoverySummary {
   canForget?: boolean;
   message?: string;
 }
-const HistorySchema = z.array(RecordSchema).max(32);
+const MAX_RECORDS = 32;
+/**
+ * Office document settings hold about 2 MiB per add-in, shared with other entries (Excel write
+ * provenance), so the history keeps headroom below that.
+ */
+const MAX_BYTES = 1.5 * 1024 * 1024;
+/** An applying receipt this recent may be another pane's write still in flight: never re-read it. */
+const IN_FLIGHT_MS = 5 * 60 * 1000;
+const HistorySchema = z.array(RecordSchema).max(MAX_RECORDS);
+const FULL =
+  'This workbook has too many unconfirmed changes. Copy the data into a new workbook and try again.';
+const TOO_LARGE =
+  'This range is too large to keep an undo copy. Select a smaller range and try again.';
+const byteSize = (value: unknown): number =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const now = (): string => new Date().toISOString();
 const queues = new Map<string, Promise<unknown>>();
 function isUnresolved(record: RecoveryRecord): boolean {
@@ -103,6 +118,42 @@ function overlaps(left: CellSnapshot, right: CellSnapshot): boolean {
 }
 
 /** Durable effect receipts, never persisted approval authority. Only bounded cell writes are replayable. */
+/**
+ * Writes whose prior cells are captured before approval and restored on undo: a cell write, and a
+ * native sort (WS4b), whose inverse is the rows in their earlier order.
+ */
+const RECOVERABLE_KINDS: ReadonlySet<string> = new Set(['write-cells', 'sort-range']);
+
+/** The cells a recoverable write changes: a write's target grid, or the range a sort reorders. */
+function recoverableAddress(request: ActuationRequest): string {
+  if (request.kind === 'sort-range') return request.params.sortRange?.range ?? '';
+  const values = gridForRequest(request);
+  return rangeForGrid(request.params.target?.range ?? '', values.length, values[0]?.length ?? 0);
+}
+
+/**
+ * A sort landed when the range holds the same rows in a new order (header unmoved). Lets a sort
+ * whose readback was not verified settle as applied, so it can be undone instead of staying
+ * unresolved and blocking later writes (security review H4).
+ */
+function sameRowsReordered(
+  before: CellSnapshot,
+  current: CellSnapshot,
+  request: ActuationRequest,
+): boolean {
+  const start = request.params.sortRange?.hasHeaders === false ? 0 : 1;
+  const [b, c] = [before.values, current.values];
+  if (b.length !== c.length || b[0]?.length !== c[0]?.length) return false;
+  if (start === 1 && JSON.stringify(b[0]) !== JSON.stringify(c[0])) return false;
+  const rows = (grid: readonly (readonly unknown[])[]) =>
+    grid
+      .slice(start)
+      .map((row) => JSON.stringify(row))
+      .sort()
+      .join('\n');
+  return rows(b) === rows(c);
+}
+
 export class RecoveryCoordinator {
   private records: RecoveryRecord[] = [];
   private readonly prepared = new Map<string, CellSnapshot>();
@@ -143,6 +194,41 @@ export class RecoveryCoordinator {
   private async save(): Promise<void> {
     await this.bridge.recoveryStorage?.save(this.owner, this.records);
   }
+  /** True when the history plus `next` fits the record and byte limits. */
+  private fits(next: RecoveryRecord): boolean {
+    if (this.records.length >= MAX_RECORDS) return false;
+    return byteSize([...this.records, next]) <= MAX_BYTES;
+  }
+  /** Drop the oldest finished receipts until `next` fits. Unresolved ones and replay parents stay. */
+  private dropResolved(next: RecoveryRecord): void {
+    const kept = new Set([...this.parents.values()].map((p) => p.id));
+    while (!this.fits(next)) {
+      const index = this.records.findIndex((r) => !isUnresolved(r) && !kept.has(r.id));
+      if (index < 0) return;
+      this.records.splice(index, 1);
+    }
+  }
+  /** Make room for `next`: finished receipts first, then once more after re-reading unresolved ones. */
+  private async makeRoom(next: RecoveryRecord): Promise<void> {
+    if (byteSize([next]) > MAX_BYTES) throw new Error(TOO_LARGE);
+    this.dropResolved(next);
+    if (this.fits(next)) return;
+    // Only unresolved receipts are re-read: a finished one can already be dropped, and a failed read
+    // would turn it into an unresolved one that holds a slot for good.
+    const cutoff = Date.now() - IN_FLIGHT_MS;
+    await this.reconcile(
+      (r) => isUnresolved(r) && !(r.state === 'applying' && Date.parse(r.updatedAt) > cutoff),
+    );
+    this.dropResolved(next);
+    if (!this.fits(next)) throw new Error(FULL);
+  }
+  /** Whether a write to these cells would be refused for an unresolved earlier write. */
+  async isBlocked(cells: CellSnapshot): Promise<boolean> {
+    return this.locked(async () => {
+      await this.load();
+      return this.records.some((record) => isUnresolved(record) && overlaps(record.before, cells));
+    });
+  }
   private assertNoUnresolvedOverlap(before: CellSnapshot): void {
     const unresolved = this.records.find(
       (record) => isUnresolved(record) && overlaps(record.before, before),
@@ -155,7 +241,7 @@ export class RecoveryCoordinator {
 
   /** Capture before approval. An absolute, versioned destination replaces the live selection. */
   async prepare(request: ActuationRequest): Promise<ActuationRequest> {
-    if (request.kind !== 'write-cells' || !this.bridge.captureCells) return request;
+    if (!RECOVERABLE_KINDS.has(request.kind) || !this.bridge.captureCells) return request;
     const prepared = this.prepared.get(request.changeId);
     if (prepared) {
       await this.locked(async () => {
@@ -164,13 +250,7 @@ export class RecoveryCoordinator {
       });
       return request;
     }
-    const values = gridForRequest(request);
-    const address = rangeForGrid(
-      request.params.target?.range ?? '',
-      values.length,
-      values[0]?.length ?? 0,
-    );
-    const before = await this.bridge.captureCells(address);
+    const before = await this.bridge.captureCells(recoverableAddress(request));
     const conditions = request.preconditions ?? [];
     for (const expected of conditions) {
       const current =
@@ -191,14 +271,71 @@ export class RecoveryCoordinator {
       this.assertNoUnresolvedOverlap(before);
       this.prepared.set(request.changeId, before);
     });
+    // Pin the reviewed, absolute range: a write's target, or the range a sort reorders.
+    const params =
+      request.kind === 'sort-range' && request.params.sortRange
+        ? { ...request.params, sortRange: { ...request.params.sortRange, range: before.locator } }
+        : { ...request.params, target: { ...request.params.target, range: before.locator } };
     return ActuationRequestSchema.parse({
       ...request,
-      params: { ...request.params, target: { ...request.params.target, range: before.locator } },
+      params,
       preconditions: [
         ...conditions.filter((c) => c.locator !== before.locator),
         sourceVersion(before),
       ],
     });
+  }
+  /**
+   * Inside one approved batch, accept the cells that earlier effects of the batch produced. The
+   * prepared capture moves to the current cells only when every changed cell holds exactly what a
+   * capture in `landed` holds; any other change keeps the old pin, so the bridge reports a stale
+   * target. A failed capture also keeps the old pin.
+   */
+  async rebase(
+    request: ActuationRequest,
+    landed: readonly CellSnapshot[],
+  ): Promise<ActuationRequest> {
+    const before = this.prepared.get(request.changeId);
+    if (!before || landed.length === 0 || !this.bridge.captureCells) return request;
+    let current: CellSnapshot;
+    try {
+      current = await this.bridge.captureCells(before.locator);
+    } catch {
+      return request;
+    }
+    if (
+      current.hash === before.hash ||
+      current.locator !== before.locator ||
+      current.documentId !== before.documentId ||
+      current.surface !== before.surface ||
+      current.objectId !== before.objectId ||
+      !changesCoveredBy(
+        before,
+        current,
+        landed.filter((l) => l.documentId === before.documentId && l.objectId === before.objectId),
+      )
+    )
+      return request;
+    this.prepared.set(request.changeId, current);
+    return ActuationRequestSchema.parse({
+      ...request,
+      preconditions: [
+        ...(request.preconditions ?? []).filter((c) => c.locator !== before.locator),
+        sourceVersion(current),
+      ],
+    });
+  }
+  /** The cells a verified recoverable effect produced, captured after it landed. */
+  async landed(request: ActuationRequest): Promise<CellSnapshot | undefined> {
+    const before = this.prepared.get(request.changeId);
+    if (!before || !this.bridge.captureCells) return undefined;
+    try {
+      // Not matched to the receipt's afterHash: a formula write's readback hash differs from a later
+      // capture of the same cells (retest 2026-10-20), so no formula write would ever count.
+      return await this.bridge.captureCells(before.locator);
+    } catch {
+      return undefined;
+    }
   }
   clearPrepared(): void {
     this.prepared.clear();
@@ -211,7 +348,7 @@ export class RecoveryCoordinator {
     actuate: () => Promise<ActuationResult>,
   ): Promise<ActuationResult> {
     const before = this.prepared.get(request.changeId);
-    if (request.kind !== 'write-cells' || !before)
+    if (!RECOVERABLE_KINDS.has(request.kind) || !before)
       return validateActuationResult(request, await actuate());
     return this.locked(async () => {
       await this.load();
@@ -219,20 +356,7 @@ export class RecoveryCoordinator {
         throw new Error(
           'This effect already has a receipt. Review recovery history before retrying.',
         );
-      if (this.records.length >= 32)
-        throw new Error('Recovery history is full. Remove a resolved receipt before writing.');
-      this.assertNoUnresolvedOverlap(before);
       const parent = this.parents.get(request.changeId);
-      if (parent) {
-        const original = this.records.find((r) => r.id === parent.id);
-        if (
-          !original ||
-          (parent.undo
-            ? original.state !== 'applied' || !original.afterHash
-            : original.state !== 'not-applied')
-        )
-          throw new Error('The recovery receipt changed. Inspect it again before continuing.');
-      }
       const record: RecoveryRecord = {
         version: 1,
         id: request.changeId,
@@ -244,11 +368,26 @@ export class RecoveryCoordinator {
         before,
         ...(parent ? { parentId: parent.id, undo: parent.undo } : {}),
       };
-      this.records.push(record);
+      // Nothing changes in memory unless the receipt is saved: list() readers see stored state.
+      const stored = structuredClone(this.records);
       try {
+        // Making room can re-read receipts, so the overlap and parent checks run on the result.
+        await this.makeRoom(record);
+        this.assertNoUnresolvedOverlap(before);
+        if (parent) {
+          const original = this.records.find((r) => r.id === parent.id);
+          if (
+            !original ||
+            (parent.undo
+              ? original.state !== 'applied' || !original.afterHash
+              : original.state !== 'not-applied')
+          )
+            throw new Error('The recovery receipt changed. Inspect it again before continuing.');
+        }
+        this.records.push(record);
         await this.save();
       } catch (error) {
-        this.records.pop();
+        this.records = stored;
         throw error;
       }
       let result: ActuationResult;
@@ -302,42 +441,52 @@ export class RecoveryCoordinator {
     return this.locked(async () => {
       await this.load();
       if (!this.bridge.captureCells) return [];
-      for (const record of this.records) {
-        if (record.state === 'undone' || record.state === 'superseded') continue;
-        try {
-          const current = await this.bridge.captureCells(record.before.locator);
-          if (
-            current.documentId !== record.before.documentId ||
-            current.objectId !== record.before.objectId
-          ) {
-            record.state = 'conflict';
-            record.message = 'The original document or worksheet is no longer active.';
-          } else if (record.afterHash && current.hash === record.afterHash) {
-            record.state = 'applied';
-          } else if (current.hash === record.before.hash) {
-            record.state = 'not-applied';
-          } else if (
-            !record.afterHash &&
-            cellsMatchRequest(current, record.request) &&
-            !hasFormulaErrors(current)
-          ) {
-            record.state = 'applied';
-            record.afterHash = current.hash;
-          } else {
-            record.state = 'conflict';
-            record.message = record.afterHash
-              ? 'This verified write was changed later. Undo is no longer safe; review a new write or remove this receipt.'
-              : 'The cells differ from both the reviewed input and output. Review them manually.';
-          }
-        } catch {
-          record.state = 'uncertain';
-          record.message =
-            'The destination could not be read. Open the original worksheet and try again.';
-        }
-      }
+      await this.reconcile();
       await this.save();
       return this.list();
     });
+  }
+  /**
+   * Compare receipts with the current cells and update their state. The caller must hold the lock
+   * (`locked()` is not re-entrant).
+   */
+  private async reconcile(only: (record: RecoveryRecord) => boolean = () => true): Promise<void> {
+    if (!this.bridge.captureCells) return;
+    for (const record of this.records) {
+      if (record.state === 'undone' || record.state === 'superseded' || !only(record)) continue;
+      try {
+        const current = await this.bridge.captureCells(record.before.locator);
+        if (
+          current.documentId !== record.before.documentId ||
+          current.objectId !== record.before.objectId
+        ) {
+          record.state = 'conflict';
+          record.message = 'The original document or worksheet is no longer active.';
+        } else if (record.afterHash && current.hash === record.afterHash) {
+          record.state = 'applied';
+        } else if (current.hash === record.before.hash) {
+          record.state = 'not-applied';
+        } else if (
+          !record.afterHash &&
+          (record.request.kind === 'sort-range'
+            ? sameRowsReordered(record.before, current, record.request)
+            : cellsMatchRequest(current, record.request)) &&
+          !hasFormulaErrors(current)
+        ) {
+          record.state = 'applied';
+          record.afterHash = current.hash;
+        } else {
+          record.state = 'conflict';
+          record.message = record.afterHash
+            ? 'This verified write was changed later. Undo is no longer safe; review a new write or remove this receipt.'
+            : 'The cells differ from both the reviewed input and output. Review them manually.';
+        }
+      } catch {
+        record.state = 'uncertain';
+        record.message =
+          'The destination could not be read. Open the original worksheet and try again.';
+      }
+    }
   }
   list(): RecoverySummary[] {
     return this.records

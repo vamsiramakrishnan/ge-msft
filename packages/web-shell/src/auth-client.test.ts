@@ -29,6 +29,21 @@ describe('NaaAuthClient', () => {
     expect(await auth.getIdToken()).toBe('id-tok');
   });
 
+  it('asks MSAL for a newly issued id token when forceRefresh is set, and only then', async () => {
+    const silent = vi.fn((req: { forceRefresh?: boolean; scopes: string[] }) =>
+      Promise.resolve<MsalAuthResult>({
+        accessToken: 'a',
+        idToken: req.forceRefresh ? 'fresh' : 'cached',
+        account,
+      }),
+    );
+    const auth = new NaaAuthClient(fakeMsal({ acquireTokenSilent: silent }), opts);
+    expect(await auth.getIdToken()).toBe('cached');
+    expect(await auth.getIdToken({ forceRefresh: true })).toBe('fresh');
+    expect(silent.mock.calls[0]![0]).not.toHaveProperty('forceRefresh');
+    expect(silent.mock.calls[1]![0]).toMatchObject({ forceRefresh: true, account });
+  });
+
   it('throws when no id token comes back', async () => {
     const auth = new NaaAuthClient(
       fakeMsal({ acquireTokenSilent: () => Promise.resolve({ accessToken: 'a' }) }),

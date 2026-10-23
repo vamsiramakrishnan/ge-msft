@@ -1,0 +1,13 @@
+{
+  "recordedAt": "2026-09-30",
+  "source": "Excel for the web, Sheet2 orders table A1:J11 (header + 10 data rows); prompt \"Create a bar chart of Total by Product\"; no skills mounted; engine default model",
+  "confirmedPlanTask": "Execute this user-confirmed plan in the open Microsoft 365 surface.\nTreat the plan as approved intent only: read live host content before any write, respect exclusions, emit only the supported cmd protocol, and let the normal preview/approval gate run.\n\n<confirmed_plan>\noriginal_request: /visualize Create a bar chart of Total by Product\nintent: visualize\nsurface: excel\nscope: document\nground: document Sheet2\ncontext: analytical\nstep 1: calculate \"Total\" column for each row if not already present\nstep 2: create a bar chart showing the sum of \"Total\" grouped by \"Product\"\nconfidence: high\n</confirmed_plan>",
+  "docState": "<doc_state surface=excel version=2>\ncapturedAt: 2026-09-30T15:24:32.916Z\ntitle: \"Sheet2\"\ninventory:\n  - [table] \"| Order ID | Customer | Product | Category | Quantity | Unit Pri\" (10 rows × 10 cols)\n</doc_state>",
+  "executorPrograms": {
+    "r1": "chart bar {\"source\":\"Sheet2!A1:J11\",\"series\":[{\"name\":\"Total\",\"categories\":\"Product\",\"aggregate\":\"sum\"}]}\ndone",
+    "r2": "let $table = analyze {\"kind\":\"capture\",\"table\":\"| Order ID | Customer | Product | Category | Quantity | Unit Pri\",\"headers\":true}\nanalyze {\"action\":\"add-column\",\"source\":\"$table\",\"name\":\"Total\",\"value\":\"=PRODUCT(F2,G2)\"}\nanalyze {\"action\":\"chart\",\"source\":\"$table\",\"type\":\"bar\",\"x-axis\":\"Product\",\"y-axis\":\"Total\"}\ndone",
+    "r3": "chart bar Sheet2!C1:C10,Sheet2!G1:G10\ndone",
+    "r4": "let $data = read Sheet2!A1:J10\nanalyze {\"kind\":\"pivot\",\"source\":\"$data\",\"rows\":[\"Product\"],\"values\":[{\"summarize\":\"sum\",\"of\":\"Total\"}],\"formulas\":[{\"name\":\"Total\",\"formula\":\"=[Quantity]*[Unit Price]\"}]}\nchart {\"type\":\"bar\",\"axes\":{\"category\":\"Product\",\"value\":\"SUM of Total\"}}\ndone",
+    "v4": "let $data = read Sheet2!A1:J11\nlet $summary = analyze {\"kind\":\"query\",\"source\":\"$data\",\"query\":\"SELECT G, SUM(J) GROUP BY G\"}\nchart Sheet2!L1 type=column data=$summary.range title=\"Revenue by region\"\ndone"
+  }
+}

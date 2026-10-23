@@ -28,8 +28,8 @@ the **React/Vite/manifest shell** over the web-shell core. See `STATUS.md`.
 | table / range / sheet / named range (values+formulas) | Excel | ✅ | `bridge-excel` range/used-range + workbook tables/names → native table block and openable refs |
 | mail item / subject / from / body | Outlook | ✅ | `bridge-outlook` (string path; reads active item) |
 | transcript window | Teams | ✅ | `teams` bridge (RSC-consented, injected) |
-| comment / thread | Word, Excel | ✅ | comment-reply actuation + `comment-added` events |
-| slide / shape | PowerPoint | ✅ | `bridge-powerpoint` (selected slides → shapes' text) |
+| comment / thread | Word, Excel | ✅ | existing threads (author, text, anchored text/cell, replies) listed as attachable `comment` refs with their ids; comment-reply actuation + `comment-added` events |
+| slide / shape / whole deck | PowerPoint | ✅ | `bridge-powerpoint` (selected slide, one shape, or whole deck → text-frame shapes' text + native table cells via `Table.values` on PowerPointApi 1.8; pictures/charts skipped; batched read, at most 4 syncs — see [POWERPOINT-WHOLE-DECK-ATTACH.md](POWERPOINT-WHOLE-DECK-ATTACH.md)) |
 | page / outline | OneNote | ✅ | `bridge-onenote` (active page title + outline rich text; web-only) |
 | calendar event (active item) | Outlook | 🟡 | Office.js appointment read not yet in the bridge |
 | image / rendered file | Word/PPT | 🟡 | `file` kind modeled; **note:** can't attach inline to `streamAssist` (no blob part) |
@@ -56,7 +56,7 @@ build on drift.
 |---|---|---|
 | Word | `outline`, `read`, `search` | `captureDocState` (outline + whole-doc `read`), `searchDocument` |
 | Excel | `outline`, `read`, `search` | `captureDocState` (outline), `readRange` (addressable `read <A1\|NamedRange>`, bounded to `MAX_READ_CELLS`=10k cells), `searchDocument` |
-| PowerPoint | `outline`, `read`, `search` | `captureDocState` (slide inventory, bounded `MAX_READ_SLIDES`=60), `readRange` (addressable `read <slide:N>`, single slide), `searchDocument` (slide-text scan, `MAX_SEARCH_SLIDES`=8) |
+| PowerPoint | `outline`, `read`, `search` | `captureDocState` (slide inventory, bounded `MAX_READ_SLIDES`=60), `readRange` (addressable `read <slide:N>`, single slide), `searchDocument` (slide-text scan, `MAX_SEARCH_SLIDES`=8). All share one batched slide reader (shape text + table cells) |
 | OneNote | `outline`, `read`, `search` | `captureDocState` (active-page title + paragraph outline; also backs whole-page `read` — no addressable sub-range), `searchDocument` (page-paragraph scan, `MAX_SEARCH_PARAGRAPHS`=8) |
 | Outlook | `read`, `search` | `captureDocState` (whole-item `read`: subject + from + leading body lines, bounded `MAX_OUTLINE_LINES`=40 — a mail item has no sub-range), `searchDocument` (body-line scan, `MAX_SEARCH_LINES`=8). No `outline` (no heading structure). |
 | Teams | `read`, `search` | `captureDocState` (whole-transcript `read`: meeting title + turn lines, bounded `MAX_TRANSCRIPT_LINES`=60 — a transcript has no sub-range), `searchDocument` (transcript-line scan, `MAX_SEARCH_LINES`=8). No `outline` (no heading structure). |
@@ -85,14 +85,17 @@ when its bridge method exists — conformance-enforced per surface (`capability-
 | **format-conditional** | Excel | ✅ `bridge-excel` conditional-format rules |
 | **comment-reply** (+ resolve) | Word, Excel | ✅ |
 | **fill-content-control** | Word | ✅ `bridge-word` direct fill of a known content-control id; prior value captured as inverse |
-| **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` (native compose or client-staged base64 PPTX deck import) |
-| **set-shape-text** | PowerPoint | ✅ `bridge-powerpoint` exact slide+shape text replacement |
+| **insert-slide** | PowerPoint | ✅ `bridge-powerpoint` native compose: title/bullets into the layout's placeholders, else sized text boxes; written by position (PowerPoint web rejects writes through a new slide's provisional id) — see [POWERPOINT-INSERT-SLIDE.md](POWERPOINT-INSERT-SLIDE.md). The base64 PPTX deck import path exists in the bridge, but no app flow stages a compiled deck yet |
+| **set-shape-text** | PowerPoint | ✅ `bridge-powerpoint` text of one shape, addressed `pp:shape:<slide>:<shape>` (slide = id, number or `last`; shape = id or `title`) — see [POWERPOINT-SHAPE-COMMANDS.md](POWERPOINT-SHAPE-COMMANDS.md) |
+| **add-shape** | PowerPoint | ✅ `bridge-powerpoint` text box / geometric shape / line on an addressed slide; off-slide geometry rejected with the slide size |
+| **format-shape** | PowerPoint | ✅ `bridge-powerpoint` fill, line, font (incl. `color=` = text colour), z-order of an addressed shape |
+| **add-table-slide** | PowerPoint | ✅ `bridge-powerpoint` native table on an existing slide, or `slide=new title="…"` to create a titled slide for it (PowerPointApi 1.8) |
 | **append-page** | OneNote | ✅ `bridge-onenote` (synthesis + inline citation tags) |
 | **reply-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayReplyForm`) |
 | **create-mail** | Outlook | ✅ `bridge-outlook` (reviewable `displayNewMessageForm`; `compose` verb, unaddressed by default) |
 | **post-message** (+ Adaptive Card) | Teams | ✅ `teams` (reviewable compose) |
 | set-speaker-notes | PowerPoint | 🟡 modeled — **not advertised** (no host write path in current typings; always degraded, so un-advertised per ADR-0006) |
-| add-shape, add-table-slide, format-shape, delete/move/duplicate slide | PowerPoint | 🟡 modeled — **not advertised** until the bridge has tested host write paths and inverses |
+| delete/move/duplicate slide | PowerPoint | 🟡 modeled — **not advertised** until the bridge has tested host write paths and inverses |
 | create-event, create-task | Outlook/Graph | 🟡 modeled — **not advertised** (no `actuate()` case yet) |
 
 **Every write verb maps to a CLI verb and is composition-bearing.** `WRITE_VERB_TO_KIND`:
@@ -128,7 +131,7 @@ just a cell. Only `suggest`/`format` (no free-text slot) stay literal.
 | Context budget + inline/reference/upload strategy | ✅ | `@ge/content` `recommendStrategy`/`ContextBudget` |
 | Connector (data-store) scoping | 🟡 | request shape built; no UI enumeration |
 | Capability **detection** (runtime) | 🟡 | `detectSurface()` (host→bridge) built; per-capability intersection gate not |
-| Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. A landed-but-untraced write is now **observable**: `ActuationResult.provenanceDropped` (had a record, failed to persist) and `provenanceMissing` (no payload at all → unattributed) are surfaced on the run-step instead of swallowed. Client `ProvenanceStore` view-model built for all. |
+| Provenance write to host durable metadata | 🟡 | Wired for **Word** (custom XML part) + **Excel** (workbook settings) via `provenance-record.ts`; **not yet** for PPT/OneNote/Outlook/Teams. A landed-but-untraced write is now **observable**: `ActuationResult.provenanceDropped` (had a record, failed to persist) and `provenanceMissing` (no payload at all → unattributed) are surfaced on the run-step instead of swallowed. PPT/OneNote/Outlook/Teams report `provenanceUnsupported` (the host cannot store it; expected, no warning). Client `ProvenanceStore` view-model built for all. |
 | Code-execution file upload (`addContextFile`, v1) | ✅ | `@ge/gemini-client` `ContextFileClient` + runtime `context` strategy; host/user attachment still explicit |
 | A2UI render + action→actuation routing | ⬜ | designed (`api/discoveryengine/a2ui.md`); renderer not built |
 | Audit | 🟡 | client-direct: provenance-in-artifact is the trail; optional thin sink undecided |

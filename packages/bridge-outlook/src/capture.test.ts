@@ -8,7 +8,7 @@ import {
   MAX_SEARCH_LINES,
   MAX_OUTLINE_LINES,
 } from './capture.js';
-import { planCompose, planReply } from './actuate-plan.js';
+import { planCompose, planDraftBody, planReply, plainTextToHtml } from './actuate-plan.js';
 
 describe('outlook capture (pure)', () => {
   it('produces valid text context from a plain-text mail item', () => {
@@ -113,7 +113,7 @@ describe('outlook actuation planning (pure)', () => {
       },
     });
     expect(plan).toEqual({
-      body: 'We can raise availability to 99.9%.',
+      body: '<p>We can raise availability to 99.9%.</p>',
       to: ['pat@acme.com'],
       subject: 'Re: SLA concerns',
     });
@@ -126,7 +126,7 @@ describe('outlook actuation planning (pure)', () => {
       surface: 'outlook',
       params: { text: 'Thanks, will follow up.' },
     });
-    expect(plan).toEqual({ body: 'Thanks, will follow up.' });
+    expect(plan).toEqual({ body: '<p>Thanks, will follow up.</p>' });
   });
 
   it('planCompose builds a new draft from subject + body (unaddressed by default)', () => {
@@ -137,7 +137,7 @@ describe('outlook actuation planning (pure)', () => {
       params: { mail: { subject: 'Follow-up on Q3', body: 'Summary below.' } },
     });
     // No `to` unless the agent supplied one — a compose draft is left for the user to address.
-    expect(plan).toEqual({ subject: 'Follow-up on Q3', body: 'Summary below.' });
+    expect(plan).toEqual({ subject: 'Follow-up on Q3', body: '<p>Summary below.</p>' });
   });
 
   it('planCompose passes recipients through only when supplied, body falls back to params.text', () => {
@@ -147,6 +147,51 @@ describe('outlook actuation planning (pure)', () => {
       surface: 'outlook',
       params: { mail: { subject: 'Re: dates', to: ['pat@acme.com'] }, text: 'Confirming below.' },
     });
-    expect(plan).toEqual({ subject: 'Re: dates', body: 'Confirming below.', to: ['pat@acme.com'] });
+    expect(plan).toEqual({
+      subject: 'Re: dates',
+      body: '<p>Confirming below.</p>',
+      to: ['pat@acme.com'],
+    });
+  });
+
+  it('keeps the paragraphs and line breaks of a plain-text reply', () => {
+    const plan = planReply({
+      changeId: asChangeId('c5'),
+      kind: 'reply-mail',
+      surface: 'outlook',
+      params: {
+        mail: {
+          body: 'Halo Pak Rizal,\n\nTerima kasih atas undangannya.\n\nSampai bertemu di rapat nanti.\nSalam,\nContoso-AI',
+        },
+      },
+    });
+    expect(plan.body).toBe(
+      '<p>Halo Pak Rizal,</p><p>Terima kasih atas undangannya.</p>' +
+        '<p>Sampai bertemu di rapat nanti.<br>Salam,<br>Contoso-AI</p>',
+    );
+  });
+
+  it('reads a literal \\n from a quoted command string as a line break', () => {
+    expect(plainTextToHtml('Hi Rina,\\n\\nThursday works.\\nThanks')).toBe(
+      '<p>Hi Rina,</p><p>Thursday works.<br>Thanks</p>',
+    );
+  });
+
+  it('escapes plain text and leaves a body that already has HTML alone', () => {
+    expect(plainTextToHtml('A < B & "C"')).toBe('<p>A &lt; B &amp; &quot;C&quot;</p>');
+    expect(plainTextToHtml('<p>Hi</p><p>Bye</p>')).toBe('<p>Hi</p><p>Bye</p>');
+    expect(plainTextToHtml('  ')).toBe('  ');
+  });
+
+  it('converts a plain set-body only when it is written as HTML', () => {
+    const req = (params: Record<string, unknown>) =>
+      planDraftBody({
+        changeId: asChangeId('c6'),
+        kind: 'set-body',
+        surface: 'outlook',
+        params,
+      } as Parameters<typeof planDraftBody>[0]);
+    expect(req({ mail: { body: 'One\n\nTwo' } }).data).toBe('<p>One</p><p>Two</p>');
+    expect(req({ text: 'One\n\nTwo' })).toEqual({ data: 'One\n\nTwo', coercionType: 'text' });
   });
 });

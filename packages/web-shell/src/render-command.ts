@@ -12,6 +12,35 @@ import type { ActuationRequest } from '@ge/contracts';
 export function renderCommandLine(request: ActuationRequest): string {
   const p = request.params;
   switch (request.kind) {
+    case 'insert-text': {
+      const position = p.position ?? (p.target?.matchText ? 'after' : 'replace');
+      return [
+        '/insert-text',
+        `position=${position}`,
+        ...(p.target?.matchText !== undefined ? [`match=${quote(p.target.matchText)}`] : []),
+        ...(p.target?.contextHint !== undefined
+          ? [`contextHint=${quote(p.target.contextHint)}`]
+          : []),
+        ...textTargetPins(request),
+        `text=${quote(p.text ?? '')}`,
+        ...textFontPairs(p.textFont),
+      ].join(' ');
+    }
+    case 'fill-content-control':
+      return [
+        '/fill-content-control',
+        `contentControlId=${quote(p.target?.contentControlId ?? '')}`,
+        ...textTargetPins(request),
+        `text=${quote(p.text ?? '')}`,
+      ].join(' ');
+    case 'set-shape-text':
+      return [
+        '/set-shape-text',
+        `slideId=${quote(p.target?.slideId ?? '')}`,
+        `shapeId=${quote(p.target?.shapeId ?? '')}`,
+        ...textTargetPins(request),
+        `text=${quote(p.text ?? '')}`,
+      ].join(' ');
     case 'write-cells': {
       const range = p.target?.range ?? '<range>';
       const cells = p.cells ?? [];
@@ -124,7 +153,86 @@ function formatPairs(format: ActuationRequest['params']['format']): string {
 
 /** A double-quoted, escape-safe rendering of a value (matches the grammar's quoted operands). */
 function quote(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return JSON.stringify(value).replace(
+    /[`\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/** These labels describe the actual native target, independently of presentational dry-run hints. */
+export function textActuationTargetLabel(request: ActuationRequest): string | undefined {
+  const target = request.params.target;
+  if (request.kind === 'fill-content-control')
+    return `Word content control ${quote(target?.contentControlId ?? '<unresolved>')}`;
+  if (request.kind === 'set-shape-text')
+    return `PowerPoint slide ${quote(target?.slideId ?? '<unresolved>')} / shape ${quote(target?.shapeId ?? '<unresolved>')}`;
+  if (request.kind !== 'insert-text') return undefined;
+  const anchor = target?.matchText;
+  const position = request.params.position ?? (anchor ? 'after' : 'replace');
+  if (anchor) {
+    const action = {
+      start: 'Start of',
+      end: 'End of',
+      before: 'Before',
+      after: 'After',
+      replace: 'Replace',
+    }[position];
+    return `${action} matched text ${quote(anchor)}${target?.contextHint !== undefined ? ` · context ${quote(target.contextHint)}` : ''}`;
+  }
+  if (position === 'start') return 'Start of document body';
+  if (position === 'end') return 'End of document body';
+  return `${position === 'before' ? 'Before' : position === 'after' ? 'After' : 'Replace'} current selection`;
+}
+
+/** Text previews use the same escaped value as the exact command, never an obsolete dry-run value. */
+export function textActuationChangeLabel(request: ActuationRequest): string | undefined {
+  if (
+    !['insert-text', 'fill-content-control', 'set-shape-text'].includes(request.kind) ||
+    request.params.text === undefined
+  )
+    return undefined;
+  return `→ ${quote(request.params.text)}`;
+}
+
+/** Navigation receives a native locator rather than the human target label. */
+export function textActuationLocation(request: ActuationRequest): string | undefined {
+  const target = request.params.target;
+  if (request.kind === 'fill-content-control')
+    return target?.contentControlId ? `word:cc:${target.contentControlId}` : undefined;
+  if (request.kind === 'set-shape-text')
+    return target?.slideId && target.shapeId
+      ? `pp:shape:${target.slideId}:${target.shapeId}`
+      : undefined;
+  if (request.kind === 'insert-text') {
+    if (target?.matchText) return `word:text:${target.matchText}`;
+    if (request.params.position !== 'start' && request.params.position !== 'end')
+      return 'word:selection';
+  }
+  return undefined;
+}
+
+function textTargetPins(request: ActuationRequest): string[] {
+  const target = request.params.target;
+  return [
+    ...(target?.expectedDocumentId !== undefined
+      ? [`expectedDocumentId=${quote(target.expectedDocumentId)}`]
+      : []),
+    ...(target?.expectedTextHash !== undefined
+      ? [`expectedTextHash=${quote(target.expectedTextHash)}`]
+      : []),
+  ];
+}
+
+function textFontPairs(font: ActuationRequest['params']['textFont']): string[] {
+  if (!font) return [];
+  return [
+    ...(['bold', 'italic', 'underline'] as const).flatMap((key) =>
+      font[key] === undefined ? [] : [`${key}=${font[key]}`],
+    ),
+    ...(font.color !== undefined ? [`color=${quote(font.color)}`] : []),
+    ...(font.size !== undefined ? [`size=${font.size}`] : []),
+    ...(font.name !== undefined ? [`font=${quote(font.name)}`] : []),
+  ];
 }
 
 function labelFallback(request: ActuationRequest): string {

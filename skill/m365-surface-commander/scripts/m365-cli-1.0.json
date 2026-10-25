@@ -1684,8 +1684,8 @@
     },
     "insert-text": {
       "command": "/insert-text",
-      "useWhen": "Word plain-text insertion: insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text",
-      "syntax": "/insert-text text=\"...\" [match=\"exact anchor text\"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]",
+      "useWhen": "Word plain-text insertion: insert grounded text at the current selection or an exact anchor. Explicit position=start|end without match= targets the document body boundary; with match= it stays within that anchor. Omit position to preserve selection replacement or anchored after-insertion. Font options format only inserted text",
+      "syntax": "/insert-text text=\"...\" [match=\"exact anchor text\"] [position=start|end|before|after|replace] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]",
       "discovery": [
         "outline",
         "search <anchor>",
@@ -1694,6 +1694,7 @@
       ],
       "sequence": [
         "Resolve the insertion point from selection or exact anchor.",
+        "Use an unanchored body start/end only when that document-wide destination is intended; retain the selected edit scope otherwise.",
         "Preview the inserted text and position.",
         "Emit one /insert-text command only when insertion, not tracked rewrite, is intended.",
         "Stop after one cmd block and wait for the host result/preview before continuing."
@@ -5146,9 +5147,10 @@
       "priority": "p0",
       "command": "/insert-text",
       "title": "Word plain-text insertion",
-      "useWhen": "insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text",
+      "useWhen": "insert grounded text at the current selection or an exact anchor. Explicit position=start|end without match= targets the document body boundary; with match= it stays within that anchor. Omit position to preserve selection replacement or anchored after-insertion. Font options format only inserted text",
       "hostApis": [
         "Word.Range.insertText",
+        "Word.Body.insertText",
         "Word.Selection.insertText"
       ],
       "requirementSets": [
@@ -5170,6 +5172,7 @@
       ],
       "sequence": [
         "Resolve the insertion point from selection or exact anchor.",
+        "Use an unanchored body start/end only when that document-wide destination is intended; retain the selected edit scope otherwise.",
         "Preview the inserted text and position.",
         "Emit one /insert-text command only when insertion, not tracked rewrite, is intended."
       ],

@@ -40,7 +40,7 @@ for (const width of [320, 360, 480]) {
   }
   if (args.expand) {
     const disclosure = page.locator('.office-workbench').filter({ has: page.locator('summary', { hasText: args.expand }) }).first();
-    await disclosure.locator('summary').click();
+    await disclosure.locator(':scope > summary').click();
     if (args.fill === '1') {
       for (const field of await disclosure.locator('textarea:not([readonly])').all()) await field.fill('Sample instructions for this workflow.');
       const output = disclosure.locator('select');
@@ -53,7 +53,25 @@ for (const width of [320, 360, 480]) {
     await page.getByRole('heading', { name: 'Inspect interrupted changes' }).scrollIntoViewIfNeeded();
   }
   if (args.scroll === 'report') await page.getByRole('button', {name: 'Copy native report', exact: true}).scrollIntoViewIfNeeded();
-  const file = join(out, `${surface}${args.panel ? `-${args.panel}` : ''}${args.expand ? `-${args.expand.replaceAll(' ', '-')}` : ''}${args.scroll ? `-${args.scroll}` : ''}-${width}.png`);
+  if (args.commands === '1') {
+    const exact = page.locator('.saved-office-task-inspection details');
+    await exact.locator('summary').click();
+    await exact.scrollIntoViewIfNeeded();
+  }
+  if (args.create === '1') {
+    const create = page.locator('.saved-office-task-create');
+    await create.locator('summary').click();
+    await create.getByLabel('Task ID', {exact:true}).fill('month-close-reviewed-memo');
+    await create.getByLabel('Exact commands', {exact:true}).fill('/fill-content-control contentControlId="42" text="Reviewed close summary. Source amounts retain their supplied precision."\nfinish when=verified');
+    if(args.attest==='1')await create.getByRole('checkbox').check();
+    await create.scrollIntoViewIfNeeded();
+  }
+  if (args.approval === '1') {
+    await page.locator('.plan-effect-head').first().click();
+    await page.locator('.plan-effect-detail').first().scrollIntoViewIfNeeded();
+  }
+  if(args.tag&&!/^[a-z0-9-]{1,64}$/.test(args.tag))throw new Error('Use a short public screenshot tag.');
+  const file = join(out, `${surface}${args.panel ? `-${args.panel}` : ''}${args.expand ? `-${args.expand.replaceAll(' ', '-')}` : ''}${args.scroll ? `-${args.scroll}` : ''}${args.tag?`-${args.tag}`:''}-${width}.png`);
   await page.locator('.preview-frame').screenshot({ path: file });
   console.log(file);
 }

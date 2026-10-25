@@ -4,6 +4,8 @@ import { intentsForManifest, type Surface, type ChangeId } from '@ge/contracts';
 import { POWERPOINT_CAPABILITIES } from '@ge/bridge-powerpoint';
 import type { PanelController, PanelState } from '../controller.js';
 import { makeDemoController } from './preview-interactive.js';
+import { savedOfficeTaskPreview } from './preview-saved-tasks.js';
+import { textApprovalPreview } from './preview-text-approval.js';
 import { App } from './components/App.js';
 import {
   FIXTURE_CHIPS,
@@ -80,6 +82,7 @@ function surfaceFromParams(params: URLSearchParams): Surface {
 
 function buildState(t: Toggles): PanelState {
   return {
+    savedOfficeTasks: savedOfficeTaskPreview(previewParams(), surfaceFromParams(previewParams())),
     ...(previewParams().get('office-workflows') === '1'
       ? {
           officeCapabilities: ['fill-content-control' as const, 'set-shape-text' as const],
@@ -132,6 +135,7 @@ function buildState(t: Toggles): PanelState {
       : {}),
     busy: previewParams().get('office-workflows') === '1' ? false : t.busy,
     ...(t.error ? { error: FIXTURE_ERROR } : {}),
+    ...textApprovalPreview(previewParams()),
   };
 }
 
@@ -167,6 +171,11 @@ export function makeMockController(state: PanelState): PanelController {
     refreshManagedText: async (...args: unknown[]) => log('refreshManagedText')(...args),
     runNativeCertification: async (...args: unknown[]) => log('runNativeCertification')(...args),
     acknowledgeTaskJournal: async (...args: unknown[]) => log('acknowledgeTaskJournal')(...args),
+    refreshSavedOfficeTasks: async () => log('refreshSavedOfficeTasks')(),
+    inspectSavedOfficeTask: async (...args: unknown[]) => log('inspectSavedOfficeTask')(...args),
+    resumeSavedOfficeTask: async (...args: unknown[]) => log('resumeSavedOfficeTask')(...args),
+    archiveSavedOfficeTask: async (...args: unknown[]) => log('archiveSavedOfficeTask')(...args),
+    saveLiteralOfficeTask: async (...args: unknown[]) => log('saveLiteralOfficeTask')(...args),
     cancel: () => log('cancel')(),
     approvePlan: () => log('approvePlan')(),
     rejectPlan: () => log('rejectPlan')(),

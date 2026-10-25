@@ -5,6 +5,8 @@ import type {
   RecoverySummary,
   EvidenceState,
   RunRecord,
+  DurableProgramSummary,
+  DurableProgramAssessment,
 } from '@ge/runtime';
 import {
   nativeTraces,
@@ -30,6 +32,7 @@ import type {
   SourceRef,
   Surface,
   SseEvent,
+  DurableCommandProgram,
 } from '@ge/contracts';
 import {
   asChangeId,
@@ -41,6 +44,7 @@ import {
   planChanges,
   extractCommandBlock,
   IntentSchema,
+  DurableCommandProgramSchema,
 } from '@ge/contracts';
 import type {
   AgentView,
@@ -129,6 +133,14 @@ export type PlanRunCommandsOptions = RunCommandsOptions;
  * so the controller is unit-testable against a fake and carries no host/network dependency.
  */
 export interface AssistLike {
+  saveDurableProgram?(program: DurableCommandProgram): Promise<void>;
+  listDurablePrograms?(): Promise<DurableProgramSummary[]>;
+  assessDurableProgram?(id: string): Promise<DurableProgramAssessment | undefined>;
+  runInspectedDurableProgram?(
+    id: string,
+    options?: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent>;
+  archiveDurableProgram?(id: string): Promise<void>;
   getEffectiveCapabilities?(): Promise<import('@ge/contracts').CapabilityManifest>;
   getAnalysisCapabilities?(): Promise<{ preview: boolean; write: boolean }>;
   readonly analysis?: { state(): AnalysisState };
@@ -532,6 +544,7 @@ export interface WorkflowRun {
 }
 
 export interface PanelState {
+  savedOfficeTasks?: SavedOfficeTasksState;
   officeCapabilities?: import('@ge/contracts').ActuationKind[];
   workflowRecipesAvailable?: boolean;
   workflowWritesAvailable?: boolean;
@@ -592,6 +605,16 @@ export interface PanelState {
   error?: string;
 }
 
+/** Native inspection is evidence, never saved approval authority. Task bodies stay in pane memory. */
+export interface SavedOfficeTasksState {
+  available: boolean;
+  loading: boolean;
+  loaded: boolean;
+  items: DurableProgramSummary[];
+  selected?: DurableProgramAssessment;
+  error?: string;
+}
+
 const EMPTY_STATE: PanelState = {
   messages: [],
   chips: [],
@@ -621,6 +644,7 @@ export class PanelController {
   /** Keep outcome context when an identical content-addressed preview is refreshed. */
   private readonly workflowWrites = new Map<string, NonNullable<WorkflowRun['write']>>();
   private workflowCapabilities?: { preview: boolean; write: boolean };
+  private savedTaskDocumentKey?: string;
   private seq = 0;
   /**
    * Finding #4: provenance is TURN-SCOPED, never ambient. This holds ONLY the provenance of the
@@ -679,6 +703,7 @@ export class PanelController {
     private readonly lister: ContextLister,
     private readonly store: ProvenanceStore = new ProvenanceStore(),
   ) {
+    this.savedTaskDocumentKey = lister.documentKey?.();
     this.syncServices();
     void session
       .getEffectiveCapabilities?.()
@@ -732,6 +757,20 @@ export class PanelController {
         });
     }
     this.set({
+      ...(this.session.listDurablePrograms &&
+      this.session.assessDurableProgram &&
+      this.session.runInspectedDurableProgram &&
+      this.session.archiveDurableProgram &&
+      this.session.saveDurableProgram
+        ? {
+            savedOfficeTasks: this.state.savedOfficeTasks ?? {
+              available: true,
+              loading: false,
+              loaded: false,
+              items: [],
+            },
+          }
+        : {}),
       workflowRecipesAvailable: Boolean(
         this.session.analysis &&
         this.session.runAnalysisProgram &&
@@ -985,6 +1024,19 @@ export class PanelController {
   private contextRefreshVersion = 0;
 
   async refreshContext(options: { whenIdle?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+    const documentKey = this.lister.documentKey?.();
+    if (documentKey !== this.savedTaskDocumentKey) {
+      this.savedTaskDocumentKey = documentKey;
+      if (this.state.savedOfficeTasks)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: false,
+            items: [],
+          },
+        });
+    }
     const version = ++this.contextRefreshVersion;
     const canCommit = (): boolean =>
       version === this.contextRefreshVersion &&
@@ -1420,6 +1472,224 @@ export class PanelController {
 
   // ---- command loop (ADR-0004) --------------------------------------------
 
+  /** Listing is explicit and scoped by the session to the current account and saved document. */
+  async refreshSavedOfficeTasks(): Promise<void> {
+    if (this.switchBlocked() || !this.session.listDurablePrograms) return;
+    const key = this.lister.documentKey?.();
+    const owner = this.beginExecution({
+      savedOfficeTasks: { available: true, loading: true, loaded: false, items: [] },
+    });
+    try {
+      const items = await this.session.listDurablePrograms();
+      this.assertSavedTaskDocument(key);
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: true,
+            items,
+          },
+        });
+    } catch (error) {
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: false,
+            items: [],
+            error: errorText(error),
+          },
+        });
+    } finally {
+      if (this.inflight === owner) this.finishExecution(owner);
+    }
+  }
+
+  async inspectSavedOfficeTask(id: string): Promise<void> {
+    if (this.switchBlocked() || !this.session.assessDurableProgram) return;
+    const key = this.lister.documentKey?.();
+    const current = this.state.savedOfficeTasks;
+    const owner = this.beginExecution({
+      savedOfficeTasks: {
+        available: true,
+        loading: true,
+        loaded: current?.loaded ?? false,
+        items: current?.items ?? [],
+      },
+    });
+    try {
+      const selected = await this.session.assessDurableProgram(id);
+      this.assertSavedTaskDocument(key);
+      if (!selected)
+        throw new Error('This saved task is no longer available in the current document.');
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: current?.loaded ?? false,
+            items: current?.items ?? [],
+            selected,
+          },
+        });
+    } catch (error) {
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: false,
+            items: [],
+            error: errorText(error),
+          },
+        });
+    } finally {
+      if (this.inflight === owner) this.finishExecution(owner);
+    }
+  }
+
+  /** User-authored literal commands are saved for inspection. Saving never starts execution. */
+  async saveLiteralOfficeTask(id: string, commands: string, confirmed: boolean): Promise<void> {
+    if (
+      this.switchBlocked() ||
+      !this.session.saveDurableProgram ||
+      !this.session.assessDurableProgram ||
+      !this.session.listDurablePrograms
+    )
+      return;
+    const key = this.lister.documentKey?.();
+    const owner = this.beginExecution({
+      savedOfficeTasks: {
+        available: true,
+        loading: true,
+        loaded: false,
+        items: [],
+      },
+    });
+    try {
+      if (!confirmed)
+        throw new Error('Confirm that these are your literal instructions before saving.');
+      const program = DurableCommandProgramSchema.parse({
+        version: 1,
+        id: id.trim(),
+        surface: this.lister.surface,
+        evidence: { kind: 'literal' },
+        stages: [{ id: 'apply', dependsOn: [], program: commands.trim() }],
+      });
+      await this.session.saveDurableProgram(program);
+      this.assertSavedTaskDocument(key);
+      const selected = await this.session.assessDurableProgram(program.id);
+      this.assertSavedTaskDocument(key);
+      const items = await this.session.listDurablePrograms();
+      this.assertSavedTaskDocument(key);
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: true,
+            items,
+            selected,
+          },
+        });
+    } catch (error) {
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: false,
+            items: [],
+            error: errorText(error),
+          },
+        });
+    } finally {
+      if (this.inflight === owner) this.finishExecution(owner);
+    }
+  }
+
+  /** The session re-inspects live sources and outputs; the panel cannot supply a permissive validator. */
+  async resumeSavedOfficeTask(id: string): Promise<void> {
+    if (this.switchBlocked() || !this.session.runInspectedDurableProgram) return;
+    const user: ChatMessage = {
+      id: this.id('u'),
+      role: 'user',
+      text: `Review remaining steps of saved task ${id}`,
+    };
+    const reply: ChatMessage = { id: this.id('a'), role: 'assistant', text: '', streaming: true };
+    this.lastRequest = undefined;
+    const owner = this.beginExecution({
+      messages: [...this.state.messages, user, reply],
+      steps: [],
+      savedOfficeTasks: {
+        ...this.state.savedOfficeTasks,
+        available: true,
+        loading: false,
+        loaded: false,
+        items: this.state.savedOfficeTasks?.items ?? [],
+        selected: undefined,
+      },
+    });
+    await this.runCommandStream(owner, reply, (options) =>
+      this.session.runInspectedDurableProgram!(id, options),
+    );
+    // A queued turn may have acquired ownership while the stream finished. It owns the pane now.
+    if (!this.switchBlocked()) await this.refreshSavedOfficeTasks();
+  }
+
+  async archiveSavedOfficeTask(id: string): Promise<void> {
+    if (
+      this.switchBlocked() ||
+      !this.session.archiveDurableProgram ||
+      !this.session.listDurablePrograms
+    )
+      return;
+    const key = this.lister.documentKey?.();
+    const owner = this.beginExecution({
+      savedOfficeTasks: {
+        available: true,
+        loading: true,
+        loaded: false,
+        items: [],
+      },
+    });
+    try {
+      await this.session.archiveDurableProgram(id);
+      const items = await this.session.listDurablePrograms();
+      this.assertSavedTaskDocument(key);
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: true,
+            items,
+          },
+        });
+    } catch (error) {
+      if (this.inflight === owner)
+        this.set({
+          savedOfficeTasks: {
+            available: true,
+            loading: false,
+            loaded: false,
+            items: [],
+            error: errorText(error),
+          },
+        });
+    } finally {
+      if (this.inflight === owner) this.finishExecution(owner);
+    }
+  }
+
+  private assertSavedTaskDocument(key: string | undefined): void {
+    if (this.lister.documentKey?.() !== key)
+      throw new Error('The active document changed. Refresh saved tasks in the current document.');
+    this.savedTaskDocumentKey = key;
+  }
+
   /**
    * Drive the ADR-0004 read-many/write-one command loop with UI-backed, per-write approval. Streams
    * the grounded answer (tokens/citations) into an assistant message exactly like `send()`, while
@@ -1543,7 +1813,11 @@ export class PanelController {
         },
         {
           surface,
+          documentKey: () => this.lister.documentKey?.(),
           getHostProfile: () => this.lister.getHostProfile?.(),
+          ...(this.session.getEffectiveCapabilities
+            ? { getCapabilities: () => this.session.getEffectiveCapabilities!() }
+            : {}),
           ...(this.lister.readRange
             ? { readRange: (selector: string) => this.lister.readRange!(selector) }
             : {}),
@@ -1672,9 +1946,11 @@ export class PanelController {
       case 'skill-expanded':
         this.addStep('command', `${ev.name} → ${ev.lines.length} line(s)`);
         return;
-      // Saved program coordination is an SDK route. Its native write receipts use the ordinary
-      // write-result branch; progress must not be turned into a second completion assertion.
       case 'durable-progress':
+        this.addStep(
+          'activity',
+          `${ev.stageId}: ${ev.state === 'resuming' ? 'previous output is current' : ev.state}`,
+        );
         return;
       case 'read-result':
         {

@@ -30,6 +30,10 @@ The Office phase implementation adds native Excel operations, dependency impact,
 packs, resumable tasks, authenticated cross-app SDK handoffs and Outlook send checks. See
 [usage and release acceptance](docs/OFFICE-PHASES.md). Native and tenant certification remain open.
 
+The **Saved tasks** pane supports explicit inspection and reviewed continuation. Reproducible
+native/tenant workflow cases and per-client comparison reports feed an exact-commit acceptance
+campaign. See [workflow operation and certification](docs/OFFICE-ACCEPTANCE.md).
+
 ## Choose the environment you want to test
 
 | Goal | Start here | Successful result |

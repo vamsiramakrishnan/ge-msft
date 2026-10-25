@@ -1,6 +1,7 @@
 import { AnalysisWorkbench } from './AnalysisWorkbench.js';
 import { WorkflowWorkbench } from './WorkflowWorkbench.js';
 import { OfficeWorkflows } from './OfficeWorkflows.js';
+import { SavedOfficeTasks } from './SavedOfficeTasks.js';
 import { EvidencePanel } from './EvidencePanel.js';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -562,6 +563,7 @@ export function App({
         }
         tools={
           <>
+            <SavedOfficeTasks state={state} controller={controller} disabled={actionBlocked} />
             <WorkflowWorkbench state={state} controller={controller} disabled={actionBlocked} />
             <OfficeWorkflows
               surface={surface}

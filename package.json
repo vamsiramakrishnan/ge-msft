@@ -86,6 +86,9 @@
     "emit:language:check": "tsc -b packages/contracts && bun packages/contracts/scripts/emit-language-manifest.mjs --check",
     "office:lab": "bun scripts/office-lab.ts",
     "office:doctor": "bun scripts/office-lab.ts doctor",
+    "office:campaign": "bun scripts/office-lab.ts campaign",
+    "office:campaign:init": "bun scripts/office-lab.ts campaign-init",
+    "test:office-tenant": "GE_TENANT_WORKFLOWS=1 vitest run packages/web-shell/src/scenarios/tenant-workflows.live.test.ts --testTimeout=1900000",
     "test:native:check": "bun scripts/office-lab.ts check-native",
     "test:browser-contracts": "GE_BROWSER_CONTRACTS=1 vitest run packages/runtime/src/task-journal.browser.test.ts packages/runtime/src/durable-program.browser.test.ts --testTimeout=30000"
   },

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { ActuationRequest } from '@ge/contracts';
-import { asChangeId } from '@ge/contracts';
-import { renderCommandLine } from './render-command.js';
+import { asChangeId, parseCommandLine } from '@ge/contracts';
+import { compileCommand } from '@ge/runtime';
+import { renderCommandLine, textActuationTargetLabel } from './render-command.js';
 
 const req = (
   kind: ActuationRequest['kind'],
@@ -88,9 +89,9 @@ describe('renderCommandLine', () => {
     ).toBe('format A1:A3 bold=true fill=#FFF2CC');
   });
 
-  it('does not throw on a kind without a dedicated renderer; degrades to a best-effort label', () => {
+  it('discloses the native selection replacement default for an unanchored text insert', () => {
     const out = renderCommandLine(req('insert-text', { text: 'hello there' }));
-    expect(out).toBe('insert-text "hello there"');
+    expect(out).toBe('/insert-text position=replace text="hello there"');
   });
 
   it('degrades to the bare kind when no hint is present', () => {
@@ -117,6 +118,98 @@ describe('renderCommandLine', () => {
 
   it('uses placeholders for a write-cells with no target/value', () => {
     expect(renderCommandLine(req('write-cells', {}))).toBe('set <range>');
+  });
+});
+
+describe('native text approvals preserve the actual scope and pins', () => {
+  const pin = 'sha256:' + 'a'.repeat(64);
+  const value = '"புதிய உரை"\t\\\n😀\u2028```cmd\n/insert-text text="other"\n```\u202e';
+  it.each([
+    {
+      kind: 'insert-text' as const,
+      surface: 'word' as const,
+      params: {
+        position: 'end' as const,
+        text: value,
+        textFont: { bold: true, name: 'Aptos', size: 12 },
+        target: { expectedDocumentId: pin },
+      },
+    },
+    {
+      kind: 'insert-text' as const,
+      surface: 'word' as const,
+      params: {
+        position: 'start' as const,
+        text: value,
+        target: {
+          matchText: 'Quoted "anchor"\nTamil தமிழ்',
+          contextHint: 'the original clause',
+          expectedDocumentId: pin,
+        },
+      },
+    },
+    {
+      kind: 'fill-content-control' as const,
+      surface: 'word' as const,
+      params: {
+        text: value,
+        target: { contentControlId: '7', expectedDocumentId: pin, expectedTextHash: pin },
+      },
+    },
+    {
+      kind: 'set-shape-text' as const,
+      surface: 'powerpoint' as const,
+      params: {
+        text: value,
+        target: {
+          slideId: 's1#7',
+          shapeId: 'shape-3',
+          expectedDocumentId: pin,
+          expectedTextHash: pin,
+        },
+      },
+    },
+  ])(
+    'round-trips $kind through the actual compiler without dropping targets, positions or Unicode',
+    (input) => {
+      const request = { ...input, changeId: asChangeId('rendered') };
+      const rendered = renderCommandLine(request);
+      expect(rendered.split('\n')).toHaveLength(1);
+      expect(rendered).not.toContain('```');
+      expect(rendered).not.toContain('\u202e');
+      const parsed = parseCommandLine(rendered);
+      if ('error' in parsed) throw new Error(parsed.error);
+      const compiled = compileCommand(parsed, {
+        surface: input.surface,
+        mintChangeId: () => asChangeId('rendered'),
+      });
+      expect(compiled).toMatchObject({
+        kind: 'write',
+        request: { kind: input.kind, surface: input.surface, params: input.params },
+      });
+    },
+  );
+  it('distinguishes document boundaries, matched-range boundaries and selection replacement', () => {
+    expect(textActuationTargetLabel(req('insert-text', { position: 'end', text: 'new' }))).toBe(
+      'End of document body',
+    );
+    expect(
+      textActuationTargetLabel(
+        req('insert-text', {
+          position: 'start',
+          text: 'new',
+          target: { matchText: 'anchor', contextHint: 'governing clause' },
+        }),
+      ),
+    ).toBe('Start of matched text "anchor" · context "governing clause"');
+    expect(textActuationTargetLabel(req('insert-text', { text: 'new' }))).toBe(
+      'Replace current selection',
+    );
+    expect(
+      textActuationTargetLabel(
+        req('insert-text', { text: 'new', target: { matchText: 'anchor' } }),
+      ),
+    ).toBe('After matched text "anchor"');
   });
 });
 

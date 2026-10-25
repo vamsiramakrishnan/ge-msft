@@ -5,7 +5,15 @@ import {
   type DurableStageCheckpoint,
   type DurableProgramRecord,
   type DurableReconciliationDecision,
+  type DurableProgramSummary,
 } from './durable-program.js';
+import { deriveDurableInspection, validateDurableSources } from './durable-inspection.js';
+import {
+  assessDurableCheckpoints,
+  assessSavedTask,
+  prepareInspectedTextTarget,
+  type DurableProgramAssessment,
+} from './saved-task-assessment.js';
 import { prepareOfficeWorkflow, type OfficeWorkflow } from './office-workflows.js';
 import { TaskJournal } from './task-journal.js';
 import { prepareNativeOperationPreconditions } from './native-operation-preflight.js';
@@ -16,6 +24,7 @@ import type {
   SourceLimits,
   DurableCommandProgram,
   DurableProgramStage,
+  DurableInspectionEvidence,
 } from '@ge/contracts';
 import type { EvidencePipeline } from './evidence.js';
 import type { ComputeEngine } from '@ge/compute';
@@ -88,6 +97,7 @@ import {
   CapabilityManifestSchema,
   isCommandParseError,
   isProgramExpr,
+  isProgramCommand,
   isProgramAnalysisBinding,
   isProgramVerifiedFinish,
   isProgramSkillCall,
@@ -709,6 +719,7 @@ export class AssistSession {
   private readonly evidenceBindings = new Map<string, EvidenceBinding>();
   private activeEvidence?: EvidenceBinding;
   private preparingEvidence = false;
+  private inspectedDurableRun = false;
   private readonly analysisBindings = new AnalysisBindings();
   private readonly commandContext: CommandContextSession;
   private lastCommandDocState?: { signature: string; session?: SessionId };
@@ -829,7 +840,17 @@ export class AssistSession {
       const deferred = new Set<string>();
       let needsUser = false;
       for await (const event of run()) {
-        signal?.throwIfAborted();
+        // A native write may finish after cancellation. Its already-recorded correlated receipt
+        // still belongs in the pane even though later narration and work must stop.
+        const receiptEvent = event as unknown as CommandLoopEvent;
+        const recordedReceipt =
+          receiptEvent?.type === 'write-result' &&
+          task.effects.some(
+            (effect) =>
+              effect.changeId === receiptEvent.result.changeId &&
+              effect.kind === receiptEvent.result.kind,
+          );
+        if (!recordedReceipt) signal?.throwIfAborted();
         if (event && typeof event === 'object' && 'type' in event) {
           const loopEvent = event as unknown as CommandLoopEvent;
           if (loopEvent.type === 'capped' && loopEvent.deferred !== undefined) {
@@ -2146,18 +2167,165 @@ export class AssistSession {
   }
 
   async inspectDurableProgram(id: string) {
-    if (this.task) throw new Error('Wait for the active task before inspecting a saved program.');
-    await this.bindTaskJournal();
-    if (!this.journal || !this.bridge.documentKey?.() || !this.options.durablePrograms)
-      throw new Error(
-        'Durable programs require saved document identity, a scoped journal and program storage.',
+    return this.withDurableInspection((runner) => runner.inspect(id));
+  }
+
+  private async withDurableInspection<T>(
+    read: (runner: DurableProgramRunner) => Promise<T>,
+  ): Promise<T> {
+    if (this.disposed || this.task || this.preparingEvidence)
+      throw new Error('Wait for the active task before inspecting saved work.');
+    this.preparingEvidence = true;
+    try {
+      await this.bindTaskJournal();
+      const key = this.bridge.documentKey?.();
+      if (!this.journal || !key || !this.options.durablePrograms)
+        throw new Error(
+          'Durable programs require saved document identity, a scoped journal and program storage.',
+        );
+      const result = await read(
+        new DurableProgramRunner(this.options.durablePrograms, this.journal.scopeKey),
       );
-    const record = await new DurableProgramRunner(
-      this.options.durablePrograms,
-      this.journal.scopeKey,
-    ).inspect(id);
-    await this.options.validatePrincipal?.();
-    return record;
+      await this.options.validatePrincipal?.();
+      if (this.bridge.documentKey?.() !== key)
+        throw new Error('The active document changed during saved task inspection.');
+      return result;
+    } finally {
+      this.preparingEvidence = false;
+    }
+  }
+
+  async listDurablePrograms(): Promise<DurableProgramSummary[]> {
+    return this.withDurableInspection((runner) => runner.list());
+  }
+
+  /** Saving stores authored commands and declared inputs. It does not execute or grant approval. */
+  async saveDurableProgram(program: DurableCommandProgram): Promise<void> {
+    await this.withDurableInspection(async (runner) => {
+      const sources = await validateDurableSources(program, this.bridge);
+      if (sources.status !== 'current')
+        throw new Error(sources.reason ?? 'The task inputs are not current.');
+      await runner.save(program);
+    });
+  }
+
+  async assessDurableProgram(
+    id: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<DurableProgramAssessment | undefined> {
+    return this.withDurableInspection(async (runner) => {
+      const record = await runner.inspect(id);
+      if (!record) return undefined;
+      const assessment = await assessSavedTask(record, this.bridge, options);
+      const available = new Set(
+        (await this.effectiveCapabilities()).actuations.map((actuation) => actuation.kind),
+      );
+      for (const checkpoint of record.stages.filter((stage) => stage.state === 'pending')) {
+        const stage = record.program.stages.find((stage) => stage.id === checkpoint.id)!;
+        for (const entry of parseProgramBlock('```cmd\n' + stage.program + '\n```').entries) {
+          if (!isProgramCommand(entry) || entry.verb === 'done') continue;
+          const compiled = compileCommand(entry, {
+            surface: record.program.surface,
+            mintChangeId: () => asChangeId('saved-task-inspection'),
+          });
+          if (
+            !isCompileError(compiled) &&
+            compiled.kind === 'write' &&
+            !available.has(compiled.request.kind)
+          ) {
+            assessment.blockers.push(
+              'A remaining task operation is unavailable in the current host or release profile.',
+            );
+            assessment.canResume = false;
+          }
+        }
+      }
+      assessment.blockers = [...new Set(assessment.blockers)];
+      return assessment;
+    });
+  }
+
+  /** Hiding retains verified claims and the task ID; it deliberately does not delete replay guards. */
+  async archiveDurableProgram(id: string): Promise<void> {
+    await this.withDurableInspection((runner) => runner.archive(id));
+  }
+
+  /** Canned UI path uses current native sources and correlated readback, never a persisted boolean validator. */
+  async *runInspectedDurableProgram(
+    id: string,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const key = this.bridge.documentKey?.();
+    const assessment = await this.assessDurableProgram(id, { signal: opts.signal });
+    if (!assessment?.canResume)
+      throw new Error(assessment?.blockers.join(' ') ?? 'This saved task is unavailable.');
+    const program = assessment.record.program;
+    if (!key || key !== this.bridge.documentKey?.())
+      throw new Error('The active document changed during saved task inspection.');
+    const guard = async (): Promise<void> => {
+      opts.signal?.throwIfAborted();
+      await opts.beforeDispatch?.();
+      await this.options.validatePrincipal?.();
+      if (!key || key !== this.bridge.documentKey?.())
+        throw new Error('The saved task belongs to a different document.');
+      const sources = await validateDurableSources(program, this.bridge, { signal: opts.signal });
+      if (sources.status !== 'current')
+        throw new Error(sources.reason ?? 'Saved task sources changed.');
+      if (!this.journal || !this.options.durablePrograms)
+        throw new Error('Task storage is unavailable.');
+      const current = await new DurableProgramRunner(
+        this.options.durablePrograms,
+        this.journal.scopeKey,
+      ).inspect(id);
+      if (!current || current.fingerprint !== assessment.record.fingerprint || current.archivedAt)
+        throw new Error('The saved task changed during validation.');
+      const completed = await assessDurableCheckpoints(
+        current.stages.filter((stage) => stage.state === 'verified'),
+        this.bridge,
+        { signal: opts.signal },
+      );
+      if (completed.some((stage) => stage.status !== 'current'))
+        throw new Error('An earlier output changed or lacks native readback support.');
+      await this.options.validatePrincipal?.();
+      if (key !== this.bridge.documentKey?.())
+        throw new Error('The active document changed during task validation.');
+      opts.signal?.throwIfAborted();
+    };
+    const guardedOptions = {
+      ...opts,
+      beforeDispatch: guard,
+      revalidate: async () => {
+        await guard();
+        return true;
+      },
+    };
+    yield* this.withTask(
+      'program',
+      `durable:${program.id}`,
+      opts.signal,
+      () => this.runInspectedProgramCore(program, guardedOptions, guard),
+      undefined,
+      opts.evidenceBinding,
+    );
+  }
+
+  private async *runInspectedProgramCore(
+    program: DurableCommandProgram,
+    opts: RunCommandsOptions & {
+      revalidate?: (
+        program: DurableCommandProgram,
+        checkpoints: DurableStageCheckpoint[],
+      ) => Promise<boolean>;
+    },
+    guard: () => Promise<void>,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    await guard();
+    this.inspectedDurableRun = true;
+    try {
+      yield* this.runDurableProgramCore(program, opts);
+    } finally {
+      this.inspectedDurableRun = false;
+    }
   }
 
   /** Explicit inspected decision; pending work still requires new approval on its next run. */
@@ -2234,7 +2402,10 @@ export class AssistSession {
 
   private async *runDurableStage(
     stage: DurableProgramStage,
-    checkpointEffect: (request: ActuationRequest) => Promise<void>,
+    checkpointEffect: (
+      request: ActuationRequest,
+      inspection?: DurableInspectionEvidence,
+    ) => Promise<void>,
     assertOwned: () => Promise<void>,
     opts: RunCommandsOptions,
   ): AsyncGenerator<SseEvent | CommandLoopEvent, ActuationResult[]> {
@@ -2251,24 +2422,34 @@ export class AssistSession {
       approveShare: () => false,
       approvePlan: async (effects) => {
         if (invalid || effects.length !== 1) return false;
-        await checkpointEffect(effects[0]!.request);
+        const context = await this.applicationContext();
+        await checkpointEffect(
+          effects[0]!.request,
+          deriveDurableInspection(effects[0]!.request, context.documentId),
+        );
         if (opts.approvePlan) return this.callApprovePlan(opts.approvePlan, effects);
         return opts.approveWrite ? opts.approveWrite(effects[0]!.request) : false;
       },
     };
-    for await (const event of this.runCommandProgramCore(stage.program, stageOptions)) {
-      if (
-        event.type === 'capped' ||
-        event.type === 'error' ||
-        event.type === 'needs-user' ||
-        (event.type === 'command' && isCompileError(event.compiled)) ||
-        (event.type === 'read-result' &&
-          event.result !== null &&
-          typeof event.result === 'object' &&
-          'error' in event.result)
-      )
-        invalid = true;
-      if (event.type !== 'done') yield event;
+    try {
+      for await (const event of this.runCommandProgramCore(stage.program, stageOptions)) {
+        if (
+          event.type === 'capped' ||
+          event.type === 'error' ||
+          event.type === 'needs-user' ||
+          (event.type === 'command' && isCompileError(event.compiled)) ||
+          (event.type === 'read-result' &&
+            event.result !== null &&
+            typeof event.result === 'object' &&
+            'error' in event.result)
+        )
+          invalid = true;
+        if (event.type !== 'done') yield event;
+      }
+    } catch (error) {
+      // Settle an already observed native receipt even when cancellation interrupted finish/control
+      // processing. The program remains cancelled; no later stage receives dispatch authority.
+      if (!opts.signal?.aborted || invalid) throw error;
     }
     return this.task!.effects.slice(start);
   }
@@ -3393,6 +3574,10 @@ export class AssistSession {
         return { error: `"${command.verb}" did not compile to a write` };
 
       compiled.request = await prepareNativeOperationPreconditions(compiled.request, this.bridge);
+      if (this.inspectedDurableRun)
+        compiled.request = await prepareInspectedTextTarget(compiled.request, this.bridge, {
+          signal: this.task?.signal,
+        });
 
       const effect: PlanEffect = {
         request: compiled.request,

@@ -15,6 +15,8 @@ import {
   type ActuationRequest,
   type DurableCommandProgram,
   type DurableProgramStage,
+  DurableInspectionEvidenceSchema,
+  type DurableInspectionEvidence,
 } from '@ge/contracts';
 
 const HASH = /^sha256:[a-f0-9]{64}$/;
@@ -45,6 +47,7 @@ const CheckpointSchema = z
       .max(16)
       .default([]),
     receipt: ActuationResultSchema.optional(),
+    inspection: DurableInspectionEvidenceSchema.optional(),
   })
   .strict();
 const RecordSchema = z
@@ -55,27 +58,52 @@ const RecordSchema = z
     updatedAt: z.string().datetime(),
     runId: z.string().uuid().optional(),
     stages: z.array(CheckpointSchema).max(32),
+    archivedAt: z.string().datetime().optional(),
   })
   .strict();
 export type DurableProgramRecord = z.infer<typeof RecordSchema>;
 export type DurableStageCheckpoint = z.infer<typeof CheckpointSchema>;
-const HistorySchema = z.array(RecordSchema).max(32);
+export interface DurableProgramSummary {
+  id: string;
+  surface: DurableCommandProgram['surface'];
+  updatedAt: string;
+  stageCount: number;
+  verifiedStages: number;
+  state: 'ready' | 'partial' | 'verified' | 'blocked' | 'archived';
+  durable: boolean;
+}
+const HistorySchema = z
+  .array(RecordSchema)
+  .max(
+    32,
+    'Saved task scope is full. Hidden tasks retain safety history and still count toward this quota.',
+  );
 function history(raw: unknown): DurableProgramRecord[] {
   const records = HistorySchema.parse(raw === undefined ? [] : raw);
   if (new Set(records.map((record) => record.program.id)).size !== records.length)
     throw new Error('Duplicate durable program IDs.');
   for (const record of records) {
     if (
+      (record.archivedAt &&
+        (record.runId || record.stages.some((stage) => stage.state !== 'verified'))) ||
       record.stages.length !== record.program.stages.length ||
       record.stages.some(
         (stage, index) =>
           stage.id !== record.program.stages[index]?.id ||
+          (stage.inspection &&
+            (!stage.effect ||
+              stage.inspection.changeId !== stage.effect.changeId ||
+              stage.inspection.operationKind !== stage.effect.kind ||
+              (stage.inspection.kind === 'cells'
+                ? record.program.surface !== 'excel'
+                : stage.inspection.surface !== record.program.surface))) ||
           (stage.state === 'verified' &&
             (!stage.effect ||
               !stage.receipt ||
               stage.receipt.changeId !== stage.effect.changeId ||
               stage.receipt.kind !== stage.effect.kind ||
-              assessActuationResult(stage.receipt) !== 'verified')) ||
+              assessActuationResult(stage.receipt) !== 'verified' ||
+              stage.receipt.trackingModeRestoreFailed)) ||
           (stage.state === 'pending' &&
             stage.receipt &&
             !['failed', 'rejected'].includes(assessActuationResult(stage.receipt))),
@@ -84,7 +112,9 @@ function history(raw: unknown): DurableProgramRecord[] {
       throw new Error('Durable checkpoints do not match their program or verified receipts.');
   }
   if (new TextEncoder().encode(JSON.stringify(records)).byteLength > 8 * 1024 * 1024)
-    throw new Error('Durable program storage exceeds 8 MiB. Archive completed tasks explicitly.');
+    throw new Error(
+      'Durable program storage exceeds 8 MiB. Hiding completed tasks retains safety history and does not free this quota.',
+    );
   return records;
 }
 /** update must be atomic across panes. No get/set emulation is safe for claims. */
@@ -178,6 +208,7 @@ function checkpointReceipt(raw: ActuationResult): ActuationResult {
         }
       : {}),
     ...(raw.recoveryPending ? { recoveryPending: true } : {}),
+    ...(raw.trackingModeRestoreFailed ? { trackingModeRestoreFailed: true } : {}),
   });
 }
 function validateProgram(input: DurableCommandProgram): DurableCommandProgram {
@@ -214,6 +245,77 @@ export class DurableProgramRunner {
       throw new Error('Saved program fingerprint mismatch.');
     return structuredClone(record);
   }
+  /** List metadata only. Hiding a completed task preserves its deduplication claim and quota. */
+  async list(): Promise<DurableProgramSummary[]> {
+    const records = history(await this.store.read(this.scope));
+    for (const record of records)
+      if ((await contentHash(record.program)) !== record.fingerprint)
+        throw new Error('Saved program fingerprint mismatch.');
+    return records
+      .filter((record) => !record.archivedAt)
+      .map((record) => ({
+        id: record.program.id,
+        surface: record.program.surface,
+        updatedAt: record.updatedAt,
+        stageCount: record.stages.length,
+        verifiedStages: record.stages.filter((stage) => stage.state === 'verified').length,
+        state:
+          record.runId ||
+          record.stages.some((stage) => ['running', 'blocked'].includes(stage.state))
+            ? 'blocked'
+            : record.stages.every((stage) => stage.state === 'verified')
+              ? 'verified'
+              : record.stages.some((stage) => stage.state === 'verified')
+                ? 'partial'
+                : 'ready',
+        durable: this.store.durable,
+      }));
+  }
+  /** Save exact source only. This method never captures an approval or calls a host. */
+  async save(input: DurableCommandProgram): Promise<void> {
+    const program = validateProgram(input);
+    const fingerprint = await contentHash(program);
+    await this.store.update(this.scope, (raw) => {
+      const records = history(raw);
+      const prior = records.find((record) => record.program.id === program.id);
+      if (prior?.archivedAt)
+        throw new Error('This completed task ID is hidden and cannot be reused.');
+      if (prior && prior.fingerprint !== fingerprint)
+        throw new Error('Saved program changed. Use a new task ID and review it.');
+      if (prior) return records;
+      return history([
+        ...records,
+        {
+          version: 1,
+          program,
+          fingerprint,
+          updatedAt: new Date().toISOString(),
+          stages: program.stages.map((stage) => ({
+            id: stage.id,
+            state: 'pending' as const,
+            inspections: [],
+          })),
+        },
+      ]);
+    });
+  }
+  /** Hide completed work without deleting the authority that prohibits replay under its task ID. */
+  async archive(id: string): Promise<void> {
+    const prior = await this.inspect(id);
+    if (!prior) throw new Error('This saved task is unavailable.');
+    await this.store.update(this.scope, (raw) =>
+      history(raw).map((record) => {
+        if (record.program.id !== id) return record;
+        if (
+          record.fingerprint !== prior.fingerprint ||
+          record.runId ||
+          record.stages.some((stage) => stage.state !== 'verified')
+        )
+          throw new Error('Only fully verified tasks without an active owner can be hidden.');
+        return { ...record, archivedAt: record.archivedAt ?? new Date().toISOString() };
+      }),
+    );
+  }
   /** Explicit operator reconciliation after all dispatching panes have stopped. Never a timed retry lease. */
   async reconcile(
     id: string,
@@ -230,6 +332,7 @@ export class DurableProgramRunner {
     const stage = record?.stages.find((item) => item.id === stageId);
     if (!record || !stage || !['running', 'blocked'].includes(stage.state))
       throw new Error('Only an interrupted or blocked stage can be reconciled.');
+    if (record.archivedAt) throw new Error('A hidden completed task cannot be reconciled.');
     if (!stage.startedAt || Date.now() - Date.parse(stage.startedAt) < 5 * 60 * 1000)
       throw new Error(
         'This stage may still be in flight. Wait five minutes and stop other panes before inspection.',
@@ -253,7 +356,8 @@ export class DurableProgramRunner {
         !stage.effect ||
         receipt.changeId !== stage.effect.changeId ||
         receipt.kind !== stage.effect.kind ||
-        assessActuationResult(receipt) !== 'verified'
+        assessActuationResult(receipt) !== 'verified' ||
+        receipt.trackingModeRestoreFailed
       )
         throw new Error(
           'Reconciliation requires a correlated native verified receipt and current source/output inspection.',
@@ -305,7 +409,10 @@ export class DurableProgramRunner {
     input: DurableCommandProgram,
     execute: (
       stage: DurableProgramStage,
-      checkpointEffect: (request: ActuationRequest) => Promise<void>,
+      checkpointEffect: (
+        request: ActuationRequest,
+        inspection?: DurableInspectionEvidence,
+      ) => Promise<void>,
       assertOwned: () => Promise<void>,
     ) => AsyncGenerator<E, ActuationResult[]>,
     options: {
@@ -324,6 +431,8 @@ export class DurableProgramRunner {
     await this.store.update(this.scope, (raw) => {
       const records = history(raw);
       const prior = records.find((record) => record.program.id === program.id);
+      if (prior?.archivedAt)
+        throw new Error('This completed task ID is hidden and cannot be reused.');
       if (prior && prior.fingerprint !== fingerprint)
         throw new Error('Saved program changed. Use a new task ID and review it.');
       if (prior?.runId)
@@ -404,8 +513,21 @@ export class DurableProgramRunner {
         );
         // Crashes/abandoned iterators leave the durable running claim. No lease expiry grants replay.
         let activeRequest: ActuationRequest | undefined;
-        const checkpointEffect = async (rawRequest: ActuationRequest): Promise<void> => {
+        const checkpointEffect = async (
+          rawRequest: ActuationRequest,
+          rawInspection?: DurableInspectionEvidence,
+        ): Promise<void> => {
           const request = ActuationRequestSchema.parse(rawRequest);
+          const inspection = rawInspection && DurableInspectionEvidenceSchema.parse(rawInspection);
+          if (
+            inspection &&
+            (inspection.operationKind !== request.kind ||
+              inspection.changeId !== request.changeId ||
+              (inspection.kind === 'cells'
+                ? request.surface !== 'excel'
+                : inspection.surface !== request.surface))
+          )
+            throw new Error('Native inspection evidence belongs to a different effect.');
           activeRequest = request;
           const effect = {
             changeId: request.changeId,
@@ -428,7 +550,9 @@ export class DurableProgramRunner {
               return {
                 ...record,
                 stages: record.stages.map((item) =>
-                  item.id === stage.id ? { ...item, effect } : item,
+                  item.id === stage.id
+                    ? { ...item, effect, ...(inspection ? { inspection } : {}) }
+                    : item,
                 ),
               };
             }),
@@ -457,7 +581,8 @@ export class DurableProgramRunner {
         const verified =
           correlated &&
           assessActuationResult(receipts[0]!) === 'verified' &&
-          !receipts[0]!.recoveryPending;
+          !receipts[0]!.recoveryPending &&
+          !receipts[0]!.trackingModeRestoreFailed;
         const cleanRefusal =
           correlated && ['failed', 'rejected'].includes(assessActuationResult(receipts[0]!));
         await this.store.update(this.scope, (raw) =>

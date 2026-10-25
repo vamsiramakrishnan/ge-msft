@@ -168,6 +168,38 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')(
           state: 'verified',
           receipt: { changeId: 'native-change', verification: { status: 'verified' } },
         });
+        await second.evaluate(async (scope) => {
+          const module = (globalThis as unknown as { GEDurable: typeof DurableModule }).GEDurable;
+          const runner = new module.DurableProgramRunner(
+            new module.IndexedDbDurableProgramStore(),
+            scope,
+          );
+          await runner.archive('browser');
+        }, scope);
+        await second.reload();
+        expect(
+          await second.evaluate(async (scope) => {
+            const module = (globalThis as unknown as { GEDurable: typeof DurableModule }).GEDurable;
+            const runner = new module.DurableProgramRunner(
+              new module.IndexedDbDurableProgramStore(),
+              scope,
+            );
+            const record = await runner.inspect('browser');
+            let reused = false;
+            try {
+              await runner.save(record!.program);
+              reused = true;
+            } catch {
+              /* retained claim rejects reuse */
+            }
+            return {
+              visible: (await runner.list()).length,
+              hidden: Boolean(record?.archivedAt),
+              retained: record?.stages[0]?.receipt?.changeId,
+              reused,
+            };
+          }, scope),
+        ).toEqual({ visible: 0, hidden: true, retained: 'native-change', reused: false });
       } finally {
         await context.close();
       }

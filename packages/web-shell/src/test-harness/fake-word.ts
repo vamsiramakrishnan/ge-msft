@@ -77,7 +77,13 @@ function bodyText(seed: WordSeed): string {
 
 /* ─────────────────────────── fake object model ─────────────────────────── */
 
-const INSERT_LOCATION = { replace: 'Replace', start: 'Start', end: 'End' } as const;
+const INSERT_LOCATION = {
+  replace: 'Replace',
+  start: 'Start',
+  end: 'End',
+  before: 'Before',
+  after: 'After',
+} as const;
 const CHANGE_TRACKING_MODE = { trackAll: 'TrackAll', off: 'Off' } as const;
 
 /** One `insertText` call, and the font the bridge then set on the returned range. */
@@ -199,6 +205,7 @@ class FakeParagraphBlock {
 
 class FakeSearchResult {
   text: string;
+  private readonly reviewedSpan?: { paragraph: number; prefix: string; suffix: string };
   /** Set for a find/replace hit: the exact occurrence a write replaces. */
   position: { para: number; start: number; length: number } | undefined;
   /** For a word from `getTextRanges`: its position and the hit's words. */
@@ -209,6 +216,33 @@ class FakeSearchResult {
     matchText: string,
   ) {
     this.text = matchText;
+    const paragraph = seed.paragraphs.findIndex((p) =>
+      p.text.toLowerCase().includes(matchText.toLowerCase()),
+    );
+    if (paragraph >= 0) {
+      const text = seed.paragraphs[paragraph]!.text;
+      const start = text.toLowerCase().indexOf(matchText.toLowerCase());
+      this.reviewedSpan = {
+        paragraph,
+        prefix: text.slice(0, start),
+        suffix: text.slice(start + matchText.length),
+      };
+    }
+  }
+  /** Current native text is derived from live content, not from the requested replacement. */
+  getReviewedText(version: string): { readonly value: string } {
+    if (version !== 'Current' || !this.reviewedSpan)
+      throw new Error('Simulated revision range unavailable.');
+    const { paragraph, prefix, suffix } = this.reviewedSpan;
+    const seed = this.seed;
+    return {
+      get value() {
+        const text = seed.paragraphs[paragraph]?.text;
+        if (text === undefined || !text.startsWith(prefix) || !text.endsWith(suffix))
+          throw new Error('Simulated revision range drifted.');
+        return text.slice(prefix.length, suffix.length ? text.length - suffix.length : undefined);
+      },
+    };
   }
   load(_props?: string): this {
     return this;
@@ -311,7 +345,7 @@ class FakeSearchResult {
     this.seed.tables = [...(this.seed.tables ?? []), values];
   }
   /** The tracked-change WRITE: replace the first occurrence of the anchor in the body. */
-  insertText(text: string, _location: string): FakeInsertedRange {
+  insertText(text: string, location: string): FakeInsertedRange {
     const entry: WordInsertRecord = {
       anchor: this.text,
       text,
@@ -320,8 +354,16 @@ class FakeSearchResult {
     this.seed.inserts.push(entry);
     const at = this.position;
     const p = at ? this.seed.paragraphs[at.para] : undefined;
-    if (at && p) p.text = p.text.slice(0, at.start) + text + p.text.slice(at.start + at.length);
-    else replaceFirst(this.seed, this.text, text);
+    const prior = at && p ? p.text.slice(at.start, at.start + at.length) : this.text;
+    const replacement =
+      location === 'Before' || location === 'Start'
+        ? text + prior
+        : location === 'After' || location === 'End'
+          ? prior + text
+          : text;
+    if (at && p)
+      p.text = p.text.slice(0, at.start) + replacement + p.text.slice(at.start + at.length);
+    else replaceFirst(this.seed, this.text, replacement);
     return insertedRange(entry);
   }
   /** Comments-as-citations WRITE. */
@@ -462,6 +504,21 @@ class FakeBody {
   getComments(): FakeCommentCollection {
     return new FakeCommentCollection(this.seed);
   }
+  insertText(text: string, location: string): FakeInsertedRange {
+    const entry: WordInsertRecord = {
+      anchor: `body:${location.toLowerCase()}`,
+      text,
+      tracked: this.seed.changeTrackingMode === 'TrackAll',
+    };
+    this.seed.inserts.push(entry);
+    if (!this.seed.paragraphs.length)
+      this.seed.paragraphs.push({ text: '', styleBuiltIn: 'Normal' });
+    if (location === 'Start') this.seed.paragraphs[0]!.text = text + this.seed.paragraphs[0]!.text;
+    else if (location === 'End')
+      this.seed.paragraphs[this.seed.paragraphs.length - 1]!.text += text;
+    else throw new Error('The fake body supports explicit start/end insertion only.');
+    return insertedRange(entry);
+  }
 }
 
 class FakeSelection {
@@ -514,15 +571,21 @@ class FakeSelection {
       : undefined;
   }
   /** Overwrite the selected text (the only location the bridge uses on a selection is replace). */
-  insertText(text: string, _location: string): FakeInsertedRange {
+  insertText(text: string, location: string): FakeInsertedRange {
     const entry: WordInsertRecord = {
       anchor: this.seed.selectionText,
       text,
       tracked: this.seed.changeTrackingMode === 'TrackAll',
     };
     this.seed.inserts.push(entry);
-    replaceFirst(this.seed, this.seed.selectionText, text);
-    this.seed.selectionText = text;
+    const replacement =
+      location === 'Before' || location === 'Start'
+        ? text + this.seed.selectionText
+        : location === 'After' || location === 'End'
+          ? this.seed.selectionText + text
+          : text;
+    replaceFirst(this.seed, this.seed.selectionText, replacement);
+    this.seed.selectionText = replacement;
     return insertedRange(entry);
   }
   insertOoxml(ooxml: string, location: string): void {

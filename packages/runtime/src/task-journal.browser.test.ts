@@ -42,14 +42,19 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')('IndexedDB cross-pane 
         request.url === '/journal.js' ? 'text/javascript' : 'text/html',
       );
       response.end(
-        request.url === '/journal.js' ? source : '<!doctype html><title>Journal contract</title>',
+        request.url === '/journal.js'
+          ? source
+          : '<!doctype html><title>Journal contract</title><script type="module">import * as journal from "/journal.js";window.GEJournal=journal;</script>',
       );
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Local test origin unavailable.');
     origin = `http://127.0.0.1:${address.port}`;
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: process.env.GE_BROWSER_EXECUTABLE,
+    });
   }, 30000);
   beforeEach(async () => {
     context = await browser.newContext();
@@ -70,8 +75,8 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')('IndexedDB cross-pane 
     const second = await context.newPage();
     await Promise.all([first.goto(origin), second.goto(origin)]);
     await first.evaluate(async (scope) => {
-      const url = '/journal.js';
-      const module = (await import(url)) as typeof import('./task-journal.js');
+      const module = (globalThis as unknown as { GEJournal: typeof import('./task-journal.js') })
+        .GEJournal;
       const journal = new module.TaskJournal(new module.IndexedDbTaskJournalStore(), scope);
       const request: ActuationRequest = {
         changeId: 'first' as ActuationRequest['changeId'],
@@ -100,8 +105,8 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')('IndexedDB cross-pane 
       () => (window as unknown as { journalTest: BrowserState }).journalTest.started,
     );
     const conflict = await second.evaluate(async (scope) => {
-      const url = '/journal.js';
-      const module = (await import(url)) as typeof import('./task-journal.js');
+      const module = (globalThis as unknown as { GEJournal: typeof import('./task-journal.js') })
+        .GEJournal;
       const journal = new module.TaskJournal(new module.IndexedDbTaskJournalStore(), scope);
       let dispatched = false;
       try {
@@ -136,8 +141,8 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')('IndexedDB cross-pane 
     const reopened = await context.newPage();
     await reopened.goto(origin);
     const history = await reopened.evaluate(async (scope) => {
-      const url = '/journal.js';
-      const module = (await import(url)) as typeof import('./task-journal.js');
+      const module = (globalThis as unknown as { GEJournal: typeof import('./task-journal.js') })
+        .GEJournal;
       const journal = new module.TaskJournal(new module.IndexedDbTaskJournalStore(), scope);
       return { durable: journal.durable, entries: await journal.inspect() };
     }, scope);
@@ -147,8 +152,8 @@ describe.skipIf(process.env.GE_BROWSER_CONTRACTS !== '1')('IndexedDB cross-pane 
     const page = await context.newPage();
     await page.goto(origin);
     const result = await page.evaluate(async (scope) => {
-      const url = '/journal.js';
-      const module = (await import(url)) as typeof import('./task-journal.js');
+      const module = (globalThis as unknown as { GEJournal: typeof import('./task-journal.js') })
+        .GEJournal;
       const store = new module.IndexedDbTaskJournalStore();
       await store.update(scope, () => []);
       let rejected = false;

@@ -130,3 +130,20 @@ cross-application artifact coordination, and supported Outlook compose/send-even
 They remain explicit backlog work. Promote each through the same contract, approval and
 native-certification boundary; do not advertise a catalog-only API or substitute a static grid
 for a requested native object.
+
+
+## Validation of this increment
+
+The local suite passed 3,729 tests with 24 optional skips. The separate Chromium contract run
+passed both IndexedDB tests, covering competing panes, reopening and transaction rollback.
+Twenty-one screenshots were inspected at 320/360/480 pixels across filled workflow forms,
+managed refresh, native fixture controls, unavailable report and interrupted-change inspection.
+New controls wrap within the pane; the older Settings rail label clipping remains unchanged.
+CI runs the same browser contracts and retains its screenshots. These browser fixtures use
+explicit sample data and establish no native Office or model-task success.
+
+TypeScript, lint/design checks, production builds, generated metadata, secret scanning, 76
+Python parity cases, six manifest tests, 40 tooling tests, 14 deterministic evals and source-exact
+skill archives passed. Independent security review verified fixes for external workbook aliases,
+fallback aggregate limits and successful Word receipt preservation during cleanup failures.
+Final-head native Office and tenant model scenarios remain outstanding.

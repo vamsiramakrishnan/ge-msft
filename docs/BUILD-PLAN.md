@@ -285,7 +285,7 @@ See `VERIFIED-OFFICE-WORKFLOWS.md` for exact implemented and remaining boundarie
 - [x] Add contract-review/response entry points through the existing executor.
 - [x] Extend deck compiler with editable charts, themes and explicit layout checks.
 - [x] Add native fixtures, exact-commit report checking and host doctor tooling.
-- [ ] Complete browser IndexedDB and 320/360/480 workflow panel screenshot acceptance.
+- [x] Complete browser IndexedDB and 320/360/480 workflow panel screenshot acceptance.
 - [ ] Run final-commit native Office fixtures and tenant model scenarios.
 - [ ] Expand strict modules/verifiers across the remaining operation catalog.
 - [ ] Implement native dependency graphs, full task continuation and cross-application orchestration.
@@ -294,3 +294,9 @@ See `VERIFIED-OFFICE-WORKFLOWS.md` for exact implemented and remaining boundarie
 Security review identified external workbook formula aliases, aggregate fallback limits and
 tracking-mode cleanup receipt loss; regression fixes are included. Native/browser acceptance
 is recorded separately and must not be inferred from the simulator suite.
+
+Browser acceptance: two real Chromium IndexedDB tests pass (cross-pane claims/reopen and
+transaction rollback). Inspected 21 screenshots at 320/360/480: filled contract review,
+managed text refresh, response package, native fixture controls, unavailable report and
+interrupted changes before/after inspection acknowledgement. New controls do not overflow;
+pre-existing Settings rail text clipping remains outside this increment. CI retains screenshots.

@@ -8,7 +8,7 @@ import {
   type ProvenancePayload,
 } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
-import { ExcelBridge } from './excel-bridge.js';
+import { ExcelBridge, MAX_SNAPSHOT_COLUMNS } from './excel-bridge.js';
 import { chartAreas } from './actuate-plan.js';
 
 /**
@@ -1260,6 +1260,75 @@ describe('ExcelBridge.resolveContext (host wiring)', () => {
 });
 
 describe('ExcelBridge.captureDocState (ADR-0003 outline)', () => {
+  it('bounds ambient values before loading a large used range and keeps its dimensions and columns', async () => {
+    const columns = Array.from({ length: 40 }, (_, i) => `Header ${i + 1}`);
+    const seed = seedOf({
+      sheets: [{ name: 'Data', origin: 'D5', values: [columns, ...Array(19999).fill(['body'])] }],
+      selection: 'Data!D5',
+    });
+    active = installExcel(seed);
+    const real = FakeRange.prototype.load;
+    const reads: string[] = [];
+    const load = vi.spyOn(FakeRange.prototype, 'load').mockImplementation(function (
+      this: FakeRange,
+      fields?: string,
+    ) {
+      if (fields?.split(',').includes('values')) {
+        const a1 = (this as unknown as { a1: string }).a1;
+        const { rows, cols } = parseA1(a1);
+        if (rows * cols > MAX_SNAPSHOT_COLUMNS)
+          throw new Error('Ambient values were requested before bounding the host read.');
+        reads.push(a1);
+      }
+      return real.call(this, fields);
+    });
+    try {
+      const snapshot = await new ExcelBridge().captureDocState();
+      expect(reads).toEqual(['D5', 'D5:AI5']);
+      expect(snapshot?.selection?.preview).toContain('Header 1');
+      expect(snapshot?.inventory.find((entry) => entry.kind === 'table')).toMatchObject({
+        id: 'range:Data!D5:AQ20004',
+        summary: '20000 rows × 40 columns',
+      });
+      expect(snapshot?.inventory.find((entry) => entry.kind === 'table')?.title).toContain(
+        'Header 32',
+      );
+      expect(snapshot?.inventory.find((entry) => entry.kind === 'table')?.title).not.toContain(
+        'Header 33',
+      );
+      expect(snapshot?.truncated).toBe(true);
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it('flags worksheet omissions before the ambient inventory is capped', async () => {
+    active = installExcel(
+      seedOf({
+        sheets: Array.from({ length: 31 }, (_, i) => ({
+          name: `Sheet${i + 1}`,
+          origin: 'A1',
+          values: [['column']],
+        })),
+      }),
+    );
+    const snapshot = await new ExcelBridge().captureDocState();
+    expect(snapshot?.inventory.filter((entry) => entry.kind === 'sheet')).toHaveLength(30);
+    expect(snapshot?.truncated).toBe(true);
+  });
+
+  it('flags named-range omissions independently of worksheet and column caps', async () => {
+    const seed = salesSeed();
+    seed.namedRanges = Array.from({ length: 61 }, (_, i) => ({
+      name: `Range${i + 1}`,
+      range: 'Sales!A1',
+    }));
+    active = installExcel(seed);
+    const snapshot = await new ExcelBridge().captureDocState();
+    expect(snapshot?.namedRanges).toHaveLength(60);
+    expect(snapshot?.truncated).toBe(true);
+  });
+
   it('snapshots the used range, selection, and named ranges; bumps version each capture', async () => {
     active = installExcel(salesSeed());
     const bridge = new ExcelBridge();

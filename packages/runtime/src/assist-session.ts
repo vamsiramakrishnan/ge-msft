@@ -91,6 +91,7 @@ import {
 } from '@ge/contracts';
 import { commandRef, estimateTokens, renderDocState } from '@ge/content';
 import { MAX_REFERENCE_READS, referenceCandidates, searchTerms } from './chat-reads.js';
+import { boundedChatContext, type ChatReads } from './chat-context.js';
 import {
   SessionContext,
   StreamAssistClient,
@@ -1505,10 +1506,18 @@ export class AssistSession {
     if (this.lazyReadEnabled && query.trim().length > 0) {
       try {
         const reads = await this.chatReads(query, snapshot);
-        for (let i = 0; i < Math.min(reads.length, this.maxReads); i++) {
-          const id = `${READ_REF_PREFIX}${i}`;
-          ephemeralIds.push(id);
-          this.context.add(framedRead(reads[i]!, id));
+        const parts = boundedChatContext(
+          reads.parts.map((read, i) => framedRead(read, `${READ_REF_PREFIX}${i}`)),
+          {
+            surface: this.bridge.surface,
+            maxReads: this.maxReads,
+            omittedParts: reads.omittedParts,
+            coverage: reads.coverage,
+          },
+        );
+        for (const part of parts) {
+          ephemeralIds.push(part.ref.id);
+          this.context.add(part);
         }
       } catch (err) {
         if (err instanceof HookBlockedError || this.task?.signal?.aborted) {
@@ -1517,6 +1526,17 @@ export class AssistSession {
           throw err;
         }
         console.warn('[assist] lazy document reads failed; skipping them for this turn', err);
+        // A malformed/unavailable page or oversized coverage must not look like a successful
+        // empty read. The model may still answer from explicitly attached evidence.
+        const parts = boundedChatContext([], {
+          surface: this.bridge.surface,
+          maxReads: this.maxReads,
+          coverage: [{ source: 'unavailable' }],
+        });
+        for (const part of parts) {
+          ephemeralIds.push(part.ref.id);
+          this.context.add(part);
+        }
       }
     }
 
@@ -3300,7 +3320,7 @@ export class AssistSession {
       if (!['verified', 'unverified'].includes(assessActuationResult(result)))
         failedNodes.add(nodeId);
       else if (assessActuationResult(result) === 'verified' && k < planSlots.length - 1) {
-        const cells = await this.recovery.landed(effect.request);
+        const cells = await this.recovery.landed(effect.request, result);
         if (cells) landed.push(cells);
       }
       results[index] = result;
@@ -3907,14 +3927,19 @@ export class AssistSession {
    * none of those found anything, the snapshot's addressable tables. Bounded by `maxReads` slices;
    * each probe is a bridge read, so host content stays data and selectors stay the bridge's.
    */
-  private async chatReads(query: string, snapshot?: DocStateSnapshot): Promise<ResolvedContext[]> {
+  private async chatReads(query: string, snapshot?: DocStateSnapshot): Promise<ChatReads> {
     const out: ResolvedContext[] = [];
+    const result: ChatReads = { parts: out, omittedParts: 0, coverage: [] };
     const seen = new Set<string>();
     const add = (parts: ResolvedContext[]) => {
       for (const part of parts) {
         const key = `${part.ref.id}\u0000${part.value.as === 'text' ? part.value.text : ''}`;
-        if (seen.has(key) || out.length >= this.maxReads) continue;
+        if (seen.has(key)) continue;
         seen.add(key);
+        if (out.length >= this.maxReads) {
+          result.omittedParts++;
+          continue;
+        }
         out.push(part);
       }
     };
@@ -3943,8 +3968,20 @@ export class AssistSession {
     // Outlook's snapshot omits its body, and keyword hits may be only a signature. Fill the
     // remaining budget with active-item context, retaining targeted hits from long emails first.
     if (this.bridge.surface === 'outlook') {
-      await probe('context:mail-item', {}, async () => (await this.wholeItemRead()) ?? []);
-      return out;
+      if (out.length < this.maxReads) {
+        try {
+          const whole = await this.wholeItemRead();
+          if (whole) {
+            add(whole);
+            result.coverage.push({ source: 'whole-item', scope: 'Active mail item text' });
+          }
+        } catch (err) {
+          if (err instanceof HookBlockedError || this.task?.signal?.aborted) throw err;
+          // Keep a successful targeted hit if the supplemental body read fails.
+          result.coverage.push({ source: 'unavailable', scope: 'Active mail item text' });
+        }
+      }
+      return result;
     }
     if (out.length === 0 && readRange && snapshot) {
       const tables = snapshot.inventory
@@ -3960,9 +3997,43 @@ export class AssistSession {
     // Nothing matched (often a question in another language than the document): answer from the
     // start of the document itself, within the same slice budget, never from headings alone
     // (retest 2026-10-20: a Word summary was written from the outline).
-    if (out.length === 0)
-      await probe('context:document', {}, async () => (await this.wholeItemRead()) ?? []);
-    return out;
+    if (out.length === 0) {
+      if (this.bridge.readDocumentPage) {
+        // The legacy whole-document resolver may load an entire host collection. Automatic chat
+        // needs one bounded page, with honest coverage; full-source work has its own traversal.
+        const page = DocumentPageSchema.parse(
+          await this.toolOperation('context:document-page', {}, () =>
+            this.bridge.readDocumentPage!({ signal: this.task?.signal }),
+          ),
+        );
+        result.coverage.push({
+          source: 'paged-document',
+          scope: page.scope,
+          eof: page.nextCursor === undefined,
+          ...(page.nextCursor ? { next: `read document:${page.nextCursor}` } : {}),
+          limitations: page.limitations,
+        });
+        add(
+          page.units.map((entry) => ({
+            ref: {
+              id: `document-page:${entry.id}`,
+              kind: 'paragraph',
+              surface: this.bridge.surface,
+              title: entry.id,
+              live: false,
+            },
+            value: { as: 'text', text: entry.text, mimeType: 'text/plain' },
+          })),
+        );
+      } else {
+        const whole = await this.wholeItemRead();
+        if (whole) {
+          add(whole);
+          result.coverage.push({ source: 'whole-item' });
+        }
+      }
+    }
+    return result;
   }
 
   private async runReadIntent(intent: ReadIntent): Promise<{ label: string; result: unknown }> {

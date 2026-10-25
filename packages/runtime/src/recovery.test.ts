@@ -84,6 +84,90 @@ function fixture() {
   };
 }
 
+describe('verified output for same-batch rebasing', () => {
+  it('rebases an overlapping approved write onto the verified output', async () => {
+    const f = fixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const first = await recovery.prepare(f.request(2));
+    const second = await recovery.prepare(f.request(3));
+    const result = await recovery.execute(first, () => f.bridge.actuate(first));
+    const landed = await recovery.landed(first, result);
+    expect(landed?.values).toEqual([[2]]);
+    const rebased = await recovery.rebase(second, [landed!]);
+    expect(await recovery.execute(rebased, () => f.bridge.actuate(rebased))).toMatchObject({
+      ok: true,
+      verification: { status: 'verified' },
+    });
+    expect(f.cells()).toEqual([[3]]);
+  });
+
+  it.each(['before capture', 'after capture'])(
+    'refuses an intervening edit %s instead of accepting it as batch output',
+    async (when) => {
+      const f = fixture();
+      const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+      const first = await recovery.prepare(f.request(2));
+      const second = await recovery.prepare(f.request(3));
+      const result = await recovery.execute(first, () => f.bridge.actuate(first));
+      if (when === 'before capture') f.edit(99);
+      const landed = await recovery.landed(first, result);
+      if (when === 'before capture') expect(landed).toBeUndefined();
+      else f.edit(99);
+      const rebased = await recovery.rebase(second, landed ? [landed] : []);
+      expect(await recovery.execute(rebased, () => f.bridge.actuate(rebased))).toMatchObject({
+        ok: false,
+        error: { code: 'stale_target' },
+      });
+      expect(f.cells()).toEqual([[99]]);
+      expect(f.landed()).toBe(1);
+    },
+  );
+
+  it('does not grant rebase authority from a missing or mismatched receipt', async () => {
+    const f = fixture();
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const request = await recovery.prepare(f.request());
+    const result = await recovery.execute(request, () => f.bridge.actuate(request));
+    expect(await recovery.landed(request, { ...result, verification: undefined })).toBeUndefined();
+    expect(
+      await recovery.landed(request, { ...result, verification: { status: 'verified' } }),
+    ).toBeUndefined();
+    expect(
+      await recovery.landed(request, { ...result, changeId: asChangeId('unrelated') }),
+    ).toBeUndefined();
+    expect(await recovery.landed(request, { ...result, recoveryPending: true })).toBeUndefined();
+  });
+
+  it('accepts a formula snapshot only while its canonical verified hash is unchanged', async () => {
+    const f = fixture();
+    let value = 1;
+    let formula = '';
+    f.bridge.captureCells = async (locator) =>
+      makeCellSnapshot({
+        surface: 'excel',
+        documentId: 'doc',
+        objectId: 'sheet-1',
+        locator: locator.includes('!') ? locator : `Sheet1!${locator}`,
+        values: [[value]],
+        formulas: [[formula]],
+      });
+    const recovery = new RecoveryCoordinator(f.bridge, 'owner');
+    const request = await recovery.prepare(f.request());
+    value = 2;
+    formula = '=1+1';
+    const verified = await f.bridge.captureCells!('Sheet1!A1');
+    const result = {
+      ok: true,
+      kind: request.kind,
+      changeId: request.changeId,
+      verification: { status: 'verified' as const, afterHash: verified.hash },
+    };
+    expect((await recovery.landed(request, result))?.formulas).toEqual([['=1+1']]);
+    formula = '=2';
+    expect(await recovery.landed(request, result)).toBeUndefined();
+  });
+});
+
 /** Minimal host range simulator for footprint checks; no model, Office network or formula eval. */
 function spatialFixture() {
   const f = fixture();

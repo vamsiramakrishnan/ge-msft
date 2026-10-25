@@ -32,6 +32,79 @@ function request(
 }
 
 describe('fake-excel object writes driven by the real ExcelBridge', () => {
+  it('binds mixed formula/literal readback to the same snapshot as a fresh capture', async () => {
+    install();
+    const bridge = new ExcelBridge();
+    const result = await bridge.actuate(
+      request('write-cells', {
+        target: { range: 'Sales!G2:I2' },
+        cellValues: [[null, '=literal', 7]],
+        cellFormulas: [['=SUM(B2:C2)', '', '']],
+      }),
+    );
+    const captured = await bridge.captureCells('Sales!G2:I2');
+    expect(result.verification).toMatchObject({ status: 'verified', afterHash: captured.hash });
+    expect(captured.values).toEqual([['=SUM(B2:C2)', '=literal', '7']]);
+    expect(captured.formulas).toEqual([['=SUM(B2:C2)', '', '']]);
+  });
+
+  it('consumes a queued write once and refreshes an existing proxy on load', async () => {
+    const s = install();
+    await Excel.run(async (ctx) => {
+      const range = ctx.workbook.worksheets.getItem('Sales').getRange('G2');
+      range.formulas = [['=SUM(B2:C2)']];
+      range.values = [[null]];
+      range.load('values,formulas');
+      await ctx.sync();
+      expect(range.values).toEqual([['=SUM(B2:C2)']]);
+      // A user edits the workbook after the first sync. A later read may not replay the old write.
+      s.seed.sheets[0]!.values[1]![6] = '99';
+      range.load('values,formulas');
+      await ctx.sync();
+      expect(range.values).toEqual([['99']]);
+      expect(range.formulas).toEqual([['99']]);
+    });
+    expect(s.snapshot().sheets[0]!.values[1]![6]).toBe('99');
+  });
+
+  it('moves formula identity with sorted rows while retaining formula-looking literal text', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Sales',
+            origin: 'A1',
+            values: [
+              ['Key', 'Calc'],
+              ['2', '=A2*2'],
+              ['1', ''],
+            ],
+          },
+        ],
+      }),
+    );
+    const bridge = new ExcelBridge();
+    await bridge.actuate(
+      request('write-cells', { target: { range: 'Sales!B3' }, cellValues: [['=literal']] }),
+    );
+    await Excel.run(async (ctx) => {
+      const range = ctx.workbook.worksheets.getItem('Sales').getRange('A1:B3');
+      range.sort.apply([{ key: 0, ascending: true }], false, true);
+      await ctx.sync();
+    });
+    const captured = await bridge.captureCells('Sales!A1:B3');
+    expect(captured.values).toEqual([
+      ['Key', 'Calc'],
+      ['1', '=literal'],
+      ['2', '=A2*2'],
+    ]);
+    expect(captured.formulas).toEqual([
+      ['', ''],
+      ['', ''],
+      ['', '=A2*2'],
+    ]);
+  });
+
   it('create-table records the table and returns the host-minted name as the inverse', async () => {
     const s = install();
     const res = await new ExcelBridge().actuate(

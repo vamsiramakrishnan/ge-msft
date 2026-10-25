@@ -235,19 +235,40 @@ class LoadGate {
 }
 
 /** The `Range` read properties subject to load-gating (mirrors office-addin-mock's PropertyNotLoaded). */
-const RANGE_READ_PROPS = ['address', 'values', 'rowCount', 'columnCount', 'isNullObject'] as const;
+const RANGE_READ_PROPS = [
+  'address',
+  'values',
+  'formulas',
+  'rowCount',
+  'columnCount',
+  'isNullObject',
+] as const;
+
+/** Seeded `=` strings are formulas; subsequent writes preserve formula vs literal text identity. */
+const sheetFormulaCells = new WeakMap<SheetSeed, Set<string>>();
+function formulaCells(sheet: SheetSeed): Set<string> {
+  let cells = sheetFormulaCells.get(sheet);
+  if (!cells) {
+    cells = new Set();
+    const origin = parseA1(sheet.origin);
+    sheet.values.forEach((row, r) =>
+      row.forEach((value, c) => {
+        if (value.startsWith('=')) cells!.add(`${origin.startRow + r}:${origin.startCol + c}`);
+      }),
+    );
+    sheetFormulaCells.set(sheet, cells);
+  }
+  return cells;
+}
 
 class FakeRange {
   getSpecialCellsOrNullObject() {
     const span = parseA1(this.rangeA1);
+    const formulas = formulaCells(sheetByName(this.seed, this.sheetName));
     const items: Array<{ address: string }> = [];
     for (let r = 0; r < span.rows; r++)
       for (let c = 0; c < span.cols; c++)
-        if (
-          (this.pendingFormulas?.[r]?.[c] ||
-            (this._pendingValues?.[r]?.[c] === undefined ? this.formulas[r]?.[c] : '')) &&
-          String(this.formulas[r]?.[c]).startsWith('=')
-        )
+        if (formulas.has(`${span.startRow + r}:${span.startCol + c}`))
           items.push({
             address: `${this.sheetName}!${indexToCol(span.startCol + c)}${span.startRow + r + 1}`,
           });
@@ -287,11 +308,12 @@ class FakeRange {
    * it: `load('rowCount,columnCount')` reads cheap span metadata; only `load('values')` materializes. */
   private _valuesCache: string[][] | undefined;
   /** Queued `.values` write (write side is NOT gated; Office writes don't require a prior load). */
-  private _pendingValues: string[][] | undefined;
-  // Write-only facets the bridge sets (never read back by the bridge), so left ungated.
+  private _pendingValues: unknown[][] | undefined;
+  /** Queued formula writes; getters read committed state after load/sync, never this pending grid. */
   private pendingFormulas?: unknown[][];
   get formulas(): unknown[][] {
-    return this.pendingFormulas ?? this.values;
+    this.requireLoaded('formulas');
+    return (this._valuesCache ??= this.computeValues());
   }
   set formulas(value: unknown[][]) {
     this.pendingFormulas = value;
@@ -399,14 +421,14 @@ class FakeRange {
   }
   get values(): string[][] {
     this.requireLoaded('values');
-    return this._pendingValues ?? (this._valuesCache ??= this.computeValues());
+    return (this._valuesCache ??= this.computeValues());
   }
   set values(grid: unknown[][]) {
     this._pendingValues = grid.map((row) =>
       row.map((v) =>
         typeof v !== 'string' ? v : v.startsWith("'") ? v.slice(1) : (asTypedDate(v) ?? v),
       ),
-    ) as string[][];
+    );
   }
 
   /** Queue a property (or comma-list, or all when omitted) for resolution at the next `sync()`. */
@@ -422,6 +444,8 @@ class FakeRange {
 
   /** Promote this batch's requested loads into readable props (called by `context.sync()`). */
   flushLoads(): void {
+    if (this.requested.has('values') || this.requested.has('formulas'))
+      this._valuesCache = undefined;
     for (const p of this.requested) this.loaded.add(p);
     this.requested.clear();
   }
@@ -439,16 +463,24 @@ class FakeRange {
   commit(): void {
     if (this._isNullObject) return;
     this.commitFormat();
+    if (!this.pendingSort && !this.pendingFormulas && !this._pendingValues) return;
     const sheet = sheetByName(this.seed, this.sheetName);
+    const formulas = formulaCells(sheet);
     const span = parseA1(this.rangeA1);
     if (this.pendingSort) {
       const { key, ascending, hasHeaders } = this.pendingSort;
       this.pendingSort = undefined;
       const grid = readGrid(sheet, span.startRow, span.startCol, span.rows, span.cols);
-      const head = hasHeaders ? grid.slice(0, 1) : [];
+      const rows = grid.map((values, r) => ({
+        values,
+        formulas: values.map((_value, c) =>
+          formulas.has(`${span.startRow + r}:${span.startCol + c}`),
+        ),
+      }));
+      const head = hasHeaders ? rows.slice(0, 1) : [];
       const num = (v: string) => (v.trim() !== '' ? Number(v) : Number.NaN);
-      const body = grid.slice(head.length).sort((a, b) => {
-        const [x, y] = [a[key] ?? '', b[key] ?? ''];
+      const body = rows.slice(head.length).sort((a, b) => {
+        const [x, y] = [a.values[key] ?? '', b.values[key] ?? ''];
         const order =
           !Number.isNaN(num(x)) && !Number.isNaN(num(y))
             ? num(x) - num(y)
@@ -456,7 +488,12 @@ class FakeRange {
         return ascending ? order : -order;
       });
       [...head, ...body].forEach((row, r) =>
-        row.forEach((value, c) => writeCell(sheet, span.startRow + r, span.startCol + c, value)),
+        row.values.forEach((value, c) => {
+          writeCell(sheet, span.startRow + r, span.startCol + c, value);
+          const key = `${span.startRow + r}:${span.startCol + c}`;
+          if (row.formulas[c]) formulas.add(key);
+          else formulas.delete(key);
+        }),
       );
       // The host re-reads values after a sort; a later load of this range sees the new order.
       this._valuesCache = undefined;
@@ -468,14 +505,24 @@ class FakeRange {
         const formula = this.pendingFormulas?.[r]?.[c];
         const value = this._pendingValues?.[r]?.[c];
         const written =
-          formula !== undefined && formula !== null && formula !== ''
+          formula !== undefined && formula !== null
             ? String(formula)
-            : value !== undefined
+            : value !== undefined && value !== null
               ? String(value)
               : undefined;
-        if (written !== undefined) writeCell(sheet, span.startRow + r, span.startCol + c, written);
+        if (written !== undefined) {
+          writeCell(sheet, span.startRow + r, span.startCol + c, written);
+          const key = `${span.startRow + r}:${span.startCol + c}`;
+          if (typeof formula === 'string' && formula.startsWith('=')) formulas.add(key);
+          else formulas.delete(key);
+        }
       }
     }
+    if (this.pendingFormulas || this._pendingValues) this._valuesCache = undefined;
+    // A sync consumes queued writes. Reloaded properties describe committed host state, including
+    // formula cells whose `values` assignment was null (leave the formula unchanged).
+    this.pendingFormulas = undefined;
+    this._pendingValues = undefined;
   }
 
   /** Record any queued format facets against this range's address (format is write-only on Range). */

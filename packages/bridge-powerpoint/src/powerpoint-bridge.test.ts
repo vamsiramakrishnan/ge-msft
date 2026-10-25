@@ -366,6 +366,7 @@ class FakeShape {
 
 class FakeShapeCollection {
   private built: FakeShape[] = [];
+  private page?: { skip: number; top: number };
   constructor(
     private readonly slide: SlideSeed,
     private readonly deck: DeckSeed,
@@ -379,9 +380,15 @@ class FakeShapeCollection {
         (s, i) => new FakeShape(s, `${this.slide.id}-shape-${i}`, false, this.guard),
       );
     }
-    return this.built;
+    return this.page
+      ? this.built.slice(this.page.skip, this.page.skip + this.page.top)
+      : this.built;
   }
-  load(_p?: string): this {
+  load(options?: string | { select?: string; skip?: number; top?: number }): this {
+    this.page =
+      typeof options === 'object'
+        ? { skip: options.skip ?? 0, top: options.top ?? Number.MAX_SAFE_INTEGER }
+        : undefined;
     return this;
   }
   getItemAt(index: number): FakeShape {
@@ -1274,6 +1281,42 @@ describe('PowerPointBridge.resolveContext', () => {
 /* ───────────────────────────── captureDocState ───────────────────────────── */
 
 describe('PowerPointBridge.captureDocState', () => {
+  it('bounds dense-slide metadata and text reads before loading previews', async () => {
+    const d = deck(
+      Array.from({ length: 61 }, (_, i) => ({
+        id: `dense-${i + 1}`,
+        shapes: Array.from({ length: 100 }, (_, j) => ({ text: `slide ${i + 1}, shape ${j + 1}` })),
+      })),
+      [60],
+    );
+    let pending = 0;
+    let readCount = 0;
+    d.onSync = () => {
+      expect(pending).toBeLessThanOrEqual(40);
+      pending = 0;
+    };
+    installed = install(d);
+    const load = vi.spyOn(FakeTextRange.prototype, 'load').mockImplementation(function (
+      this: FakeTextRange,
+    ) {
+      pending++;
+      readCount++;
+      return this;
+    });
+    try {
+      const snapshot = await new PowerPointBridge().captureDocState();
+      expect(readCount).toBe(60 * 8);
+      expect(snapshot?.title).toBe('61 slides');
+      expect(snapshot?.inventory).toHaveLength(60);
+      expect(snapshot?.inventory[0]?.summary).toContain('pp:shape:dense-1:dense-1-shape-7');
+      expect(snapshot?.inventory[0]?.summary).not.toContain('pp:shape:dense-1:dense-1-shape-8');
+      expect(snapshot?.selection?.title).toBe('Slide 61 (slide:dense-61)');
+      expect(snapshot?.truncated).toBe(true);
+    } finally {
+      load.mockRestore();
+    }
+  });
+
   it.each([
     [[0], 'Slide 1 (slide:s1)'],
     [[1], 'Slide 2 (slide:s2)'],
@@ -1403,6 +1446,8 @@ describe('PowerPointBridge.captureDocState', () => {
     // The slide past the cap must not appear in the inventory.
     expect(snap.outline.some((o) => o.text.includes(`Title ${MAX_READ_SLIDES + 5}`))).toBe(false);
     expect(snap.outline.some((o) => o.text.includes('Title 0'))).toBe(true);
+    expect(snap.title).toBe(`${MAX_READ_SLIDES + 10} slides`);
+    expect(snap.truncated).toBe(true);
   });
 });
 

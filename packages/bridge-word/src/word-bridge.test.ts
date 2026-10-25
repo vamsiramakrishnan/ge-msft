@@ -658,14 +658,14 @@ describe('WordBridge orchestration (against a fake host)', () => {
   describe('actuate tracked-change', () => {
     it('falls back to the selection when the anchor is the selected text but search cannot find it', async () => {
       const host = new FakeWordHost();
-      // A multi-paragraph selection: Word returns paragraph marks as \r; the model's anchor lost them.
+      // A multi-paragraph selection: Word returns paragraph marks as \r; the model uses spaces.
       host.selectionText = 'established in Problem 1.\rBecause the connector is read-only';
       const res = await new WordBridge(host).actuate({
         changeId: asChangeId('chg-sel'),
         kind: 'tracked-change',
         surface: 'word',
         params: {
-          target: { matchText: 'established in Problem 1.Because the connector is read-only' },
+          target: { matchText: 'established in Problem 1. Because the connector is read-only' },
           text: 'Shorter.',
         },
       });
@@ -673,6 +673,45 @@ describe('WordBridge orchestration (against a fake host)', () => {
       expect(host.inserts).toEqual([
         { query: '<selection>', matchCase: false, text: 'Shorter.', chosen: host.selectionText },
       ]);
+    });
+
+    it.each(['\n', '\r\n', ' '])(
+      'keeps long selected text and paragraph boundaries when the anchor uses %j',
+      async (separator) => {
+        const host = new FakeWordHost();
+        const first = 'The connector reads only the documents the user can access. '
+          .repeat(6)
+          .trim();
+        const second = 'Write permission still requires approval.';
+        host.selectionText = `${first}\r${second}\r`;
+        const res = await new WordBridge(host).actuate({
+          changeId: asChangeId('chg-long-selection'),
+          kind: 'tracked-change',
+          surface: 'word',
+          params: { target: { matchText: `${first}${separator}${second}` }, text: 'Shorter.' },
+        });
+        expect(res).toMatchObject({ ok: true, location: 'tracked-change' });
+        expect(host.inserts).toHaveLength(1);
+        expect(host.inserts[0]?.chosen).toBe(host.selectionText);
+      },
+    );
+
+    it.each([
+      ['The directors will re sign.', 'The directors will resign.'],
+      ['Account 12 34 is approved.', 'Account 1234 is approved.'],
+      ['The owner is not able.', 'The owner is notable.'],
+      ['First paragraph\rSecond paragraph', 'First paragraphSecond paragraph'],
+    ])('refuses a changed word boundary in the live selection: %j', async (anchor, selected) => {
+      const host = new FakeWordHost();
+      host.selectionText = selected;
+      const res = await new WordBridge(host).actuate({
+        changeId: asChangeId('chg-stale-selection'),
+        kind: 'tracked-change',
+        surface: 'word',
+        params: { target: { matchText: anchor }, text: 'Replacement.' },
+      });
+      expect(res).toMatchObject({ ok: false, error: { code: 'anchor_drift' } });
+      expect(host.inserts).toEqual([]);
     });
 
     it('matches the selection when the anchor carries doc_state quote escapes', async () => {
@@ -688,6 +727,22 @@ describe('WordBridge orchestration (against a fake host)', () => {
         },
       });
       expect(res).toMatchObject({ ok: true });
+    });
+
+    it.each([
+      ['Use & literally.', 'Use &amp; literally.'],
+      ['Use " literally.', 'Use &quot; literally.'],
+    ])('does not decode literal entities in the live selection: %j', async (anchor, selected) => {
+      const host = new FakeWordHost();
+      host.selectionText = selected;
+      const res = await new WordBridge(host).actuate({
+        changeId: asChangeId('chg-literal-entity'),
+        kind: 'tracked-change',
+        surface: 'word',
+        params: { target: { matchText: anchor }, text: 'Replacement.' },
+      });
+      expect(res).toMatchObject({ ok: false, error: { code: 'anchor_drift' } });
+      expect(host.inserts).toEqual([]);
     });
 
     it('still reports anchor_drift when the anchor is neither found nor the selection', async () => {

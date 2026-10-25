@@ -325,14 +325,31 @@ export class RecoveryCoordinator {
       ],
     });
   }
-  /** The cells a verified recoverable effect produced, captured after it landed. */
-  async landed(request: ActuationRequest): Promise<CellSnapshot | undefined> {
+  /** A fresh capture may represent batch output only when it matches the verified receipt. */
+  async landed(
+    request: ActuationRequest,
+    result: ActuationResult,
+  ): Promise<CellSnapshot | undefined> {
     const before = this.prepared.get(request.changeId);
-    if (!before || !this.bridge.captureCells) return undefined;
+    const receipt = validateActuationResult(request, result);
+    if (
+      !before ||
+      !this.bridge.captureCells ||
+      assessActuationResult(receipt) !== 'verified' ||
+      !receipt.verification?.afterHash
+    )
+      return undefined;
     try {
-      // Not matched to the receipt's afterHash: a formula write's readback hash differs from a later
-      // capture of the same cells (retest 2026-10-20), so no formula write would ever count.
-      return await this.bridge.captureCells(before.locator);
+      const current = await this.bridge.captureCells(before.locator);
+      // Coauthor edits and formula recalculation may happen after verification. Neither becomes
+      // authority to replace another approved target's precondition. A mismatch keeps its old pin.
+      return current.hash === receipt.verification.afterHash &&
+        current.surface === before.surface &&
+        current.documentId === before.documentId &&
+        current.objectId === before.objectId &&
+        current.locator === before.locator
+        ? current
+        : undefined;
     } catch {
       return undefined;
     }

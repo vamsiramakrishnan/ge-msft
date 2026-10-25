@@ -292,7 +292,7 @@ export class WordBridge implements DocBridge {
       // tracked change on the selection instead of failing the same way on every retry.
       const anchor = plan.matchText;
       outcome = await this.host.applyTrackedChangeToSelection(plan.text, (selected) =>
-        sameTextIgnoringWhitespace(selected, anchor),
+        matchesSelectedAnchor(selected, anchor),
       );
     }
     if (outcome.status === 'drift') {
@@ -1070,16 +1070,19 @@ function provFlags(
 export const HANDLED_ACTUATIONS: readonly ActuationKind[] = WordBridge.handledActuations;
 
 /**
- * Paragraph marks come back as `\r` from Word but vanish or become spaces in model text, and the
- * model may copy the `<doc_state>` entity escapes (`&quot;` …) instead of the characters.
+ * Paragraph marks come back as `\r` from Word and may become spaces in model text. Keep word
+ * boundaries: removing whitespace would accept a drift from "re sign" to "resign". Only the
+ * model's anchor may contain `<doc_state>` entity escapes; literal host text must stay literal.
  */
-function sameTextIgnoringWhitespace(a: string, b: string): boolean {
-  const strip = (s: string): string =>
-    s
-      .replace(/&quot;/g, '"')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&amp;/g, '&')
-      .replace(/\s+/g, '');
-  return strip(a).length > 0 && strip(a) === strip(b);
+function matchesSelectedAnchor(selected: string, anchor: string): boolean {
+  const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
+  const live = normalize(selected);
+  if (!live) return false;
+  if (live === normalize(anchor)) return true;
+  const decoded = anchor
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+  return live === normalize(decoded);
 }

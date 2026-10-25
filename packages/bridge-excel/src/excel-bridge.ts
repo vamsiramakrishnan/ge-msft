@@ -302,7 +302,7 @@ export class ExcelBridge implements DocBridge {
       sheet.load('name');
       // valuesOnly: true — see listContext's used-range read for why.
       const used = hasNullObj ? sheet.getUsedRangeOrNullObject(true) : sheet.getUsedRange(true);
-      used.load('address,values,isNullObject');
+      used.load('address,rowCount,columnCount,isNullObject');
 
       const names = ctx.workbook.names;
       if (wantNames) names.load('items/name,items/type,items/formula');
@@ -314,9 +314,8 @@ export class ExcelBridge implements DocBridge {
       // Every sheet's used range, so a request about another sheet can name and read it.
       // `visibility` is ExcelApi 1.1; the null-object read needs 1.4, older hosts list names only.
       // A VeryHidden sheet is set by code, not the user (often lookup/config data): never listed.
-      const listed = allSheets.items
-        .filter((s) => s.visibility !== 'VeryHidden')
-        .slice(0, MAX_LISTED_SHEETS);
+      const visibleSheets = allSheets.items.filter((s) => s.visibility !== 'VeryHidden');
+      const listed = visibleSheets.slice(0, MAX_LISTED_SHEETS);
       const sheetUsed = hasNullObj
         ? listed.map((s) => s.getUsedRangeOrNullObject(true).load('address,isNullObject'))
         : [];
@@ -333,17 +332,32 @@ export class ExcelBridge implements DocBridge {
 
       const usedEmpty = hasNullObj && (used as { isNullObject?: boolean }).isNullObject === true;
       const usedAddress = usedEmpty ? '' : used.address;
-      const usedValues = usedEmpty ? [] : (used.values as string[][]);
-      const namedRanges: DocStateNamedRange[] = wantNames
-        ? names.items
-            .filter((n) => n.type === 'Range')
-            .slice(0, 60)
-            .map((n) => ({ name: n.name, range: stripLeadingEquals(String(n.formula)) }))
-        : [];
+      // Only the first header row is ambient data. Reading the whole used range here would
+      // bypass both readRange's cell budget and readDocumentPage's tiles on every turn.
+      const headerColumns = usedEmpty ? 0 : Math.min(used.columnCount, MAX_SNAPSHOT_COLUMNS);
+      const header = headerColumns
+        ? sheet.getRange(
+            rangeForGrid(parseAddress(usedAddress).rangeAddress.split(':')[0]!, 1, headerColumns),
+          )
+        : undefined;
+      if (header) {
+        header.load('values');
+        await ctx.sync();
+      }
+      const rangeNames = wantNames ? names.items.filter((n) => n.type === 'Range') : [];
+      const namedRanges: DocStateNamedRange[] = rangeNames
+        .slice(0, 60)
+        .map((n) => ({ name: n.name, range: stripLeadingEquals(String(n.formula)) }));
       return {
         title: sheet.name,
         usedAddress,
-        usedValues,
+        headerValues: header?.values as string[][] | undefined,
+        usedRows: usedEmpty ? 0 : used.rowCount,
+        usedColumns: usedEmpty ? 0 : used.columnCount,
+        truncated:
+          allSheets.items.length > listed.length ||
+          rangeNames.length > namedRanges.length ||
+          (!usedEmpty && used.columnCount > headerColumns),
         selAddress: selected?.address ?? '',
         selValues: selected?.values ?? [],
         selSkippedCells: selected?.skippedCells,
@@ -353,7 +367,7 @@ export class ExcelBridge implements DocBridge {
     });
 
     const blocks = captured.usedAddress
-      ? usedRangeToBlocks(captured.usedAddress, captured.usedValues)
+      ? usedRangeToBlocks(captured.usedAddress, captured.headerValues ?? [])
       : [];
 
     this.docStateVersion += 1;
@@ -371,7 +385,7 @@ export class ExcelBridge implements DocBridge {
           } satisfies DocStateSelection)
         : undefined;
 
-    return buildDocStateSnapshot({
+    const snapshot = buildDocStateSnapshot({
       surface: 'excel',
       version: this.docStateVersion,
       title: captured.title,
@@ -380,6 +394,19 @@ export class ExcelBridge implements DocBridge {
       ...(captured.namedRanges.length > 0 ? { namedRanges: captured.namedRanges } : {}),
       sheets: captured.sheets,
     });
+    // Header-only blocks retain the useful column list; dimensions describe the actual used
+    // range rather than the one-row preview. An empty header still leaves the range discoverable.
+    if (captured.usedAddress) {
+      const id = `range:${captured.usedAddress}`;
+      let table = snapshot.inventory.find((entry) => entry.kind === 'table' && entry.id === id);
+      if (!table) {
+        table = { kind: 'table', id, title: captured.usedAddress };
+        snapshot.inventory.push(table);
+      }
+      table.summary = `${captured.usedRows} rows × ${captured.usedColumns} columns`;
+    }
+    if (captured.truncated) snapshot.truncated = true;
+    return snapshot;
   }
 
   /**
@@ -1409,6 +1436,8 @@ export const MAX_READ_COMMENTS = 50;
 
 /** Sheets listed in the snapshot; a workbook with more lists the first ones only. */
 const MAX_LISTED_SHEETS = 30;
+/** A bounded column-name preview, independent of the active sheet's row count. */
+export const MAX_SNAPSHOT_COLUMNS = 32;
 
 /**
  * Read up to {@link MAX_READ_COMMENTS} workbook comment threads — author, text, cell and replies —

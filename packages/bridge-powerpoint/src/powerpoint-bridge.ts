@@ -175,7 +175,8 @@ export class PowerPointBridge implements DocBridge {
 
   async captureDocState(): Promise<DocStateSnapshot | undefined> {
     if (!isSet('PowerPointApi', '1.4')) return undefined;
-    const slides = await this.readAllSlides();
+    const captured = await this.readSnapshotSlides();
+    const slides = captured.slides;
     if (slides.length === 0) return undefined;
     const selected = isSet('PowerPointApi', '1.5')
       ? await PowerPoint.run(async (ctx) => {
@@ -184,7 +185,7 @@ export class PowerPointBridge implements DocBridge {
           await ctx.sync();
           return selection.items.map((slide) => {
             // Slide.index needs 1.8. The captured deck order already gives positions on 1.5.
-            const index = slides.findIndex((entry) => entry.slideId === slide.id);
+            const index = captured.slideIds.indexOf(slide.id);
             return `${index < 0 ? 'Selected slide' : `Slide ${index + 1}`} (slide:${slide.id})`;
           });
         }).catch(() => []) // Optional selection failure must not discard the captured deck.
@@ -193,12 +194,13 @@ export class PowerPointBridge implements DocBridge {
     const snapshot = buildDocStateSnapshot({
       surface: 'powerpoint',
       version: this.docStateVersion,
+      title: `${captured.slideIds.length} slides`,
       blocks: slideElementsToDocStateBlocks(slides),
       ...(selected.length ? { selection: { kind: 'slide', title: selected.join(', ') } } : {}),
     });
     // Shape ids ride on each slide's entry, so shape commands name a real id on the first try
     // instead of guessing and retrying on target_conflict (live 2026-10-02: 3 wasted turns).
-    // Read with the slides above: no extra host round trip.
+    // Read only a bounded prefix of each slide's shapes; addressed reads expose the rest.
     const shapesBySlide = new Map(
       slides.map((slide) => [`slide:${slide.slideId ?? slide.index}`, slide.shapes ?? []]),
     );
@@ -214,7 +216,64 @@ export class PowerPointBridge implements DocBridge {
       // Keep the slide number the builder set ("slide 15"); the shapes follow it.
       if (summary) entry.summary = entry.summary ? `${entry.summary}; ${summary}` : summary;
     }
+    if (captured.truncated) snapshot.truncated = true;
     return snapshot;
+  }
+
+  /** Ambient discovery reads shape prefixes, never every shape in the deck. */
+  private async readSnapshotSlides(): Promise<{
+    slides: SlideElement[];
+    slideIds: string[];
+    truncated: boolean;
+  }> {
+    return PowerPoint.run(async (ctx) => {
+      const collection = ctx.presentation.slides;
+      collection.load('items/id');
+      await ctx.sync();
+      const slideIds = collection.items.map((slide) => slide.id);
+      const slides = collection.items.slice(0, MAX_READ_SLIDES);
+      const collections = slides.map((slide) => {
+        const shapes = slide.shapes;
+        shapes.load({ select: 'id,type', skip: 0, top: MAX_SUMMARY_SHAPES + 1 });
+        return shapes;
+      });
+      if (collections.length) await ctx.sync();
+      if (collections.some((shapes) => shapes.items.length > MAX_SUMMARY_SHAPES + 1))
+        throw new Error('PowerPoint did not honor bounded snapshot reads.');
+      const targets = collections.map((shapes) => shapes.items.slice(0, MAX_SUMMARY_SHAPES));
+      const readable = await withoutNonTextPlaceholders(
+        ctx,
+        targets.flat().filter((shape) => TEXT_SHAPE_TYPES.has(String(shape.type))),
+      );
+      const texts = new Map<PowerPoint.Shape, string>();
+      // A slide count is not a content-read budget. Keep every native text batch bounded too.
+      for (let offset = 0; offset < readable.length; offset += SNAPSHOT_TEXT_BATCH) {
+        const batch = await readShapeContent(
+          ctx,
+          readable.slice(offset, offset + SNAPSHOT_TEXT_BATCH),
+        );
+        for (const [shape, text] of batch) texts.set(shape, text.slice(0, SNAPSHOT_TEXT_CHARS));
+      }
+      return {
+        slideIds,
+        truncated:
+          slideIds.length > slides.length ||
+          collections.some((shapes) => shapes.items.length > MAX_SUMMARY_SHAPES),
+        slides: slides.map((slide, index) => {
+          const shapes = targets[index] ?? [];
+          return {
+            index,
+            slideId: slide.id,
+            title:
+              shapes
+                .map((shape) => (texts.get(shape) ?? '').trim().split(/\r?\n/, 1)[0] ?? '')
+                .find(Boolean) ?? '',
+            body: [],
+            shapes: shapes.map((shape) => ({ shapeId: shape.id, text: texts.get(shape) ?? '' })),
+          };
+        }),
+      };
+    });
   }
 
   /**
@@ -2244,6 +2303,9 @@ function hostErrorSuffix(error: unknown): string {
 
 /** Shapes listed per slide in the outline; the rest stay reachable through `read slide:N`. */
 const MAX_SUMMARY_SHAPES = 8;
+/** Native host read limits for ambient shape previews, independent of slide/shape density. */
+const SNAPSHOT_TEXT_BATCH = 40;
+const SNAPSHOT_TEXT_CHARS = 240;
 
 /**
  * `shapes: pp:shape:256:2 Placeholder: SLA Terms; pp:shape:256:5 Image`. The renderer escapes and clips the whole line;

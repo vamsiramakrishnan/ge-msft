@@ -1,4 +1,6 @@
-import { createBridgeDispatch } from '@ge/runtime';
+import { officeHostProfile } from './office-host-profile.js';
+import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
+import { contentHash } from '@ge/contracts';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -8,6 +10,7 @@ import type {
   DocStateSelection,
   DocStateSnapshot,
   ResolvedContext,
+  TextTargetCapture,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
@@ -81,7 +84,11 @@ export class WordBridge implements DocBridge {
       'insert-hyperlink': (host, request) => host.applyInsertHyperlink(request),
       'find-replace': (host, request) => host.applyFindReplace(request),
     },
-    { provenance: 'reported' },
+    {
+      provenance: 'reported',
+      capabilities: (host) => host.getCapabilities(),
+      documentKey: (host) => host.documentKey(),
+    },
   );
   static readonly handledActuations = WordBridge.dispatcher.handledActuations;
 
@@ -116,8 +123,12 @@ export class WordBridge implements DocBridge {
 
   constructor(private readonly host: WordHost = new OfficeWordHost()) {}
 
+  getHostProfile(): import('@ge/contracts').HostCapabilityProfile | undefined {
+    return officeHostProfile(this.surface);
+  }
+
   getCapabilities(): CapabilityManifest {
-    return WORD_CAPABILITIES;
+    return negotiateCapabilities(WORD_CAPABILITIES, this.getHostProfile());
   }
 
   async listContext(): Promise<ContextRef[]> {
@@ -159,6 +170,23 @@ export class WordBridge implements DocBridge {
     }
     // Existing comment threads, so a reply can target one by its host id (`reply <commentId> …`).
     refs.push(...commentsToRefs(comments));
+    if (this.host.listContentControls) {
+      const controls = await this.host.listContentControls();
+      refs.push(
+        ...controls.items.map(
+          (control): ContextRef => ({
+            id: `word:cc:${control.id}`,
+            kind: 'paragraph',
+            surface: this.surface,
+            title: control.title || control.tag || `Content control ${control.id}`,
+            hostRef: { type: 'word.contentControl', contentControlId: control.id },
+            ...(!controls.complete
+              ? { notice: 'Content-control discovery is limited to the first 100 controls.' }
+              : {}),
+          }),
+        ),
+      );
+    }
     refs.push({
       id: 'word:document',
       kind: 'document',
@@ -170,6 +198,10 @@ export class WordBridge implements DocBridge {
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.hostRef?.type === 'word.contentControl' && this.host.readContentControlText) {
+      const text = await this.host.readContentControlText(ref.hostRef.contentControlId);
+      return [{ ref, value: { as: 'text', text, mimeType: 'text/plain' } }];
+    }
     if (ref.kind === 'selection') {
       const text = await this.host.readSelectionText();
       return wordSelectionToContext(text);
@@ -189,6 +221,26 @@ export class WordBridge implements DocBridge {
     // Whole document → paragraphs (with style for heading levels) → native blocks → chunks.
     const paras = await this.host.readParagraphs();
     return wordDocumentToContext('word:document', undefined, paragraphsToElements(paras));
+  }
+  async captureTextTarget(ref: ContextRef): Promise<TextTargetCapture> {
+    const key = this.documentKey();
+    if (!key || ref.hostRef?.type !== 'word.contentControl' || !this.host.readContentControlText)
+      throw new Error('Choose a content control in a saved Word document.');
+    const id = ref.hostRef.contentControlId;
+    const text = await this.host.readContentControlText(id);
+    if (this.documentKey() !== key)
+      throw new Error('The document changed during target capture. Read it again.');
+    return {
+      text,
+      target: {
+        surface: this.surface,
+        documentId: await contentHash({ surface: this.surface, documentKey: key }),
+        objectId: id,
+        locator: `word:cc:${id}`,
+        revision: await contentHash({ text }),
+        scope: 'word-content-control',
+      },
+    };
   }
 
   /**
@@ -323,6 +375,16 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: outcome.location,
+      ...(outcome.trackingModeRestoreFailed ? { trackingModeRestoreFailed: true } : {}),
+      ...(outcome.verification
+        ? {
+            verification: outcome.verification,
+            completion:
+              outcome.verification.status === 'verified'
+                ? ('verified' as const)
+                : ('unknown' as const),
+          }
+        : {}),
       ...provFlags(req, dropped),
     };
   }
@@ -568,6 +630,16 @@ export class WordBridge implements DocBridge {
    * reversible.
    */
   private async applyFillContentControl(req: ActuationRequest): Promise<ActuationResult> {
+    if (req.params.target?.expectedTextHash && !this.host.supportsTextPreconditions)
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unsupported_precondition',
+          message: 'This Word adapter cannot enforce the captured text revision.',
+        },
+      };
     const plan = planFillContentControl(req);
     if (!plan.hasId || !plan.contentControlId) {
       return {
@@ -588,7 +660,22 @@ export class WordBridge implements DocBridge {
         error: { code: 'no_text', message: 'fill-content-control needs params.text' },
       };
     }
-    const outcome = await this.host.fillContentControl(plan.contentControlId, plan.text);
+    const outcome = await this.host.fillContentControl(
+      plan.contentControlId,
+      plan.text,
+      req.params.target?.expectedTextHash,
+    );
+    if (outcome.status === 'conflict')
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'target_conflict',
+          message:
+            'The content control changed since preview or its revision cannot be verified. Read it again before updating.',
+        },
+      };
     if (outcome.status === 'gone') {
       // The control was deleted → degrade to a panel item rather than throw (anchor-drift analogue).
       return {
@@ -616,6 +703,15 @@ export class WordBridge implements DocBridge {
         contentControlId: plan.contentControlId,
         priorText: outcome.priorText,
       },
+      ...(outcome.verification
+        ? {
+            verification: outcome.verification,
+            completion:
+              outcome.verification.status === 'verified'
+                ? ('verified' as const)
+                : ('unknown' as const),
+          }
+        : {}),
       ...provFlags(req, dropped),
     };
   }

@@ -1,7 +1,7 @@
 import type { FileView } from '@ge/contracts';
 import { byteLength, truncateToBytes } from '../docfs/bytes.js';
 import type { Mount } from '../docfs/mount.js';
-import { EvidenceWorkspace, snapshotReceipt } from './workspace.js';
+import { EvidenceWorkspace } from './workspace.js';
 
 /** Existing DocFs verbs reach immutable evidence without a feature-specific command grammar. */
 export function evidenceMount(workspace: EvidenceWorkspace): Mount {
@@ -13,10 +13,9 @@ export function evidenceMount(workspace: EvidenceWorkspace): Mount {
       throw new Error('Invalid evidence read budget.');
     const [id, kind, group, leaf] = rel.split('/');
     if (!id || !(await workspace.list()).includes(id)) return null;
-    const snapshot = await workspace.load(id);
+    const receipt = await workspace.receipt(id);
     let text: string;
-    if (kind === 'manifest.json' && group === undefined)
-      text = JSON.stringify(snapshotReceipt(snapshot));
+    if (kind === 'manifest.json' && group === undefined) text = JSON.stringify(receipt);
     else if (kind === 'windows') {
       if (
         !group ||
@@ -26,7 +25,8 @@ export function evidenceMount(workspace: EvidenceWorkspace): Mount {
         rel.split('/').length !== 4
       )
         return null;
-      const unit = snapshot.pages.flatMap((page) => page.units)[Number(group)];
+      if (Number(group) >= receipt.unitCount) return null;
+      const unit = await workspace.readAt(id, Number(group));
       if (!unit) return null;
       const window = await workspace.readText(id, unit.id, {
         offset: Number(leaf.slice(0, -5)),
@@ -51,7 +51,8 @@ export function evidenceMount(workspace: EvidenceWorkspace): Mount {
         return null;
       const index = Number(leaf.slice(0, -5));
       if (Math.floor(index / 100) !== Number(group)) return null;
-      const unit = snapshot.pages.flatMap((page) => page.units)[index];
+      if (index >= receipt.unitCount) return null;
+      const unit = await workspace.readAt(id, index);
       if (!unit) return null;
       text = JSON.stringify({ textWindowPath: `/evidence/${id}/windows/${index}/0.json`, ...unit });
     }
@@ -71,7 +72,7 @@ export function evidenceMount(workspace: EvidenceWorkspace): Mount {
       if (!rel) return (await workspace.list()).map((name) => ({ name, kind: 'dir' }));
       const [id, kind, group] = rel.split('/');
       if (!id || !(await workspace.list()).includes(id)) return [];
-      const snapshot = await workspace.load(id);
+      const snapshot = await workspace.receipt(id);
       if (!kind)
         return [
           { name: 'manifest.json', kind: 'file' },
@@ -106,24 +107,30 @@ export function evidenceMount(workspace: EvidenceWorkspace): Mount {
         throw new Error('Invalid evidence search limit.');
       const id = rel.split('/')[0];
       if (!id || !(await workspace.list()).includes(id) || !pattern.trim()) return [];
-      const snapshot = await workspace.load(id);
       const prefix = rel.replace(/\/$/, '');
-      return snapshot.pages
-        .flatMap((page) => page.units)
-        .flatMap((unit, index) => {
-          const path = `${id}/units/${Math.floor(index / 100)}/${index}.json`;
-          if (path !== prefix && !path.startsWith(`${prefix}/`)) return [];
-          const offset = unit.text.indexOf(pattern);
-          if (offset < 0) return [];
-          return [
-            {
-              path,
-              line: unit.text.slice(0, offset).split('\n').length,
-              text: truncateToBytes(unit.text.slice(offset), 512).text,
-            },
-          ];
-        })
-        .slice(0, max);
+      const hits: Array<{ path: string; line: number; text: string }> = [];
+      let cursor: string | undefined;
+      do {
+        const page = await workspace.query(
+          id,
+          { kind: 'grep', literal: pattern, caseSensitive: true },
+          { cursor, limit: 100 },
+        );
+        for (const node of page.nodes) {
+          const path = node.path.replace(/^\/evidence\//, '');
+          if (path !== prefix && !path.startsWith(prefix + '/')) continue;
+          const unit = await workspace.read(id, node.id);
+          const offset = node.matchOffset ?? 0;
+          hits.push({
+            path,
+            line: unit.text.slice(0, offset).split('\n').length,
+            text: truncateToBytes(unit.text.slice(offset), 512).text,
+          });
+          if (hits.length >= max) return hits;
+        }
+        cursor = page.nextCursor;
+      } while (cursor);
+      return hits;
     },
   };
 }

@@ -1,5 +1,12 @@
 # Status — what's built (and what's next)
 
+The October 25 increment adds host-aware discovery/dispatch, strict initial capability modules,
+indexed evidence navigation, batched Excel freshness reads, conservative formula output bounds,
+current-revision/native text verification, durable effect checkpoints, managed Word/PPT text
+refresh, typed workflow entry points, editable deck charts and native certification tooling.
+[Implemented behavior, usage and remaining roadmap](VERIFIED-OFFICE-WORKFLOWS.md). Native Office
+and tenant acceptance are still required; the full twelve-week proposal is not marked complete.
+
 The honest, current state of the codebase. Companion to `BUILD-PLAN.md` (the original checklist,
 now partly superseded), `CAPABILITY-MAP.md` (the I/O inventory), and the **ADRs** (the current
 architecture). Updated for the September 2026 architecture unification.

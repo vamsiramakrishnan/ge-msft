@@ -1,5 +1,6 @@
 import {
   ContextProjectionRequestSchema,
+  DocumentPageSchema,
   EvidenceSnapshotSchema,
   type ContextProjection,
   type ContextProjectionRequest,
@@ -10,6 +11,7 @@ import {
 } from '@ge/contracts';
 import { evidenceHash } from './hash.js';
 import { navigateEvidence, type EvidenceQuery } from './navigation.js';
+import { navigateEvidencePages } from './paged-navigation.js';
 import { byteLength } from '../docfs/bytes.js';
 import { SourceTraversal, verifySource, type EvidenceSource } from './source.js';
 import { MemoryEvidenceStore, type EvidenceStore } from './store.js';
@@ -87,16 +89,85 @@ export class EvidenceWorkspace {
     const { id: _id, pages: _pages, ...body } = snapshot;
     if (
       index !== snapshot.pages.length ||
-      traversal.receipt.id !== snapshot.id ||
+      JSON.stringify(traversal.receipt.pageHashes) !== JSON.stringify(snapshot.pageHashes) ||
+      traversal.receipt.unitCount !== snapshot.unitCount ||
+      traversal.receipt.sourceBytes !== snapshot.sourceBytes ||
+      traversal.receipt.scope !== snapshot.scope ||
+      JSON.stringify(traversal.receipt.limitations) !== JSON.stringify(snapshot.limitations) ||
+      (snapshot.pageUnitCounts !== undefined &&
+        JSON.stringify(traversal.receipt.pageUnitCounts) !==
+          JSON.stringify(snapshot.pageUnitCounts)) ||
       (await evidenceHash(JSON.stringify(body))) !== snapshot.id
     )
       throw new Error('Evidence integrity check failed.');
     return snapshot;
   }
   async verify(id: string, source: EvidenceSource, signal?: AbortSignal): Promise<void> {
-    await verifySource(source, snapshotReceipt(await this.load(id)), signal);
+    await verifySource(source, await this.receipt(id), signal);
+  }
+  /** Hash the small manifest, then only the page requested. A corrupt adapter cannot forge membership. */
+  async receipt(id: string): Promise<SourceReceipt> {
+    if (!this.store.getReceipt) return snapshotReceipt(await this.load(id));
+    const raw = await this.store.getReceipt(id);
+    if (!raw) throw new Error('Evidence snapshot unavailable or released.');
+    const { pages: _pages, ...receipt } = EvidenceSnapshotSchema.parse({ ...raw, pages: [] });
+    const { id: storedId, ...body } = receipt;
+    if (storedId !== id || (await evidenceHash(JSON.stringify(body))) !== id)
+      throw new Error('Evidence integrity check failed.');
+    if (
+      receipt.pageUnitCounts &&
+      (receipt.pageUnitCounts.length !== receipt.pageHashes.length ||
+        receipt.pageUnitCounts.reduce((sum, count) => sum + count, 0) !== receipt.unitCount)
+    )
+      throw new Error('Evidence ordinal index integrity check failed.');
+    return receipt;
+  }
+  async page(id: string, index: number): Promise<DocumentPage> {
+    if (!Number.isSafeInteger(index) || index < 0) throw new Error('Invalid evidence page.');
+    if (!this.store.getPage) {
+      const page = (await this.load(id)).pages[index];
+      if (!page) throw new Error('Evidence page unavailable.');
+      return page;
+    }
+    const receipt = await this.receipt(id);
+    const page = DocumentPageSchema.parse(await this.store.getPage(id, index));
+    if (
+      index >= receipt.pageHashes.length ||
+      (await evidenceHash(JSON.stringify(page))) !== receipt.pageHashes[index]
+    )
+      throw new Error('Evidence page integrity check failed.');
+    return page;
+  }
+  async readAt(id: string, ordinal: number): Promise<DocumentPage['units'][number]> {
+    if (!Number.isSafeInteger(ordinal) || ordinal < 0) throw new Error('Invalid evidence ordinal.');
+    const receipt = await this.receipt(id);
+    if (ordinal >= receipt.unitCount)
+      throw new Error('Evidence unit does not exist in this snapshot.');
+    if (!receipt.pageUnitCounts) {
+      return structuredClone((await this.load(id)).pages.flatMap((page) => page.units)[ordinal]!);
+    }
+    let offset = 0;
+    for (const [index, count] of receipt.pageUnitCounts.entries()) {
+      if (ordinal < offset + count) {
+        const page = await this.page(id, index);
+        if (page.units.length !== count)
+          throw new Error('Evidence ordinal index integrity check failed.');
+        return structuredClone(page.units[ordinal - offset]!);
+      }
+      offset += count;
+    }
+    throw new Error('Evidence ordinal index integrity check failed.');
   }
   async read(id: string, unitId: string): Promise<DocumentPage['units'][number]> {
+    if (this.store.getReceipt && this.store.getPage && this.store.locateUnit) {
+      // Validate even a miss: a released or corrupt snapshot must not appear to be a valid empty one.
+      await this.receipt(id);
+      const index = await this.store.locateUnit(id, unitId);
+      if (index === undefined) throw new Error('Evidence unit does not exist in this snapshot.');
+      const unit = (await this.page(id, index)).units.find((unit) => unit.id === unitId);
+      if (!unit) throw new Error('Evidence index integrity check failed.');
+      return structuredClone(unit);
+    }
     const unit = (await this.load(id)).pages
       .flatMap((page) => page.units)
       .find((unit) => unit.id === unitId);
@@ -108,6 +179,33 @@ export class EvidenceWorkspace {
     query: EvidenceQuery,
     options: { cursor?: string; limit?: number; maxBytes?: number } = {},
   ) {
+    const receipt = await this.receipt(id);
+    if (
+      receipt.pageUnitCounts &&
+      this.store.getPage &&
+      (query.kind !== 'expand' || this.store.locateUnit)
+    ) {
+      let anchor: { unit: DocumentPage['units'][number]; ordinal: number } | undefined;
+      if (query.kind === 'expand') {
+        const index = await this.store.locateUnit!(id, query.id);
+        if (index === undefined) throw new Error('Expansion anchor is absent.');
+        const page = await this.page(id, index);
+        const within = page.units.findIndex((unit) => unit.id === query.id);
+        if (within < 0) throw new Error('Evidence index integrity check failed.');
+        anchor = {
+          unit: page.units[within]!,
+          ordinal:
+            receipt.pageUnitCounts.slice(0, index).reduce((sum, count) => sum + count, 0) + within,
+        };
+      }
+      return navigateEvidencePages(
+        receipt,
+        query,
+        (index) => this.page(id, index),
+        anchor,
+        options,
+      );
+    }
     return navigateEvidence(await this.load(id), query, options);
   }
   /** Exact text windows; callers can advance nextOffset without losing oversized nodes. */

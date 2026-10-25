@@ -3623,3 +3623,48 @@ button.cite:hover {
 .resume-card {
   margin: var(--s4) var(--s5) 0;
 }
+
+/* Office workflows reuse fields and buttons; these classes only arrange their layout. */
+.office-workbench {
+  margin-bottom: var(--s5);
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: var(--fz-md);
+  overflow-wrap: anywhere;
+}
+.office-workbench > summary,
+.office-workbench > h3,
+.office-workbench > p {
+  padding: var(--s4);
+  margin: 0;
+}
+.office-workbench > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.office-workflow-body {
+  display: grid;
+  min-width: 0;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-top: 1px solid var(--hairline-soft);
+}
+.office-workflow-body p {
+  margin: 0;
+}
+.office-workflow-body .field-control {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.office-workflow-body textarea.field-control {
+  height: auto;
+  padding: var(--s3);
+  resize: vertical;
+  font-family: inherit;
+}
+.office-workflow-body > label:not(.field) {
+  display: flex;
+  align-items: start;
+  gap: var(--s2);
+}

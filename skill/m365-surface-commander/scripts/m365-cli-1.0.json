@@ -4578,12 +4578,13 @@
       "useWhen": "replace exact existing text as a reviewable tracked change",
       "hostApis": [
         "Word.Range.insertText",
-        "Word.ChangeTrackingMode"
+        "Word.Document.changeTrackingMode",
+        "Word.Range.getReviewedText"
       ],
       "requirementSets": [
         {
           "name": "WordApi",
-          "minVersion": "1.1"
+          "minVersion": "1.4"
         }
       ],
       "contextKinds": [

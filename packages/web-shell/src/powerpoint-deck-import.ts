@@ -30,7 +30,7 @@ export async function buildPowerPointDeckImportRequest(
     changeId:
       typeof options.changeId === 'string'
         ? asChangeId(options.changeId)
-        : (options.changeId ?? asChangeId(`deck-${artifact.specFingerprint}`)),
+        : (options.changeId ?? asChangeId(`deck-${crypto.randomUUID()}`)),
     kind: 'insert-slide',
     surface: 'powerpoint',
     params: {

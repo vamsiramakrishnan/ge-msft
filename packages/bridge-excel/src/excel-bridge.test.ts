@@ -799,6 +799,11 @@ class FakeWorkbook {
 const CHART_SELECTED = '<chart>';
 
 class FakeContext {
+  readonly application = {
+    calculationState: 'Done',
+    load: () => undefined,
+    calculate: () => undefined,
+  };
   readonly workbook: FakeWorkbook;
   private readonly touched: FakeRange[] = [];
   private invalidSelection = false;
@@ -832,6 +837,60 @@ class FakeContext {
     return Promise.resolve();
   }
 }
+
+describe('Excel bounded native read plans', () => {
+  it('captures independent ranges with two shared synchronization stages', async () => {
+    active = installExcel(salesSeed());
+    const sync = vi.spyOn(FakeContext.prototype, 'sync');
+    try {
+      const result = await new ExcelBridge().captureCellsBatch(['Sales!A1:B2', 'Sales!A3:B4']);
+      expect(result.map((snapshot) => snapshot.locator)).toEqual(['Sales!A1:B2', 'Sales!A3:B4']);
+      expect(result.map((snapshot) => snapshot.values.length)).toEqual([2, 2]);
+      expect(sync).toHaveBeenCalledTimes(2);
+    } finally {
+      sync.mockRestore();
+    }
+  });
+  it('enforces the aggregate budget during a payload-limit fallback', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const snapshot = await bridge.captureCells('Sales!A1:B2');
+    const sync = vi
+      .spyOn(FakeContext.prototype, 'sync')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('payload limit'), { code: 'ResponsePayloadSizeLimitExceeded' }),
+      );
+    const capture = vi.spyOn(bridge, 'captureCells').mockResolvedValue({
+      ...snapshot,
+      values: [['x'.repeat(12 * 1024 * 1024)]],
+    });
+    try {
+      await expect(
+        bridge.captureCellsBatch(['Sales!A1', 'Sales!A2', 'Sales!A3', 'Sales!A4']),
+      ).rejects.toThrow('32 MiB');
+      expect(capture).toHaveBeenCalledTimes(3);
+    } finally {
+      sync.mockRestore();
+      capture.mockRestore();
+    }
+  });
+  it('refuses an unknown array-formula footprint before entering the host', async () => {
+    active = installExcel(salesSeed());
+    const sync = vi.spyOn(FakeContext.prototype, 'sync');
+    try {
+      const result = await new ExcelBridge().actuate({
+        changeId: asChangeId('spill'),
+        kind: 'write-cells',
+        surface: 'excel',
+        params: { target: { range: 'Sales!A1' }, cells: [['=SEQUENCE(1000)']] },
+      });
+      expect(result.error?.code).toBe('unknown_write_footprint');
+      expect(sync).not.toHaveBeenCalled();
+    } finally {
+      sync.mockRestore();
+    }
+  });
+});
 
 function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook {
   const reg = (r: FakeRange): FakeRange => {
@@ -2326,7 +2385,7 @@ describe('ExcelBridge.actuate format-conditional (ADR-0007 cf verb)', () => {
     const res = await new ExcelBridge().actuate(
       formatConditional({ conditional: { range: 'Sales!C2:C4', rule: { kind: 'dataBar' } } }),
     );
-    expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'unsupported_host' } });
+    expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'unsupported' } });
     expect(active.seed.conditionalFormats.size).toBe(0);
   });
 

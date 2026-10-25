@@ -108,8 +108,8 @@ describe('Outlook command reliability', () => {
     );
     expect(first).toContain('mail "body"');
     expect(first).toContain('compose "Subject" "body"');
-    // Specialized compose-mode writes show real parameters, not `[key=value ...]`.
-    expect(first).toContain('/set-subject subject="Updated project plan"');
+    // The received-item pane must not advertise edits to a separate compose buffer.
+    expect(first).not.toContain('/set-subject subject="Updated project plan"');
     expect(first).not.toContain('/set-subject [key=value ...]');
   });
 

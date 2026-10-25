@@ -41,6 +41,7 @@ interface InstallOpts {
   requirements?: Record<string, number>;
   /** Force `Word.run` to reject (simulate an unsupported host / batch failure). */
   wordRunThrows?: boolean;
+  failSyncAt?: number;
   /** Throw from inside `body.search` (simulate a host quirk mid-batch). */
   searchThrows?: boolean;
   /** Make `onCommentAdded.add()` throw (comment events advertised but unusable). */
@@ -346,6 +347,7 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
     sync(): Promise<void> {
       rec.syncCount += 1;
       rec.trace.push('sync');
+      if (rec.syncCount === opts.failSyncAt) return Promise.reject(new Error('Native sync failed'));
       return Promise.resolve();
     },
   };
@@ -555,13 +557,26 @@ describe('OfficeWordHost.applyTrackedChange (search→choose→insert batch)', (
     );
 
     expect(out).toEqual({ status: 'applied', location: 'tracked-change' });
-    expect(rec.changeTrackingMode).toBe('TrackAll');
+    expect(rec.trace).toContain('mode:TrackAll');
+    expect(rec.changeTrackingMode).toBe('');
     // choose saw the read-back match texts.
     expect(choose).toHaveBeenCalledWith(['intro 99.5%', 'SLA: 99.5% uptime']);
     // wrote exactly once, on the chosen (second) hit, with the replace location.
     expect(rec.inserts).toEqual([
       { anchor: 'SLA: 99.5% uptime', text: '99.9%', location: 'Replace' },
     ]);
+  });
+
+  it('preserves the landed receipt if restoring tracking mode fails', async () => {
+    const rec = setup({ searchHits: { q: ['q'] }, failSyncAt: 4 });
+    const out = await new OfficeWordHost().applyTrackedChange(
+      'q',
+      { matchCase: true },
+      'new',
+      () => 0,
+    );
+    expect(rec.inserts).toHaveLength(1);
+    expect(out).toMatchObject({ status: 'applied', trackingModeRestoreFailed: true });
   });
 
   it('preserves the read-then-write ordering: load + first sync precede the choose-driven insert', async () => {
@@ -575,7 +590,7 @@ describe('OfficeWordHost.applyTrackedChange (search→choose→insert batch)', (
     expect(firstSync).toBeGreaterThanOrEqual(0);
     expect(insert).toBeGreaterThan(firstSync);
     expect(lastSync).toBeGreaterThan(insert);
-    expect(rec.syncCount).toBe(3);
+    expect(rec.syncCount).toBe(4); // includes restoring the user's tracking mode
   });
 
   it('marks only the changed words of a grammar fix (UAT #17)', async () => {

@@ -234,6 +234,15 @@
     "load_when": "The active surface is Teams or a plan mentions meetings, transcript, channel, thread, or post."
   },
   {
+    "path": "references/verified-office-workflows.md",
+    "title": "Verified Office Workflows",
+    "kind": "reference",
+    "surface": "",
+    "workflow": "",
+    "topics": "[freshness, bounded-context, managed-refresh, native-verification, recovery]",
+    "load_when": "A task needs reusable Office workflows, managed output refresh, native postconditions or interrupted-write recovery."
+  },
+  {
     "path": "references/word-semantics.md",
     "title": "Word Semantics",
     "kind": "reference",

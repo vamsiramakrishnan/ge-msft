@@ -38,4 +38,5 @@ Generated from resource frontmatter. Load the listed file only when its `load_wh
 | [references/progressive-disclosure.md](../references/progressive-disclosure.md) | reference | - | - | Choosing context or command help, or recovering omitted evidence from an execution-state reference. |
 | [references/specialized-capabilities.md](../references/specialized-capabilities.md) | reference | - | - | A task needs host-native capability beyond the core CLI verbs. |
 | [references/teams-semantics.md](../references/teams-semantics.md) | reference | teams | - | The active surface is Teams or a plan mentions meetings, transcript, channel, thread, or post. |
+| [references/verified-office-workflows.md](../references/verified-office-workflows.md) | reference | - | - | A task needs reusable Office workflows, managed output refresh, native postconditions or interrupted-write recovery. |
 | [references/word-semantics.md](../references/word-semantics.md) | reference | word | - | The active surface is Word or a plan mentions redlines, comments, paragraphs, or text anchors. |

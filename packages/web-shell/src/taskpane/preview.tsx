@@ -80,6 +80,40 @@ function surfaceFromParams(params: URLSearchParams): Surface {
 
 function buildState(t: Toggles): PanelState {
   return {
+    ...(previewParams().get('office-workflows') === '1'
+      ? {
+          officeCapabilities: ['fill-content-control' as const, 'set-shape-text' as const],
+          taskJournal: {
+            durable: true,
+            entries: [
+              {
+                id: 'preview-only',
+                taskId: 'preview-task',
+                kind: 'set-shape-text' as const,
+                state: 'uncertain' as const,
+                updatedAt: '2026-10-25T00:00:00Z',
+              },
+            ],
+          },
+        }
+      : {}),
+    ...(previewParams().get('office-report') === '1'
+      ? {
+          nativeCertification: {
+            version: 1 as const,
+            fixtureVersion: 1 as const,
+            fixtureId: 'excel-grid-readback',
+            commit: 'a'.repeat(40),
+            surface: 'excel' as const,
+            startedAt: '2026-10-25T00:00:00Z',
+            durationMs: 0,
+            status: 'unavailable' as const,
+            checks: {},
+            nativeSyncs: 0,
+            effects: [],
+          },
+        }
+      : {}),
     messages: t.messages ? FIXTURE_MESSAGES : [],
     chips: t.chips ? FIXTURE_CHIPS : [],
     suggestions: t.suggestions ? FIXTURE_SUGGESTIONS : [],
@@ -90,9 +124,13 @@ function buildState(t: Toggles): PanelState {
     availableAgents: [],
     availableDataStores: [],
     conversations: FIXTURE_CONVERSATIONS,
-    ...(t.write ? { pendingWrite: FIXTURE_PENDING_WRITE } : {}),
-    ...(t.plan ? { pendingPlan: FIXTURE_PLAN } : {}),
-    busy: t.busy,
+    ...(t.write && previewParams().get('office-workflows') !== '1'
+      ? { pendingWrite: FIXTURE_PENDING_WRITE }
+      : {}),
+    ...(t.plan && previewParams().get('office-workflows') !== '1'
+      ? { pendingPlan: FIXTURE_PLAN }
+      : {}),
+    busy: previewParams().get('office-workflows') === '1' ? false : t.busy,
     ...(t.error ? { error: FIXTURE_ERROR } : {}),
   };
 }
@@ -112,11 +150,23 @@ export function makeMockController(state: PanelState): PanelController {
   const mock = {
     getState: () => state,
     subscribe: (_listener: (s: PanelState) => void) => () => undefined,
+    managedTextTargets: () => [
+      {
+        id: 'preview-output',
+        kind: 'content-control',
+        title: 'Sample managed output',
+        surface: 'word',
+      },
+    ],
     refreshContext: async () => log('refreshContext')(),
     attach: async (id: string) => log('attach')(id),
     detach: (id: string) => log('detach')(id),
     send: async (q: string) => log('send')(q),
     runCommands: async (t: string) => log('runCommands')(t),
+    runOfficeWorkflow: async (...args: unknown[]) => log('runOfficeWorkflow')(...args),
+    refreshManagedText: async (...args: unknown[]) => log('refreshManagedText')(...args),
+    runNativeCertification: async (...args: unknown[]) => log('runNativeCertification')(...args),
+    acknowledgeTaskJournal: async (...args: unknown[]) => log('acknowledgeTaskJournal')(...args),
     cancel: () => log('cancel')(),
     approvePlan: () => log('approvePlan')(),
     rejectPlan: () => log('rejectPlan')(),

@@ -38,6 +38,7 @@ export class SourceTraversal {
     const cursors = new Set<string>();
     const ids = new Set<string>();
     const pageHashes: string[] = [];
+    const pageUnitCounts: number[] = [];
     const limitations = new Set<string>();
     let scope = '';
     let sourceBytes = 0;
@@ -66,6 +67,7 @@ export class SourceTraversal {
         if (ids.size > this.limits.maxUnits) throw new Error('Source-unit limit reached.');
       }
       pageHashes.push(await evidenceHash(encoded));
+      pageUnitCounts.push(page.units.length);
       cursor = page.nextCursor;
       yield page;
     } while (cursor !== undefined);
@@ -78,6 +80,7 @@ export class SourceTraversal {
       sourceBytes,
       limitations: [...limitations],
       complete: true as const,
+      pageUnitCounts,
     };
     this.result = { ...body, id: await evidenceHash(JSON.stringify(body)) };
   }
@@ -98,6 +101,8 @@ export async function verifySource(
         'The document changed since capture. Refresh the evidence before continuing.',
       );
   }
-  if (traversal.receipt.id !== receipt.id)
+  const { id: _id, ...body } = traversal.receipt;
+  if (receipt.pageUnitCounts === undefined) delete body.pageUnitCounts;
+  if ((await evidenceHash(JSON.stringify(body))) !== receipt.id)
     throw new Error('Document coverage changed since capture.');
 }

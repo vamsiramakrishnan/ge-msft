@@ -1,5 +1,6 @@
+import { officeHostProfile } from './office-host-profile.js';
 import { unknownActuationResult } from '@ge/contracts';
-import { createBridgeDispatch } from '@ge/runtime';
+import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -68,7 +69,15 @@ export class OutlookBridge implements DocBridge {
       'set-body': (host, request) => host.applyBody(request),
       'set-subject': (host, request) => host.applySubject(request),
     },
-    { provenance: 'unsupported' },
+    {
+      provenance: 'unsupported',
+      capabilities: (host) => host.getCapabilities(),
+      documentKey: (host) => host.documentKey(),
+      unavailable: (host, request) =>
+        ['set-body', 'set-subject', 'set-recipients', 'add-attachment'].includes(request.kind)
+          ? host.resolveDraft(request).error
+          : undefined,
+    },
   );
   static readonly handledActuations = OutlookBridge.dispatcher.handledActuations;
 
@@ -77,8 +86,12 @@ export class OutlookBridge implements DocBridge {
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
   private docStateVersion = 0;
 
+  getHostProfile(): import('@ge/contracts').HostCapabilityProfile | undefined {
+    return officeHostProfile(this.surface);
+  }
+
   getCapabilities(): CapabilityManifest {
-    return OUTLOOK_CAPABILITIES;
+    return negotiateCapabilities(OUTLOOK_CAPABILITIES, this.getHostProfile());
   }
 
   async listContext(): Promise<ContextRef[]> {
@@ -283,6 +296,7 @@ export class OutlookBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: attachments ? 'reply-form+attachment' : 'reply-form',
+      completion: 'review-opened',
     };
   }
 
@@ -316,7 +330,13 @@ export class OutlookBridge implements DocBridge {
       htmlBody: plan.body,
       ...(plan.to ? { toRecipients: plan.to } : {}),
     });
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'new-message-form' };
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: 'new-message-form',
+      completion: 'review-opened',
+    };
   }
 
   /**

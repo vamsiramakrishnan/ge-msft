@@ -11,6 +11,8 @@ export interface CompiledDeckArtifact {
 
 export interface CompileDeckOptions {
   readonly compression?: boolean;
+  /** Fail before generating a file when geometry overlaps or extends outside the slide. */
+  readonly strictLayout?: boolean;
 }
 
 interface SlideSize {
@@ -34,6 +36,10 @@ export async function compileDeckSpecToBase64(
 ): Promise<CompiledDeckArtifact> {
   const spec = DeckSpecSchema.parse(input);
   const warnings: string[] = [];
+  if (options.strictLayout) {
+    const issues = inspectDeckLayout(spec);
+    if (issues.length) throw new Error(`Deck layout failed: ${issues.join('; ')}`);
+  }
   const pptx = new PptxGenJS();
   pptx.layout = spec.layout === 'standard' ? 'LAYOUT_4x3' : 'LAYOUT_WIDE';
   pptx.author = spec.author ?? 'Gemini Enterprise M365 Add-in';
@@ -41,8 +47,8 @@ export async function compileDeckSpecToBase64(
   if (spec.title) pptx.title = spec.title;
   pptx.company = 'Google Gemini Enterprise for Microsoft 365';
   pptx.theme = {
-    headFontFace: 'Aptos Display',
-    bodyFontFace: 'Aptos',
+    headFontFace: spec.theme?.headFontFace ?? 'Aptos Display',
+    bodyFontFace: spec.theme?.bodyFontFace ?? 'Aptos',
   };
 
   const size = spec.layout === 'standard' ? STANDARD_SIZE : WIDE_SIZE;
@@ -55,10 +61,10 @@ export async function compileDeckSpecToBase64(
         y: 0.35,
         w: size.width - 1.1,
         h: 0.52,
-        fontFace: 'Aptos Display',
+        fontFace: spec.theme?.headFontFace ?? 'Aptos Display',
         fontSize: 24,
         bold: true,
-        color: '1F1F1F',
+        color: spec.theme?.headingColor ?? '1F1F1F',
         margin: 0,
         fit: 'shrink',
       });
@@ -69,7 +75,7 @@ export async function compileDeckSpecToBase64(
         y: 0.92,
         w: size.width - 1.16,
         h: 0.4,
-        fontFace: 'Aptos',
+        fontFace: spec.theme?.bodyFontFace ?? 'Aptos',
         fontSize: 11,
         color: '595959',
         margin: 0,
@@ -78,7 +84,7 @@ export async function compileDeckSpecToBase64(
     }
     if (slideSpec.notes) slide.addNotes(slideSpec.notes);
     for (const element of slideSpec.elements) {
-      addElement(slide, element, size, warnings);
+      addElement(slide, element, size, warnings, spec.theme);
     }
   }
 
@@ -102,19 +108,54 @@ export async function compileDeckSpecToBase64(
 export function fingerprintDeckSpec(spec: DeckSpec): string {
   return fnv1a32(stableStringify(DeckSpecSchema.parse(spec)));
 }
+/** Deterministic geometry/accessibility checks. Text overflow still requires native/render acceptance. */
+export function inspectDeckLayout(input: unknown): string[] {
+  const spec = DeckSpecSchema.parse(input);
+  const size = spec.layout === 'standard' ? STANDARD_SIZE : WIDE_SIZE;
+  const issues: string[] = [];
+  for (const [slideIndex, slide] of spec.slides.entries()) {
+    const boxes: Array<Frame & { name: string; allowOverlap?: boolean }> = [];
+    if (slide.title) boxes.push({ name: 'title', x: 0.55, y: 0.35, w: size.width - 1.1, h: 0.52 });
+    if (slide.subtitle)
+      boxes.push({ name: 'subtitle', x: 0.58, y: 0.92, w: size.width - 1.16, h: 0.4 });
+    for (const [index, element] of slide.elements.entries()) {
+      const label = `Slide ${slideIndex + 1} element ${index + 1}`;
+      if (
+        element.w <= 0 ||
+        element.h <= 0 ||
+        element.x + element.w > size.width ||
+        element.y + element.h > size.height
+      )
+        issues.push(`${label} extends outside the slide or has no area`);
+      if (element.kind === 'image' && !element.altText?.trim())
+        issues.push(`${label} needs alternative text`);
+      boxes.push({ ...element, name: `element ${index + 1}` });
+    }
+    for (let left = 0; left < boxes.length; left++)
+      for (let right = left + 1; right < boxes.length; right++) {
+        const a = boxes[left]!;
+        const b = boxes[right]!;
+        if (a.allowOverlap || b.allowOverlap) continue;
+        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)
+          issues.push(`Slide ${slideIndex + 1}: ${a.name} overlaps ${b.name}`);
+      }
+  }
+  return issues;
+}
 
 function addElement(
   slide: PptxGenJS.Slide,
   element: DeckElement,
   size: SlideSize,
   warnings: string[],
+  theme?: DeckSpec['theme'],
 ): void {
   const frame = clampFrame(element, size, warnings);
   switch (element.kind) {
     case 'text':
       slide.addText(element.text, {
         ...frame,
-        ...textOptions(element.style),
+        ...textOptions(element.style, theme),
         margin: 0.04,
         fit: 'shrink',
       });
@@ -124,7 +165,7 @@ function addElement(
         element.items.map((text) => ({ text, options: { bullet: { type: 'bullet' } } })),
         {
           ...frame,
-          ...textOptions(element.style),
+          ...textOptions(element.style, theme),
           breakLine: false,
           fit: 'shrink',
         },
@@ -135,10 +176,31 @@ function addElement(
         element.rows.map((row) => row.map((text) => ({ text }))),
         {
           ...frame,
-          ...textOptions(element.style),
+          ...textOptions(element.style, theme),
           border: { type: 'solid', color: 'D0D7DE', pt: 0.5 },
           fill: { color: 'FFFFFF' },
           margin: 0.05,
+        },
+      );
+      return;
+    case 'chart':
+      slide.addChart(
+        element.chartType === 'column' ? 'bar' : element.chartType,
+        element.series.map((series) => ({
+          name: series.name,
+          labels: element.labels,
+          values: series.values,
+        })),
+        {
+          ...frame,
+          barDir: element.chartType === 'bar' ? 'bar' : 'col',
+          showLegend: element.showLegend,
+          showTitle: Boolean(element.title),
+          title: element.title,
+          chartColors: theme?.accentColors,
+          showValue: false,
+          catAxisLabelFontFace: theme?.bodyFontFace ?? 'Aptos',
+          valAxisLabelFontFace: theme?.bodyFontFace ?? 'Aptos',
         },
       );
       return;
@@ -152,13 +214,16 @@ function addElement(
   }
 }
 
-function textOptions(style: DeckTextStyle | undefined): PptxGenJS.TextPropsOptions {
+function textOptions(
+  style: DeckTextStyle | undefined,
+  theme?: DeckSpec['theme'],
+): PptxGenJS.TextPropsOptions {
   return {
-    fontFace: style?.fontFace ?? 'Aptos',
+    fontFace: style?.fontFace ?? theme?.bodyFontFace ?? 'Aptos',
     fontSize: style?.fontSize ?? 14,
     bold: style?.bold,
     italic: style?.italic,
-    color: style?.color ?? '1F1F1F',
+    color: style?.color ?? theme?.bodyColor ?? '1F1F1F',
     align: style?.align,
   };
 }

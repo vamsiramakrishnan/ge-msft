@@ -258,13 +258,12 @@ describe('Excel full-stack integration', () => {
     await ui!.act(() => {
       run = ui!.controller.runCommands('flag a cell');
     });
-    await ui!.waitFor((s) => s.pendingPlan !== undefined);
-    await ui!.act(() => ui!.controller.approvePlan());
     await ui!.waitFor((s) => !s.busy);
     await run;
     await ui!.flush();
 
-    // No comment was added (host too old); the loop degraded without throwing.
+    // The unsupported command is filtered before approval and never reaches the host.
+    expect(ui!.controller.getState().pendingPlan).toBeUndefined();
     expect(sim.snapshot().comments.length).toBe(0);
     const steps = ui!.container.querySelector('.run-steps')?.textContent ?? '';
     expect(steps.length).toBeGreaterThan(0);

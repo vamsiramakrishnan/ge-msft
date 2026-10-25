@@ -21,6 +21,8 @@ export const EvidenceSnapshotSchema = z.object({
   sourceBytes: z.number().int().nonnegative(),
   limitations: z.array(z.string().max(1000)).max(40),
   complete: z.literal(true),
+  /** Authenticated ordinal index. Older snapshots without it use full-validation navigation. */
+  pageUnitCounts: z.array(z.number().int().nonnegative().max(1000)).max(10000).optional(),
   pages: z.array(DocumentPageSchema).max(10000),
 });
 export type EvidenceSnapshot = z.infer<typeof EvidenceSnapshotSchema>;

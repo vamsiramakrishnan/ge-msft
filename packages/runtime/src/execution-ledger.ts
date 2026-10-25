@@ -42,6 +42,7 @@ export interface RunRecord extends Omit<RunOutcome, 'effects'> {
     changeId: string;
     kind: ActuationResult['kind'];
     ok: boolean;
+    completion?: ActuationResult['completion'];
     errorCode?: string;
     errorReason?: ActuationErrorReason;
   }>;
@@ -64,6 +65,7 @@ export class ExecutionLedger {
         changeId: r.changeId,
         kind: r.kind,
         ok: r.ok,
+        ...(r.completion ? { completion: r.completion } : {}),
         ...(r.error ? { errorCode: r.error.code } : {}),
         // Closed codes only: a bridge result that skipped the schema cannot put text in diagnostics.
         ...(ActuationErrorReasonSchema.safeParse(r.error?.reason).success

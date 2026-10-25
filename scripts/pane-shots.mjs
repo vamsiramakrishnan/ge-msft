@@ -25,10 +25,12 @@ const surface = args.surface ?? 'excel';
 const out = args.out ?? join(tmpdir(), 'pane-shots');
 mkdirSync(out, { recursive: true });
 
-const browser = await chromium.launch({ channel: 'chrome' }).catch(() => chromium.launch());
+const browser = process.env.GE_BROWSER_EXECUTABLE
+  ? await chromium.launch({ executablePath: process.env.GE_BROWSER_EXECUTABLE })
+  : await chromium.launch({ channel: 'chrome' }).catch(() => chromium.launch());
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: 2 });
 for (const width of [320, 360, 480]) {
-  const query = [`surface=${surface}`, 'demo=1', args.query].filter(Boolean).join('&');
+  const query = [`surface=${surface}`, args.demo === '0' ? '' : 'demo=1', args.query].filter(Boolean).join('&');
   await page.goto(`${base}/?${query}`);
   await page.selectOption('select[aria-label="Pane width"]', `${width}`);
   await page.waitForTimeout(400);
@@ -36,7 +38,22 @@ for (const width of [320, 360, 480]) {
     await page.click(`.tw-rail-item[data-panel="${args.panel}"]`);
     await page.waitForTimeout(200);
   }
-  const file = join(out, `${surface}${args.panel ? `-${args.panel}` : ''}-${width}.png`);
+  if (args.expand) {
+    const disclosure = page.locator('.office-workbench').filter({ has: page.locator('summary', { hasText: args.expand }) }).first();
+    await disclosure.locator('summary').click();
+    if (args.fill === '1') {
+      for (const field of await disclosure.locator('textarea:not([readonly])').all()) await field.fill('Sample instructions for this workflow.');
+      const output = disclosure.locator('select');
+      if (await output.count()) await output.selectOption({ index: 1 });
+    }
+    await disclosure.scrollIntoViewIfNeeded();
+  }
+  if (args.scroll === 'interrupted') {
+    if (args.check === '1') await page.getByRole('checkbox', { name: 'I stopped other running panes' }).check();
+    await page.getByRole('heading', { name: 'Inspect interrupted changes' }).scrollIntoViewIfNeeded();
+  }
+  if (args.scroll === 'report') await page.getByRole('button', {name: 'Copy native report', exact: true}).scrollIntoViewIfNeeded();
+  const file = join(out, `${surface}${args.panel ? `-${args.panel}` : ''}${args.expand ? `-${args.expand.replaceAll(' ', '-')}` : ''}${args.scroll ? `-${args.scroll}` : ''}-${width}.png`);
   await page.locator('.preview-frame').screenshot({ path: file });
   console.log(file);
 }

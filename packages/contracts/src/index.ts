@@ -41,3 +41,10 @@ export * from './analysis-actions.js';
 export * from './analysis-program-schema.js';
 export * from './provenance-record.js';
 export * from './evidence.js';
+
+export * from './host-profile.js';
+export * from './capability-module.js';
+
+export * from './formula-footprint.js';
+
+export * from './formula-policy.js';

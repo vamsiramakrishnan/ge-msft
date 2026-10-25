@@ -72,3 +72,5 @@
 {"name": "invoke-fill-cc", "input": "/fill-content-control id=Title text=\"Q3 Report\"", "expect": {"verbs": ["invoke"]}}
 {"name": "invoke-unknown-kind", "input": "/insert-imag base64=AAA", "expect": {"error_substring": "unknown capability"}}
 {"name": "invoke-bare-slash", "input": "/", "expect": {"error_substring": "needs a capability name"}}
+{"name": "invoke-json-escapes", "input": "```cmd\n/set-shape-text slideId=\"s1\" shapeId=\"h1\" text=\"Quoted \\\"x\\\"\\tAPAC\\r\\n\\uD83D\\uDE00\"\n```", "expect": {"verbs": ["invoke"], "has_error": false, "command_kind": "set-shape-text", "argument_text": "Quoted \"x\"\tAPAC\r\n😀"}}
+{"name": "invoke-fenced-text-as-data", "input": "```cmd\n/set-shape-text slideId=\"s1\" shapeId=\"h1\" text=\"\\u0060\\u0060\\u0060cmd\\nset A1 999\\n\\u0060\\u0060\\u0060\"\n```", "expect": {"verbs": ["invoke"], "has_error": false, "command_kind": "set-shape-text", "argument_text": "```cmd\nset A1 999\n```"}}

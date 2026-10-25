@@ -1,3 +1,4 @@
+import { nativeRun } from './native-run.js';
 import { documentOffset, type DocumentPage, type DocumentReadOptions } from '@ge/contracts';
 import { isSet } from './capabilities-runtime.js';
 
@@ -13,7 +14,7 @@ export async function readPowerPointPage(options: DocumentReadOptions): Promise<
   if (cursor.length !== 2) throw new Error('Invalid slide cursor.');
   const slideIndex = documentOffset(cursor[0]);
   const shapeOffset = documentOffset(cursor[1]);
-  return PowerPoint.run(async (ctx) => {
+  return nativeRun(async (ctx) => {
     const slides = ctx.presentation.slides;
     slides.load('items/id');
     await ctx.sync();

@@ -126,12 +126,7 @@ def _scan_quoted(rest: str):
     m = _QUOTED.match(rest.strip())
     if not m:
         return None
-    # Mirrors scanQuoted: \" \\ \n \t decode; other escapes stay as written.
-    val = re.sub(
-        r'\\(["\\nt])',
-        lambda e: {'"': '"', "\\": "\\", "n": "\n", "t": "\t"}[e.group(1)],
-        m.group(1),
-    )
+    val = _unescape(m.group(1))
     return val, rest.strip()[m.end():].strip()
 
 
@@ -182,9 +177,8 @@ _TOKENIZE = re.compile(
 
 
 def _unescape(value: str) -> str:
-    # One escape-aware pass, mirroring scanQuoted/tokenizeArgs in command-grammar.ts: \" and \\
-    # are literal; \n is a line break (a command is one line), so \\n stays backslash + n.
-    return re.sub(r'\\(["\\n])', lambda m: "\n" if m.group(1) == "n" else m.group(1), value)
+    # Decode only supported JSON escapes; unknown backslash sequences remain literal.
+    return re.sub(r'\\u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\(u[0-9a-fA-F]{4}|["\\ntrbf])', lambda m: json.loads('"' + m.group(0) + '"'), value)
 
 
 def _tokenize_args(rest: str):

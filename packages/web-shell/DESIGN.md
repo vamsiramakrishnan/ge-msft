@@ -200,6 +200,11 @@ added here first, then to `RECIPES` in `scripts/check-design.ts`.
 Label 11px/600 `--ink-2`, 6px above a 32px control with a 1px `--hairline` border and `--r`.
 Inputs, selects and textareas inherit the pane font; they never fall back to 16px.
 
+Office workflow forms use `.office-workbench` as a bordered disclosure with `--r`, and
+`.office-workflow-body` as a grid with `--s4` padding and gaps. They reuse `.field`,
+`.field-control` and `.btn`. Multiline fields use their `rows` height, `--s3` padding and
+vertical resizing. Checkbox labels place their native checkbox beside wrapping text.
+
 ### 5.2 Section label (eyebrow)
 
 `.eyebrow`: 11px/500, `--ink-2`, lowercase. One per section, above the section's first item.

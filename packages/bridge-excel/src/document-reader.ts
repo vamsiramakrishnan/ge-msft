@@ -1,3 +1,4 @@
+import { nativeRun } from './native-run.js';
 import { documentOffset, type DocumentPage, type DocumentReadOptions } from '@ge/contracts';
 import { isSet } from './capabilities-runtime.js';
 
@@ -15,7 +16,7 @@ export async function readExcelPage(options: DocumentReadOptions): Promise<Docum
   const sheetIndex = documentOffset(cursor[0]);
   const row = documentOffset(cursor[1]);
   const col = documentOffset(cursor[2]);
-  return Excel.run(async (ctx) => {
+  return nativeRun(async (ctx) => {
     const sheets = ctx.workbook.worksheets;
     sheets.load('items/id,items/name,items/visibility');
     await ctx.sync();

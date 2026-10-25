@@ -1,13 +1,22 @@
-import { createBridgeDispatch } from '@ge/runtime';
+import { officeHostProfile } from './office-host-profile.js';
+import { verifyCalculationReady } from './calculation.js';
+import { nativeRun } from './native-run.js';
+import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
 import {
   cellsMatchRequest,
   formulasForRequest,
+  hasScalarFormulaFootprint,
   hasFormulaErrors,
   rangeForGrid,
   type ActuationRequest as CellRequest,
   type CellSnapshot,
 } from '@ge/contracts';
-import { excelDocumentId, excelRecoveryStorage, snapshotRange } from './cell-snapshot.js';
+import {
+  excelDocumentId,
+  excelRecoveryStorage,
+  snapshotRange,
+  snapshotRanges,
+} from './cell-snapshot.js';
 import type {
   ActuationKind,
   ActuationRequest,
@@ -84,7 +93,11 @@ export class ExcelBridge implements DocBridge {
       'add-comment': (host, request) => host.applyAddComment(request),
       'comment-reply': (host, request) => host.applyCommentReply(request),
     },
-    { provenance: 'reported' },
+    {
+      provenance: 'reported',
+      capabilities: (host) => host.getCapabilities(),
+      documentKey: (host) => host.documentKey(),
+    },
   );
   static readonly handledActuations = ExcelBridge.dispatcher.handledActuations;
 
@@ -94,18 +107,60 @@ export class ExcelBridge implements DocBridge {
 
   async captureCells(selector: string): Promise<CellSnapshot> {
     const documentId = await excelDocumentId();
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const range = resolveReadRange(ctx, selector);
       if (!range) throw new Error('The source range could not be resolved.');
       return snapshotRange(range, ctx, documentId);
     });
   }
+  async captureCellsBatch(selectors: readonly string[]): Promise<CellSnapshot[]> {
+    if (
+      !selectors.length ||
+      selectors.length > 16 ||
+      selectors.some((selector) => selector.length > 1024)
+    )
+      throw new Error('A cell read plan requires one to sixteen bounded selectors.');
+    const documentId = await excelDocumentId();
+    try {
+      return await nativeRun(async (ctx) => {
+        const ranges = selectors.map((selector) => {
+          const range = resolveReadRange(ctx, selector);
+          if (!range) throw new Error('A source range could not be resolved.');
+          return range;
+        });
+        return snapshotRanges(ranges, ctx, documentId);
+      });
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (
+        !['ResponsePayloadSizeLimitExceeded', 'RequestPayloadSizeLimitExceeded'].includes(
+          String(code),
+        )
+      )
+        throw error;
+      // Read-only retry in fresh contexts. Never retry a mutation or hide another host failure.
+      const snapshots: CellSnapshot[] = [];
+      let bytes = 0;
+      for (const selector of selectors) {
+        const snapshot = await this.captureCells(selector);
+        bytes += new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+        if (bytes > 32 * 1024 * 1024)
+          throw new Error('Aggregate source snapshots exceed the 32 MiB batch budget.');
+        snapshots.push(snapshot);
+      }
+      return snapshots;
+    }
+  }
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
   private docStateVersion = 0;
 
+  getHostProfile(): import('@ge/contracts').HostCapabilityProfile | undefined {
+    return officeHostProfile(this.surface);
+  }
+
   getCapabilities(): CapabilityManifest {
-    return EXCEL_CAPABILITIES;
+    return negotiateCapabilities(EXCEL_CAPABILITIES, this.getHostProfile());
   }
 
   async listContext(): Promise<ContextRef[]> {
@@ -116,7 +171,7 @@ export class ExcelBridge implements DocBridge {
 
   private async listRangeContext(): Promise<ContextRef[]> {
     const selected = await readSelectedRange();
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       // valuesOnly: true — exclude cells that only ever had formatting applied (a common cause of
       // spurious blank rows/columns bloating the used range beyond the real data).
@@ -208,7 +263,7 @@ export class ExcelBridge implements DocBridge {
         const selected = await readSelectedRange();
         return selected ? selectionValuesToContext(selected.address, selected.values) : [];
       }
-      return Excel.run(async (ctx) => {
+      return nativeRun(async (ctx) => {
         const sel = resolveReadRange(ctx, selector);
         if (!sel) return [];
         sel.load('address,values,isNullObject');
@@ -220,7 +275,7 @@ export class ExcelBridge implements DocBridge {
     if (ref.kind === 'table') {
       const selector = excelSelectorFromRef(ref);
       if (!selector) return [];
-      return Excel.run(async (ctx) => {
+      return nativeRun(async (ctx) => {
         const range = resolveReadRange(ctx, selector);
         if (!range) return [];
         range.load('address,values,isNullObject');
@@ -230,7 +285,7 @@ export class ExcelBridge implements DocBridge {
       });
     }
     // Sheet / table → the used range as a native table → chunks.
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const used = ctx.workbook.worksheets.getActiveWorksheet().getUsedRange(true);
       used.load('address,values');
       await ctx.sync();
@@ -247,7 +302,7 @@ export class ExcelBridge implements DocBridge {
     const selector = excelSelectorFromRef(ref);
     if (!selector) return;
 
-    await Excel.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       const target = resolveReadRange(ctx, selector);
       if (!target) return;
       target.load('address,isNullObject');
@@ -280,7 +335,7 @@ export class ExcelBridge implements DocBridge {
 
   /** Every sheet name, VeryHidden included and uncapped (see {@link DocBridge.listSheetNames}). */
   async listSheetNames(): Promise<string[]> {
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const sheets = ctx.workbook.worksheets;
       sheets.load('items/name');
       await ctx.sync();
@@ -297,7 +352,7 @@ export class ExcelBridge implements DocBridge {
     const wantNames = isSet('ExcelApi', '1.7');
 
     const selected = await readSelectedRange();
-    const captured = await Excel.run(async (ctx) => {
+    const captured = await nativeRun(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       sheet.load('name');
       // valuesOnly: true — see listContext's used-range read for why.
@@ -418,7 +473,7 @@ export class ExcelBridge implements DocBridge {
   async searchDocument(query: string): Promise<ResolvedContext[]> {
     const q = query.trim();
     if (!q) return [];
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const sheet = ctx.workbook.worksheets.getActiveWorksheet();
       // valuesOnly: true — see listContext's used-range read for why.
       const used = isSet('ExcelApi', '1.4')
@@ -444,7 +499,7 @@ export class ExcelBridge implements DocBridge {
   async readRange(a1: string): Promise<ResolvedContext[]> {
     const selector = a1.trim();
     if (!selector) return [];
-    return Excel.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const range = resolveReadRange(ctx, selector);
       if (!range) return [];
       // First sync: cheap metadata only. Bound the read BEFORE materializing `.values`, so a large
@@ -613,10 +668,25 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
+    if (
+      formulaCells.some((row) =>
+        row.some((formula) => formula && !hasScalarFormulaFootprint(formula)),
+      )
+    )
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unknown_write_footprint',
+          message:
+            'The formula output footprint is unknown. It must be staged before writing to the document.',
+        },
+      };
     // ADR-0003 element 4: prefer provenance.sources, fall back to params.sources, for the
     // human-visible citation comment layered on top of durable provenance metadata.
     const sources = req.provenance?.sources ?? req.params.sources ?? [];
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(target);
       const sheet =
         sheetName !== undefined
@@ -626,6 +696,21 @@ export class ExcelBridge implements DocBridge {
       const refused = await protectedSheetRefusal(ctx, sheet, range, req, true);
       if (refused) return refused;
       const before = await snapshotRange(range, ctx, await excelDocumentId());
+      if (
+        before.formulas?.some((row) =>
+          row.some((formula) => formula && !hasScalarFormulaFootprint(formula)),
+        )
+      )
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: {
+            code: 'unknown_write_footprint',
+            message:
+              'An existing formula may spill outside this range. Resolve its full footprint in Excel before replacing it.',
+          },
+        };
       const pinned: CellRequest = {
         ...req,
         params: { ...req.params, target: { ...req.params.target, range: before.locator } },
@@ -675,6 +760,7 @@ export class ExcelBridge implements DocBridge {
       // Keep a landed write successful even if readback fails. Verification is a separate outcome.
       let verification: NonNullable<ActuationResult['verification']>;
       try {
+        if (grid.hasFormulas) await verifyCalculationReady(ctx);
         const after = await snapshotRange(range, ctx, before.documentId);
         const ok = cellsMatchRequest(after, pinned) && !hasFormulaErrors(after);
         verification = {
@@ -754,7 +840,7 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
@@ -848,7 +934,7 @@ export class ExcelBridge implements DocBridge {
         ...fail('unsupported_host', 'This host cannot sort ranges (ExcelApi < 1.2).'),
         degraded: true,
       };
-    const result: ActuationResult = await Excel.run(async (ctx) => {
+    const result: ActuationResult = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
@@ -997,7 +1083,7 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
@@ -1083,7 +1169,7 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         split.sheetName !== undefined
@@ -1176,7 +1262,7 @@ export class ExcelBridge implements DocBridge {
       };
     }
     const rule = plan.rule;
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
@@ -1257,7 +1343,7 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'unsupported', message: 'This host cannot add comments (ExcelApi < 1.10).' },
       };
     }
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
@@ -1290,7 +1376,7 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'no_comment', message: 'comment-reply needs target.commentId' },
       };
     }
-    const result = await Excel.run(async (ctx) => {
+    const result = await nativeRun(async (ctx) => {
       const comments = ctx.workbook.comments;
       comments.load('items/id');
       // First sync is required: we must read back the comment ids to locate the target proxy
@@ -1449,7 +1535,7 @@ async function readComments(): Promise<ExcelComment[]> {
   if (!isSet('ExcelApi', '1.10')) return [];
   const withResolved = isSet('ExcelApi', '1.11');
   try {
-    return await Excel.run(async (ctx) => {
+    return await nativeRun(async (ctx) => {
       const comments = ctx.workbook.comments;
       comments.load(
         withResolved
@@ -1690,7 +1776,7 @@ function tooLargeNotice(address: string, cells: number): string {
 
 async function readSelectedRange(): Promise<SelectedRange | undefined> {
   try {
-    return await Excel.run(async (ctx) => {
+    return await nativeRun(async (ctx) => {
       const sel = ctx.workbook.getSelectedRange();
       // Size first: a whole-column selection is over a million cells, and loading its values breaks
       // Office's ~5 MB response cap ("The response payload size has exceeded the limit").

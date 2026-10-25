@@ -53,9 +53,24 @@ export class AnalysisWorkspace {
           throw new Error(
             'The inputs contain different versions of the same source. Capture them again.',
           );
-    for (const source of sources.values()) {
-      const current = await this.bridge.captureCells(source.locator);
-      if (current.hash !== source.hash || current.documentId !== source.documentId)
+    const expected = [...sources.values()];
+    const currentSources =
+      this.bridge.captureCellsBatch && expected.length > 1
+        ? await this.bridge.captureCellsBatch(expected.map((source) => source.locator))
+        : [];
+    if (!this.bridge.captureCellsBatch || expected.length <= 1)
+      for (const source of expected)
+        currentSources.push(await this.bridge.captureCells(source.locator));
+    if (currentSources.length !== expected.length)
+      throw new Error('Host source batch has incomplete coverage.');
+    for (const [index, source] of expected.entries()) {
+      const current = currentSources[index]!;
+      if (
+        current.hash !== source.hash ||
+        current.documentId !== source.documentId ||
+        current.locator !== source.locator ||
+        (source.objectId && current.objectId !== source.objectId)
+      )
         throw new Error(`Source changed: ${source.locator}. Capture and analyze it again.`);
     }
   }

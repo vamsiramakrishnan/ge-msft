@@ -23,7 +23,7 @@ import {
 import { contentHash } from './hash.js';
 import { parseJsonArrayStream } from './json-stream.js';
 import { WifTokenClient } from './wif.js';
-import { StreamAssistClient, buildStreamAssistRequest } from './stream-assist.js';
+import { StreamAssistClient, buildStreamAssistRequest, paneInstructions } from './stream-assist.js';
 import { ConversationClient } from './sessions.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 
@@ -260,6 +260,7 @@ describe('ConversationClient', () => {
     expect(out.turns).toEqual([
       {
         queryText: '/visualize this',
+        userText: '/visualize this',
         createTime: '2026-07-07T02:00:00Z',
         answerState: 'SUCCEEDED',
       },
@@ -267,6 +268,124 @@ describe('ConversationClient', () => {
     expect((f.mock.calls[0] as unknown as [string, RequestInit])[0]).toBe(
       `${sessionUrl(cfg(), 'sess-2')}?includeAnswerDetails=true`,
     );
+  });
+
+  it("keeps the user's own words and the visible answer, not context or thoughts", async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-3',
+        turns: [
+          {
+            createdAt: '2026-10-02T09:15:30Z',
+            query: {
+              text: 'ignored when parts exist',
+              parts: [
+                { mimeType: 'text/plain', text: '<doc_state surface=excel>…</doc_state>' },
+                { mimeType: 'text/plain', text: 'Working-document read — "Sheet1!A1:E11"' },
+                { text: 'can you chart this?' },
+              ],
+            },
+            detailedAssistAnswer: {
+              state: 'SUCCEEDED',
+              replies: [
+                { groundedContent: { content: { text: '**Planning**', thought: true } } },
+                { groundedContent: { content: { text: 'Here is a chart. ' } } },
+                { groundedContent: { content: { file: { mimeType: 'image/png' } } } },
+                { groundedContent: { content: { text: 'Q3 is highest.' } } },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+
+    const [turn] = (await client.getConversation('sess-3', { includeAnswerDetails: true })).turns;
+
+    expect(turn).toMatchObject({
+      userText: 'can you chart this?',
+      createTime: '2026-10-02T09:15:30Z',
+      answerText: 'Here is a chart. Q3 is highest.',
+      answerHasMedia: true,
+    });
+  });
+
+  it("never shows document context as the user's words", async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/sess-4',
+        turns: [
+          {
+            query: {
+              text: '<doc_state surface=word>secret</doc_state>',
+              parts: [
+                { mimeType: 'text/plain', text: '<doc_state surface=word>secret</doc_state>' },
+                { text: '<doc_state surface=word>no mime type</doc_state>' },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+    const out = await client.getConversation('sess-4');
+    expect(out.turns[0]?.userText).toBeUndefined();
+    expect(out.title).toBe('sess-4');
+  });
+
+  it("never shows the pane's own instructions (name, writing rules) as the user's words", async () => {
+    const question = 'check email from jessica and summarise it';
+    const legacy =
+      'Your name is ContosoAI. If you refer to yourself, call yourself ContosoAI only; never call yourself Gemini or Gemini Enterprise.';
+    const f = vi.fn(async () =>
+      jsonResponse({
+        name: 'projects/proj/locations/eu/collections/default_collection/engines/eng1/sessions/s5',
+        turns: [
+          {
+            query: {
+              text: `${paneInstructions('ContosoAI', ['Open emails with Halo.'])}\n\n${question}`,
+            },
+          },
+          { query: { parts: [{ text: paneInstructions('ContosoAI')! }, { text: question }] } },
+          { query: { text: `${legacy}\n\n${question}` } },
+          // Old wording as its own part, as Outlook sent it with the email attached.
+          { query: { parts: [{ text: legacy }, { text: question }] } },
+        ],
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+    const out = await client.getConversation('s5');
+    expect(out.turns.map((t) => t.userText)).toEqual([question, question, question, question]);
+    expect(out.title).toBe(question);
+  });
+
+  it('reads which Office app a chat ran in from its document snapshot', async () => {
+    const f = vi.fn(async () =>
+      jsonResponse({
+        sessions: [
+          {
+            name: 'projects/p/locations/eu/collections/c/engines/e/sessions/xl',
+            turns: [
+              {
+                query: {
+                  parts: [
+                    { mimeType: 'text/plain', text: '<doc_state surface=excel version=1>\n…' },
+                    { text: 'chart this' },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            name: 'projects/p/locations/eu/collections/c/engines/e/sessions/web',
+            turns: [{ query: { text: 'hi' } }],
+          },
+        ],
+      }),
+    );
+    const client = new ConversationClient(tokens, cfg(), f as never);
+    const { conversations } = await client.listConversations();
+    expect(conversations.map((c) => c.surface)).toEqual(['excel', undefined]);
   });
 });
 
@@ -604,6 +723,35 @@ describe('StreamAssistClient', () => {
     if (prov?.type === 'provenance') {
       expect(prov.payload.sources[0]?.title).toBe('Vendor Risk Policy v4');
       expect(prov.payload.agentId).toContain('eng1');
+    }
+  });
+
+  it('switches Argon and the engine default on subsequent chat, planner and command requests', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const client = new StreamAssistClient(tokens, cfg(), async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        streamOf([
+          JSON.stringify([
+            {
+              answer: {
+                state: 'SUCCEEDED',
+                replies: [{ groundedContent: { content: { text: 'Ready.' } } }],
+              },
+            },
+          ]),
+        ]),
+        { status: 200 },
+      );
+    });
+    for (const modelId of ['gemini-4-argon', undefined, '  ']) {
+      client.setModelId(modelId);
+      for (const route of ['default', 'planner', 'command'] as const) {
+        await collect(client.stream(assistReq(), { skillRoute: route }));
+        expect(bodies.at(-1)?.generationSpec).toEqual(
+          modelId === 'gemini-4-argon' ? { modelId: 'gemini-4-argon' } : undefined,
+        );
+      }
     }
   });
 

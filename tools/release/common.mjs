@@ -10,10 +10,17 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { loadBrand } from '../brand/brand.mjs';
 
+/** The build's brand (GE_BRAND → brands/<id>/): every user-visible name in the manifests. */
+export const BRAND = loadBrand();
 export const repoRoot = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 export const alphaProfile = 'internal-alpha-word-excel';
 export const devProfile = 'development';
+export const prodProfile = 'production';
+/** Office apps the production profile can ship. OneNote ships as its own XML manifest. */
+export const PROD_SURFACES = ['word', 'excel', 'powerpoint', 'outlook', 'onenote'];
+const DEFAULT_PROD_SURFACES = 'word,excel,powerpoint,outlook';
 const DEFAULT_DEV_PORT = '13000';
 
 export function parseArgs(argv = process.argv.slice(2)) {
@@ -71,7 +78,7 @@ function devWebOrigin(env) {
 
 export function profileFromArgs(args) {
   const profile = String(args.profile ?? alphaProfile);
-  if (profile !== alphaProfile && profile !== devProfile) {
+  if (profile !== alphaProfile && profile !== devProfile && profile !== prodProfile) {
     throw new Error(`Unsupported profile "${profile}".`);
   }
   return profile;
@@ -191,12 +198,24 @@ export function releaseConfig(profile, env = process.env) {
         '22222222-2222-4222-8222-222222222222',
       webDomain: devEnv.GE_DEV_WEB_DOMAIN ?? webUrl.hostname,
       webOrigin,
-      developerName: devEnv.GE_DEV_DEVELOPER_NAME ?? 'Gemini Enterprise Dev',
+      // Optional per-developer add-in name, so side-by-side dev installs are distinguishable.
+      displayName: devEnv.GE_DEV_APP_NAME || undefined,
+      developerName: devEnv.GE_DEV_DEVELOPER_NAME ?? `${BRAND.name} Dev`,
       websiteUrl: devEnv.GE_DEV_WEBSITE_URL ?? `${webOrigin}/`,
       privacyUrl: devEnv.GE_DEV_PRIVACY_URL ?? `${webOrigin}/privacy`,
       termsUrl: devEnv.GE_DEV_TERMS_URL ?? `${webOrigin}/terms`,
       supportUrl: devEnv.GE_DEV_SUPPORT_URL ?? `${webOrigin}/support`,
     };
+  }
+
+  if (profile === prodProfile) {
+    // Like development, GE_PROD_* may live in packages/web-shell/.env; exported variables win. An
+    // explicit env (tests) is used as given.
+    const prodEnv =
+      env === process.env
+        ? { ...parseDotEnv(join(repoRoot, 'packages', 'web-shell', '.env')), ...env }
+        : env;
+    return prodReleaseConfig(prodEnv);
   }
 
   const required = [
@@ -231,16 +250,127 @@ export function releaseConfig(profile, env = process.env) {
   return cfg;
 }
 
-export function validateReleaseConfig(cfg) {
-  if (!GUID.test(cfg.appId) || DEV_GUIDS.has(cfg.appId.toLowerCase())) {
-    throw new Error('GE_ALPHA_APP_ID must be a non-development GUID.');
+// The placeholder ids the development profile falls back to; never valid in a release.
+const DEV_FALLBACK_GUIDS = new Set(
+  ['1', '2', '3', '4', '5', '6', '7', '8'].map((d) => {
+    const x = d.repeat(8);
+    return `${x}-${d.repeat(4)}-4${d.repeat(3)}-8${d.repeat(3)}-${d.repeat(12)}`;
+  }),
+);
+
+function isReleaseGuid(value) {
+  const v = String(value ?? '').toLowerCase();
+  return GUID.test(v) && !DEV_GUIDS.has(v) && !DEV_FALLBACK_GUIDS.has(v);
+}
+
+function prodReleaseConfig(rawEnv) {
+  // The manifest must name the same Entra app the web build signs in with, so default to it.
+  const env = {
+    ...rawEnv,
+    GE_PROD_ENTRA_CLIENT_ID: rawEnv.GE_PROD_ENTRA_CLIENT_ID || rawEnv.VITE_ENTRA_CLIENT_ID,
+  };
+  const keys = [
+    'APP_ID',
+    'ENTRA_CLIENT_ID',
+    'WEB_DOMAIN',
+    'DEVELOPER_NAME',
+    'WEBSITE_URL',
+    'PRIVACY_URL',
+    'TERMS_URL',
+    'SUPPORT_URL',
+  ];
+  const surfaces = String(env.GE_PROD_SURFACES || DEFAULT_PROD_SURFACES)
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const unknown = surfaces.filter((s) => !PROD_SURFACES.includes(s));
+  if (unknown.length) {
+    throw new Error(
+      `GE_PROD_SURFACES has unknown app(s): ${unknown.join(', ')}. Use: ${PROD_SURFACES.join(', ')}.`,
+    );
   }
-  if (!GUID.test(cfg.entraClientId) || DEV_GUIDS.has(cfg.entraClientId.toLowerCase())) {
-    throw new Error('GE_ALPHA_ENTRA_CLIENT_ID must be a non-development GUID.');
+  if (!surfaces.length) throw new Error('GE_PROD_SURFACES must list at least one Office app.');
+  const hasDocumentHost = surfaces.some((s) => ['word', 'excel', 'powerpoint'].includes(s));
+  if (hasDocumentHost) keys.push('OFFICE_XML_APP_ID');
+  if (surfaces.includes('outlook')) keys.push('OUTLOOK_APP_ID');
+  if (surfaces.includes('onenote')) keys.push('ONENOTE_APP_ID');
+
+  const missing = keys.map((k) => `GE_PROD_${k}`).filter((key) => !env[key]);
+  if (missing.length) {
+    const err = new Error(`Missing production manifest configuration: ${missing.join(', ')}`);
+    err.code = 'BLOCKED_EXTERNAL';
+    throw err;
   }
-  if (!HOST.test(cfg.webDomain)) throw new Error('GE_ALPHA_WEB_DOMAIN must be a bare DNS host.');
+  // The brand names the production add-in (GE_BRAND → brands/<id>/brand.json).
+  const brand = loadBrand(env.GE_BRAND || undefined);
+  const cfg = {
+    profile: prodProfile,
+    surfaces,
+    appId: env.GE_PROD_APP_ID,
+    officeXmlAppId: env.GE_PROD_OFFICE_XML_APP_ID,
+    outlookAppId: env.GE_PROD_OUTLOOK_APP_ID,
+    oneNoteAppId: env.GE_PROD_ONENOTE_APP_ID,
+    entraClientId: env.GE_PROD_ENTRA_CLIENT_ID,
+    webOrigin: `https://${env.GE_PROD_WEB_DOMAIN}`,
+    webDomain: env.GE_PROD_WEB_DOMAIN,
+    developerName: env.GE_PROD_DEVELOPER_NAME,
+    websiteUrl: env.GE_PROD_WEBSITE_URL,
+    privacyUrl: env.GE_PROD_PRIVACY_URL,
+    termsUrl: env.GE_PROD_TERMS_URL,
+    supportUrl: env.GE_PROD_SUPPORT_URL,
+    displayName: brand.name,
+    fullName: brand.fullName,
+    description: {
+      short: `${brand.name} across your Microsoft 365 apps.`,
+      full: `${brand.name} in Microsoft 365: grounded answers and reviewable, traceable changes, scoped to your identity.`,
+    },
+    xmlDescriptionPrefix: '',
+  };
+  validateReleaseConfig(cfg, 'GE_PROD');
+  const host = cfg.webDomain.toLowerCase();
+  if (!host.includes('.') || host.includes('..') || /^\d+(\.\d+){3}$/.test(host)) {
+    throw new Error(
+      'GE_PROD_WEB_DOMAIN must be a full DNS name, not an IP address or single label.',
+    );
+  }
+  const ids = {
+    OFFICE_XML_APP_ID: 'officeXmlAppId',
+    OUTLOOK_APP_ID: 'outlookAppId',
+    ONENOTE_APP_ID: 'oneNoteAppId',
+  };
+  for (const [key, field] of Object.entries(ids)) {
+    if (keys.includes(key) && !isReleaseGuid(cfg[field])) {
+      throw new Error(`GE_PROD_${key} must be a non-development GUID.`);
+    }
+  }
+  const used = [cfg.appId, cfg.officeXmlAppId, cfg.outlookAppId, cfg.oneNoteAppId]
+    .filter(Boolean)
+    .map((v) => v.toLowerCase());
+  if (new Set(used).size !== used.length) {
+    throw new Error('GE_PROD_* app ids must all be different.');
+  }
+  return cfg;
+}
+
+/** Unified-manifest scopes for the selected apps (OneNote is not part of the unified package). */
+export function manifestScopes(cfg) {
+  const all = { outlook: 'mail', excel: 'workbook', word: 'document', powerpoint: 'presentation' };
+  if (!cfg.surfaces) return ['mail', 'workbook', 'document', 'presentation'];
+  return Object.entries(all)
+    .filter(([surface]) => cfg.surfaces.includes(surface))
+    .map(([, scope]) => scope);
+}
+
+export function validateReleaseConfig(cfg, prefix = 'GE_ALPHA') {
+  if (!isReleaseGuid(cfg.appId)) {
+    throw new Error(`${prefix}_APP_ID must be a non-development GUID.`);
+  }
+  if (!isReleaseGuid(cfg.entraClientId)) {
+    throw new Error(`${prefix}_ENTRA_CLIENT_ID must be a non-development GUID.`);
+  }
+  if (!HOST.test(cfg.webDomain)) throw new Error(`${prefix}_WEB_DOMAIN must be a bare DNS host.`);
   if (/localhost|example\.com/i.test(cfg.webDomain)) {
-    throw new Error('GE_ALPHA_WEB_DOMAIN must not be localhost or example.com.');
+    throw new Error(`${prefix}_WEB_DOMAIN must not be localhost or example.com.`);
   }
   for (const key of ['websiteUrl', 'privacyUrl', 'termsUrl', 'supportUrl']) {
     const url = new URL(cfg[key]);
@@ -294,9 +424,9 @@ function askSelectionMenu(origin, entryPoint, suffix, description) {
       {
         id: `geminiAsk${suffix}Menu`,
         type: 'menu',
-        label: 'Gemini Enterprise',
+        label: `${BRAND.name}`,
         icons: ribbonIcons(origin),
-        supertip: supertip('Gemini Enterprise', description),
+        supertip: supertip(`${BRAND.name}`, description),
         items: [
           {
             id: `geminiSummarize${suffix}`,
@@ -304,7 +434,7 @@ function askSelectionMenu(origin, entryPoint, suffix, description) {
             label: `Summarize ${target}`,
             supertip: supertip(
               `Summarize ${target}`,
-              `Summarize the current ${target} in the Gemini pane.`,
+              `Summarize the current ${target} in the ${BRAND.assistantName} pane.`,
             ),
             actionId: 'summarizeSelection',
           },
@@ -314,7 +444,7 @@ function askSelectionMenu(origin, entryPoint, suffix, description) {
             label: `Explain ${target}`,
             supertip: supertip(
               `Explain ${target}`,
-              `Explain the current ${target} in the Gemini pane.`,
+              `Explain the current ${target} in the ${BRAND.assistantName} pane.`,
             ),
             actionId: 'explainSelection',
           },
@@ -332,9 +462,9 @@ export function alphaManifest(cfg) {
     manifestVersion: '1.23',
     id: cfg.appId,
     version: rootVersion(),
-    name: { short: 'Gemini Enterprise', full: 'Gemini Enterprise for Microsoft 365 Alpha' },
+    name: { short: `${BRAND.name}`, full: `${BRAND.fullName} Alpha` },
     description: {
-      short: 'Internal Word and Excel alpha for grounded Gemini Enterprise assistance.',
+      short: `Internal Word and Excel alpha for grounded ${BRAND.name} assistance.`,
       full: 'Internal tenant alpha for Word and Excel only. Changes are reviewable, gated, and require durable provenance.',
     },
     developer: {
@@ -388,16 +518,19 @@ export function alphaManifest(cfg) {
                 groups: [
                   {
                     id: 'geminiGroup',
-                    label: 'Gemini Enterprise',
+                    label: `${BRAND.name}`,
                     icons: ribbonIcons(origin),
                     controls: [
                       {
                         id: 'openGeminiBtn',
                         type: 'button',
-                        label: 'Open Gemini',
+                        label: `Open ${BRAND.assistantName}`,
                         actionId: 'openPanel',
                         icons: ribbonIcons(origin),
-                        supertip: supertip('Open Gemini', 'Open the Gemini Enterprise task pane.'),
+                        supertip: supertip(
+                          `Open ${BRAND.assistantName}`,
+                          `Open the ${BRAND.name} task pane.`,
+                        ),
                       },
                     ],
                   },
@@ -423,14 +556,19 @@ export function alphaManifest(cfg) {
 export function developmentManifest(cfg) {
   const origin = cfg.webOrigin;
   const domain = cfg.webDomain;
+  const scopes = manifestScopes(cfg);
+  const docScopes = ['document', 'workbook', 'presentation'].filter((s) => scopes.includes(s));
   return {
     $schema: 'https://developer.microsoft.com/json-schemas/teams/v1.23/MicrosoftTeams.schema.json',
     manifestVersion: '1.23',
     id: cfg.appId,
     version: rootVersion(),
-    name: { short: 'Gemini Enterprise Dev', full: 'Gemini Enterprise for Microsoft 365 Dev' },
-    description: {
-      short: 'Development package for Gemini Enterprise across Microsoft Office.',
+    name: {
+      short: cfg.displayName ?? `${BRAND.name} Dev`,
+      full: cfg.fullName ?? `${BRAND.fullName} Dev`,
+    },
+    description: cfg.description ?? {
+      short: `Development package for ${BRAND.name} across Microsoft Office.`,
       full: 'Development sideload package for Word, Excel, PowerPoint, and Outlook. Not a production release artifact.',
     },
     developer: {
@@ -449,7 +587,7 @@ export function developmentManifest(cfg) {
     extensions: [
       {
         requirements: {
-          scopes: ['mail', 'workbook', 'document', 'presentation'],
+          scopes,
         },
         runtimes: [
           {
@@ -485,16 +623,19 @@ export function developmentManifest(cfg) {
                 groups: [
                   {
                     id: 'geminiGroup',
-                    label: 'Gemini Enterprise',
+                    label: `${BRAND.name}`,
                     icons: ribbonIcons(origin),
                     controls: [
                       {
                         id: 'openGeminiBtn',
                         type: 'button',
-                        label: 'Open Gemini',
+                        label: `Open ${BRAND.assistantName}`,
                         actionId: 'openPanel',
                         icons: ribbonIcons(origin),
-                        supertip: supertip('Open Gemini', 'Open the Gemini Enterprise task pane.'),
+                        supertip: supertip(
+                          `Open ${BRAND.assistantName}`,
+                          `Open the ${BRAND.name} task pane.`,
+                        ),
                       },
                     ],
                   },
@@ -503,40 +644,48 @@ export function developmentManifest(cfg) {
             ],
           },
         ],
-        contextMenus: [
-          {
-            requirements: { scopes: ['document', 'workbook', 'presentation'] },
-            menus: [
-              askSelectionMenu(
-                origin,
-                'text',
-                'Text',
-                'Summarize or review the current selection in the Gemini pane.',
-              ),
-              askSelectionMenu(
-                origin,
-                'cell',
-                'Cell',
-                'Summarize or review the current spreadsheet range in the Gemini pane.',
-              ),
-            ],
-          },
-        ],
-        autoRunEvents: [
-          {
-            requirements: {
-              capabilities: [{ name: 'Mailbox', minVersion: '1.12' }],
-              scopes: ['mail'],
-            },
-            events: [
-              {
-                type: 'messageSending',
-                actionId: 'onMessageSend',
-                options: { sendMode: 'softBlock' },
-              },
-            ],
-          },
-        ],
+        ...(docScopes.length
+          ? {
+              contextMenus: [
+                {
+                  requirements: { scopes: docScopes },
+                  menus: [
+                    askSelectionMenu(
+                      origin,
+                      'text',
+                      'Text',
+                      `Summarize or review the current selection in the ${BRAND.assistantName} pane.`,
+                    ),
+                    askSelectionMenu(
+                      origin,
+                      'cell',
+                      'Cell',
+                      `Summarize or review the current spreadsheet range in the ${BRAND.assistantName} pane.`,
+                    ),
+                  ],
+                },
+              ],
+            }
+          : {}),
+        ...(scopes.includes('mail')
+          ? {
+              autoRunEvents: [
+                {
+                  requirements: {
+                    capabilities: [{ name: 'Mailbox', minVersion: '1.12' }],
+                    scopes: ['mail'],
+                  },
+                  events: [
+                    {
+                      type: 'messageSending',
+                      actionId: 'onMessageSend',
+                      options: { sendMode: 'softBlock' },
+                    },
+                  ],
+                },
+              ],
+            }
+          : {}),
       },
     ],
   };
@@ -546,7 +695,7 @@ export function oneNoteManifest(cfg) {
   const origin = cfg.webOrigin;
   const esc = xmlEscape;
   return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- Development OneNote manifest. OneNote ships separately from the unified M365 package. -->
+<!-- ${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}OneNote manifest. OneNote ships separately from the unified M365 package. -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
@@ -556,8 +705,8 @@ export function oneNoteManifest(cfg) {
   <Version>${esc(officeXmlVersion())}</Version>
   <ProviderName>${esc(cfg.developerName)}</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Gemini Enterprise Dev (OneNote)" />
-  <Description DefaultValue="Development OneNote add-in for Gemini Enterprise." />
+  <DisplayName DefaultValue="${esc(cfg.displayName ?? `${BRAND.name} Dev`)} (OneNote)" />
+  <Description DefaultValue="${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}OneNote add-in for ${esc(BRAND.name)}." />
   <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
   <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
@@ -579,6 +728,7 @@ export function oneNoteManifest(cfg) {
             <OfficeTab id="TabHome">
               <Group id="geminiGroup">
                 <Label resid="Gemini.Group" />
+                <Icon><bt:Image size="16" resid="Icon.16" /><bt:Image size="32" resid="Icon.32" /></Icon>
                 <Control xsi:type="Button" id="openGeminiBtn">
                   <Label resid="Gemini.Open" />
                   <Supertip>
@@ -622,9 +772,9 @@ export function oneNoteManifest(cfg) {
         <bt:Url id="Taskpane.Url" DefaultValue="${esc(origin)}/taskpane.html?host=onenote" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
-        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
-        <bt:String id="Gemini.Ask" DefaultValue="Ask Gemini about this" />
+        <bt:String id="Gemini.Group" DefaultValue="${esc(BRAND.name)}" />
+        <bt:String id="Gemini.Open" DefaultValue="Open ${esc(BRAND.assistantName)}" />
+        <bt:String id="Gemini.Ask" DefaultValue="Ask ${esc(BRAND.assistantName)} about this" />
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="Gemini.Desc" DefaultValue="Capture and synthesize research grounded on your unit." />
@@ -677,7 +827,7 @@ export function taskPaneXmlManifest(cfg, surface) {
       : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- Development ${esc(title)} XML manifest for Office web Upload Add-in testing. -->
+<!-- ${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}${esc(title)} XML manifest for Office web Upload Add-in testing. -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
@@ -686,8 +836,8 @@ export function taskPaneXmlManifest(cfg, surface) {
   <Version>${esc(officeXmlVersion())}</Version>
   <ProviderName>${esc(cfg.developerName)}</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Gemini Enterprise Dev (${esc(title)})" />
-  <Description DefaultValue="Development ${esc(title)} add-in for Gemini Enterprise." />
+  <DisplayName DefaultValue="${esc(cfg.displayName ?? `${BRAND.name} Dev`)} (${esc(title)})" />
+  <Description DefaultValue="${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}${esc(title)} add-in for ${esc(BRAND.name)}." />
   <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
   <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
@@ -747,11 +897,11 @@ export function taskPaneXmlManifest(cfg, surface) {
         <bt:Url id="Taskpane.Url" DefaultValue="${esc(origin)}/taskpane.html?host=${esc(surface)}" />${functionUrl}
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
-        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+        <bt:String id="Gemini.Group" DefaultValue="${esc(BRAND.name)}" />
+        <bt:String id="Gemini.Open" DefaultValue="Open ${esc(BRAND.assistantName)}" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="Gemini.Desc" DefaultValue="Open the Gemini Enterprise task pane." />
+        <bt:String id="Gemini.Desc" DefaultValue="Open the ${esc(BRAND.name)} task pane." />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>${customFunctionsExtendedOverrides}
@@ -809,8 +959,8 @@ export function multiHostOfficeXmlManifest(cfg) {
   <Version>${esc(officeXmlVersion())}</Version>
   <ProviderName>${esc(cfg.developerName)}</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Gemini Enterprise Dev" />
-  <Description DefaultValue="Gemini Enterprise for Word, Excel, and PowerPoint." />
+  <DisplayName DefaultValue="${esc(cfg.displayName ?? `${BRAND.name} Dev`)}" />
+  <Description DefaultValue="${esc(BRAND.name)} for Word, Excel, and PowerPoint." />
   <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
   <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
@@ -846,11 +996,11 @@ export function multiHostOfficeXmlManifest(cfg) {
         <bt:Url id="Functions.Url" DefaultValue="${esc(origin)}/functions.html" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
-        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+        <bt:String id="Gemini.Group" DefaultValue="${esc(BRAND.name)}" />
+        <bt:String id="Gemini.Open" DefaultValue="Open ${esc(BRAND.assistantName)}" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="Gemini.Desc" DefaultValue="Open the Gemini Enterprise task pane." />
+        <bt:String id="Gemini.Desc" DefaultValue="Open the ${esc(BRAND.name)} task pane." />
       </bt:LongStrings>
     </Resources>
     <WebApplicationInfo>
@@ -874,7 +1024,7 @@ export function outlookXmlManifest(cfg) {
   const esc = xmlEscape;
   const id = cfg.outlookAppId ?? '88888888-8888-4888-8888-888888888888';
   return `<?xml version="1.0" encoding="UTF-8"?>
-<!-- Development Outlook XML manifest for Outlook web Upload Add-in testing. -->
+<!-- ${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}Outlook XML manifest for Outlook web Upload Add-in testing. -->
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
            xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
@@ -884,8 +1034,8 @@ export function outlookXmlManifest(cfg) {
   <Version>${esc(officeXmlVersion())}</Version>
   <ProviderName>${esc(cfg.developerName)}</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="Gemini Enterprise Dev (Outlook)" />
-  <Description DefaultValue="Development Outlook add-in for Gemini Enterprise." />
+  <DisplayName DefaultValue="${esc(cfg.displayName ?? `${BRAND.name} Dev`)} (Outlook)" />
+  <Description DefaultValue="${esc(cfg.xmlDescriptionPrefix ?? 'Development ')}Outlook add-in for ${esc(BRAND.name)}." />
   <IconUrl DefaultValue="${esc(origin)}/icon-32.png" />
   <HighResolutionIconUrl DefaultValue="${esc(origin)}/icon-64.png" />
   <SupportUrl DefaultValue="${esc(cfg.supportUrl)}" />
@@ -980,11 +1130,11 @@ export function outlookXmlManifest(cfg) {
         <bt:Url id="Commands.Url" DefaultValue="${esc(origin)}/commands.html" />
       </bt:Urls>
       <bt:ShortStrings>
-        <bt:String id="Gemini.Group" DefaultValue="Gemini Enterprise" />
-        <bt:String id="Gemini.Open" DefaultValue="Open Gemini" />
+        <bt:String id="Gemini.Group" DefaultValue="${esc(BRAND.name)}" />
+        <bt:String id="Gemini.Open" DefaultValue="Open ${esc(BRAND.assistantName)}" />
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="Gemini.Desc" DefaultValue="Open the Gemini Enterprise task pane." />
+        <bt:String id="Gemini.Desc" DefaultValue="Open the ${esc(BRAND.name)} task pane." />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>
@@ -1004,9 +1154,11 @@ export function validateGeneratedManifest(manifest, profile) {
   const errors = [];
   const text = JSON.stringify(manifest);
   const forbiddenTokens =
-    profile === alphaProfile
-      ? ['REPLACE_', 'example.com', 'localhost']
-      : ['REPLACE_', 'example.com'];
+    profile === prodProfile
+      ? ['REPLACE_', 'example.com', 'localhost', 'http://']
+      : profile === alphaProfile
+        ? ['REPLACE_', 'example.com', 'localhost']
+        : ['REPLACE_', 'example.com'];
   for (const token of forbiddenTokens) {
     if (text.includes(token)) errors.push(`manifest contains forbidden token ${token}`);
   }

@@ -210,7 +210,7 @@ provenance/guardrails):
 ### Invariants preserved (the part we do not touch)
 
 Fail-closed plan/approval gate · closure conformance per surface · provenance-or-observable-drop
-(`provenanceDropped`/`provenanceMissing`) · formula safety on every written/spilled cell · untrusted
+(`provenanceDropped`/`provenanceMissing`; `provenanceUnsupported` where the host cannot store it) · formula safety on every written/spilled cell · untrusted
 host content (and composed data) framed strictly as data, never instructions · no auto-send.
 
 ## Consequences

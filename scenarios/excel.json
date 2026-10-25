@@ -1,0 +1,62 @@
+[
+  {
+    "id": "excel-format-professional",
+    "surface": "excel",
+    "title": "Format the selected range to look professional",
+    "prompt": "can you format the selected range, to make it look professional",
+    "clarification": "NA",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["ID", "Name", "Department", "City", "Join Date", "Status", "Salary", "Rating"],
+            ["1", "Asha Rao", "Finance", "Mumbai", "2023-01-15", "Active", "85000", "4"],
+            ["2", "Vikram Shah", "Sales", "Delhi", "2022-06-01", "Active", "72000", "3"],
+            ["3", "Meera Iyer", "HR", "Chennai", "2021-11-20", "On leave", "64000", "5"],
+            ["4", "Rohan Das", "IT", "Bengaluru", "2024-03-10", "Active", "98000", "4"],
+            ["5", "Priya Nair", "Finance", "Kochi", "2020-08-05", "Active", "91000", "5"],
+            ["6", "Arjun Mehta", "Sales", "Pune", "2023-09-18", "Inactive", "58000", "2"],
+            ["7", "Kavya Reddy", "IT", "Hyderabad", "2022-02-27", "Active", "105000", "4"],
+            ["8", "Sanjay Gupta", "Operations", "Kolkata", "2021-05-14", "Active", "67000", "3"],
+            ["9", "Neha Joshi", "HR", "Jaipur", "2024-07-01", "Active", "61000", "4"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:H10"
+    },
+    "expect": {
+      "status": "completed",
+      "noErrors": true,
+      "applied": { "format-cells": 1 },
+      "formatsInclude": ["fontColor", "horizontalAlignment"]
+    }
+  },
+  {
+    "id": "excel-write-total",
+    "surface": "excel",
+    "title": "Add a total row",
+    "prompt": "add a total of the Salary column below the last row",
+    "clarification": "Put it in the cell directly below the last salary.",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Name", "Salary"],
+            ["Asha", "85000"],
+            ["Vikram", "72000"],
+            ["Meera", "64000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:B4"
+    },
+    "expect": {
+      "status": "completed",
+      "applied": { "write-cells": 1 }
+    }
+  }
+]

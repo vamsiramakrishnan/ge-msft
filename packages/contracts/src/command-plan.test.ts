@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  commandIntentText,
+  confirmedPlanChanges,
+  planChanges,
+  editIntentFor,
+  planDescribesChange,
+  CONFIRMED_PLAN_CLOSE,
+  CONFIRMED_PLAN_OPEN,
   CommandPlanSchema,
   derivePlanContextStrategy,
   describePlanContextHints,
@@ -232,5 +239,174 @@ describe('renderPlanPrompt', () => {
     expect(prompt).toContain('intent   <ask | draft>');
     expect(prompt).toContain('capability-shaped steps');
     expect(prompt).toContain('one rectangular grid/table materialization step');
+  });
+
+  it('reads as a task with no role or override wording, and allows the engine follow-up block', () => {
+    // 2026-10-19: "emit only the plan" against the engine's "always add suggested_questions"
+    // made Gemini 3.8 reason about overriding system instructions; Model Armor blocked it.
+    const prompt = renderPlanPrompt('excel');
+    expect(prompt).not.toMatch(/You are|Do NOT|emit only|block only/);
+    expect(prompt).toContain('A suggested_questions block after the plan is fine');
+  });
+
+  it('parses the plan when the engine adds its follow-up block after it', () => {
+    const reply =
+      '```plan\nintent rewrite\nsurface excel\nstep add a growth column\n```\n\n```suggested_questions\n["Add a chart?"]\n```';
+    expect(parsePlanBlock(reply).plan).toMatchObject({ intent: 'rewrite', surface: 'excel' });
+  });
+});
+
+describe('commandIntentText', () => {
+  it('keeps only the request, steps and exclusions of a confirmed-plan task', () => {
+    const task = [
+      'Execute this user-confirmed plan in the open Microsoft 365 surface.',
+      'Treat the plan as approved intent only: read live host content before any write.',
+      '',
+      CONFIRMED_PLAN_OPEN,
+      'original_request: Change the title on slide 1',
+      'intent: draft',
+      'surface: powerpoint',
+      'step 1: set the title shape text',
+      'exclude: other slides',
+      'confidence: high',
+      CONFIRMED_PLAN_CLOSE,
+    ].join('\n');
+    expect(commandIntentText(task)).toBe(
+      'Change the title on slide 1\nset the title shape text\nother slides',
+    );
+  });
+
+  it('returns any other task unchanged', () => {
+    expect(commandIntentText('reply to the email accepting the meeting')).toBe(
+      'reply to the email accepting the meeting',
+    );
+    expect(commandIntentText(`${CONFIRMED_PLAN_OPEN} unterminated`)).toBe(
+      `${CONFIRMED_PLAN_OPEN} unterminated`,
+    );
+  });
+});
+
+describe('live write vocabulary', () => {
+  it('plans only the writes the surface offers, and says no to the rest', () => {
+    const prompt = renderPlanPrompt('excel', ['ask', 'rewrite'], ['Write cells', 'Format cells']);
+    expect(prompt).toContain('Changes this add-in can make: Write cells; Format cells.');
+    expect(prompt).toContain('never approximate it with other changes');
+    // The static vocabulary named unshipped features (pivot, sort) and invited plans for them.
+    expect(prompt).not.toContain('pivot');
+  });
+});
+
+describe('intent effects (fix G)', () => {
+  it('describes only the offered intents by their effect', () => {
+    const prompt = renderPlanPrompt('excel', ['ask', 'rewrite', 'visualize']);
+    expect(prompt).toContain('rewrite   change existing content: text, values, formulas');
+    expect(prompt).toContain(
+      'A request that changes the document never uses ask, summarize or explain.',
+    );
+    expect(prompt).not.toContain('draft     create or change content');
+  });
+
+  it('recognises change steps and the edit intent of each surface', () => {
+    expect(planDescribesChange({ steps: ['add excel formula in G12 to sum range G2:G11'] })).toBe(
+      true,
+    );
+    // Shaping the answer is not a document change (live 2026-10-09).
+    expect(
+      planDescribesChange({ steps: ['Format the extracted action items as a clear list'] }),
+    ).toBe(false);
+    expect(
+      planDescribesChange({
+        steps: ['extract and format the list of identified supplier obligations'],
+      }),
+    ).toBe(false);
+    expect(planDescribesChange({ steps: ['format the header row bold'] })).toBe(true);
+    expect(planDescribesChange({ steps: ['format B2:E11 as currency'] })).toBe(true);
+    // Analysis wording is an answer, not formatting (live 2026-10-12: "apa yang tampak tidak biasa").
+    expect(
+      planDescribesChange({ steps: ['Highlight any unusual patterns or outliers in the data'] }),
+    ).toBe(false);
+    expect(planDescribesChange({ steps: ['highlight cells above 100 in green'] })).toBe(true);
+    expect(planDescribesChange({ steps: ['highlight the outliers in D2:D10 in red'] })).toBe(true);
+    // Security review 2026-10-12: formatting without a cell reference is still a change.
+    expect(planDescribesChange({ steps: ['highlight the outlier cells in red'] })).toBe(true);
+    expect(planDescribesChange({ steps: ['highlight unusual values in yellow'] })).toBe(true);
+    expect(planDescribesChange({ steps: ['flag the outlier rows'] })).toBe(true);
+    // A real change in the same step is still a change (security review 2026-10-12).
+    expect(
+      planDescribesChange({
+        steps: ['Compile the findings and add them as a comment on paragraph 3'],
+      }),
+    ).toBe(true);
+    expect(
+      planDescribesChange({ steps: ['Format the identified totals in D2:D10 as currency'] }),
+    ).toBe(true);
+    expect(
+      planDescribesChange({ steps: ['Organize the extracted rows and write them to Sheet2'] }),
+    ).toBe(true);
+    expect(planDescribesChange({ steps: ['identify the region with the highest total'] })).toBe(
+      false,
+    );
+    expect(editIntentFor('excel')).toBe('rewrite');
+    expect(editIntentFor('word')).toBe('rewrite');
+    expect(editIntentFor('powerpoint')).toBe('draft');
+    expect(editIntentFor('outlook')).toBe('draft');
+    expect(editIntentFor('teams')).toBe('notes');
+    expect(editIntentFor('not-a-surface' as never)).toBeUndefined();
+  });
+});
+
+describe('changes: the planner states the effect (WS1, 2026-10-20)', () => {
+  const plan = (body: string) =>
+    parsePlanBlock(`\`\`\`plan\nintent   ask\nsurface  excel\n${body}\n\`\`\``);
+
+  it('parses changes yes|no into a boolean', () => {
+    expect(plan('changes  yes\nstep     leave a note on the lowest region').plan?.changes).toBe(
+      true,
+    );
+    expect(plan('changes  No\nstep     filter rows where Region is Kalimantan').plan?.changes).toBe(
+      false,
+    );
+    expect(plan('step     answer').plan?.changes).toBeUndefined();
+  });
+
+  it('rejects any other value', () => {
+    const { errors } = plan('changes  maybe\nstep     answer');
+    expect(errors.join(' ')).toMatch(/changes must be yes\|no/);
+  });
+
+  it('trusts the stated effect over the step keywords, and falls back only without it', () => {
+    // Argon mx-xl-read-14: an analysis step with "filter" + "rows" is not a change.
+    const analysis = { steps: ['filter rows where Region is Kalimantan and compare totals'] };
+    expect(planChanges({ ...analysis, changes: false })).toEqual({ changes: false, stated: true });
+    expect(planChanges(analysis)).toEqual({ changes: true, stated: false });
+    // u-xl-note-on-lowest: a question that also leaves a note is a change.
+    expect(planChanges({ steps: ['find the lowest region'], changes: true })).toEqual({
+      changes: true,
+      stated: true,
+    });
+  });
+
+  it('reads the stated effect back from a confirmed-plan task', () => {
+    const task = (line: string) =>
+      [
+        CONFIRMED_PLAN_OPEN,
+        'original_request: changes: yes please',
+        'intent: ask',
+        line,
+        'step 1: x',
+        CONFIRMED_PLAN_CLOSE,
+      ].join('\n');
+    expect(confirmedPlanChanges(task('changes: no'))).toBe(false);
+    expect(confirmedPlanChanges(task('changes: yes'))).toBe(true);
+    // The user's own words never count: only the plan's line after the request.
+    expect(confirmedPlanChanges(task('confidence: high'))).toBeUndefined();
+    expect(confirmedPlanChanges('changes: yes')).toBeUndefined();
+  });
+
+  it('asks the planner for it and defines it by effect', () => {
+    const prompt = renderPlanPrompt('excel');
+    expect(prompt).toContain('changes  <yes|no>');
+    expect(prompt).toMatch(/question or analysis is no/i);
+    expect(prompt).toMatch(/don't change anything/i);
   });
 });

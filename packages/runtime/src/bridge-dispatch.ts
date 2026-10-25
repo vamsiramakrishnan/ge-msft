@@ -5,6 +5,7 @@ import {
   type ActuationKind,
   type ActuationRequest,
   type ActuationResult,
+  type HostRefusalReason,
   type Surface,
 } from '@ge/contracts';
 
@@ -32,6 +33,18 @@ const SURFACE_NAMES: Record<Surface, string> = {
   onenote: 'OneNote',
   teams: 'Teams',
 };
+
+/**
+ * Office.js error codes that reject the WHOLE request before any statement runs, for a reason the
+ * user can fix. Batches are not transactional: a code a single statement can raise (AccessDenied,
+ * *Conflict, ItemNotFound, ApiNotFound) may follow an earlier statement that landed, so it stays a
+ * throw (outcome unknown); bridges refuse those cases themselves before writing (e.g. a protected
+ * Excel sheet).
+ */
+// Empty on purpose: a handler may sync more than once, so even "the whole request was rejected"
+// can follow a landed write (security review 2026-10-16). Bridges detect refusals in their own
+// read-only pre-checks (Excel: edit mode, protected sheet) where a non-write is certain.
+const HOST_REFUSALS: Readonly<Record<string, HostRefusalReason>> = {};
 
 /**
  * Execution authority comes from these host handlers, never descriptive capability metadata.
@@ -94,11 +107,25 @@ export function createBridgeDispatch<Host>(
             message: `${SURFACE_NAMES[surface]} bridge cannot ${request.kind}`,
           },
         };
-      const result = await table[request.kind]!(host, request);
+      let result: ActuationResult;
+      try {
+        result = await table[request.kind]!(host, request);
+      } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        const reason = typeof code === 'string' ? HOST_REFUSALS[code] : undefined;
+        // Anything else may have failed after a write landed: the caller keeps it unknown.
+        if (!reason) throw error;
+        return {
+          ok: false,
+          changeId: request.changeId,
+          kind: request.kind,
+          error: { code: 'host_refused', reason, message: `Office refused the change (${code}).` },
+        };
+      }
       return provenance === 'unsupported' && result.ok
         ? {
             ...result,
-            ...(request.provenance ? { provenanceDropped: true } : { provenanceMissing: true }),
+            ...(request.provenance ? { provenanceUnsupported: true } : { provenanceMissing: true }),
           }
         : result;
     },

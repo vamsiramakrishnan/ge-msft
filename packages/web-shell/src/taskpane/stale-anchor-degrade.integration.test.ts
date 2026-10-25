@@ -7,6 +7,7 @@ import {
   mountStack,
   type WordSimulator,
   type MountedStack,
+  openPlanEffects,
 } from '../test-harness/index.js';
 
 /**
@@ -80,6 +81,7 @@ describe('Word stale-anchor degrade (full-stack interplay)', () => {
     await ui!.waitFor((s) => s.pendingPlan !== undefined);
 
     // The plan-approval card renders the verbatim suggest command targeting the live anchor text.
+    openPlanEffects(ui!.container);
     const cmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
     expect(cmd).toContain('suggest');
     expect(cmd).toContain(ANCHOR);
@@ -97,6 +99,9 @@ describe('Word stale-anchor degrade (full-stack interplay)', () => {
     const anchored = sim.seed.paragraphs.find((p) => p.text.includes(ANCHOR));
     if (!anchored) throw new Error('expected the anchored paragraph to be present at preview-time');
     anchored.text = 'This revision removes the service-level commitment entirely.';
+    // The selection sat on that text, so it now holds the coauthor's wording too (real Word keeps the
+    // two in step; the fake tracks them separately).
+    sim.seed.selectionText = anchored.text;
 
     // ── APPLY: approve the plan. The bridge re-resolves at apply-time and finds nothing. ──
     await ui!.act(() => ui!.controller.approvePlan());
@@ -149,8 +154,9 @@ describe('Word stale-anchor degrade (full-stack interplay)', () => {
     await ui!.flush();
 
     const snap = sim.snapshot();
+    // Word-level tracked edit: only the changed word of the anchor is replaced (UAT #17).
     expect(snap.inserts.length).toBe(1);
-    expect(snap.inserts[0]?.anchor).toBe(ANCHOR);
+    expect(ANCHOR).toContain(snap.inserts[0]!.anchor);
     expect(snap.bodyText).toContain(SUGGESTION);
     expect(snap.changeTrackingMode).toBe('TrackAll');
     // The clean apply DID record durable provenance (the stale case above recorded none).

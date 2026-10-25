@@ -18,12 +18,24 @@ page count. Excel row count alone is also insufficient to predict cost: column c
 and formulas matter. One exceptionally large paragraph, shape or cell can still exceed a host
 transport limit; the task reports failure rather than silently skipping it.
 
-Ambient context is cheaper: Excel captures sheet/range metadata without reading cell values;
-PowerPoint captures slide IDs without reading all shapes; Word reads only a bounded paragraph
-prefix. A truncated inventory is labeled. Targeted questions and explicit attachments retain their
+Ambient context is cheaper: Excel captures sheet/range metadata and at most one header row of
+32 columns, after loading dimensions. PowerPoint captures the total slide count and at most
+60 slides with eight shape previews each; shape metadata uses a lookahead and text reads use
+batches of at most 40 objects. Word reads only a bounded paragraph prefix. Truncated slide,
+worksheet, named-range and header inventories are labeled. Targeted questions and explicit attachments retain their
 existing paths; this change does not turn every legacy search/attachment reader into a streaming
 reader. In particular, Excel's legacy literal search/whole-sheet attachment can still load the active
 used range, and PowerPoint's legacy search is limited to its existing slide prefix.
+
+When ordinary chat finds no targeted evidence, its automatic body fallback uses one paged read
+when available. It reports scope, extraction limitations, EOF and the next read command, with
+explicit omissions when only part of that page fits. On Outlook and other nonpaged surfaces,
+the fallback can resolve whole-item text, but automatic working context is capped at 24 KiB of
+serialized, framed parts including its coverage notice. Oversized text keeps an exact Unicode-safe
+prefix with an explicit partial marker. An explicit read and result inspection can retrieve omitted
+text; that read observes the live source and is not a continuation of the earlier capture. These
+ambient excerpts grant no source-completeness, freshness or write authority. Required evidence
+bindings retain their separate fail-closed byte and freshness checks.
 
 ## Runtime and StreamAssist
 

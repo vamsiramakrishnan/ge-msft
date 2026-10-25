@@ -134,10 +134,11 @@ describe('multi-effect plan approval (runtime + web-shell + triggers)', () => {
     expect(plan).not.toBeNull();
     // Cardinality, in the DOM and in the controller state.
     expect(plan!.querySelectorAll('.plan-effect').length).toBe(3);
-    const pin = plan!.querySelector('.pin')?.textContent ?? '';
-    // The summary groups by kind and pluralizes: "2 writes + 1 comment".
-    expect(pin).toContain('2 writes');
-    expect(pin).toContain('1 comment');
+    // The card title counts the changes; each row names its kind in plain words.
+    expect(plan!.querySelector('.plan-approval-title')?.textContent).toBe('Review 3 changes');
+    const kinds = [...plan!.querySelectorAll('.plan-effect-kind')].map((k) => k.textContent);
+    expect(kinds.filter((k) => k === 'Cells')).toHaveLength(2);
+    expect(kinds.filter((k) => k === 'Comment')).toHaveLength(1);
     expect(ui!.controller.getState().pendingPlan?.summary).toBe('2 writes + 1 comment');
 
     await ui!.act(() => ui!.controller.approvePlan());

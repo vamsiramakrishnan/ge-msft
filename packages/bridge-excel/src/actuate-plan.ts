@@ -40,26 +40,52 @@ export interface FormatCellsPlan {
   fill?: string;
   /** Excel number-format code, e.g. "$#,##0.00". */
   numberFormat?: string;
+  fontColor?: string;
+  fontSize?: number;
+  /** Office.js `HorizontalAlignment` value. */
+  horizontalAlignment?: 'Left' | 'Center' | 'Right' | 'Justify';
+  /** Office.js `VerticalAlignment` value. */
+  verticalAlignment?: 'Top' | 'Center' | 'Bottom';
+  wrapText?: boolean;
+  /** Applied to all six edges; `None` clears them. */
+  borderWeight?: 'Thin' | 'Medium' | 'Thick' | 'None';
+  /** Outer-edge weight when it differs from `borderWeight`. */
+  outsideWeight?: 'Thin' | 'Medium' | 'Thick' | 'None';
+  /** Inner-line weight when it differs from `borderWeight`. */
+  insideWeight?: 'Thin' | 'Medium' | 'Thick' | 'None';
+  borderColor?: string;
+  autofit?: boolean;
   /** True iff at least one format facet is set — the bridge degrades a no-op format. */
   hasOps: boolean;
 }
 
+const HORIZONTAL = { left: 'Left', center: 'Center', right: 'Right', justify: 'Justify' } as const;
+const VERTICAL = { top: 'Top', center: 'Center', bottom: 'Bottom' } as const;
+const WEIGHT = { thin: 'Thin', medium: 'Medium', thick: 'Thick', none: 'None' } as const;
+
 export function planFormatCells(req: ActuationRequest): FormatCellsPlan {
   const p = req.params;
   const f = p.format ?? {};
-  const hasOps =
-    f.bold !== undefined ||
-    f.italic !== undefined ||
-    f.fill !== undefined ||
-    f.numberFormat !== undefined;
-  return {
+  const plan: FormatCellsPlan = {
     ...(p.target?.range ? { address: p.target.range } : {}),
     ...(f.bold !== undefined ? { bold: f.bold } : {}),
     ...(f.italic !== undefined ? { italic: f.italic } : {}),
     ...(f.fill !== undefined ? { fill: f.fill } : {}),
     ...(f.numberFormat !== undefined ? { numberFormat: f.numberFormat } : {}),
-    hasOps,
+    ...(f.fontColor !== undefined ? { fontColor: f.fontColor } : {}),
+    ...(f.fontSize !== undefined ? { fontSize: f.fontSize } : {}),
+    ...(f.align !== undefined ? { horizontalAlignment: HORIZONTAL[f.align] } : {}),
+    ...(f.valign !== undefined ? { verticalAlignment: VERTICAL[f.valign] } : {}),
+    ...(f.wrap !== undefined ? { wrapText: f.wrap } : {}),
+    ...(f.border !== undefined ? { borderWeight: WEIGHT[f.border] } : {}),
+    ...(f.borderOutside !== undefined ? { outsideWeight: WEIGHT[f.borderOutside] } : {}),
+    ...(f.borderInside !== undefined ? { insideWeight: WEIGHT[f.borderInside] } : {}),
+    ...(f.borderColor !== undefined ? { borderColor: f.borderColor } : {}),
+    ...(f.autofit ? { autofit: true } : {}),
+    hasOps: false,
   };
+  plan.hasOps = Object.keys(plan).some((k) => k !== 'address' && k !== 'hasOps');
+  return plan;
 }
 
 /**
@@ -241,6 +267,70 @@ export function planInsertChart(req: ActuationRequest): InsertChartPlan {
   };
 }
 
+/** One area of a chart source: its full address, the address without its first row, its first cell. */
+export interface ChartArea {
+  address: string;
+  body: string;
+  topLeft: string;
+}
+
+/**
+ * Split a chart source into its A1 areas (`Sheet2!C1:C11,Sheet2!G1:G11`). The model asks for this
+ * shape to chart non-adjacent columns (categories + values), and `Worksheet.getRange` rejects it, so
+ * the bridge builds the chart from the areas instead. All areas must be on one sheet.
+ */
+export function chartAreas(
+  address: string,
+): { sheetName?: string; areas: ChartArea[] } | { error: string } {
+  const pieces = splitAreaList(address);
+  // A lone defined name (`Revenue`, `FY24_Q3`) is one source Excel resolves itself; scanning it for
+  // cell addresses read `FY24_Q3` as the areas FY24 and Q3 (security review, 2026-09-30).
+  if (pieces.length === 1 && !A1_AREA_RE.test(pieces[0]!) && DEFINED_NAME_RE.test(pieces[0]!))
+    return { areas: [{ address: pieces[0]!, body: pieces[0]!, topLeft: pieces[0]! }] };
+  const areas: ChartArea[] = [];
+  let sheetName: string | undefined;
+  for (const piece of pieces) {
+    const m = A1_AREA_RE.exec(piece);
+    if (!m) return { error: `not an A1 range: ${piece}` };
+    const sheet = m[1] === undefined ? undefined : m[1].replace(/^'|'$/g, '').replace(/''/g, "'");
+    if (areas.length > 0 && sheet !== sheetName)
+      return { error: 'chart areas must all be on one worksheet' };
+    sheetName = sheet;
+    const firstCol = m[2]!;
+    const firstRow = Number(m[3]);
+    const lastCol = m[4] ?? firstCol;
+    const lastRow = m[5] === undefined ? firstRow : Number(m[5]);
+    areas.push({
+      address: `${firstCol}${firstRow}:${lastCol}${lastRow}`,
+      body: `${firstCol}${Math.min(firstRow + 1, lastRow)}:${lastCol}${lastRow}`,
+      topLeft: `${firstCol}${firstRow}`,
+    });
+  }
+  if (areas.length === 0) return { error: `not an A1 range: ${address}` };
+  return { ...(sheetName !== undefined ? { sheetName } : {}), areas };
+}
+
+/** One whole A1 area, optionally sheet-qualified; anchored so nothing is left over. */
+const A1_AREA_RE =
+  /^(?:('(?:[^']|'')+'|[^!,\s']+)!)?\$?([A-Za-z]{1,3})\$?(\d{1,7})(?::\$?([A-Za-z]{1,3})\$?(\d{1,7}))?$/;
+const DEFINED_NAME_RE = /^[A-Za-z_\\][A-Za-z0-9_.]*$/;
+
+/** Split `A!C1:C9, 'Sales, 2024'!G1:G9` on commas outside quoted sheet names. */
+function splitAreaList(address: string): string[] {
+  const out: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (const ch of address) {
+    if (ch === "'") quoted = !quoted;
+    if (ch === ',' && !quoted) {
+      out.push(current.trim());
+      current = '';
+    } else current += ch;
+  }
+  out.push(current.trim());
+  return out.filter(Boolean);
+}
+
 const CF_OPERATOR: Record<'gt' | 'lt' | 'ge' | 'le' | 'eq' | 'ne' | 'between', string> = {
   gt: 'GreaterThan',
   lt: 'LessThan',
@@ -365,4 +455,170 @@ export function formatSourceComment(sources: SourceRef[], maxChars = 500): strin
   if (text.length <= maxChars) return text;
   if (maxChars <= 1) return text.slice(0, maxChars);
   return `${text.slice(0, maxChars - 1)}…`;
+}
+
+/** `sort-range` (WS4b): a native in-place sort of one range by one key column. */
+export interface SortRangePlan {
+  address?: string;
+  key: string;
+  ascending: boolean;
+  hasHeaders: boolean;
+}
+
+export function planSortRange(req: ActuationRequest): SortRangePlan {
+  const s = req.params.sortRange;
+  const address = s?.range?.trim();
+  return {
+    ...(address ? { address } : {}),
+    key: s?.key?.trim() ?? '',
+    ascending: s?.order !== 'descending',
+    hasHeaders: s?.hasHeaders ?? true,
+  };
+}
+
+const colToIndex = (letters: string): number =>
+  [...letters.toUpperCase()].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0) - 1;
+
+/**
+ * The key's column offset within the range: a header name (case-insensitive, exact) wins; else a
+ * column letter, relative to the range's first column. Undefined when neither names a column.
+ */
+export function sortKeyIndex(
+  key: string,
+  header: readonly unknown[],
+  firstColumn: string,
+  hasHeaders = true,
+): number | undefined {
+  // A header name only when row 1 IS a header; a header named "C" wins over column C (review L4).
+  if (hasHeaders) {
+    const wanted = key.trim().toLowerCase();
+    const byName = header.findIndex(
+      (cell) =>
+        String(cell ?? '')
+          .trim()
+          .toLowerCase() === wanted,
+    );
+    if (byName >= 0) return byName;
+  }
+  if (!/^[A-Za-z]{1,3}$/.test(key.trim())) return undefined;
+  const offset = colToIndex(key.trim()) - colToIndex(firstColumn);
+  return offset >= 0 && offset < header.length ? offset : undefined;
+}
+
+/** A number, or a non-empty string that is one ("98000"); else NaN. */
+const asNumber = (v: unknown): number =>
+  typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : Number.NaN;
+
+const isBlank = (v: unknown): boolean => v === null || v === undefined || v === '';
+
+/** Excel's type order for a sort: numbers, then text, then logicals (blanks handled apart). */
+const typeRank = (v: unknown): number =>
+  typeof v === 'number' ? 0 : typeof v === 'boolean' ? 2 : 1;
+
+/**
+ * True when `a` may come before `b` in an Excel sort with this direction (review H4). Blanks go last
+ * in both directions. Two texts that both look like numbers pass in either numeric or text order,
+ * since readback may type them either way ("100" < "20" as text; account numbers are text).
+ */
+function inOrder(a: unknown, b: unknown, ascending: boolean): boolean {
+  if (isBlank(b)) return true;
+  if (isBlank(a)) return false;
+  const dir = ascending ? 1 : -1;
+  const [ra, rb] = [typeRank(a), typeRank(b)];
+  if (ra !== rb) return (rb - ra) * dir > 0;
+  if (ra !== 1) return (Number(b) - Number(a)) * dir >= 0;
+  const text = String(b).localeCompare(String(a), undefined, { sensitivity: 'base' }) * dir >= 0;
+  const [na, nb] = [asNumber(a), asNumber(b)];
+  return text || (!Number.isNaN(na) && !Number.isNaN(nb) && (nb - na) * dir >= 0);
+}
+
+/**
+ * Built-in functions whose result depends only on their arguments. Anything else (a position or
+ * volatile function, a defined name, a LAMBDA or add-in function) makes a formula unsafe to move.
+ */
+const ROW_SAFE_FUNCTIONS = new Set(
+  (
+    'ABS AND AVERAGE AVERAGEA CEILING CHAR CONCAT CONCATENATE COUNT COUNTA COUNTBLANK DATE DAY ' +
+    'EXACT EXP FIND FLOOR IF IFERROR IFNA IFS INT ISBLANK ISERROR ISNUMBER ISTEXT LEFT LEN LN LOG ' +
+    'LOG10 LOWER MAX MAXA MEDIAN MID MIN MINA MOD MONTH N NOT OR POWER PRODUCT PROPER REPT RIGHT ' +
+    'ROUND ROUNDDOWN ROUNDUP SEARCH SIGN SQRT SUBSTITUTE SUM SWITCH TEXT TEXTJOIN TRIM TRUNC UPPER ' +
+    'VALUE XOR YEAR'
+  ).split(' '),
+);
+
+const columnIndex = (letters: string): number =>
+  [...letters.toUpperCase()].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0);
+
+/**
+ * True when every formula in the rows a sort moves uses only cells of its own row inside the sorted
+ * columns, by relative row, and only built-in functions from {@link ROW_SAFE_FUNCTIONS}. Excel
+ * adjusts such references when it moves the row, so each result stays the same (`=E2/D2` →
+ * `=E5/D5`). Everything else is refused: another row, a column outside the range, an absolute row
+ * (`E$2`), another sheet, a table, spill, trim or whole-column/row reference, a defined name, or any
+ * other function. Allow-list: once the known tokens are removed, only operators may remain.
+ * `firstRow`/`firstColumn` give the sheet position of `formulas[0][0]`.
+ */
+export function formulasStayInRow(
+  formulas: readonly (readonly unknown[])[],
+  firstRow: number,
+  firstColumn: string,
+  hasHeaders: boolean,
+): boolean {
+  const left = columnIndex(firstColumn);
+  const right = left + (formulas[0]?.length ?? 0) - 1;
+  for (let r = hasHeaders ? 1 : 0; r < formulas.length; r++) {
+    const row = firstRow + r;
+    for (const cell of formulas[r] ?? []) {
+      const formula = String(cell ?? '');
+      if (!formula.startsWith('=')) continue;
+      // String literals are text, not references ("" escapes a quote).
+      let code = formula.slice(1).replace(/"(?:[^"]|"")*"/g, ' ');
+      if (/[[\]!'#\\@]|:\.|\.:/.test(code)) return false;
+      // A whole-row reference (`2:2`, `$3:$9`) spans every column of other rows' data.
+      if (/(?<![\w.$])\$?\d+:\$?\d+(?![\w.])/.test(code)) return false;
+      let safe = true;
+      code = code
+        .replace(
+          /(?<![\w.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\w(.])/g,
+          (_m, _c: string, col: string, rowLock: string, digits: string) => {
+            const at = columnIndex(col);
+            if (rowLock || Number(digits) !== row || at < left || at > right) safe = false;
+            return ' ';
+          },
+        )
+        .replace(/(?<![\w.])([A-Za-z_][\w.]*)\s*\(/g, (_m, name: string) => {
+          if (!ROW_SAFE_FUNCTIONS.has(name.toUpperCase())) safe = false;
+          return ' (';
+        })
+        .replace(/(?<![\w.])(?:TRUE|FALSE)(?![\w.(])/gi, ' ')
+        .replace(/(?<![\w.])\d+(?:\.\d+)?(?:E[+-]?\d+)?(?![\w.])/gi, ' ');
+      if (!safe || !/^[\s,()+\-*/^&=<>%:]*$/.test(code)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A sort landed as reviewed when the data rows are the same rows in a new order (nothing changed
+ * or lost) and the key column is in the requested order. The header row must not move.
+ */
+export function sortVerified(
+  before: readonly (readonly unknown[])[],
+  after: readonly (readonly unknown[])[],
+  keyIndex: number,
+  ascending: boolean,
+  hasHeaders: boolean,
+): boolean {
+  if (before.length !== after.length) return false;
+  const start = hasHeaders ? 1 : 0;
+  if (hasHeaders && JSON.stringify(before[0]) !== JSON.stringify(after[0])) return false;
+  const rows = (grid: readonly (readonly unknown[])[]) =>
+    grid
+      .slice(start)
+      .map((row) => JSON.stringify(row))
+      .sort();
+  if (JSON.stringify(rows(before)) !== JSON.stringify(rows(after))) return false;
+  for (let r = start + 1; r < after.length; r++)
+    if (!inOrder(after[r - 1]![keyIndex], after[r]![keyIndex], ascending)) return false;
+  return true;
 }

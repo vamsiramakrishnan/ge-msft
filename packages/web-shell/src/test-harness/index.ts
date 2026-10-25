@@ -50,5 +50,5 @@ export type { ScriptedClient, ScriptedTurn } from './scripted-client.js';
 export { makeOfficeSeed } from './fake-office.js';
 export type { OfficeSeed, RequirementSets, OfficeHandlerRegistry } from './fake-office.js';
 
-export { mountStack } from './mount-stack.js';
+export { openPlanEffects, mountStack } from './mount-stack.js';
 export type { MountedStack, MountStackOptions } from './mount-stack.js';

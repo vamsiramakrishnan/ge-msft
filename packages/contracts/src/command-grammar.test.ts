@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { CapabilityManifest } from './capability.js';
 import {
+  FORMAT_KEYS_USAGE,
   ParsedCommandSchema,
   WRITE_VERB_TO_KIND,
   extractCommandBlock,
+  stripFollowUpBlock,
   parseCommandLine,
   parseCommandBlock,
   grammarFor,
@@ -55,6 +57,40 @@ describe('command-grammar — verb map', () => {
   });
 });
 
+describe('command-grammar — quoted sheet names', () => {
+  it('keeps a multi-area chart range on a quoted sheet as one token (UAT #11)', () => {
+    expect(
+      parseCommandLine(
+        "chart line 'Branch Performance'!A1:A25,'Branch Performance'!H1:H25 title=\"Trend\"",
+      ),
+    ).toMatchObject({
+      verb: 'chart',
+      chartType: 'line',
+      range: "'Branch Performance'!A1:A25,'Branch Performance'!H1:H25",
+      props: { title: 'Trend' },
+    });
+  });
+});
+
+describe('command-grammar — set', () => {
+  it('accepts set <cell> "" as clearing the cell (UAT 2026-10-16)', () => {
+    expect(parseCommandLine('set Sheet1!I2 ""')).toEqual({
+      verb: 'set',
+      cell: 'Sheet1!I2',
+      value: '',
+    });
+    expect(parseCommandLine('set Sheet1!I2')).toHaveProperty('error');
+  });
+
+  it('decodes \\" inside a double-quoted set value', () => {
+    expect(parseCommandLine('set I3 "=IF(A3=A2,(F3-F2)/F2,\\"\\")"')).toEqual({
+      verb: 'set',
+      cell: 'I3',
+      value: '=IF(A3=A2,(F3-F2)/F2,"")',
+    });
+  });
+});
+
 describe('command-grammar — parseCommandLine (control + reads)', () => {
   it('parses no-arg verbs', () => {
     expect(parseCommandLine('outline')).toEqual({ verb: 'outline' });
@@ -82,6 +118,15 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
       selector: 'Sales!C2:C7',
     });
     expect(parseCommandLine('read')).toEqual({ verb: 'read', selector: '' });
+    // Argon wrote `read "Branch Performance!A1:F21"`, which resolved to nothing (WS3).
+    expect(parseCommandLine('read "Branch Performance!A1:F21"')).toEqual({
+      verb: 'read',
+      selector: 'Branch Performance!A1:F21',
+    });
+    expect(parseCommandLine("read 'Branch Performance'!A1:F21")).toEqual({
+      verb: 'read',
+      selector: "'Branch Performance'!A1:F21",
+    });
   });
 
   it('parses search text and strips wrapping quotes', () => {
@@ -197,6 +242,11 @@ describe('command-grammar — parseCommandLine (control + reads)', () => {
       verb: 'open',
       selector: 'Sales!A1:C9',
     });
+  });
+
+  it('accepts a plural context kind (`list comments`)', () => {
+    expect(parseCommandLine('list comments')).toEqual({ verb: 'list', kind: 'comment' });
+    expect(parseCommandLine('list Slides')).toEqual({ verb: 'list', kind: 'slide' });
   });
 
   it('rejects malformed context inspection verbs', () => {
@@ -464,6 +514,16 @@ describe('command-grammar — ADR-0005 Phase 2 effect-arg expressions', () => {
       text: '',
       textExpr: { kind: 'pipeline', source: { src: 'var', name: 'summary' } },
     });
+    expect(
+      parseCommandLine('mail "See attached." attach="hello arjuna.docx" text="test script 1"'),
+    ).toEqual({
+      verb: 'mail',
+      body: 'See attached.',
+      attachment: { name: 'hello arjuna.docx', text: 'test script 1' },
+    });
+    expect(parseCommandLine('mail "See attached." attach="a.docx"')).toMatchObject({
+      error: expect.stringContaining('attach='),
+    });
     // A quoted body stays literal (no *Expr).
     expect(parseCommandLine('mail "Thanks — confirming."')).toEqual({
       verb: 'mail',
@@ -541,6 +601,69 @@ describe('command-grammar — ADR-0007 host-native verbs (table / chart / cf)', 
       chartType: 'bar',
       range: `'Project schedule'!B5:D30`,
       props: { title: 'Task Progress' },
+    });
+  });
+
+  it('keeps a multi-area chart range on a quoted sheet name whole (UAT 2026-10)', () => {
+    // From PR #3 by Gautam Rana: the model put a space after the comma between two areas.
+    const months = `'Branch Performance'!C1:C55`;
+    const growth = `'Branch Performance'!I1:I55`;
+    for (const line of [`chart line ${months},${growth}`, `chart line ${months}, ${growth}`]) {
+      expect(parseCommandLine(`${line} title="MoM"`)).toEqual({
+        verb: 'chart',
+        chartType: 'line',
+        range: `${months},${growth}`,
+        props: { title: 'MoM' },
+      });
+    }
+  });
+
+  // Live 2026-10-15 (mx-xl-chart-11/12/15/20): a second quoted area was cut at its space.
+  it('keeps several quoted areas (and a quoted prop value) as one token', () => {
+    const areas = `'Branch Performance'!A1:A21,'Branch Performance'!C1:D21`;
+    expect(parseCommandLine(`chart column ${areas} title="Loans"`)).toEqual({
+      verb: 'chart',
+      chartType: 'column',
+      range: areas,
+      props: { title: 'Loans' },
+    });
+    expect(parseCommandLine(`table 'It''s Q3'!A1:C9 headers`)).toMatchObject({
+      range: `'It''s Q3'!A1:C9`,
+    });
+    expect(
+      parseCommandLine(`/insert-chart sourceRange='Branch Performance'!A1:B9 chartType=bar`),
+    ).toMatchObject({ props: { sourceRange: `'Branch Performance'!A1:B9` } });
+  });
+
+  // UAT 2026-10-15: Outlook drafts showed a literal "\n\n" instead of blank lines.
+  it('decodes \\n and \\t inside quoted text into real line breaks and tabs', () => {
+    expect(parseCommandLine('mail "Hi Rina,\\n\\nThank you."')).toMatchObject({
+      body: 'Hi Rina,\n\nThank you.',
+    });
+    expect(parseCommandLine('reply c1 "Line 1\\nLine 2"')).toMatchObject({
+      text: 'Line 1\nLine 2',
+    });
+    // An escaped backslash stays a backslash: "C:\\new" is not a line break.
+    expect(parseCommandLine('reply c1 "C:\\\\new"')).toMatchObject({ text: 'C:\\new' });
+    expect(parseCommandLine('grid A1:B2 = "a\\tb\\nc\\td"')).toMatchObject({
+      verb: 'grid',
+    });
+  });
+
+  it('reply can also resolve the thread (the bridges support it; the verb could not ask)', () => {
+    expect(parseCommandLine('reply xl:comment:c1 "Done, thanks" resolve')).toEqual({
+      verb: 'reply',
+      commentId: 'xl:comment:c1',
+      text: 'Done, thanks',
+      resolve: true,
+    });
+    expect(parseCommandLine('reply c1 "Done"')).toEqual({
+      verb: 'reply',
+      commentId: 'c1',
+      text: 'Done',
+    });
+    expect(parseCommandLine('reply c1 "Done" maybe')).toMatchObject({
+      error: expect.stringContaining('[resolve]'),
     });
   });
 
@@ -766,6 +889,64 @@ describe('command-grammar — format (k=v pairs, values with # $ , . %)', () => 
     });
   });
 
+  it('keeps escaped quotes inside a double-quoted value (OOXML attributes)', () => {
+    const xml = '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr></w:p>';
+    const escaped = xml.replace(/"/g, '\\"');
+    expect(parseCommandLine(`/insert-ooxml ooxml="${escaped}"`)).toEqual({
+      verb: 'invoke',
+      kind: 'insert-ooxml',
+      props: { ooxml: xml },
+      args: [],
+    });
+    expect(parseCommandLine(`/insert-ooxml "${escaped}"`)).toEqual({
+      verb: 'invoke',
+      kind: 'insert-ooxml',
+      props: {},
+      args: [xml],
+    });
+  });
+
+  it('flattens a model-written JSON style after the range', () => {
+    expect(
+      parseCommandLine(
+        'format Sheet1!A1:H1 {"font":{"bold":true,"color":"#FFFFFF"},"fill":{"color":"#1F4E78"},"horizontalAlignment":"Center"}',
+      ),
+    ).toEqual({
+      verb: 'format',
+      range: 'Sheet1!A1:H1',
+      props: { bold: 'true', fontColor: '#FFFFFF', fill: '#1F4E78', align: 'Center' },
+    });
+  });
+
+  it('reads the range from a JSON body and accepts shorthand facets', () => {
+    expect(
+      parseCommandLine(
+        'format {"range":"Sheet1!A1:H10","style":{"border":{"color":"#D3D3D3","style":"thin"},"align":{"horizontal":"center","vertical":"center"}}}',
+      ),
+    ).toEqual({
+      verb: 'format',
+      range: 'Sheet1!A1:H10',
+      props: { align: 'center', valign: 'center', border: 'thin', borderColor: '#D3D3D3' },
+    });
+    expect(parseCommandLine('format A1:H10 {"border":"thin","fill":"#F2F2F2"}')).toEqual({
+      verb: 'format',
+      range: 'A1:H10',
+      props: { fill: '#F2F2F2', border: 'thin' },
+    });
+  });
+
+  it('errors on malformed or facet-less format JSON', () => {
+    expect(parseCommandLine('format A1 {"bold":')).toMatchObject({
+      error: expect.stringContaining('malformed'),
+    });
+    expect(parseCommandLine('format A1 {"wibble":1}')).toMatchObject({
+      error: expect.stringContaining('key=value'),
+    });
+    expect(parseCommandLine('format {"style":{"bold":true}}')).toMatchObject({
+      error: expect.stringContaining('key=value'),
+    });
+  });
+
   it('errors on a format with no props or a bare key (no =)', () => {
     expect(parseCommandLine('format Sales!A16:C16')).toMatchObject({
       error: expect.stringContaining('key=value'),
@@ -776,6 +957,25 @@ describe('command-grammar — format (k=v pairs, values with # $ , . %)', () => 
     expect(parseCommandLine('format A1 bold')).toMatchObject({
       error: expect.stringContaining('key=value'),
     });
+  });
+
+  it('flattens a JSON-style format into key=value props', () => {
+    expect(
+      parseCommandLine(
+        'format Sheet1!A1:H1 {"font": {"bold": true, "color": "#FFFFFF"}, "fill": "#1F4E79"}',
+      ),
+    ).toMatchObject({
+      verb: 'format',
+      range: 'Sheet1!A1:H1',
+      props: { bold: 'true', fontColor: '#FFFFFF', fill: '#1F4E79' },
+    });
+  });
+
+  it('answers unreadable format JSON with the key=value form to use instead', () => {
+    const res = parseCommandLine('format Sheet1!A1:H1 {"wibble": 1}');
+    expect(res).toMatchObject({ error: expect.stringContaining('not JSON') });
+    if ('error' in res)
+      expect(res.error).toContain('format Sheet1!A1:H1 bold=true fontColor=#FFFFFF');
   });
 });
 
@@ -930,7 +1130,9 @@ describe('command-grammar — capability scoping', () => {
     expect(verbs).toContain('comment');
     expect(verbs).toContain('format');
     expect(specs.find((v) => v.verb === 'comment')?.usage).toBe('comment <cell> "text"');
-    expect(specs.find((v) => v.verb === 'format')?.usage).toBe('format <range> k=v ...');
+    expect(specs.find((v) => v.verb === 'format')?.usage).toBe(
+      `format <range> key=value ... (not JSON) — keys: ${FORMAT_KEYS_USAGE}`,
+    );
   });
 
   it('Word advertises comment (quoted-anchor form) but NOT format (no format-cells)', () => {
@@ -943,7 +1145,7 @@ describe('command-grammar — capability scoping', () => {
 
   it('Word advertises reply when comment-reply is in its actuations', () => {
     const specs = grammarFor(wordManifest);
-    expect(specs.find((v) => v.verb === 'reply')?.usage).toBe('reply <commentId> "text"');
+    expect(specs.find((v) => v.verb === 'reply')?.usage).toBe('reply <commentId> "text" [resolve]');
   });
 
   it('does NOT advertise reply when comment-reply is absent (Excel here has none)', () => {
@@ -1147,6 +1349,49 @@ describe('command-grammar — ADR-0006 CLI parity verbs (slide/page/mail/post)',
       bullets: ['up 12%', 'churn down'],
     });
   });
+  it('done takes an optional quoted answer and never rejects trailing text', () => {
+    expect(parseCommandLine('done')).toEqual({ verb: 'done' });
+    expect(parseCommandLine('done "The last row is Samarth · Pro"')).toEqual({
+      verb: 'done',
+      message: 'The last row is Samarth · Pro',
+    });
+    expect(parseCommandLine('done ""')).toEqual({ verb: 'done' });
+    // Trailing text still finishes (a rejected done kept a deck plan adding slides).
+    expect(parseCommandLine('done the last row')).toEqual({ verb: 'done' });
+    expect(parseCommandLine('done — all 4 slides added')).toEqual({ verb: 'done' });
+    expect(parseCommandLine('done "a" "b"')).toEqual({ verb: 'done', message: 'a' });
+  });
+
+  it('slide takes an optional at=N position, first or last, and rejects a non-number', () => {
+    expect(parseCommandLine('slide "Agenda" "Goals" "Timeline" at=2')).toEqual({
+      verb: 'slide',
+      title: 'Agenda',
+      bullets: ['Goals', 'Timeline'],
+      at: 2,
+    });
+    expect(parseCommandLine('slide at=1 "Cover"')).toEqual({
+      verb: 'slide',
+      title: 'Cover',
+      bullets: [],
+      at: 1,
+    });
+    expect(parseCommandLine('slide "Top" ($rows | select name) at=3')).toMatchObject({
+      verb: 'slide',
+      at: 3,
+    });
+    expect(parseCommandLine('slide "Meet at=5" "x"')).toEqual({
+      verb: 'slide',
+      title: 'Meet at=5',
+      bullets: ['x'],
+    });
+    expect(parseCommandLine('slide "Agenda" at=0')).toMatchObject({
+      error: expect.stringContaining('at= must be a slide number'),
+    });
+    expect(parseCommandLine('slide "Agenda" at=second')).toMatchObject({
+      error: expect.stringContaining('at= must be a slide number'),
+    });
+  });
+
   it('slide: title only (zero bullets)', () => {
     expect(parseCommandLine('slide "Just a title"')).toEqual({
       verb: 'slide',
@@ -1228,5 +1473,46 @@ describe('command-grammar — the /<kind> specialized surface (ADR-0008 §two-ti
 
   it('a bare / is corrective', () => {
     expect(isCommandParseError(parseCommandLine('/'))).toBe(true);
+  });
+});
+
+describe('stripFollowUpBlock', () => {
+  const cmd = '```cmd\nset A1 1\nfinish when=verified\n```';
+  const follow = '```suggested_questions\n["Add a chart?"]\n```';
+
+  it('drops the engine follow-up block after the reply', () => {
+    expect(stripFollowUpBlock(`${cmd}\n\n${follow}\n`)).toBe(cmd);
+  });
+
+  it('keeps a reply without a trailing follow-up block unchanged', () => {
+    expect(stripFollowUpBlock(cmd)).toBe(cmd);
+    const jsonAfter = `${cmd}\n\n\`\`\`json\n{"a":1}\n\`\`\``;
+    expect(stripFollowUpBlock(jsonAfter)).toBe(jsonAfter);
+  });
+
+  it('never drops a follow-up block that something else follows', () => {
+    const before = `${follow}\n${cmd}`;
+    expect(stripFollowUpBlock(before)).toBe(before);
+    const secondProgram = `${cmd}\n${follow}\n\`\`\`cmd\nset B1 2\n\`\`\``;
+    expect(stripFollowUpBlock(secondProgram)).toBe(secondProgram);
+  });
+
+  it('never touches a program that is not closed before the follow-up block', () => {
+    const unclosed = '```cmd\nset A1 1\nfinish when=verified\n' + follow;
+    expect(stripFollowUpBlock(unclosed)).toBe(unclosed);
+    const inside = '```cmd\nset A1 1\n```suggested_questions\nfinish when=verified\n```';
+    expect(stripFollowUpBlock(inside)).toBe(inside);
+  });
+
+  it('keeps everything when the follow-up block holds a fence or a tagged opener', () => {
+    const nested = `${cmd}\n\`\`\`suggested_questions\n\`\`\`cmd\nset B1 2\n\`\`\``;
+    expect(stripFollowUpBlock(nested)).toBe(nested);
+    const tagged = `${cmd}\n\`\`\`suggested_questions json\n[]\n\`\`\``;
+    expect(stripFollowUpBlock(tagged)).toBe(tagged);
+  });
+
+  it('keeps CRLF line endings of the program it returns', () => {
+    const crlf = '```cmd\r\nset A1 1\r\n```\r\n```suggested_questions\r\n[]\r\n```\r\n';
+    expect(stripFollowUpBlock(crlf)).toBe('```cmd\r\nset A1 1\r\n```');
   });
 });

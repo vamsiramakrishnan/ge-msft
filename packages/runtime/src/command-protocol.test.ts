@@ -7,13 +7,19 @@ import type {
   DocStateSnapshot,
   ResolvedContext,
   SseEvent,
+  Surface,
 } from '@ge/contracts';
-import { ActuationRequestSchema } from '@ge/contracts';
+import { ActuationRequestSchema, parseCommandLine } from '@ge/contracts';
 import type { StreamAssistClient, StreamOptions } from '@ge/gemini-client';
 import type { AssistRequest } from '@ge/contracts';
 import { TriggerRegistry } from '@ge/triggers';
 import { AssistSession, type CommandLoopEvent } from './assist-session.js';
-import { compileCommand, renderCommandHelp, renderGrammarPrompt } from './command-protocol.js';
+import {
+  compileCommand,
+  normalizeCommentId,
+  renderCommandHelp,
+  renderGrammarPrompt,
+} from './command-protocol.js';
 import type { DocBridge } from './bridge.js';
 import { asChangeId } from '@ge/contracts';
 
@@ -36,6 +42,54 @@ describe('compileCommand', () => {
       },
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `set` over a range → one write that fills the formula down (UAT #7)', () => {
+    const parsed = parseCommandLine(
+      `set 'Branch Performance'!I2:I57 "=IF(A2=A1,(F2-F1)/F1,\\"\\")"`,
+    );
+    if ('error' in parsed) throw new Error(parsed.error);
+    const c = compileCommand(parsed, { surface: 'excel', mintChangeId: mint });
+    if (!('request' in c)) throw new Error('not a write');
+    const cells = c.request.params.cells!;
+    expect(c.request.params.target).toEqual({ range: "'Branch Performance'!I2:I57" });
+    expect(cells).toHaveLength(56);
+    expect(cells[0]).toEqual(['=IF(A2=A1,(F2-F1)/F1,"")']);
+    expect(cells[55]).toEqual(['=IF(A57=A56,(F57-F56)/F56,"")']);
+    expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('a fill that would move a reference off the sheet is a correction, not a crash', () => {
+    const parsed = parseCommandLine('set A1:B2 =XFD1');
+    if ('error' in parsed) throw new Error(parsed.error);
+    expect(compileCommand(parsed, { surface: 'excel', mintChangeId: mint })).toEqual({
+      error: expect.stringContaining('off the worksheet'),
+    });
+  });
+
+  it('turns the \n escape into a line break in quoted text, keeping \\n literal (live 2026-10-14)', () => {
+    // Commands are one line, so the model writes line breaks as `\n`; Outlook showed them literally.
+    const compiled = (line: string, surface: Surface) => {
+      const parsed = parseCommandLine(line);
+      if ('error' in parsed) throw new Error(parsed.error);
+      const c = compileCommand(parsed, { surface, mintChangeId: mint });
+      return 'request' in c ? c.request.params : c;
+    };
+    expect(compiled('mail "Halo Rizal,\\n\\nSalam,\\nAdele"', 'outlook')).toEqual({
+      mail: { body: 'Halo Rizal,\n\nSalam,\nAdele' },
+    });
+    expect(compiled('post "Update:\\n- done"', 'teams')).toMatchObject({
+      text: 'Update:\n- done',
+    });
+    // An escaped backslash stays a backslash: a path or LaTeX survives in written text.
+    expect(compiled('comment "Budget" "Saved in C:\\\\new folder"', 'word')).toMatchObject({
+      target: { matchText: 'Budget' },
+      text: 'Saved in C:\\new folder',
+    });
+    // Props decode the same way, so nested fields built from them get real line breaks too.
+    expect(compiled('/set-body text="Hi,\\nThanks"', 'outlook')).toMatchObject({
+      mail: { body: 'Hi,\nThanks' },
+    });
   });
 
   it('compiles `suggest` → a tracked-change with target.matchText', () => {
@@ -103,18 +157,357 @@ describe('compileCommand', () => {
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
 
-  it('ignores unknown format keys but errors when NO recognized prop is present', () => {
-    const ok = compileCommand(
-      { verb: 'format', range: 'A1', props: { bold: 'true', wibble: 'x' } },
+  it('accepts Office.js key names and any-case values as aliases', () => {
+    const c = compileCommand(
+      {
+        verb: 'format',
+        range: 'A1:H10',
+        props: {
+          color: '#FFFFFF',
+          horizontalAlignment: 'Center',
+          verticalAlignment: 'middle',
+          border: 'Thin',
+          borderColor: '#d3d3d3',
+        },
+      },
       { surface: 'excel', mintChangeId: mint },
     );
-    expect(ok).toMatchObject({ kind: 'write', request: { params: { format: { bold: true } } } });
+    expect(c).toMatchObject({
+      request: {
+        params: {
+          format: {
+            fontColor: '#FFFFFF',
+            align: 'center',
+            valign: 'center',
+            border: 'thin',
+            borderColor: '#D3D3D3',
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+    expect(
+      compileCommand(
+        { verb: 'format', range: 'A1', props: { align: 'sideways' } },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toMatchObject({ error: expect.stringContaining('format align must be one of') });
+  });
 
-    const bad = compileCommand(
-      { verb: 'format', range: 'A1', props: { wibble: 'x' } },
+  it('compiles separate outside and inside border weights (WS4b, Argon mx-xl-format-10)', () => {
+    const c = compileCommand(
+      {
+        verb: 'format',
+        range: 'Sheet1!A1:E11',
+        props: { borderOutside: 'Thick', borderInside: 'thin' },
+      },
       { surface: 'excel', mintChangeId: mint },
     );
-    expect(bad).toMatchObject({ error: expect.stringContaining('recognized property') });
+    expect(c).toMatchObject({
+      request: { params: { format: { borderOutside: 'thick', borderInside: 'thin' } } },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+    expect(
+      compileCommand(
+        { verb: 'format', range: 'A1', props: { borderInside: 'double' } },
+        { surface: 'excel', mintChangeId: mint },
+      ),
+    ).toMatchObject({ error: expect.stringContaining('format borderInside must be one of') });
+  });
+
+  it('rejects an unknown format key, naming every supported key, instead of dropping it', () => {
+    const cases: Array<Record<string, string>> = [{ bold: 'true', wibble: 'x' }, { wibble: 'x' }];
+    for (const props of cases) {
+      const bad = compileCommand(
+        { verb: 'format', range: 'A1', props },
+        { surface: 'excel', mintChangeId: mint },
+      );
+      expect(bad).toMatchObject({ error: expect.stringContaining('unknown format key "wibble"') });
+      if ('error' in bad) {
+        for (const key of ['fontColor', 'fontSize', 'align', 'border', 'wrap', 'autofit']) {
+          expect(bad.error).toContain(key);
+        }
+      }
+    }
+  });
+
+  it('compiles font color, size, alignment, wrap, borders and autofit', () => {
+    const c = compileCommand(
+      {
+        verb: 'format',
+        range: 'Sheet1!A1:H1',
+        props: {
+          fontColor: '#ffffff',
+          fontSize: '12',
+          align: 'center',
+          wrap: 'true',
+          border: 'thin',
+          borderColor: '#D3D3D3',
+          autofit: 'true',
+        },
+      },
+      { surface: 'excel', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: {
+        kind: 'format-cells',
+        params: {
+          format: {
+            fontColor: '#FFFFFF',
+            fontSize: 12,
+            align: 'center',
+            wrap: true,
+            border: 'thin',
+            borderColor: '#D3D3D3',
+            autofit: true,
+          },
+        },
+      },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('rejects format values the host cannot apply, with the allowed values', () => {
+    const cases: Array<[Record<string, string>, string]> = [
+      [{ align: 'middle' }, 'left, center, right, justify'],
+      [{ fontColor: 'white' }, '#RRGGBB'],
+      [{ fill: 'blue' }, '#RRGGBB'],
+      [{ border: 'dotted' }, 'thin, medium, thick, none'],
+      [{ fontSize: 'big' }, 'between 6 and 96'],
+      [{ bold: 'yes' }, 'true or false'],
+    ];
+    for (const [props, expected] of cases) {
+      const bad = compileCommand(
+        { verb: 'format', range: 'A1', props },
+        { surface: 'excel', mintChangeId: mint },
+      );
+      expect(bad).toMatchObject({ error: expect.stringContaining(expected) });
+    }
+  });
+
+  it('normalizes a quoted or ref-prefixed reply id to the bare host comment id', () => {
+    for (const written of [
+      '1891186488',
+      '"1891186488"',
+      "'1891186488'",
+      'word:comment:1891186488',
+      '"word:comment:1891186488"',
+      'comment:1891186488',
+      'xl:comment:1891186488',
+    ]) {
+      const c = compileCommand(
+        { verb: 'reply', commentId: written, text: 'ok' },
+        { surface: 'word', mintChangeId: () => asChangeId('cid') },
+      );
+      expect(c).toMatchObject({
+        request: { params: { target: { commentId: '1891186488' } } },
+      });
+    }
+    expect(normalizeCommentId('{3f2a}')).toBe('{3f2a}');
+  });
+
+  it('ignores a suggest-style arrow in positional /find-replace', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'find-replace',
+        props: {},
+        args: ['Contoso-AI', '=>', 'ContosoAI'],
+      } as never,
+      { surface: 'word', mintChangeId: () => asChangeId('cid') },
+    );
+    expect(c).toMatchObject({
+      request: { params: { findReplace: { find: 'Contoso-AI', replace: 'ContosoAI' } } },
+    });
+  });
+
+  it('takes positional OOXML for /insert-ooxml when ooxml= is missing', () => {
+    const c = compileCommand(
+      { verb: 'invoke', kind: 'insert-ooxml', props: {}, args: ['<w:p/>'] } as never,
+      { surface: 'word', mintChangeId: () => asChangeId('cid') },
+    );
+    expect(c).toMatchObject({ request: { kind: 'insert-ooxml', params: { ooxml: '<w:p/>' } } });
+  });
+
+  it('keeps the empty rows asked for under a /insert-table header (UAT 2026-10-16)', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'insert-table',
+        props: {
+          rows: '#\\tAktivitas\\tDeliverable\\tPenanggung Jawab\\n\\t\\t\\t\\n\\t\\t\\t\\n\\t\\t\\t',
+        },
+        args: [],
+      } as never,
+      { surface: 'word', mintChangeId: () => asChangeId('cid') },
+    );
+    expect(c).toMatchObject({
+      request: {
+        params: {
+          tableGrid: {
+            rows: [
+              ['#', 'Aktivitas', 'Deliverable', 'Penanggung Jawab'],
+              ['', '', '', ''],
+              ['', '', '', ''],
+              ['', '', '', ''],
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it('takes headerFill= for /add-table-slide (UAT #16)', () => {
+    const c = compileCommand(
+      {
+        verb: 'invoke',
+        kind: 'add-table-slide',
+        props: { slide: '4', rows: 'No\\tDimensi\\n1\\tRegulasi', headerFill: '#C8102E' },
+        args: [],
+      } as never,
+      { surface: 'powerpoint', mintChangeId: () => asChangeId('cid') },
+    );
+    expect(c).toMatchObject({ request: { params: { tableGrid: { headerFill: '#C8102E' } } } });
+  });
+
+  it('takes bold/font/size for /insert-text (UAT #20)', () => {
+    const parsed = parseCommandLine('/insert-text text="AI COE" bold=true font=Arial size=16');
+    if ('error' in parsed) throw new Error(parsed.error);
+    expect(compileCommand(parsed, { surface: 'word', mintChangeId: mint })).toMatchObject({
+      request: {
+        kind: 'insert-text',
+        params: { text: 'AI COE', textFont: { bold: true, name: 'Arial', size: 16 } },
+      },
+    });
+  });
+
+  it('compiles mail attach= into a reply that carries a real .docx (UAT #22b)', () => {
+    const out = compileCommand(
+      parseCommandLine(
+        'mail "See attached." attach="hello arjuna.docx" text="test script 1"',
+      ) as never,
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    if (!('request' in out)) throw new Error('not a write');
+    expect(out.request).toMatchObject({
+      kind: 'reply-mail',
+      params: { mail: { body: 'See attached.' }, attachment: { name: 'hello arjuna.docx' } },
+    });
+    const bytes = Uint8Array.from(atob(out.request.params.attachment!.base64!), (c) =>
+      c.charCodeAt(0),
+    );
+    expect([...bytes.slice(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]);
+    expect(
+      compileCommand(
+        parseCommandLine('mail "See attached." attach="data.xlsx" text="1,2"') as never,
+        { surface: 'outlook', mintChangeId: mint },
+      ),
+    ).toMatchObject({ error: expect.stringContaining('mail attach= cannot build a .xlsx') });
+  });
+
+  it.each([
+    'evil\u202Excod.docx',
+    '../x.docx',
+    '.hidden.docx',
+    'page.html',
+    'run.hta',
+    'macro.docm',
+    `${'a'.repeat(101)}.docx`,
+  ])('refuses the attachment name %j when building a file from text', (name) => {
+    for (const line of [
+      `/add-attachment name=${JSON.stringify(name)} text="x"`,
+      `mail "See attached." attach=${JSON.stringify(name)} text="x"`,
+    ]) {
+      expect(
+        compileCommand(parseCommandLine(line) as never, { surface: 'outlook', mintChangeId: mint }),
+      ).toHaveProperty('error');
+    }
+  });
+
+  it("keeps the built file's text on the request for the approval card", () => {
+    const out = compileCommand(
+      parseCommandLine('/add-attachment name="notes.csv" text="a,b"') as never,
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    expect(out).toMatchObject({
+      request: { params: { attachment: { name: 'notes.csv', text: 'a,b' } } },
+    });
+  });
+
+  it('refuses tab-separated values on a multi-cell set and points to grid (live 2026-10-17)', () => {
+    const out = compileCommand(parseCommandLine('set Summary!B2:C2 "18010\\t13860"') as never, {
+      surface: 'excel',
+      mintChangeId: mint,
+    });
+    expect(out).toMatchObject({ error: expect.stringContaining('use grid Summary!B2:C2') });
+    // One cell keeps the text as written.
+    expect(
+      compileCommand(parseCommandLine('set Summary!B2 "a\\tb"') as never, {
+        surface: 'excel',
+        mintChangeId: mint,
+      }),
+    ).toHaveProperty('request');
+  });
+
+  it('builds a real .docx for a text attachment named .docx; refuses .xlsx from text (UAT #22)', () => {
+    const docx = compileCommand(
+      parseCommandLine('/add-attachment name="hello arjuna.docx" text="test script 1"') as never,
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    if (!('request' in docx)) throw new Error('not a write');
+    const bytes = Uint8Array.from(atob(docx.request.params.attachment!.base64!), (c) =>
+      c.charCodeAt(0),
+    );
+    expect([...bytes.slice(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]); // a zip, not 13 bytes of text
+    const txt = compileCommand(
+      parseCommandLine('/add-attachment name="notes.txt" text="test script 1"') as never,
+      { surface: 'outlook', mintChangeId: mint },
+    );
+    expect(txt).toMatchObject({
+      request: { params: { attachment: { base64: btoa('test script 1') } } },
+    });
+    expect(
+      compileCommand(parseCommandLine('/add-attachment name="data.xlsx" text="a,b"') as never, {
+        surface: 'outlook',
+        mintChangeId: mint,
+      }),
+    ).toEqual({ error: expect.stringContaining('cannot build a .xlsx file') });
+  });
+
+  it('takes positional text for /replace-selection when text= is missing', () => {
+    const c = compileCommand(
+      { verb: 'invoke', kind: 'replace-selection', props: {}, args: ['Short new text.'] } as never,
+      { surface: 'word', mintChangeId: () => asChangeId('cid') },
+    );
+    expect(c).toMatchObject({
+      request: { kind: 'replace-selection', params: { text: 'Short new text.' } },
+    });
+  });
+
+  it('encodes a plain-text /add-attachment (text= or content=) so the model never writes base64', () => {
+    for (const key of ['text', 'content']) {
+      const c = compileCommand(
+        {
+          verb: 'invoke',
+          kind: 'add-attachment',
+          props: { name: 'hello.txt', [key]: 'Hello from Gemini ✓' },
+          args: [],
+        } as never,
+        { surface: 'outlook', mintChangeId: () => asChangeId('cid') },
+      );
+      expect(c).toMatchObject({
+        request: {
+          kind: 'add-attachment',
+          params: {
+            attachment: {
+              name: 'hello.txt',
+              base64: Buffer.from('Hello from Gemini ✓', 'utf8').toString('base64'),
+            },
+          },
+        },
+      });
+    }
   });
 
   it('compiles `reply` → comment-reply with a commentId target (Zod-valid, changeId minted once)', () => {
@@ -335,6 +728,28 @@ describe('compileCommand', () => {
       },
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `slide … at=N` → insert-slide targeting zero-based slideIndex N-1', () => {
+    const c = compileCommand(
+      { verb: 'slide', title: 'Agenda', bullets: ['Goals'], at: 2 },
+      { surface: 'powerpoint', mintChangeId: mint },
+    );
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: { kind: 'insert-slide', params: { target: { slideIndex: 1 } } },
+    });
+    if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+  });
+
+  it('compiles `/add-table-slide slide=new at=2` → target.slideIndex 1', () => {
+    const parsed = parseCommandLine('/add-table-slide slide=new at=2 title="Risks" rows="A\\tB"');
+    if ('error' in parsed) throw new Error(parsed.error);
+    const c = compileCommand(parsed, { surface: 'powerpoint', mintChangeId: mint });
+    expect(c).toMatchObject({
+      kind: 'write',
+      request: { kind: 'add-table-slide', params: { target: { slideId: 'new', slideIndex: 1 } } },
+    });
   });
 
   it('compiles `/insert-slide deckBase64=…` into an explicit PowerPoint deck artifact import', () => {
@@ -702,6 +1117,124 @@ describe('compileCommand', () => {
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
 
+  it('reads the PowerPoint slide / shape references models actually write', () => {
+    const compile = (line: string) => {
+      const parsed = parseCommandLine(line);
+      if ('error' in parsed) throw new Error(parsed.error);
+      const c = compileCommand(parsed, { surface: 'powerpoint', mintChangeId: mint });
+      if (!('request' in c)) throw new Error(JSON.stringify(c));
+      expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+      return c.request.params;
+    };
+    // A bare slide reference as the first argument (live: `/add-shape pp:slide:264#0 …`).
+    expect(
+      compile('/add-shape pp:slide:257#0 shapeType=textBox text="Draft" left=72 top=300').target,
+    ).toEqual({ slideId: 'pp:slide:257#0' });
+    expect(compile('/add-shape 2 shapeType=textBox text="Draft"').target).toEqual({ slideId: '2' });
+    // A quoted title is never mistaken for a slide.
+    expect(compile('/add-table-slide "Key Risks" rows="Risk\\tOwner"').target).toBeUndefined();
+    // Live: `/add-table-slide "Risks and Mitigations" "Risk | Owner" "Vendor delay | Pat"` →
+    // a new titled slide with that table.
+    const quoted = compile(
+      '/add-table-slide "Key risks" "Risk | Owner" "Vendor delay | Pat" "Budget | Sam"',
+    );
+    expect(quoted.target).toEqual({ slideId: 'new' });
+    expect(quoted.slide).toEqual({ title: 'Key risks', bullets: [] });
+    expect(quoted.tableGrid?.rows).toEqual([
+      ['Risk', 'Owner'],
+      ['Vendor delay', 'Pat'],
+      ['Budget', 'Sam'],
+    ]);
+    // A flat list of single cells is not guessed into columns.
+    expect(compile('/add-table-slide "Key risks" "Risk" "Owner" "Vendor"').tableGrid?.rows).toEqual(
+      [],
+    );
+    // `slide=new title=…` carries the new slide's title.
+    const table = compile('/add-table-slide slide=new title="Key risks" rows="Risk\\tOwner"');
+    expect(table.target).toEqual({ slideId: 'new' });
+    expect(table.slide).toEqual({ title: 'Key risks', bullets: [] });
+    // `slide=1 shape=title` + dotted style keys (live: `fill.color=#0000FF font.color=#FFFFFF`).
+    const format = compile(
+      '/format-shape slide=1 shape=title fill.color=#0000FF font.color="#FFFFFF" font.size=28',
+    );
+    expect(format.target).toEqual({ slideId: '1', shapeId: 'title' });
+    expect(format.shapeFormat).toEqual({ fill: '#0000FF', font: { color: '#FFFFFF', size: 28 } });
+    // Live: `/format-shape pp:shape:1:title fill=#0000FF color=#FFFFFF` left the text black.
+    expect(
+      compile('/format-shape pp:shape:1:title fill=#0000FF color=#FFFFFF').shapeFormat,
+    ).toEqual({
+      fill: '#0000FF',
+      font: { color: '#FFFFFF' },
+    });
+    expect(compile('/format-shape slide=1 shape=s1-shape-1 fillColor=#123456').shapeFormat).toEqual(
+      {
+        fill: '#123456',
+      },
+    );
+    // Live: `/format-shape slide=1 shape=title fontColor=#002060 bold=true` applied the colour but
+    // silently dropped bold.
+    expect(
+      compile(
+        '/format-shape slide=1 shape=title fontColor=#002060 bold=true italic=true underline=true size=24',
+      ).shapeFormat,
+    ).toEqual({
+      font: { color: '#002060', bold: true, italic: true, underline: true, size: 24 },
+    });
+  });
+
+  it('draws the geometry an /add-shape names, and refuses one it cannot draw before approval', () => {
+    const compile = (line: string) => {
+      const parsed = parseCommandLine(line);
+      if ('error' in parsed) throw new Error(parsed.error);
+      return compileCommand(parsed, { surface: 'powerpoint', mintChangeId: mint });
+    };
+    const shapeOf = (line: string) => {
+      const c = compile(line);
+      if (!('request' in c)) throw new Error(JSON.stringify(c));
+      expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
+      return c.request.params.shape;
+    };
+    // Live 2026-10-09: this line became an empty text box, refused as "textBox needs text".
+    expect(
+      shapeOf('/add-shape slide=2 shapeType=rectangle left=576 top=36 width=144 height=72'),
+    ).toEqual({
+      shapeType: 'geometric',
+      geometryType: 'Rectangle',
+      left: 576,
+      top: 36,
+      width: 144,
+      height: 72,
+    });
+    expect(shapeOf('/add-shape slide=2 shapeType=Triangle fill=#0000FF text="AI CoE"')).toEqual({
+      shapeType: 'geometric',
+      geometryType: 'Triangle',
+      text: 'AI CoE',
+      fill: '#0000FF',
+    });
+    expect(shapeOf('/add-shape slide=2 shapeType=geometric geometryType=ellipse')).toMatchObject({
+      shapeType: 'geometric',
+      geometryType: 'Ellipse',
+    });
+    expect(shapeOf('/add-shape slide=2 geometryType=roundRectangle')).toMatchObject({
+      shapeType: 'geometric',
+      geometryType: 'RoundRectangle',
+    });
+    expect(shapeOf('/add-shape slide=2 shapeType=textbox text="Draft"')).toMatchObject({
+      shapeType: 'textBox',
+      text: 'Draft',
+    });
+    expect(shapeOf('/add-shape slide=2 shapeType=line connectorType=elbow')).toMatchObject({
+      shapeType: 'line',
+      connectorType: 'elbow',
+    });
+
+    const unknown = compile('/add-shape slide=2 shapeType=hexagram left=1 top=1');
+    expect(unknown).toEqual({ error: expect.stringContaining('cannot draw "hexagram"') });
+    expect(compile('/add-shape slide=2 shapeType=geometric')).toEqual({
+      error: expect.stringContaining('cannot draw ""'),
+    });
+  });
+
   it('compiles specialized /format-shape into typed PowerPoint shape formatting params', () => {
     const c = compileCommand(
       {
@@ -845,12 +1378,15 @@ describe('compileCommand', () => {
 describe('renderGrammarPrompt', () => {
   it('advertises set for Excel and not suggest', () => {
     const prompt = renderGrammarPrompt(excelManifest);
-    expect(prompt).toContain('set <A1> <value|=formula>');
+    expect(prompt).toContain('set <A1|A1:A50> <value|=formula>');
     expect(prompt).toContain('grid <range> = "a\\tb\\nc\\td"');
     expect(prompt).toContain('read [A1|NamedRange|document:<cursor>]');
     expect(prompt).toContain('context [incremental|inline-preferred');
     expect(prompt).not.toContain('suggest "old text"');
     expect(prompt).toContain('```cmd');
+    // UAT 2026-10-16 (PR #6): adding one column must not retype the table it sits beside. The
+    // live pane sends the compact bootstrap (renderCommandHelp without a topic).
+    expect(renderCommandHelp(excelManifest)).toContain('Never retype or move existing cells.');
   });
 
   it('advertises chart only when insert-chart is present', () => {
@@ -870,10 +1406,34 @@ describe('renderGrammarPrompt', () => {
     expect(prompt).toContain('chart <column|bar|line|pie|scatter|area>');
   });
 
+  it('lists every format key, their values and how to quote spaces', () => {
+    const prompt = renderGrammarPrompt({
+      ...excelManifest,
+      actuations: [
+        ...excelManifest.actuations,
+        { kind: 'format-cells', surface: 'excel', title: 'Format cells', reversible: false },
+      ],
+    });
+    for (const text of [
+      'fontColor=#RRGGBB',
+      'fontSize=6-96',
+      'align=left|center|right|justify',
+      'border=thin|medium|thick|none',
+      'borderColor=#RRGGBB',
+      'wrap=true|false',
+      'autofit=true',
+      'numberFormat="',
+      'not JSON',
+    ]) {
+      expect(prompt).toContain(text);
+    }
+  });
+
   it('advertises suggest for Word and not set', () => {
     const prompt = renderGrammarPrompt(wordManifest);
     expect(prompt).toContain('suggest "old text" => "new text"');
     expect(prompt).not.toContain('set <A1');
+    expect(renderCommandHelp(wordManifest)).not.toContain('Never retype or move existing cells.');
   });
 
   it('advertises specialized slash operations only when the surface manifest includes them', () => {
@@ -891,8 +1451,8 @@ describe('renderGrammarPrompt', () => {
         },
       ],
     });
-    expect(prompt).toContain('/insert-text [key=value ...]');
-    expect(prompt).toContain('/fill-content-control [key=value ...]');
+    expect(prompt).toContain('/insert-text text="..."');
+    expect(prompt).toContain('/fill-content-control contentControlId=<id> text="..."');
   });
 
   it('uses registry metadata for advanced slash operations once advertised', () => {
@@ -1194,6 +1754,23 @@ function loopEvents(events: Array<SseEvent | CommandLoopEvent>): CommandLoopEven
 }
 
 /* ───────────────────────── the loop ───────────────────────────────────── */
+
+describe('AssistSession.runCommands — done after failed commands', () => {
+  it('does not finish on a done batched after failed commands; the errors go back to the model', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      '```cmd\nformat Sales!A1:C1 {"wibble": 1}\ndone\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await collect(session.runCommands('make the header look professional'));
+
+    expect(queries.length).toBeGreaterThanOrEqual(2);
+    expect(queries[1]).toContain('not JSON');
+    expect(queries[1]).toContain('done was ignored');
+  });
+});
 
 describe('AssistSession.runCommands — the bounded command loop', () => {
   it('read-many: batches all reads in a turn, then terminates on done', async () => {
@@ -1814,6 +2391,48 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     expect(bridge.applied).toHaveLength(0);
   });
 
+  it('completes when writes capped in one turn are applied in the next', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient([
+      '```cmd\nset A1 1\nset A2 2\nset A3 3\n```',
+      '```cmd\nset A3 3\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+    await collect(
+      session.runCommands('write three', { approveWrite: () => true, maxWritesPerTurn: 2 }),
+    );
+    expect(bridge.applied).toHaveLength(3);
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('names the exact held-back command so the model can resend it', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client, queries } = fakeClient([
+      '```cmd\nset A1 1\nset A2 2\nformat Sales!A1:C1 bold=true fill=#1F4E79\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+    await collect(
+      session.runCommands('write and format', { approveWrite: () => true, maxWritesPerTurn: 2 }),
+    );
+    expect(queries[1]).toContain('resend exactly: format Sales!A1:C1 bold=true fill=#1F4E79');
+  });
+
+  it('stays incomplete when a capped write is never sent again', async () => {
+    const bridge = new FakeExcelBridge();
+    const { client } = fakeClient([
+      '```cmd\nset A1 1\nset A2 2\nset A3 3\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+    await collect(
+      session.runCommands('write three', { approveWrite: () => true, maxWritesPerTurn: 2 }),
+    );
+    expect(bridge.applied).toHaveLength(2);
+    expect(session.executions.list().at(-1)?.status).not.toBe('completed');
+  });
+
   it('write-one cap: only maxWritesPerTurn writes actuate in one block', async () => {
     const bridge = new FakeExcelBridge();
     const { client } = fakeClient([
@@ -1826,6 +2445,41 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     );
     expect(bridge.applied).toHaveLength(2); // the third write is capped, not actuated
     expect(loopEvents(events).some((e) => e.type === 'capped')).toBe(true);
+  });
+
+  it('applies up to 30 writes in one block by default; the 31st is capped', async () => {
+    const bridge = new FakeExcelBridge();
+    const sets = Array.from({ length: 31 }, (_, i) => `set A${i + 1} ${i + 1}`).join('\n');
+    const { client } = fakeClient(['```cmd\n' + sets + '\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, { unit });
+    const events = await collect(
+      session.runCommands('write 31 cells', { approveWrite: () => true }),
+    );
+    expect(bridge.applied).toHaveLength(30);
+    expect(loopEvents(events).find((e) => e.type === 'capped')).toMatchObject({
+      reason: 'write cap 30/turn',
+    });
+  });
+
+  it('keeps the share cap at 8 per task when the write cap is the default 30', async () => {
+    const bridge = new FakeExcelBridge();
+    const { sharedStore, shared } = fakeSharedStore();
+    const shares = Array.from({ length: 9 }, (_, i) => `share s${i}.txt = read Sales!C2:C7`).join(
+      '\n',
+    );
+    const { client } = fakeClient(['```cmd\n' + shares + '\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      sharedStore,
+      estateWritesEnabled: true,
+    });
+    const events = await collect(
+      session.runCommands('Publish data cross-surface', { approveShare: () => true }),
+    );
+    expect(shared.size).toBe(16); // 8 shares, each with its provenance file
+    expect(loopEvents(events).find((e) => e.type === 'capped')).toMatchObject({
+      reason: 'share cap 8/task',
+    });
   });
 
   it('suggest → tracked-change with target.matchText (Word)', async () => {
@@ -1920,8 +2574,10 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
 
   it('stops at maxTurns without done (exhausted)', async () => {
     const bridge = new FakeExcelBridge();
-    // Every turn emits a read, never done.
-    const { client } = fakeClient(Array(20).fill('```cmd\noutline\n```'));
+    // Every turn emits a different read, never done (an identical one stops earlier: no progress).
+    const { client } = fakeClient(
+      Array.from({ length: 20 }, (_, i) => `\`\`\`cmd\nread Sheet1!A${i + 1}\n\`\`\``),
+    );
     const session = new AssistSession(bridge, client, { unit });
 
     const events = await collect(session.runCommands('loop forever', { maxTurns: 3 }));

@@ -57,7 +57,7 @@
 {"name": "context-unknown-hint", "input": "context run-python-now", "expect": {"error_substring": "unknown context hint"}}
 {"name": "suggest-one-string", "input": "suggest \"only one\"", "expect": {"error_substring": "two quoted strings"}}
 {"name": "outline-trailing-junk", "input": "outline Sales", "expect": {"error_substring": "takes no arguments"}}
-{"name": "done-trailing-junk", "input": "done now please", "expect": {"error_substring": "takes no arguments"}}
+{"name": "done-explanatory-tail", "input": "done now please", "expect": {"verbs": ["done"]}}
 {"name": "help-targeted", "input": "help shape", "expect": {"verbs": ["help"]}}
 {"name": "block-each-flat", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2\ndone\n```", "expect": {"verbs": ["read", "set", "done"], "complete": true}}
 {"name": "block-unclosed-fence", "input": "```cmd\nread Sales!C2:C7\nset Sales!F2 =C2-D2", "expect": {"verbs": ["read", "set"], "complete": false}}
@@ -65,6 +65,9 @@
 {"name": "block-clean-done-complete", "input": "```cmd\nread Sales!C2:C7\ndone\n```", "expect": {"verbs": ["read", "done"], "complete": true}}
 {"name": "block-no-done-not-complete", "input": "```cmd\nread Sales!C2:C7\n```", "expect": {"verbs": ["read"], "complete": false}}
 {"name": "block-no-fence", "input": "I will read the sheet and compute totals.", "expect": {"no_block": true}}
+{"name": "verified-leading-prose", "input": "Explanation\n```cmd\nset A1 5\nfinish when=verified\n```", "expect": {"verbs": ["set"], "has_error": false, "complete": false}}
+{"name": "verified-final-unclosed", "input": "```cmd\nset A1 5\nfinish when=verified", "expect": {"verbs": ["set"], "has_error": false, "complete": false}}
+{"name": "verified-embedded-fence", "input": "```cmd\nset A1 5\nfinish when=verified\n```\nSee ```this``` note", "expect": {"verbs": [], "has_error": true, "complete": false}}
 {"name": "invoke-insert-image", "input": "/insert-image base64=AAA alt=\"Q3 chart\"", "expect": {"verbs": ["invoke"]}}
 {"name": "invoke-fill-cc", "input": "/fill-content-control id=Title text=\"Q3 Report\"", "expect": {"verbs": ["invoke"]}}
 {"name": "invoke-unknown-kind", "input": "/insert-imag base64=AAA", "expect": {"error_substring": "unknown capability"}}

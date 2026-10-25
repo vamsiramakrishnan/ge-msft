@@ -299,7 +299,7 @@ done
     assert analyze('let $x = read S!A1:C2\nanalyze {"kind":"inspect","id":"$x"}')["errors"]
     assert not analyze(bound_read + '\nanalyze {"kind":"query","inputs":["$source"],"sql":"SELECT \'$literal\' FROM table1"}')["errors"]
     assert analyze(program + "\nread A1")["errors"]
-    assert analyze("```cmd\n" + program)["errors"]
+    assert analyze("```cmd\n" + program + "\nread A1")["errors"]
     assert analyze("finish when=applied")["errors"]
     assert analyze('let $bad = analyze {"kind":"materialize"}')["errors"]
     assert analyze(bound_read + "\n" + bound_read)["errors"]
@@ -309,8 +309,19 @@ done
     assert not analyze("LET $value = read S!A1:C2")["errors"]
     verified = "```cmd\n" + program + "\n```"
     plain = "```cmd\nset A1 6\n```"
+    # Match parseProgramBlock: one verified program may have surrounding prose, or omit its
+    # closing fence only when the response ends exactly at finish. Neither changes its effects.
+    expected = analyze(program)
+    for response in ("Explanation\n" + verified, verified + "\nExplanation",
+                     verified + "\n# comment", "```cmd\n" + program):
+        valid = analyze(response)
+        assert not valid["errors"] and valid["effects"] == expected["effects"]
+        assert valid["bindings"] == expected["bindings"] and valid["reads"] == expected["reads"]
+        assert valid["requestedCompletion"] == "verified"  # request, never a runtime proof
+        lines, notes = normalize(response)
+        assert lines == program.splitlines() and notes
     for response in (verified + "\n" + plain, plain + "\n" + verified,
-                     "Explanation\n" + verified, verified + "\nExplanation"):
+                     verified + "\nSee ```this``` note", "```cmd\n" + program + "\nread A1"):
         invalid = analyze(response)
         assert invalid["errors"] and not invalid["effects"]
         lines, notes = normalize(response)

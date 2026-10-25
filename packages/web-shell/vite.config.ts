@@ -1,4 +1,6 @@
+import { brandAssets } from './brand-assets.js';
 import { computeAssets } from './compute-assets.js';
+import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -12,6 +14,25 @@ const hostFromUrl = (value: string | undefined): string[] => {
     return [value.replace(/^https?:\/\//, '').replace(/\/.*$/, '')].filter(Boolean);
   }
 };
+
+/**
+ * Which build a pasted diagnostic came from: the commit when git is available (a Docker build
+ * may have no .git; GE_BUILD_COMMIT overrides) and the build time, which is always known.
+ */
+function buildId(env: Record<string, string | undefined>): string {
+  let commit = env.GE_BUILD_COMMIT;
+  if (!commit) {
+    try {
+      commit = execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: 'pipe' })
+        .toString()
+        .trim();
+    } catch {
+      commit = undefined;
+    }
+  }
+  const builtAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return [commit, builtAt].filter(Boolean).join(' ');
+}
 
 /**
  * Build the runnable add-in shell. Its entry HTML pages are:
@@ -37,7 +58,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     root: __dirname,
-    plugins: [computeAssets(), react(), ...(useHttps ? [basicSsl()] : [])],
+    define: { __BUILD_ID__: JSON.stringify(buildId(env)) },
+    plugins: [computeAssets(), ...brandAssets(), react(), ...(useHttps ? [basicSsl()] : [])],
     server: {
       https: useHttps ? true : undefined,
       port,

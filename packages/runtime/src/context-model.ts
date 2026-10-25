@@ -1,4 +1,4 @@
-import type { ResolvedContext, Surface } from '@ge/contracts';
+import { assessActuationResult, type ResolvedContext, type Surface } from '@ge/contracts';
 import { eventOrigin, type HostEvent } from '@ge/triggers';
 
 /**
@@ -31,6 +31,8 @@ const MAX_NOTES = 40;
 
 interface Note {
   text: string;
+  /** A settled write outcome (`post-actuation`), as opposed to an event in the host. */
+  actuation?: boolean;
   /** True once this note has been committed to the session (resident server-side). */
   sent: boolean;
   /** The version at which this note was added (monotonic), so commits can be version-scoped. */
@@ -78,6 +80,8 @@ export class ContextModel {
             : `Attempted ${event.request.kind} (${event.request.changeId}) — ${
                 r.error?.code ?? 'failed'
               }`,
+          // An uncertain outcome stays in every brief: a later task must know it may have landed.
+          { actuation: assessActuationResult(r) !== 'uncertain' },
         );
         return { commit: 'fold' };
       }
@@ -97,23 +101,29 @@ export class ContextModel {
    * consecutive duplicate; caps the log (dropping the oldest already-sent note first) so the
    * brief stays token-bounded.
    */
-  note(text: string): void {
+  note(text: string, opts: { actuation?: boolean } = {}): void {
     const t = text.trim();
     if (!t) return;
     const last = this.notes[this.notes.length - 1];
     if (last && last.text === t) return;
     this._version++;
-    this.notes.push({ text: t, sent: false, seq: this._version });
+    this.notes.push({
+      text: t,
+      sent: false,
+      seq: this._version,
+      ...(opts.actuation ? { actuation: true } : {}),
+    });
     this.prune();
   }
 
   /**
    * The brief to commit: the not-yet-sent notes rendered as a single data-framed text part.
    * Returns undefined when there is nothing pending. Framed explicitly as data, never
-   * instructions (the engine's Model Armor screens it server-side regardless).
+   * instructions (the engine's Model Armor screens it server-side regardless). `withoutActuations`
+   * leaves out write outcomes, for requests that get their own task's results another way.
    */
-  pendingBrief(): ContextBrief | undefined {
-    const pending = this.notes.filter((n) => !n.sent);
+  pendingBrief(opts: { withoutActuations?: boolean } = {}): ContextBrief | undefined {
+    const pending = this.notes.filter((n) => !n.sent && !(opts.withoutActuations && n.actuation));
     if (pending.length === 0) return undefined;
     const body = pending.map((n) => `- ${n.text}`).join('\n');
     const entry: ResolvedContext = {

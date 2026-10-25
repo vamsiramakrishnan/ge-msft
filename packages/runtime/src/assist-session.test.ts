@@ -11,11 +11,19 @@ import type {
 import { asChangeId, asSessionId } from '@ge/contracts';
 import { StreamAssistClient } from '@ge/gemini-client';
 import type { DocStateSnapshot } from '@ge/contracts';
-import { AssistSession, DOC_STATE_REF_ID, READ_REF_PREFIX } from './assist-session.js';
+import {
+  AssistSession,
+  HOST_READ_TIMEOUT_MS,
+  DOC_STATE_REF_ID,
+  READ_REF_PREFIX,
+} from './assist-session.js';
 import type { CommandLoopEvent, PlanEffect } from './assist-session.js';
 import type { ReadIntent } from './command-protocol.js';
 import { BRIEF_REF_ID } from './context-model.js';
 import type { DocBridge } from './bridge.js';
+import { RuntimeHooks } from './hooks.js';
+import { completedEffectsExtension, installRuntimeExtensions } from './extensions.js';
+import { TriggerRegistry } from '@ge/triggers';
 
 /** A typed probe onto `AssistSession`'s private `runReadIntent` — avoids `any` in DocFs-verb tests. */
 interface ReadIntentProbe {
@@ -217,6 +225,116 @@ describe('AssistSession — the reusable loop', () => {
     expect(session.context.size).toBe(0);
   });
 
+  it('detaches every chunk a PowerPoint ref resolved to, and replaces stale chunks on re-attach', async () => {
+    let chunks = 3;
+    const deck: ContextRef = {
+      id: 'pp:deck',
+      kind: 'document',
+      surface: 'powerpoint',
+      title: 'Whole deck',
+    };
+    const bridge: DocBridge = {
+      surface: 'powerpoint',
+      getCapabilities: () => ({
+        surface: 'powerpoint',
+        contextKinds: ['document'],
+        actuations: [],
+      }),
+      listContext: () => Promise.resolve([deck]),
+      resolveContext: (ref) =>
+        Promise.resolve(
+          Array.from({ length: chunks }, (_, i) => ({
+            ref: { ...ref, id: `${ref.id}#${i}`, kind: 'paragraph' as const },
+            value: { as: 'text' as const, text: `Slide ${i + 1}`, mimeType: 'text/markdown' },
+          })),
+        ),
+      actuate: (request) =>
+        Promise.resolve({ ok: true, changeId: request.changeId, kind: request.kind }),
+    };
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.attachRef(deck);
+    expect(session.context.list().map((c) => c.ref.id)).toEqual([
+      'pp:deck#0',
+      'pp:deck#1',
+      'pp:deck#2',
+    ]);
+
+    // The deck shrank: re-attaching must not leave the old third chunk behind.
+    chunks = 2;
+    await session.attachRef(deck);
+    expect(session.context.list().map((c) => c.ref.id)).toEqual(['pp:deck#0', 'pp:deck#1']);
+
+    session.detach('pp:deck');
+    expect(session.context.size).toBe(0);
+
+    // The auto-attach path records its chunks the same way.
+    await session.attachContext(['document']);
+    expect(session.context.size).toBe(2);
+    session.detach('pp:deck');
+    expect(session.context.size).toBe(0);
+  });
+
+  it('detaches every chunk on any surface (Word whole document)', async () => {
+    const doc: ContextRef = {
+      id: 'word:document',
+      kind: 'document',
+      surface: 'word',
+      title: 'Whole document',
+    };
+    const bridge = new FakeBridge();
+    bridge.resolveContext = (ref) =>
+      Promise.resolve(
+        [0, 1].map((i) => ({
+          ref: { ...ref, id: `${ref.id}#${i}`, kind: 'paragraph' as const },
+          value: { as: 'text' as const, text: `Section ${i + 1}`, mimeType: 'text/markdown' },
+        })),
+      );
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.attachRef(doc);
+    expect(session.context.size).toBe(2);
+    session.detach('word:document');
+    expect(session.context.size).toBe(0);
+  });
+
+  it('keeps a part another attached ref still claims (refs resolving to the same item)', async () => {
+    // Outlook-style: every ref resolves to the one active mail item, under the same id.
+    const mailItem: ContextRef = {
+      id: 'ol:item',
+      kind: 'mail-item',
+      surface: 'outlook',
+      title: 'Mail',
+    };
+    const thread: ContextRef = {
+      id: 'ol:thread',
+      kind: 'mail-thread',
+      surface: 'outlook',
+      title: 'Thread',
+    };
+    const bridge = new FakeBridge();
+    bridge.resolveContext = () =>
+      Promise.resolve([
+        {
+          ref: { id: 'ol:item#0', kind: 'paragraph', surface: 'outlook', title: 'Mail' },
+          value: { as: 'text', text: 'Quarterly numbers attached.', mimeType: 'text/markdown' },
+        },
+      ]);
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await session.attachRef(mailItem);
+    await session.attachRef(thread);
+    expect(session.context.size).toBe(1);
+
+    session.detach('ol:item');
+    expect(session.context.list().map((c) => c.ref.id)).toEqual(['ol:item#0']);
+    session.detach('ol:thread');
+    expect(session.context.size).toBe(0);
+  });
+
   it('resumes a prior session id (cross-surface / reopen)', () => {
     const bridge = new FakeBridge();
     const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
@@ -227,11 +345,26 @@ describe('AssistSession — the reusable loop', () => {
     expect(session.sessionId).toBe('sess_prior');
   });
 
+  it('starts a new conversation: the session id is dropped until the next turn opens one', () => {
+    const bridge = new FakeBridge();
+    const client = new StreamAssistClient(tokens, cfg, geminiFetch() as never);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      resumeSessionId: asSessionId('sess_prior'),
+    });
+    session.startNewSession();
+    expect(session.sessionId).toBeUndefined();
+  });
+
   it('threads the abort signal through to the transport fetch', async () => {
     const bridge = new FakeBridge();
     let seenSignal: AbortSignal | undefined;
+    const ac = new AbortController();
+    let abortedInFlight = false;
     const fetchImpl = vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
       seenSignal = init?.signal;
+      ac.abort();
+      abortedInFlight = init?.signal?.aborted === true;
       return new Response(
         streamOf([
           JSON.stringify([
@@ -249,10 +382,12 @@ describe('AssistSession — the reusable loop', () => {
     });
     const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
     const session = new AssistSession(bridge, client, { unit });
-    const ac = new AbortController();
 
-    await collect(session.ask('q', { signal: ac.signal }));
-    expect(seenSignal).toBe(ac.signal);
+    await collect(session.ask('q', { signal: ac.signal })).catch(() => undefined); // cancelled
+    // The transport links the caller's signal with its idle watchdog: a cancel while the request
+    // is in flight reaches the fetch signal.
+    expect(seenSignal).toBeDefined();
+    expect(abortedInFlight).toBe(true);
   });
 
   it('does NOT mark the folded brief resident when the turn is aborted mid-stream (re-folds next turn)', async () => {
@@ -606,7 +741,10 @@ describe('AssistSession — ADR-0003 context loop (doc_state + lazy read)', () =
 
     // The turn still streamed (answer present), just without the ambient/read parts.
     expect(events.map((e) => e.type)).toContain('token');
-    expect(partTexts(bodies[0]!).some((t) => t.startsWith('<doc_state'))).toBe(false);
+    // The failed snapshot is replaced by an explicit "could not be read" note, never left out.
+    expect(partTexts(bodies[0]!).filter((t) => t.startsWith('<doc_state'))).toEqual([
+      expect.stringContaining('<doc_state unavailable="true">'),
+    ]);
     expect(partTexts(bodies[0]!).some((t) => t.includes('read slice'))).toBe(false);
     expect(session.context.size).toBe(0);
   });
@@ -1271,6 +1409,23 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(writes.every((w) => w.result.error?.code === 'plan_unapproved')).toBe(true);
   });
 
+  it('a rejected plan ends the task: no further model turn', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\nset A2 2\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('one write', { approvePlan: () => false }),
+    );
+
+    expect(events.filter((e) => e.type === 'turn-start')).toHaveLength(1);
+    expect(bridge.applied).toHaveLength(0);
+    expect(writeResults(events)[0]?.result.error?.code).toBe('plan_unapproved');
+    // Nothing landed, so the task is not reported as done.
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+  });
+
   it('approve → every effect is gated + actuated (one approval for the whole set)', async () => {
     const bridge = new ComposeBridge();
     const { fetch } = scriptedFetch([
@@ -1294,7 +1449,7 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(bridge.applied).toHaveLength(3);
   });
 
-  it('does not accept done batched after a write in the same command block', async () => {
+  it('completes a done batched after writes once every write lands', async () => {
     const bridge = new ComposeBridge();
     const { fetch } = scriptedFetch([
       '```cmd\nchart bar \'Project schedule\'!B5:D30 title="Task Progress"\ndone\n```',
@@ -1320,8 +1475,578 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
       },
     });
     expect(bridge.applied).toHaveLength(1);
+    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 1)).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  it('ignores done batched after lines that failed, so the model sees the errors and retries', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\nformat A1 {"bold":\ndone\n```', // malformed JSON format, then done
+      '```cmd\nset A1 1\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('format', { approvePlan: () => true }));
+    expect(bodies.length).toBeGreaterThan(1); // turn 1's done did not end the task
+    expect(JSON.stringify(bodies[1])).toContain('done was ignored');
+    expect(bridge.applied).toHaveLength(1);
+    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 3)).toBe(true);
+  });
+
+  it('keeps going when a write batched with done does not land', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\nset A2 2\ndone\n```',
+      '```cmd\nset A2 2\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(
+      session.runCommands('two writes', { approvePlan: () => true, maxWritesPerTurn: 1 }),
+    );
+
+    expect(bridge.applied).toHaveLength(2); // A2 was capped in turn 1, then retried in turn 2
     expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 1)).toBe(false);
-    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 2)).toBe(true);
+    expect(events.some((e) => e.type === 'done' && 'turn' in e && e.turn === 3)).toBe(true);
+  });
+
+  it('stops sending the selection in <doc_state> once the task has changed the document', async () => {
+    class SelectionBridge extends ComposeBridge {
+      captureDocState(): Promise<DocStateSnapshot | undefined> {
+        return Promise.resolve({
+          ...fakeSnapshot(),
+          selection: { kind: 'selection', title: 'Selection', preview: 'Rewrite me please' },
+        });
+      }
+    }
+    const bridge = new SelectionBridge();
+    const { fetch, bodies } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit });
+
+    await collectLoop(session.runCommands('rewrite my selection', { approvePlan: () => true }));
+    expect(bridge.applied).toHaveLength(1);
+    const sent = (i: number): string => JSON.stringify(bodies[i]);
+    expect(sent(0)).toContain('Rewrite me please'); // before the write: the user's selection
+    expect(sent(1)).toContain('doc_state'); // the snapshot is still sent after the write…
+    expect(sent(1)).not.toContain('Rewrite me please'); // …without the selection, so no second rewrite
+  });
+
+  it.each(['compact', 'full'] as const)(
+    'permits engine follow-ups in %s disclosure and fence repair without executing them',
+    async (commandDisclosure) => {
+      const bridge = new ComposeBridge();
+      const { fetch, bodies } = scriptedFetch([
+        'I will update the cell.',
+        '```cmd\nset A1 1\ndone\n```\n\n```suggested_questions\n["set A2 99"]\n```',
+      ]);
+      const client = new StreamAssistClient(tokens, cfg, fetch);
+      const session = new AssistSession(bridge, client, {
+        unit,
+        commandDisclosure,
+        context: { docState: false },
+      });
+      const approve = vi.fn(() => true);
+      const events = await collectLoop(
+        session.runCommands('Set the cell', { approvePlan: approve }),
+      );
+      const initial = JSON.stringify(bodies[0]);
+      const repair = JSON.stringify(bodies[1]);
+      expect(initial).toContain('A suggested_questions block after it is fine');
+      expect(initial).not.toMatch(/any other fenced block|then STOP/);
+      expect(repair).toContain('A suggested_questions block after it is fine');
+      expect(repair).not.toContain('and nothing else');
+      expect(bridge.applied).toHaveLength(1);
+      expect(bridge.applied[0]?.params.target?.range).toBe('A1');
+      expect(approve).toHaveBeenCalledTimes(1);
+      expect(events.some((event) => event.type === 'done')).toBe(true);
+      session.dispose();
+    },
+  );
+
+  it('finishes when the model answers in prose after a change has landed (no re-prompt loop)', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      'Done — I replaced it across the document.',
+      '```cmd\nset A2 2\n```', // must never be requested
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('replace', { approvePlan: () => true }));
+    expect(bridge.applied).toHaveLength(1);
+    expect(bodies).toHaveLength(2);
+    expect(events.some((e) => e.type === 'no-fence')).toBe(false);
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('a redundant follow-up that matches nothing after a success does not mark the task incomplete', async () => {
+    class AfterwardsBridge extends ComposeBridge {
+      private calls = 0;
+      override actuate(request: ActuationRequest): Promise<ActuationResult> {
+        this.calls += 1;
+        if (this.calls === 2) {
+          return Promise.resolve({
+            ok: false,
+            changeId: request.changeId,
+            kind: request.kind,
+            error: { code: 'no_hits', message: 'nothing matched' },
+          });
+        }
+        return super.actuate(request);
+      }
+    }
+    const bridge = new AfterwardsBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nset A2 2\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('a clean failure retried successfully by a same-kind write does not mark the task incomplete', async () => {
+    class FlakyBridge extends ComposeBridge {
+      private calls = 0;
+      override actuate(request: ActuationRequest): Promise<ActuationResult> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return Promise.resolve({
+            ok: false,
+            changeId: request.changeId,
+            kind: request.kind,
+            error: { code: 'no_hits', message: 'nothing matched' },
+          });
+        }
+        return super.actuate(request);
+      }
+    }
+    const bridge = new FlakyBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nset A1 2\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  class RejectFirstBridge extends ComposeBridge {
+    private calls = 0;
+    constructor(private readonly first: Partial<ActuationResult>) {
+      super();
+    }
+    override actuate(request: ActuationRequest): Promise<ActuationResult> {
+      this.calls += 1;
+      if (this.calls === 1)
+        return Promise.resolve({
+          ok: false,
+          changeId: request.changeId,
+          kind: request.kind,
+          error: { code: 'no_compose', message: 'not a draft' },
+          ...this.first,
+        });
+      return super.actuate(request);
+    }
+  }
+
+  it('a clean failure recovered by a later different-kind write, then done, completes the task', async () => {
+    const bridge = new RejectFirstBridge({});
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(bridge.applied.map((r) => r.kind)).toEqual(['insert-chart']);
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  /** A command loop where turn 1 writes (the bridge answers with `receipt`) and turn 2 is blocked by
+   * Model Armor, run with the production verify guard installed. */
+  async function blockedAfterWrite(receipt: Partial<ActuationResult>) {
+    class ReceiptBridge extends ComposeBridge {
+      override actuate(request: ActuationRequest): Promise<ActuationResult> {
+        return Promise.resolve({
+          changeId: request.changeId,
+          kind: request.kind,
+          ok: false,
+          ...receipt,
+        } as ActuationResult);
+      }
+    }
+    let call = 0;
+    const fetchImpl = vi.fn(async () => {
+      call += 1;
+      const chunk =
+        call === 1
+          ? {
+              sessionInfo: { session: 'sess_1' },
+              answer: {
+                state: 'SUCCEEDED',
+                replies: [{ groundedContent: { content: { text: '```cmd\nset A1 1\n```' } } }],
+              },
+            }
+          : { answer: { customerPolicyEnforcementResult: { verdict: 'BLOCK' } } };
+      return new Response(streamOf([JSON.stringify([chunk])]), { status: 200 });
+    });
+    const hooks = new RuntimeHooks();
+    installRuntimeExtensions([completedEffectsExtension], {
+      hooks,
+      triggers: new TriggerRegistry(),
+    });
+    const client = new StreamAssistClient(tokens, cfg, fetchImpl as unknown as typeof fetch);
+    const session = new AssistSession(new ReceiptBridge(), client, {
+      unit,
+      hooks,
+      context: { docState: false },
+    });
+    return { session, run: collectLoop(session.runCommands('write', { approvePlan: () => true })) };
+  }
+
+  it('a Model Armor block after a clean failed write ends blocked, keeping the policy message', async () => {
+    const { session, run } = await blockedAfterWrite({
+      error: { code: 'no_hits', message: 'nothing matched' },
+    });
+    const events = await run; // the generic "did not complete" guard does not replace the block
+    expect(events.some((e) => e.type === 'policy' && e.verdict === 'block')).toBe(true);
+    const record = session.executions.list().at(-1);
+    expect(record?.status).toBe('blocked');
+    expect(record?.effects).toHaveLength(1);
+  });
+
+  it('a Model Armor block after an uncertain write still warns that changes may have applied', async () => {
+    const { run } = await blockedAfterWrite({
+      recoveryPending: true,
+      error: { code: 'outcome_unknown', message: 'host did not confirm' },
+    });
+    await expect(run).rejects.toThrow(/may already have applied/);
+  });
+
+  it('a declined write next to one that landed still warns that changes may have applied', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\nset A2 2\n```']);
+    const hooks = new RuntimeHooks();
+    installRuntimeExtensions([completedEffectsExtension], {
+      hooks,
+      triggers: new TriggerRegistry(),
+    });
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, {
+      unit,
+      hooks,
+      context: { docState: false },
+    });
+    let approvals = 0;
+    const run = collectLoop(
+      session.runCommands('write two cells', { approvePlan: () => ++approvals === 1 }),
+    );
+
+    await expect(run).rejects.toThrow(/may already have applied/);
+    expect(bridge.applied).toHaveLength(1);
+    expect(session.executions.list().at(-1)?.status).not.toBe('cancelled');
+  });
+
+  it('a scheme-like selector does not land on an object titled with its tail', async () => {
+    class TitledBridge extends ComposeBridge {
+      resolved = 0;
+      override listContext(): Promise<ContextRef[]> {
+        return Promise.resolve([{ id: 'xl:tbl-1', kind: 'table', surface: 'excel', title: 'C' }]);
+      }
+      override resolveContext(): Promise<ResolvedContext[]> {
+        this.resolved += 1;
+        return Promise.resolve([]);
+      }
+    }
+    const bridge = new TitledBridge();
+    const { fetch } = scriptedFetch(['```cmd\ninspect A:C\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    await collectLoop(session.runCommands('look at A:C', { approvePlan: () => true }));
+
+    expect(bridge.resolved).toBe(0);
+  });
+
+  it('refuses to resend a write whose earlier identical attempt has an unknown outcome', async () => {
+    class UncertainBridge extends ComposeBridge {
+      calls = 0;
+      override actuate(request: ActuationRequest): Promise<ActuationResult> {
+        this.calls += 1;
+        return Promise.resolve({
+          ok: false,
+          changeId: request.changeId,
+          kind: request.kind,
+          recoveryPending: true,
+          error: { code: 'outcome_unknown', message: 'host did not confirm' },
+        });
+      }
+    }
+    const bridge = new UncertainBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nset A1 1\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    // The replay never reaches the host: a second attempt could duplicate a write that did land.
+    expect(bridge.calls).toBe(1);
+    const refused = events.find(
+      (e) => e.type === 'command' && 'error' in e.compiled && /unknown/.test(e.compiled.error),
+    );
+    expect(refused).toBeDefined();
+  });
+
+  it('a clean failure followed only by an EARLIER different-kind success stays incomplete', async () => {
+    class RejectSecondBridge extends ComposeBridge {
+      private calls = 0;
+      override actuate(request: ActuationRequest): Promise<ActuationResult> {
+        this.calls += 1;
+        if (this.calls === 2)
+          return Promise.resolve({
+            ok: false,
+            changeId: request.changeId,
+            kind: request.kind,
+            error: { code: 'no_hits', message: 'nothing matched' },
+          });
+        return super.actuate(request);
+      }
+    }
+    const bridge = new RejectSecondBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('incomplete');
+  });
+
+  it('an invalid-request rejection (no_format) recovered by another write later completes', async () => {
+    // Live 2026-10-02: format-shape → no_format, then set-shape-text applied, then "Task blocked".
+    const bridge = new RejectFirstBridge({
+      error: { code: 'no_format', message: 'no recognized format property' },
+    });
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('a text box refused over empty placeholders is settled by a later write of another kind', async () => {
+    // Live 2026-10-16: /add-shape textBox → use_placeholders (nothing written), then `shape` into
+    // the placeholders applied — the slide was right but the card said "That didn't finish".
+    const bridge = new RejectFirstBridge({
+      error: { code: 'use_placeholders', message: 'write into the empty placeholders' },
+    });
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('a document-changed conflict (target_conflict) is not excused by another kind', async () => {
+    const bridge = new RejectFirstBridge({
+      error: { code: 'target_conflict', message: 'the target changed' },
+    });
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).not.toBe('completed');
+  });
+
+  it('a guardrail block is never excused by a later different-kind success', async () => {
+    const bridge = new RejectFirstBridge({
+      error: { code: 'unsafe_formula', message: 'blocked formula' },
+    });
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('incomplete');
+  });
+
+  it('a different-kind sibling in the SAME turn does not excuse a wrong-target failure', async () => {
+    const bridge = new RejectFirstBridge({});
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).toBe('incomplete');
+  });
+
+  it('an uncertain outcome is never excused by a later different-kind success', async () => {
+    const bridge = new RejectFirstBridge({
+      recoveryPending: true,
+      error: { code: 'outcome_unknown', message: 'receipt lost' },
+    });
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nchart bar A1:B5\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(session.executions.list().at(-1)?.status).not.toBe('completed');
+  });
+
+  it('a read-only question ends with the answer `done "<answer>"` carries', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nread A1:B3\n```',
+      '```cmd\ndone "The last row is Samarth, Pro"\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('read the last row'));
+    const done = events.find((e) => e.type === 'done' && 'turn' in e);
+    expect(done).toMatchObject({ message: 'The last row is Samarth, Pro' });
+    expect(bridge.applied).toHaveLength(0);
+    expect(session.executions.list().at(-1)?.status).toBe('completed');
+  });
+
+  it('a host snapshot that never settles is skipped after the read timeout, not a frozen task', async () => {
+    // Live 2026-10-02: PowerPoint for the web stalled reading the deck right after insert-slide.
+    vi.useFakeTimers();
+    try {
+      class StallingBridge extends ComposeBridge {
+        captureDocState(): Promise<DocStateSnapshot | undefined> {
+          return new Promise(() => {});
+        }
+      }
+      const bridge = new StallingBridge();
+      const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
+      const client = new StreamAssistClient(tokens, cfg, fetch);
+      const session = new AssistSession(bridge, client, { unit });
+      let settled = false;
+      const run = collectLoop(session.runCommands('write', { approvePlan: () => true })).finally(
+        () => {
+          settled = true;
+        },
+      );
+      // Step the clock until the task settles: one big advance can run before the stalled read
+      // starts on a loaded machine, and then its timer is never reached (flaked under full load).
+      for (let i = 0; i < 30 && !settled; i++)
+        await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS / 4);
+      await run;
+      expect(bridge.applied).toHaveLength(1);
+      expect(session.executions.list().at(-1)?.status).toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a `read <selector>` the host never answers gives up after the read timeout (live 2026-10-16)', async () => {
+    // Live: `read slide:2` waited ~24 min on a stalled PowerPoint for the web; only `context:*`
+    // reads were bounded.
+    vi.useFakeTimers();
+    try {
+      class StallingRangeBridge extends ComposeBridge {
+        override readRange(): Promise<never> {
+          return new Promise(() => {});
+        }
+      }
+      const bridge = new StallingRangeBridge();
+      const { fetch } = scriptedFetch(['```cmd\nread A1:B3\n```', '```cmd\ndone "n/a"\n```']);
+      const client = new StreamAssistClient(tokens, cfg, fetch);
+      const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+      let settled = false;
+      const run = collectLoop(session.runCommands('read the table')).finally(() => {
+        settled = true;
+      });
+      for (let i = 0; i < 20 && !settled; i++)
+        await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS / 4);
+      const events = await run;
+      const read = events.find((e) => e.type === 'read-result');
+      expect(JSON.stringify(read)).toContain('did not answer read A1:B3');
+      expect(events.some((e) => e.type === 'done' && 'turn' in e)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to re-apply a write identical to one that already landed in the task', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\nset A1 1\n```',
+      '```cmd\nset A1 1\n```', // the model "retries" a write that already succeeded
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
+    expect(bridge.applied).toHaveLength(1);
+    const refused = events.find(
+      (e) => e.type === 'command' && 'compiled' in e && 'error' in e.compiled && e.turn === 2,
+    ) as Extract<CommandLoopEvent, { type: 'command' }> | undefined;
+    expect(refused?.compiled).toMatchObject({ error: expect.stringContaining('already applied') });
+  });
+
+  it('`inspect selection` / `inspect [selection]` resolve the live selection ref', async () => {
+    const bridge = new FakeBridge();
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\ninspect selection\ninspect [selection]\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    await collectLoop(session.runCommands('look at my selection'));
+    const resultTurn = JSON.stringify(bodies[1]);
+    // Both spellings resolved through the bridge to the selection's text (twice, one per command).
+    expect(resultTurn.split('The SLA is 99.5%.').length - 1).toBeGreaterThanOrEqual(2);
   });
 
   it('no approver ⇒ the whole plan is blocked (fail-closed); nothing actuates', async () => {
@@ -1618,5 +2343,29 @@ describe('AssistSession.plan — the planner pre-stage (§F)', () => {
     const { plan, needsClarification } = await session.plan('rewrite the section');
     expect(needsClarification).toBe(true);
     expect(plan?.clarify).toEqual(['which section — §4 or §5?']);
+  });
+
+  it('reports a failed planner call as a failure, apart from a reply with no plan block', async () => {
+    const bridge = new FakeBridge();
+    const denied = vi.fn(async () => new Response('denied', { status: 401 }));
+    const failing = new AssistSession(
+      bridge,
+      new StreamAssistClient(tokens, cfg, denied as never),
+      {
+        unit,
+      },
+    );
+    const failed = await failing.plan('hii');
+    expect(failed.plan).toBeNull();
+    expect(failed.failure).toMatchObject({ code: 'http_401' });
+
+    const prose = new AssistSession(
+      bridge,
+      new StreamAssistClient(tokens, cfg, fetchText('Hello! How can I help?') as never),
+      { unit },
+    );
+    const noBlock = await prose.plan('hii');
+    expect(noBlock.plan).toBeNull();
+    expect(noBlock.failure).toBeUndefined();
   });
 });

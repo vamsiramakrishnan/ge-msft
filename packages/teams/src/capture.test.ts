@@ -118,6 +118,21 @@ describe('teams actuation planning (pure)', () => {
     expect(plan).toEqual({ text: 'Summary', card: '<card>...</card>' });
   });
 
+  it('keeps a card valid JSON when its text carries a line break', () => {
+    // The scanner decodes a quoted `\n` into a real line break; inside a JSON string that is invalid.
+    const plan = planPostMessage({
+      changeId: asChangeId('c4'),
+      kind: 'post-message',
+      surface: 'teams',
+      params: {
+        text: 'Summary',
+        html: '{\n  "type": "AdaptiveCard",\n  "body": [{ "type": "TextBlock", "text": "Line 1\nLine 2" }]\n}',
+      },
+    });
+    const card = JSON.parse(plan.card as string) as { body: Array<{ text: string }> };
+    expect(card.body[0]!.text).toBe('Line 1\nLine 2');
+  });
+
   it('falls back to empty text when nothing is provided', () => {
     const plan = planPostMessage({
       changeId: asChangeId('c3'),

@@ -13,6 +13,7 @@ import {
   estateWritesEnabledFor,
   SKILL_FILES,
   type ShellConfig,
+  skillDriftNotice,
 } from './compose.js';
 
 const config: ShellConfig = {
@@ -60,6 +61,32 @@ describe('composeSession', () => {
     expect(session.sessionId).toBe('sess_prior'); // resumed
     expect(tokens).toBeDefined();
     expect(client).toBeDefined();
+  });
+
+  it('sends only the brand writing rules for the open app (email rules only from Outlook)', async () => {
+    const rules = [
+      'Keep answers short.',
+      { text: 'Open Bahasa emails with "Halo".', surfaces: ['outlook'] },
+      { text: 'Sign emails as ContosoAI.', surfaces: ['outlook'], turns: ['command' as const] },
+    ];
+    const rulesSent = async (surface: 'word' | 'outlook'): Promise<unknown> => {
+      const bridge = Object.assign(new FakeBridge(), { surface });
+      const { client } = await composeSession({
+        config: { ...config, assistantName: 'ContosoAI', assistantRules: rules },
+        auth,
+        bridge: bridge as unknown as DocBridge,
+        unit,
+        fetchImpl: vi.fn() as unknown as typeof fetch,
+      });
+      return (client as unknown as { config: { assistantRules?: string[] } }).config.assistantRules;
+    };
+    expect(await rulesSent('outlook')).toEqual([
+      'Keep answers short.',
+      'Open Bahasa emails with "Halo".',
+      // A rule limited to turns keeps that limit for the client (only command turns send it).
+      { text: 'Sign emails as ContosoAI.', routes: ['command'] },
+    ]);
+    expect(await rulesSent('word')).toEqual(['Keep answers short.']);
   });
 });
 
@@ -122,5 +149,24 @@ describe('SKILL_FILES', () => {
       expect(key.startsWith('.')).toBe(false);
       expect(key.startsWith('/')).toBe(false);
     }
+  });
+});
+
+describe('skillDriftNotice', () => {
+  it('names stale and missing skills, and stays quiet when all match or none is configured', () => {
+    expect(skillDriftNotice([])).toBeUndefined();
+    expect(
+      skillDriftNotice([{ action: 'unchanged', agent: { displayName: 'm365-surface-commander' } }]),
+    ).toBeUndefined();
+    expect(
+      skillDriftNotice([{ action: 'error', agentId: 'cmdr', error: 'forbidden' }]),
+    ).toBeUndefined();
+    const notice = skillDriftNotice([
+      { action: 'stale', agent: { displayName: 'm365-surface-commander' } },
+      { action: 'missing', agentId: 'm365-command-planner' },
+    ]);
+    expect(notice).toContain('older than this app: m365-surface-commander');
+    expect(notice).toContain('not found: m365-command-planner');
+    expect(notice).toContain('bun run ge:skills');
   });
 });

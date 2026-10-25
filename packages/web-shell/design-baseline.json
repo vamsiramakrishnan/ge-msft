@@ -1,0 +1,68 @@
+{
+  "packages/web-shell/src/taskpane/styles.css": {
+    "color": 17,
+    "font-size": 15,
+    "radius": 6
+  },
+  "packages/web-shell/src/taskpane/preview.css": {
+    "color": 23,
+    "radius": 4,
+    "font-size": 6
+  },
+  "packages/web-shell/src/taskpane/workspace.css": {
+    "radius": 14,
+    "color": 11,
+    "font-size": 23
+  },
+  "packages/web-shell/src/taskpane/components/PlanClarificationCard.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/MessageThread.tsx": {
+    "button": 4
+  },
+  "packages/web-shell/src/taskpane/components/AnalysisWorkbench.tsx": {
+    "button": 11
+  },
+  "packages/web-shell/src/taskpane/components/SurfaceCommandCenter.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/QuickActionParamForm.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/Toolbar.tsx": {
+    "button": 3
+  },
+  "packages/web-shell/src/taskpane/components/ContextStrip.tsx": {
+    "button": 6
+  },
+  "packages/web-shell/src/taskpane/components/ConversationHistoryPanel.tsx": {
+    "button": 4
+  },
+  "packages/web-shell/src/taskpane/components/RunSteps.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/SavedDiagnosticsPanel.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/WorkflowWorkbench.tsx": {
+    "button": 7
+  },
+  "packages/web-shell/src/taskpane/components/Composer.tsx": {
+    "button": 3
+  },
+  "packages/web-shell/src/taskpane/components/CommandPlanCard.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/QuickActionBar.tsx": {
+    "button": 3
+  },
+  "packages/web-shell/src/taskpane/components/PlanApprovalCard.tsx": {
+    "button": 2
+  },
+  "packages/web-shell/src/taskpane/components/ContextTray.tsx": {
+    "button": 3
+  },
+  "packages/web-shell/src/taskpane/components/ActionLibrary.tsx": {
+    "button": 4
+  }
+}

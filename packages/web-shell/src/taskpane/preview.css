@@ -132,6 +132,8 @@ body {
 /* The panel uses height:100vh; inside the frame we want it to fill the frame instead. */
 .preview-frame .panel {
   height: 100%;
+  /* the pane uses its own (brand) font, as in the add-in, not the harness font */
+  font-family: var(--sans);
 }
 
 .preview-capture {

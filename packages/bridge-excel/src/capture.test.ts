@@ -88,6 +88,47 @@ describe('excel capture (pure)', () => {
   });
 });
 
+describe('excel reads of numbers-only ranges', () => {
+  it('reads a numeric column with its sheet row numbers instead of throwing', () => {
+    // Live 2026-09-30: `read Sheet2!G2:G11` failed with "r.trim is not a function" (Excel returns
+    // numbers), and the model then commented the wrong cell.
+    const values = [[130000], [13500], [12000]] as unknown as string[][];
+    const [ctx] = rangeToContext('Sheet2!G2:G4', values);
+    const text = ctx!.value.as === 'text' ? ctx!.value.text : '';
+    expect(text).toContain('| row | G |');
+    expect(text).toContain('| 4 | 12000 |');
+    expect(text).not.toContain('| 130000 |\n| --- |');
+  });
+
+  it('labels non-contiguous search matches in a headerless grid with their real sheet rows', () => {
+    // Security review: a match on sheet row 52 was labelled row 3.
+    const grid = Array.from({ length: 60 }, (_, i) => [
+      i === 50 ? 777 : i,
+    ]) as unknown as string[][];
+    const [ctx] = searchUsedRange('Data!B3:B62', grid, '777');
+    const text = ctx!.value.as === 'text' ? ctx!.value.text : '';
+    expect(text).toContain('| 3 | 0 |'); // the first (numeric) row keeps its own sheet row
+    expect(text).toContain('| 53 | 777 |');
+  });
+
+  it('reads the cell part after the last `!` when the sheet name contains digits', () => {
+    const [ctx] = rangeToContext('FY2026Data!C5:C6', [[1], [2]] as unknown as string[][]);
+    const text = ctx!.value.as === 'text' ? ctx!.value.text : '';
+    expect(text).toContain('| row | C |');
+    expect(text).toContain('| 5 | 1 |');
+  });
+
+  it('keeps a text first row as the header', () => {
+    const [ctx] = rangeToContext('Sales!A1:B2', [
+      ['region', 'revenue'],
+      ['East', '300'],
+    ]);
+    const text = ctx!.value.as === 'text' ? ctx!.value.text : '';
+    expect(text).toContain('| region | revenue |');
+    expect(text).not.toContain('| row |');
+  });
+});
+
 describe('excel doc-state blocks (pure, ADR-0003)', () => {
   it('maps a used range to one anchored native table block', () => {
     const blocks = usedRangeToBlocks('Sheet1!A1:B3', [

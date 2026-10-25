@@ -21,6 +21,10 @@ export interface ShapeElement {
   shapeId: string;
   /** Text read from the shape's text frame; empty for non-text shapes. */
   text: string;
+  /** Host shape type (`Placeholder`, `TextBox`, `GeometricShape`, `Image`, `Table`…), when read. */
+  type?: string;
+  /** True for the shape `shape=title` resolves to on this slide. */
+  isTitle?: boolean;
 }
 
 export interface SlideElement {
@@ -54,6 +58,19 @@ export function shapesToSlideText(shapeTexts: string[]): { title: string; body: 
   return { title, body: lines.slice(1) };
 }
 
+/**
+ * A native table's cell grid (`Table.values`) → one text line per row, cells joined by ` | `, so it
+ * flows through {@link shapesToSlideText} like any other shape text. Line breaks inside a cell
+ * become spaces (a row must stay one line); rows whose cells are all blank are dropped.
+ */
+export function tableValuesToText(values: string[][]): string {
+  return values
+    .map((row) => row.map((cell) => (cell ?? '').replace(/\s+/g, ' ').trim()))
+    .filter((row) => row.some((cell) => cell.length > 0))
+    .map((row) => row.join(' | '))
+    .join('\n');
+}
+
 /** Turn captured slides into native blocks via the `native.slide()` builder. */
 export function slideElementsToBlocks(slides: SlideElement[]): Block[] {
   const blocks: Block[] = [];
@@ -82,6 +99,34 @@ export function slidesToContext(
   return toContextNative(content, opts);
 }
 
+/**
+ * The shape listing a single-slide `read` appends, so the model can address shape commands
+ * (`/format-shape slide=N shape=<id>`) without guessing ids. Shape text is document content: it is
+ * quoted, single-line and clipped, like any other grounding text.
+ */
+export function slideShapeListing(slide: SlideElement): string[] {
+  const shapes = slide.shapes ?? [];
+  if (shapes.length === 0) return [];
+  const title = shapes.find((shape) => shape.isTitle);
+  const header =
+    `Shapes on slide ${slide.index + 1} (for shape commands use slide=${slide.index + 1} and ` +
+    `shape=<id>${title ? `; shape=title is id ${title.shapeId}` : ''}):`;
+  return [
+    header,
+    ...shapes.map((shape) => {
+      const text = shape.text.replace(/\s+/g, ' ').trim();
+      return [
+        `- id ${shape.shapeId}`,
+        shape.type,
+        shape.isTitle ? 'title' : undefined,
+        text ? JSON.stringify(text.length > 80 ? `${text.slice(0, 80)}…` : text) : undefined,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    }),
+  ];
+}
+
 /** A single selected slide → context (same mapping as `slidesToContext`). */
 export function selectedSlideToContext(slide: SlideElement): ResolvedContext[] {
   return slidesToContext(`pp:slide:${slide.slideId ?? slide.index}`, undefined, [slide]);
@@ -103,17 +148,21 @@ export function slideContextRef(
   };
 }
 
+/**
+ * A shape as attachable context. Titled by its host id, never its position: the model copies the
+ * number from the title into `pp:shape:<slide>:<shape>`, and "Shape 1" (the first shape, often a
+ * decorative line) read as shape id 1 targeted nothing, or the wrong shape.
+ */
 export function shapeContextRef(
   slide: Pick<SlideElement, 'index' | 'slideId'>,
   shape: ShapeElement,
-  ordinal: number,
 ): ContextRef {
   const slideId = slide.slideId ?? String(slide.index);
   return {
     id: `pp:shape:${slideId}:${shape.shapeId}`,
     kind: 'shape',
     surface: 'powerpoint',
-    title: `Shape ${ordinal + 1} on slide ${slide.index + 1}`,
+    title: `Shape ${shape.shapeId} on slide ${slide.index + 1}`,
     ...(shape.text.trim() ? { preview: shape.text.trim().slice(0, 120) } : {}),
     live: true,
     anchor: {
@@ -127,11 +176,10 @@ export function shapeContextRef(
 export function selectedShapeToContext(
   slide: Pick<SlideElement, 'index' | 'slideId'>,
   shape: ShapeElement,
-  ordinal = 0,
 ): ResolvedContext[] {
   const text = shape.text.trim();
   if (!text) return [];
-  const ref = shapeContextRef(slide, shape, ordinal);
+  const ref = shapeContextRef(slide, shape);
   return [
     {
       ref,
@@ -142,12 +190,14 @@ export function selectedShapeToContext(
 
 /**
  * Captured slides → the `Block[]` the surface-agnostic `buildDocStateSnapshot` consumes for the
- * `<doc_state>` outline/inventory (ADR-0003 Layer B element 1). Reuses {@link slideElementsToBlocks}
- * so the snapshot's slide inventory comes from the SAME native mapping as grounding context — each
- * slide's title becomes a `slide:<id>` heading the builder lists under `inventory`.
+ * `<doc_state>` outline/inventory (ADR-0003 Layer B element 1): one `slide:<id>` title heading per
+ * slide, which the builder numbers in order, so `slides` must start at the deck's first slide. Body
+ * lines are left to `read slide:N`. Listing each bullet as well filled the 60-entry inventory by
+ * about slide 11 (live 2026-10-09, a 15-slide deck): a slide just added at the end was missing, and
+ * the model spent its remaining turns searching for it instead of adding the table it was asked for.
  */
 export function slideElementsToDocStateBlocks(slides: SlideElement[]): Block[] {
-  return slideElementsToBlocks(slides);
+  return slides.flatMap((s, i) => native.slide(i, s.title, [], s.slideId));
 }
 
 /** Cap on slides scanned/returned by a lazy `searchDocument` so a common term can't blow the budget. */
@@ -187,4 +237,31 @@ export function parseSlideSelector(selector: string): number | undefined {
   const oneBased = Number(m[1]);
   if (!Number.isInteger(oneBased) || oneBased < 1) return undefined;
   return oneBased - 1;
+}
+
+/**
+ * Whether a `read` selector could name a slide — `slide:`/`pp:slide:` refs, `last`, or a token with a
+ * digit (a slide number or host id such as `256#`). Checked BEFORE calling the host, so a name like
+ * `Agenda` degrades to `[]` without a round-trip.
+ */
+export function mayNameSlide(selector: string): boolean {
+  const key = selector.trim();
+  return /^(?:pp:)?slide\b/i.test(key) || /^last$/i.test(key) || /^[\w#-]*\d[\w#-]*$/.test(key);
+}
+
+/**
+ * Resolve a `read` selector against the deck's slide ids (in order): an exact host id (bare or as
+ * `slide:<id>` / `pp:slide:<id>`), `last`, else a 1-based slide number ({@link parseSlideSelector}).
+ * Ids win over numbers, matching the write path's slide resolution.
+ */
+export function slideIndexForSelector(
+  ids: readonly string[],
+  selector: string,
+): number | undefined {
+  const key = selector.trim().replace(/^(?:pp:)?slide[\s:]*/i, '');
+  const byId = ids.indexOf(key);
+  if (byId >= 0) return byId;
+  if (/^last$/i.test(key)) return ids.length > 0 ? ids.length - 1 : undefined;
+  const index = parseSlideSelector(key);
+  return index !== undefined && index < ids.length ? index : undefined;
 }

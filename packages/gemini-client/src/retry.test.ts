@@ -95,3 +95,10 @@ describe('CircuitBreaker', () => {
     expect(cb.current).toBe('closed');
   });
 });
+
+describe('defaultIsRetriable — aborts', () => {
+  it('never retries an aborted request', () => {
+    expect(defaultIsRetriable(new DOMException('cancelled', 'AbortError'))).toBe(false);
+    expect(defaultIsRetriable(new TypeError('Failed to fetch'))).toBe(true);
+  });
+});

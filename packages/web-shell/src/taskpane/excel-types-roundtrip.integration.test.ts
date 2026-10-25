@@ -7,6 +7,7 @@ import {
   mountStack,
   type ExcelSimulator,
   type MountedStack,
+  openPlanEffects,
 } from '../test-harness/index.js';
 
 /**
@@ -114,6 +115,7 @@ describe('Excel typed write roundtrip (full-stack interplay: bridge-excel + runt
     const plan = ui!.container.querySelector('.plan-approval');
     expect(plan).not.toBeNull();
     expect(plan?.querySelectorAll('.plan-effect').length).toBe(3);
+    openPlanEffects(ui!.container);
     const planText = plan?.textContent ?? '';
     expect(planText).toContain('set Out!B2 =SUM(Data!B2:B4)');
     expect(planText).toContain('set Out!B3 12');

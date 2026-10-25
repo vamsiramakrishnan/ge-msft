@@ -74,8 +74,8 @@ def analyze(program_text: str, capabilities=None):
             continue
         if rec and rec.get("kind") == "verified-finish":
             finish_requested = True
-            if not closed:
-                errors.append("finish when=verified requires a closed cmd fence")
+            # verified_frame_error already enforces the TS whole-response frame contract,
+            # including its allowed unclosed block ending exactly at the verified finish.
             continue
         if rec and rec.get("kind") == "analysis-binding":
             action = json.loads(rec["request"])

@@ -34,6 +34,20 @@ const DEFAULT_RESULT_LIMITS: Limits = {
   maxNodes: 200_000,
   maxResults: 1024,
 };
+/**
+ * Command help is trusted, bounded documentation the model must read to proceed: a `{ help }`
+ * result up to this size is returned inline, never as a reference (Argon mx-xl-condfmt-08 looped
+ * on help it could not see, 2026-10-19).
+ */
+export const HELP_INLINE_MAX_BYTES = 12 * 1024;
+
+const isHelpRecord = (value: Json): boolean =>
+  value !== null &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  Object.keys(value).length === 1 &&
+  typeof value.help === 'string';
+
 const encoder = new TextEncoder();
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 let nextScope = 0;
@@ -300,8 +314,14 @@ export class CommandResultStore {
           continue;
         }
         raw.push(record);
-        const value = record.bytes <= this.limits.inlineBytes ? record.value : this.retain(record);
-        if (!record.ref && record.bytes > this.limits.inlineBytes) errors++;
+        const inlineLimit = isHelpRecord(record.value)
+          ? Math.max(
+              this.limits.inlineBytes,
+              Math.min(HELP_INLINE_MAX_BYTES, this.limits.turnBytes),
+            )
+          : this.limits.inlineBytes;
+        const value = record.bytes <= inlineLimit ? record.value : this.retain(record);
+        if (!record.ref && record.bytes > inlineLimit) errors++;
         output.push(value);
       }
     let text = JSON.stringify(output);

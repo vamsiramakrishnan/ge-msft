@@ -1,0 +1,252 @@
+[
+  {
+    "id": "id-excel-format-professional",
+    "surface": "excel",
+    "title": "Excel: format profesional (Bahasa Indonesia)",
+    "prompt": "bisakah kamu memformat rentang yang dipilih agar terlihat profesional",
+    "clarification": "Tidak ada, gunakan pilihan yang wajar.",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["ID", "Nama", "Departemen", "Kota", "Tanggal Masuk", "Status", "Gaji", "Nilai"],
+            ["1", "Budi Santoso", "Keuangan", "Jakarta", "2023-01-15", "Aktif", "8500000", "4"],
+            ["2", "Siti Rahma", "Penjualan", "Bandung", "2022-06-01", "Aktif", "7200000", "3"],
+            ["3", "Andi Wijaya", "SDM", "Surabaya", "2021-11-20", "Cuti", "6400000", "5"],
+            ["4", "Dewi Lestari", "TI", "Medan", "2024-03-10", "Aktif", "9800000", "4"],
+            ["5", "Rizky Pratama", "Keuangan", "Semarang", "2020-08-05", "Aktif", "9100000", "5"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:H6"
+    },
+    "expect": {
+      "applied": { "format-cells": 1 },
+      "formatsInclude": ["fontColor", "horizontalAlignment"]
+    }
+  },
+  {
+    "id": "id-excel-write-total",
+    "surface": "excel",
+    "title": "Excel: tambah baris total (Bahasa Indonesia)",
+    "prompt": "tambahkan total kolom Gaji di bawah baris terakhir",
+    "clarification": "Letakkan di sel tepat di bawah gaji terakhir.",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Nama", "Gaji"],
+            ["Budi", "8500000"],
+            ["Siti", "7200000"],
+            ["Andi", "6400000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:B4"
+    },
+    "expect": { "applied": { "write-cells": 1 } }
+  },
+  {
+    "id": "id-ppt-read-slide-2",
+    "surface": "powerpoint",
+    "title": "PowerPoint: baca slide 2 (Bahasa Indonesia)",
+    "prompt": "Apa isi slide 2?",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Tinjauan Strategi FY26", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Rapat direksi, Oktober 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            { "text": "Perubahan harga", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Naikkan paket premium 8%\nPerkenalkan diskon tagihan tahunan\nHentikan paket starter lama",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            { "text": "Langkah berikutnya", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Persetujuan keuangan paling lambat 15 Nov",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "answerIncludes": ["harga"], "notApplied": ["insert-slide", "set-shape-text"] }
+  },
+  {
+    "id": "id-ppt-insert-one-slide",
+    "surface": "powerpoint",
+    "title": "PowerPoint: satu slide baru (Bahasa Indonesia)",
+    "prompt": "Buat satu slide berjudul Prospek Q4 dengan 3 poin",
+    "clarification": "Gunakan contoh poin yang wajar.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Tinjauan Strategi FY26", "type": "Placeholder", "placeholderType": "Title" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "insert-slide": 1 }, "documentIncludes": ["Prospek Q4"] }
+  },
+  {
+    "id": "id-ppt-insert-4-slide-deck",
+    "surface": "powerpoint",
+    "title": "PowerPoint: dek 4 slide (Bahasa Indonesia)",
+    "prompt": "Buat dek 4 slide: masalah, opsi, rekomendasi, dan langkah berikutnya untuk beralih ke 4 hari kerja seminggu",
+    "clarification": "Gunakan contoh isi yang wajar.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "Rapat tim", "type": "Placeholder", "placeholderType": "Title" }]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "insert-slide": 1 } }
+  },
+  {
+    "id": "id-ppt-replace-shape-text",
+    "surface": "powerpoint",
+    "title": "PowerPoint: ganti judul (Bahasa Indonesia)",
+    "prompt": "Ubah judul di slide 1 menjadi Rencana Tahunan FY26",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Tinjauan Strategi FY26", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Rapat direksi, Oktober 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "set-shape-text": 1 }, "documentIncludes": ["Rencana Tahunan FY26"] }
+  },
+  {
+    "id": "id-ppt-add-text-box",
+    "surface": "powerpoint",
+    "title": "PowerPoint: kotak teks (Bahasa Indonesia)",
+    "prompt": "Tambahkan kotak teks di slide 1 yang bertuliskan Draf untuk ditinjau",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Tinjauan Strategi FY26", "type": "Placeholder", "placeholderType": "Title" }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "add-shape": 1 }, "documentIncludes": ["Draf untuk ditinjau"] }
+  },
+  {
+    "id": "id-ppt-format-shape",
+    "surface": "powerpoint",
+    "title": "PowerPoint: format judul (Bahasa Indonesia)",
+    "prompt": "Buat judul di slide 1 menjadi tebal dan berwarna biru tua",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            { "text": "Tinjauan Strategi FY26", "type": "Placeholder", "placeholderType": "Title" },
+            {
+              "text": "Rapat direksi, Oktober 2026",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "format-shape": 1 } }
+  },
+  {
+    "id": "id-ppt-table-slide",
+    "surface": "powerpoint",
+    "title": "PowerPoint: slide tabel (Bahasa Indonesia)",
+    "prompt": "Tambahkan slide dengan tabel berisi 3 risiko dan penanggung jawabnya",
+    "clarification": "Gunakan contoh risiko dan penanggung jawab yang wajar.",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [{ "text": "Status proyek", "type": "Placeholder", "placeholderType": "Title" }]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": { "applied": { "add-table-slide": 1 } }
+  },
+  {
+    "id": "id-xl-analyse-trends",
+    "surface": "excel",
+    "title": "Excel: analisis tren (live 2026-10-12: selesai tanpa jawaban)",
+    "prompt": "Analisis data ini dan sebutkan tiga tren teratas. Wilayah mana yang membaik dan mana yang menurun, dan apa yang tampak tidak biasa",
+    "clarification": "Gunakan semua data.",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Branch Performance",
+          "origin": "A1",
+          "values": [
+            ["Branch", "City", "Jan", "Feb", "Mar", "Apr", "May", "Jun"],
+            ["Dago", "Bandung", 120, 128, 135, 141, 150, 158],
+            ["Asia Afrika", "Bandung", 90, 91, 90, 92, 91, 93],
+            ["Lapangan Merdeka", "Medan", 110, 104, 99, 93, 88, 82],
+            ["Polonia", "Medan", 95, 90, 86, 81, 77, 72],
+            ["Sudirman", "Jakarta", 200, 205, 212, 220, 226, 240],
+            ["Kemang", "Jakarta", 150, 148, 190, 151, 149, 152],
+            ["Tunjungan", "Surabaya", 130, 133, 137, 140, 144, 147],
+            ["Darmo", "Surabaya", 80, 82, 79, 83, 81, 84]
+          ]
+        }
+      ],
+      "selection": "'Branch Performance'!A1:H9"
+    },
+    "expect": {
+      "notApplied": [
+        "write-cells",
+        "format-cells",
+        "format-conditional",
+        "insert-chart",
+        "create-table"
+      ],
+      "answerIncludes": ["Medan"]
+    }
+  }
+]

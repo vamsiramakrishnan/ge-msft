@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OfficeWordHost, type WordHandlers } from './host-port.js';
+import { MAX_READ_COMMENTS, OfficeWordHost, type WordHandlers } from './host-port.js';
 
 /**
  * Direct tests for the REAL {@link OfficeWordHost} adapter — the bridge's only un-faked seam. It
@@ -26,8 +26,17 @@ interface InstallOpts {
   searchHits?: Record<string, string[]>;
   /** match text → containing-paragraph text, surfaced via `paragraphs.getFirstOrNullObject()`. */
   contextParas?: Record<string, string | undefined>;
-  /** Existing comments for `getComments()`. */
-  comments?: Array<{ id: string }>;
+  /** Hit texts that sit inside a tracked deletion (struck-through, still found by `body.search`). */
+  deletedHits?: string[];
+  /** Existing comments for `getComments()` (thread fields are optional; ids are required). */
+  comments?: Array<{
+    id: string;
+    authorName?: string;
+    content?: string;
+    resolved?: boolean;
+    anchorText?: string;
+    threadReplies?: Array<{ authorName: string; content: string }>;
+  }>;
   /** Requirement-set support map (e.g. { WordApi: 6 }). Defaults to a modern host. */
   requirements?: Record<string, number>;
   /** Force `Word.run` to reject (simulate an unsupported host / batch failure). */
@@ -43,7 +52,7 @@ interface InstallOpts {
   /** Seed the live selection text for readSelectionText. */
   selectionText?: string;
   /** Seed the body paragraphs for readBodyText / readParagraphs. */
-  paragraphs?: Array<{ text: string; styleBuiltIn: string }>;
+  paragraphs?: Array<{ text: string; styleBuiltIn: string; reviewedText?: string }>;
   /** Make `Office...addHandlerAsync` throw (selection observation unavailable). */
   addHandlerThrows?: boolean;
   /** Make `Office...removeHandlerAsync` throw (host already tore the handler down). */
@@ -102,12 +111,23 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
   }
 
   class FakeResult {
+    /** For a word from `getTextRanges`: its position and the range's words. */
+    index = 0;
+    all: string[] = [];
     constructor(public text: string) {}
     load(p?: string): this {
       rec.trace.push(`result.load:${p ?? ''}`);
       return this;
     }
-    get paragraphs(): { getFirstOrNullObject(): FakeParagraph } {
+    /** WordApi 1.6: a hit listed in `deletedHits` is inside a tracked deletion. */
+    getTrackedChanges(): { items: Array<{ type: string }>; load(): void } {
+      const deleted = (opts.deletedHits ?? []).includes(this.text);
+      return { items: deleted ? [{ type: 'Deleted' }] : [], load: () => undefined };
+    }
+    get paragraphs(): {
+      getFirstOrNullObject(): FakeParagraph;
+      getLast(): { getRange(): { insertOoxml(ooxml: string, location: string): void } };
+    } {
       return {
         getFirstOrNullObject: () =>
           new FakeParagraph(
@@ -115,11 +135,48 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
               ? opts.contextParas?.[this.text]
               : undefined,
           ),
+        getLast: () => ({
+          getRange: () => ({
+            insertOoxml: (ooxml: string, location: string) => {
+              rec.inserts.push({ anchor: `paragraph of ${this.text}`, text: ooxml, location });
+            },
+          }),
+        }),
       };
+    }
+    insertOoxml(ooxml: string, location: string): void {
+      rec.inserts.push({ anchor: this.text, text: ooxml, location });
     }
     insertText(text: string, location: string): void {
       rec.trace.push('insertText');
       rec.inserts.push({ anchor: this.text, text, location });
+    }
+    /** WordApi 1.3: the words of the range (split on spaces, trimmed); each can expand to another. */
+    getTextRanges(_delimiters: string[], _trim: boolean): { items: FakeResult[]; load(): void } {
+      const words = this.text.split(/\s+/).filter(Boolean);
+      const items = words.map((word, i) => {
+        const r = new FakeResult(word);
+        r.index = i;
+        r.all = words;
+        return r;
+      });
+      return { items, load: () => undefined };
+    }
+    expandTo(other: FakeResult): FakeResult {
+      return new FakeResult(this.all.slice(this.index, other.index + 1).join(' '));
+    }
+    /** WordApi 1.3: the range cut at its paragraph marks (`\r`), the marks trimmed. */
+    split(
+      _delimiters: string[],
+      _trim: boolean,
+      _trimSpacing: boolean,
+    ): {
+      items: FakeResult[];
+      load(): void;
+    } {
+      const parts = this.text.split('\r');
+      while (parts.length > 1 && parts.at(-1) === '') parts.pop();
+      return { items: parts.map((part) => new FakeResult(part)), load: () => undefined };
     }
     insertComment(text: string): void {
       rec.trace.push('insertComment');
@@ -128,9 +185,18 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
   }
 
   class FakeResultCollection {
-    items: FakeResult[];
+    private readonly hits: FakeResult[];
+    private readonly createdAt = rec.syncCount;
     constructor(query: string) {
-      this.items = (opts.searchHits?.[query] ?? []).map((t) => new FakeResult(t));
+      this.hits = (opts.searchHits?.[query] ?? []).map((t) => new FakeResult(t));
+    }
+    /** Like Word, `items` is unavailable until a sync: reading it first throws PropertyNotLoaded. */
+    get items(): FakeResult[] {
+      if (rec.syncCount === this.createdAt)
+        throw new Error(
+          "fake-word: The property 'items' is not available. Call load and context.sync() first.",
+        );
+      return this.hits;
     }
     load(p?: string): this {
       rec.trace.push(`results.load:${p ?? ''}`);
@@ -139,9 +205,34 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
   }
 
   class FakeCommentProxy {
-    constructor(private readonly target: { id: string; replies: string[]; resolved?: boolean }) {}
+    constructor(
+      private readonly target: {
+        id: string;
+        replies: string[];
+        resolved?: boolean;
+        authorName?: string;
+        content?: string;
+        anchorText?: string;
+        threadReplies?: Array<{ authorName: string; content: string }>;
+      },
+    ) {}
     get id(): string {
       return this.target.id;
+    }
+    get authorName(): string | undefined {
+      return this.target.authorName;
+    }
+    get content(): string | undefined {
+      return this.target.content;
+    }
+    get resolved(): boolean | undefined {
+      return this.target.resolved;
+    }
+    get replies(): { items: Array<{ authorName: string; content: string }>; load(): void } {
+      return { items: this.target.threadReplies ?? [], load: () => undefined };
+    }
+    getRange(): { text: string; load(): void; select(): void } {
+      return { text: this.target.anchorText ?? '', load: () => undefined, select: () => undefined };
     }
     reply(text: string): void {
       rec.replies.push({ id: this.target.id, text });
@@ -202,7 +293,11 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
     },
     get paragraphs(): { items: Array<{ text: string; styleBuiltIn: string }>; load(): unknown } {
       return {
-        items: (opts.paragraphs ?? []).map((p) => ({ ...p })),
+        items: (opts.paragraphs ?? []).map((p) => ({
+          ...p,
+          // WordApi 1.4: the text with tracked changes applied (deletions gone).
+          getReviewedText: () => ({ value: p.reviewedText ?? p.text }),
+        })),
         load() {
           return this;
         },
@@ -224,12 +319,14 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
     set changeTrackingMode(m: string) {
       this._ctm = m;
       rec.changeTrackingMode = m;
+      rec.trace.push(`mode:${m}`);
     },
+    load: () => undefined,
     get changeTrackingMode(): string {
       return this._ctm;
     },
-    getSelection(): { text: string; load(): unknown } {
-      return { text: opts.selectionText ?? '', load: () => undefined };
+    getSelection(): FakeResult {
+      return new FakeResult(opts.selectionText ?? '');
     },
     customXmlParts: {
       add(xml: string): { id: string } {
@@ -258,7 +355,7 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
       if (opts.wordRunThrows) return Promise.reject(new Error('Word.run unsupported'));
       return cb(ctx);
     },
-    InsertLocation: { replace: 'Replace', start: 'Start', end: 'End' },
+    InsertLocation: { replace: 'Replace', start: 'Start', end: 'End', after: 'After' },
     ChangeTrackingMode: { trackAll: 'TrackAll', off: 'Off' },
     EventSource: { local: 'Local', remote: 'Remote' },
   };
@@ -354,6 +451,20 @@ describe('OfficeWordHost reads', () => {
       ],
     });
     await expect(new OfficeWordHost().readBodyText()).resolves.toBe('Heading\nBody line.');
+  });
+
+  it('readParagraphs reads the reviewed text, so struck-out tracked deletions are not reported', async () => {
+    setup({
+      paragraphs: [
+        {
+          text: 'native GEGemini Enterprise (GE) capabilities',
+          reviewedText: 'native GE (GE) capabilities',
+          styleBuiltIn: 'Normal',
+        },
+      ],
+    });
+    const paras = await new OfficeWordHost().readParagraphs();
+    expect(paras.map((p) => p.text)).toEqual(['native GE (GE) capabilities']);
   });
 
   it('readParagraphs returns only non-empty paragraphs with their built-in style', async () => {
@@ -456,14 +567,68 @@ describe('OfficeWordHost.applyTrackedChange (search→choose→insert batch)', (
   it('preserves the read-then-write ordering: load + first sync precede the choose-driven insert', async () => {
     const rec = setup({ searchHits: { q: ['only hit'] } });
     await new OfficeWordHost().applyTrackedChange('q', { matchCase: true }, 'new', () => 0);
-    // search → load → sync (read) → insertText → sync (write): two syncs, insert after the first.
+    // search → load → sync (read) → sync (tracked-deletion check) → insertText → sync (write):
+    // the insert still comes after the reads and before the final write sync.
     const firstSync = rec.trace.indexOf('sync');
     const insert = rec.trace.indexOf('insertText');
     const lastSync = rec.trace.lastIndexOf('sync');
     expect(firstSync).toBeGreaterThanOrEqual(0);
     expect(insert).toBeGreaterThan(firstSync);
     expect(lastSync).toBeGreaterThan(insert);
-    expect(rec.syncCount).toBe(2);
+    expect(rec.syncCount).toBe(3);
+  });
+
+  it('marks only the changed words of a grammar fix (UAT #17)', async () => {
+    const hit =
+      'Seluruh pengembangan solusi AI wajib mengikuti regulasi yang berlaku, tidak terbatas pada POJK yang diperbarui';
+    const rec = setup({ searchHits: { Seluruh: [hit] } });
+    const out = await new OfficeWordHost().applyTrackedChange(
+      'Seluruh',
+      { matchCase: false },
+      hit.replace('tidak terbatas pada', 'termasuk'),
+      () => 0,
+    );
+    expect(out).toEqual({ status: 'applied', location: 'tracked-change' });
+    expect(rec.inserts).toEqual([
+      { anchor: 'tidak terbatas pada', text: 'termasuk', location: 'Replace' },
+    ]);
+  });
+
+  it('/replace-selection also tracks only the changed words (UAT #17 regression)', async () => {
+    const sentence = 'Kami akan mengikuti regulasi yang berlaku melalui PADK 1';
+    const rec = setup({ selectionText: sentence });
+    const out = await new OfficeWordHost().replaceSelection(
+      'Kami akan mematuhi regulasi yang berlaku melalui PADK No. 1',
+    );
+    expect(out).toMatchObject({ status: 'applied', priorText: sentence });
+    expect(rec.inserts).toEqual([
+      { anchor: '1', text: 'No. 1', location: 'Replace' },
+      { anchor: 'mengikuti', text: 'mematuhi', location: 'Replace' },
+    ]);
+  });
+
+  it('tracks only the changed words of each paragraph in a two-paragraph selection (real Word, 2026-10-17)', async () => {
+    const first = 'Solusi AI hanya boleh digunakan untuk keperluan kerja yang disetujui.';
+    const second = 'Seluruh pengembangan wajib mengikuti regulasi yang berlaku.';
+    const rec = setup({ selectionText: `${first}\r${second}\r` });
+    const out = await new OfficeWordHost().replaceSelection(
+      `${first}\nSeluruh pengembangan wajib mematuhi regulasi yang berlaku.`,
+    );
+    expect(out).toMatchObject({ status: 'applied' });
+    // One word in the second paragraph; the first paragraph and both paragraph marks untouched.
+    expect(rec.inserts).toEqual([{ anchor: 'mengikuti', text: 'mematuhi', location: 'Replace' }]);
+  });
+
+  it('keeps both paragraphs when the model returns them merged into one (real Word, 2026-10-17)', async () => {
+    const first = 'Solusi AI hanya boleh digunakan untuk keperluan kerja yang disetujui.';
+    const second = 'Seluruh pengembangan wajib mengikuti regulasi yang berlaku.';
+    const rec = setup({ selectionText: `${first}\r${second}\r` });
+    const out = await new OfficeWordHost().replaceSelection(
+      `${first} Seluruh pengembangan wajib mematuhi regulasi yang berlaku.`,
+    );
+    expect(out).toMatchObject({ status: 'applied' });
+    // Only the changed word; no paragraph is deleted and re-inserted.
+    expect(rec.inserts).toEqual([{ anchor: 'mengikuti', text: 'mematuhi', location: 'Replace' }]);
   });
 
   it('degrades to drift (no write, no second sync) when there are zero hits', async () => {
@@ -502,6 +667,39 @@ describe('OfficeWordHost.applyTrackedChange (search→choose→insert batch)', (
 });
 
 /* ───────────────────────────────── addComment ───────────────────────────── */
+
+describe('OfficeWordHost.insertOoxml (block content goes after the anchor paragraph)', () => {
+  it('inserts a paragraph fragment after the anchor paragraph, not inside the matched sentence', async () => {
+    // Live 2026-10-01: "Summary" landed inside "The Supplier may terminate…".
+    const rec = setup({ searchHits: { 'may terminate': ['may terminate'] } });
+    await new OfficeWordHost().insertOoxml(
+      'may terminate',
+      { matchCase: false },
+      '<w:p><w:r><w:t>Summary</w:t></w:r></w:p>',
+      () => 0,
+    );
+    expect(rec.inserts).toEqual([
+      {
+        anchor: 'paragraph of may terminate',
+        text: '<w:p><w:r><w:t>Summary</w:t></w:r></w:p>',
+        location: 'After',
+      },
+    ]);
+  });
+
+  it('keeps inline content (runs) right after the matched text', async () => {
+    const rec = setup({ searchHits: { term: ['term'] } });
+    await new OfficeWordHost().insertOoxml(
+      'term',
+      { matchCase: false },
+      '<w:r><w:t>x</w:t></w:r>',
+      () => 0,
+    );
+    expect(rec.inserts).toEqual([
+      { anchor: 'term', text: '<w:r><w:t>x</w:t></w:r>', location: 'After' },
+    ]);
+  });
+});
 
 describe('OfficeWordHost.addComment (requirement-set gated, best-effort)', () => {
   it('inserts a comment on the first re-resolved hit when WordApi 1.4 is supported', async () => {
@@ -558,6 +756,75 @@ describe('OfficeWordHost.persistProvenance (durable custom XML part, gated)', ()
   });
 });
 
+describe('OfficeWordHost.findReplace', () => {
+  it('skips hits inside a tracked deletion, so a re-run cannot replace struck-out text again', async () => {
+    const rec = setup({
+      searchHits: { 'Gemini Enterprise': ['struck-out', 'live'] },
+      deletedHits: ['struck-out'],
+    });
+    const out = await new OfficeWordHost().findReplace('Gemini Enterprise', 'GE', {
+      matchCase: false,
+      matchWholeWord: false,
+    });
+    expect(out).toEqual({ status: 'applied', replacedCount: 1 });
+    expect(rec.inserts.map((i) => i.anchor)).toEqual(['live']);
+  });
+
+  it('reports none when every hit is struck-out text', async () => {
+    setup({ searchHits: { 'Gemini Enterprise': ['struck-out'] }, deletedHits: ['struck-out'] });
+    await expect(
+      new OfficeWordHost().findReplace('Gemini Enterprise', 'GE', {
+        matchCase: false,
+        matchWholeWord: false,
+      }),
+    ).resolves.toEqual({ status: 'none' });
+  });
+
+  it('replaces from the last hit back, so earlier edits cannot shift later hits', async () => {
+    // Distinct read-back texts stand in for three hits in document order.
+    const rec = setup({ searchHits: { 'Contoso-AI': ['hit-1', 'hit-2', 'hit-3'] } });
+    const out = await new OfficeWordHost().findReplace('Contoso-AI', 'ContosoAI', {
+      matchCase: false,
+      matchWholeWord: false,
+    });
+    expect(out).toEqual({ status: 'applied', replacedCount: 3 });
+    expect(rec.inserts.map((i) => i.anchor)).toEqual(['hit-3', 'hit-2', 'hit-1']);
+  });
+});
+
+describe('OfficeWordHost tracks every edit (product decision 2026-10-15)', () => {
+  it('records a direct edit as a tracked change, then restores the user setting', async () => {
+    const rec = setup({ searchHits: { '45 days': ['45 days'] } });
+    await new OfficeWordHost().findReplace('45 days', '30 days', {
+      matchCase: false,
+      matchWholeWord: false,
+    });
+    const on = rec.trace.indexOf('mode:TrackAll');
+    expect(on).toBeGreaterThanOrEqual(0);
+    expect(on).toBeLessThan(rec.trace.indexOf('insertText'));
+    // The user's own later edits are not forced into Track Changes.
+    expect(rec.trace.at(-1) === 'mode:' || rec.changeTrackingMode === '').toBe(true);
+  });
+
+  it('never anchors an edit on struck-out text', async () => {
+    const rec = setup({
+      searchHits: { '45 days': ['struck-out', 'live'] },
+      deletedHits: ['struck-out'],
+    });
+    await new OfficeWordHost().insertText('45 days', { matchCase: false }, ' (net)', () => 0);
+    expect(rec.inserts.map((i) => i.anchor)).toEqual(['live']);
+  });
+
+  it('leaves Track Changes alone when trackEdits is off', async () => {
+    const rec = setup({ searchHits: { '45 days': ['45 days'] } });
+    await new OfficeWordHost({ trackEdits: false }).findReplace('45 days', '30 days', {
+      matchCase: false,
+      matchWholeWord: false,
+    });
+    expect(rec.changeTrackingMode).toBeUndefined();
+  });
+});
+
 /* ─────────────────────────────── replyToComment ─────────────────────────── */
 
 describe('OfficeWordHost.replyToComment', () => {
@@ -575,12 +842,81 @@ describe('OfficeWordHost.replyToComment', () => {
     expect(rec.resolved).toEqual(['cmt-2']);
   });
 
+  it('matches a comment whose host id comes back as a number (Word on the web)', async () => {
+    // The typings say string; the web host returns 1891186488 as a number.
+    const rec = setup({ comments: [{ id: 1891186488 as unknown as string }] });
+    const out = await new OfficeWordHost().replyToComment('1891186488', 'Q1 2027', false);
+    expect(out).toEqual({ status: 'replied', location: 'comment:1891186488' });
+    expect(rec.replies).toHaveLength(1);
+    await expect(new OfficeWordHost().readComments()).resolves.toMatchObject([
+      { id: '1891186488' },
+    ]);
+  });
+
   it('returns gone when the comment id no longer exists, writing nothing', async () => {
     const rec = setup({ comments: [{ id: 'other' }] });
     const out = await new OfficeWordHost().replyToComment('missing', 'hi', true);
     expect(out).toEqual({ status: 'gone' });
     expect(rec.replies).toHaveLength(0);
     expect(rec.resolved).toHaveLength(0);
+  });
+});
+
+/* ─────────────────────────────── readComments ───────────────────────────── */
+
+describe('OfficeWordHost.readComments', () => {
+  it('reads each thread — author, text, state, anchored text and replies — in two syncs', async () => {
+    const rec = setup({
+      comments: [
+        {
+          id: 'cmt-1',
+          authorName: 'Dana',
+          content: 'Is this right?',
+          resolved: false,
+          anchorText: '99.5%',
+          threadReplies: [{ authorName: 'Lee', content: 'Yes' }],
+        },
+        { id: 'cmt-2', content: 'Fixed', resolved: true },
+      ],
+    });
+    const before = rec.syncCount;
+    const threads = await new OfficeWordHost().readComments();
+    expect(rec.syncCount - before).toBe(2);
+    expect(threads).toEqual([
+      {
+        id: 'cmt-1',
+        authorName: 'Dana',
+        content: 'Is this right?',
+        resolved: false,
+        anchorText: '99.5%',
+        replies: [{ authorName: 'Lee', content: 'Yes' }],
+      },
+      {
+        id: 'cmt-2',
+        authorName: '',
+        content: 'Fixed',
+        resolved: true,
+        anchorText: '',
+        replies: [],
+      },
+    ]);
+  });
+
+  it('caps the read at MAX_READ_COMMENTS threads', async () => {
+    setup({
+      comments: Array.from({ length: MAX_READ_COMMENTS + 5 }, (_, i) => ({ id: `c${i}` })),
+    });
+    await expect(new OfficeWordHost().readComments()).resolves.toHaveLength(MAX_READ_COMMENTS);
+  });
+
+  it('returns [] below WordApi 1.4 (no comments API)', async () => {
+    setup({ requirements: { WordApi: 3 }, comments: [{ id: 'c1' }] });
+    await expect(new OfficeWordHost().readComments()).resolves.toEqual([]);
+  });
+
+  it('returns [] (never throws) when the batch fails', async () => {
+    setup({ wordRunThrows: true, comments: [{ id: 'c1' }] });
+    await expect(new OfficeWordHost().readComments()).resolves.toEqual([]);
   });
 });
 

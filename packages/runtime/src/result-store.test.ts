@@ -13,6 +13,18 @@ const inspect = (store: CommandResultStore, selector: string): Record<string, un
   store.inspect(selector) as Record<string, unknown>;
 
 describe('CommandResultStore', () => {
+  it('returns command help inline up to 12 KB: it is bounded documentation (WS3)', () => {
+    const store = new CommandResultStore();
+    const help = 'Command: x\n' + 'y'.repeat(9000);
+    const encoded = JSON.parse(store.encode([{ help }]).text) as unknown[];
+    expect(encoded).toEqual([{ help }]);
+    // Any other 9 KB result is still a reference.
+    const other = JSON.parse(store.encode([{ data: 'y'.repeat(9000) }]).text) as Array<{
+      ref?: string;
+    }>;
+    expect(other[0]?.ref).toBeDefined();
+  });
+
   it('keeps small results inline without changing result shapes', () => {
     const store = new CommandResultStore();
     const values = [{ ok: true, answer: 42 }, { error: 'Target moved' }, [1, null, 'x']];

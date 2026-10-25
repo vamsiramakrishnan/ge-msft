@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { AssistRequest, ResolvedContext } from '@ge/contracts';
 import { SessionContext, contextValueToQueryPart } from './session-context.js';
-import { buildStreamAssistRequest } from './stream-assist.js';
+import {
+  LANGUAGE_RULE,
+  buildStreamAssistRequest,
+  identityText,
+  paneInstructions,
+} from './stream-assist.js';
 
 function textCtx(id: string, text: string): ResolvedContext {
   return {
@@ -67,5 +72,61 @@ describe('buildStreamAssistRequest with live context', () => {
     const body = buildStreamAssistRequest(req, cfg);
     expect(body.query).toHaveProperty('text');
     expect(body.query).not.toHaveProperty('parts');
+  });
+
+  it('puts the branded assistant name first when one is configured', () => {
+    const named = { ...cfg, assistantName: 'ContosoAI' };
+    const sc = new SessionContext();
+    sc.add(textCtx('sel', 'SLA is 99.5%'));
+    const parts = (
+      buildStreamAssistRequest(req, named, undefined, sc.list()).query as {
+        parts: unknown[];
+      }
+    ).parts;
+    expect(parts).toEqual([
+      { text: paneInstructions('ContosoAI')! },
+      { text: 'SLA is 99.5%' },
+      { text: 'Summarize the risk' },
+    ]);
+    const text = (buildStreamAssistRequest(req, named).query as { text: string }).text;
+    expect(text.startsWith(`${paneInstructions('ContosoAI')}\n\n`)).toBe(true);
+    expect(identityText('ContosoAI')).toContain('never Gemini');
+    expect(identityText('ContosoAI')).toContain('Do not introduce yourself');
+  });
+
+  it('sends no identity line without a branded name', () => {
+    const text = (buildStreamAssistRequest(req, cfg).query as { text: string }).text;
+    expect(text).not.toContain('Your name is');
+  });
+
+  it('sends the brand writing rules right after the name, in the same instruction block', () => {
+    const rule = 'Open Bahasa emails with "Halo", never "Yth."';
+    const branded = { ...cfg, assistantName: 'ContosoAI', assistantRules: [rule] };
+    const text = (buildStreamAssistRequest(req, branded).query as { text: string }).text;
+    expect(
+      text.startsWith(
+        `<pane_instructions>\n${identityText('ContosoAI')}\n${rule}\n${LANGUAGE_RULE}\n</pane_instructions>\n\n`,
+      ),
+    ).toBe(true);
+    expect(paneInstructions(undefined, [])).toBeUndefined();
+  });
+
+  it('sends a rule limited to command turns only when the assistant writes (not on chat or planner)', () => {
+    const rule = 'Open Bahasa emails with "Halo".';
+    const branded = {
+      ...cfg,
+      assistantName: 'ContosoAI',
+      assistantRules: [{ text: rule, routes: ['command' as const] }],
+    };
+    const queryOf = (route: 'default' | 'planner' | 'command'): string =>
+      (
+        buildStreamAssistRequest(req, branded, undefined, undefined, route).query as {
+          text: string;
+        }
+      ).text;
+    expect(queryOf('command')).toContain(rule);
+    expect(queryOf('default')).not.toContain(rule);
+    expect(queryOf('planner')).not.toContain(rule);
+    expect(queryOf('default')).toContain(identityText('ContosoAI'));
   });
 });

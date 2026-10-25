@@ -180,6 +180,7 @@ describe('production event and extension wiring', () => {
 
 it('defers a host context refresh that completes during a task, then refreshes after idle', async () => {
   const f = fixture();
+  const refresh = vi.spyOn(f.controller, 'refreshContext');
   let finishListing!: (refs: ContextRef[]) => void;
   f.list.mockImplementationOnce(
     () =>
@@ -214,7 +215,8 @@ it('defers a host context refresh that completes during a task, then refreshes a
   expect(f.controller.getState().chips).toEqual([]);
   releaseTask();
   await turn;
-  expect(f.list).toHaveBeenCalledTimes(2);
+  // A chat can list the active item for grounding too; count panel refreshes independently.
+  expect(refresh).toHaveBeenCalledTimes(2);
   expect(f.controller.getState().chips).toEqual([]);
   f.connection.dispose();
   f.runtime.dispose();

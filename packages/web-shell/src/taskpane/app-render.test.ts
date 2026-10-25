@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { openPlanEffects } from '../test-harness/mount-stack.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -45,27 +46,34 @@ describe('<App/> render smoke', () => {
     expect(panel?.getAttribute('aria-busy')).toBe('true');
   });
 
-  it('keeps the core toolbar destinations labeled at narrow-pane density', () => {
+  it('keeps the sidebar destinations labeled at narrow-pane density', () => {
     render();
-    const labels = [...container.querySelectorAll('.tw-label')].map((node) => node.textContent);
-    expect(labels).toContain('Context');
-    expect(labels).toContain('Actions');
-    expect(labels).toContain('History');
+    const labels = [...container.querySelectorAll('.tw-rail .tw-label')].map(
+      (node) => node.textContent,
+    );
+    expect(labels).toEqual(expect.arrayContaining(['Chat', 'Tools', 'History']));
   });
 
-  it('opens catalog routing in the same unclipped modal surface', () => {
-    const catalogClient = {
-      listCatalog: () => new Promise<never>(() => undefined),
-    } as unknown as NonNullable<AppProps['catalogClient']>;
-    render('word', { catalogClient });
-    const routingButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label="Catalog and routing settings"]',
+  it('collapses the sidebar to a menu button and opens it again', () => {
+    localStorage.clear();
+    render();
+    act(() =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Collapse sidebar"]')?.click(),
     );
-    act(() => routingButton?.click());
-    expect(container.querySelector('.tw-modal-title')?.textContent).toContain(
-      'Catalog and routing',
-    );
-    expect(container.querySelector('#ge-catalog-settings')).not.toBeNull();
+    expect(container.querySelector('.tw-rail')).toBeNull();
+    expect(localStorage.getItem('ge.sidebar')).toBe('closed');
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open sidebar"]')?.click());
+    expect(container.querySelector('.tw-rail')).not.toBeNull();
+    localStorage.clear();
+  });
+
+  it('opens Settings with the answer options and no skills catalog', () => {
+    render('word');
+    act(() => container.querySelector<HTMLButtonElement>('[data-panel="settings"]')?.click());
+    expect(container.querySelector('.tw-modal-title')?.textContent).toContain('Settings');
+    expect(container.querySelector('[aria-label="Response format"]')).not.toBeNull();
+    expect(container.querySelector('#ge-catalog-settings')).toBeNull();
+    expect(container.querySelector('#tw-panel-settings')?.textContent).not.toMatch(/skill/i);
   });
 
   it('renders the conversation thread with an assistant message and its citations', () => {
@@ -78,52 +86,118 @@ describe('<App/> render smoke', () => {
     expect(container.querySelector('.cites')?.getAttribute('aria-label')).toBe('Citations');
   });
 
-  it('renders the streaming caret on the in-flight assistant message', () => {
+  it('renders the loader, not the caret, on the in-flight assistant message while it works', () => {
     render();
-    expect(container.querySelector('.caret')).not.toBeNull();
+    expect(container.querySelector('.caret')).toBeNull();
     const activity = container.querySelector('.message-activity[role="status"]');
     expect(activity?.textContent).toContain('Checking the selected policy');
   });
 
-  it('renders the context tray with attached and available chips', () => {
+  it('renders the sources row, which opens to list every chip', () => {
     render();
-    const contextButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label^="Context"]',
-    );
-    act(() => contextButton?.click());
-    const modal = container.querySelector('[role="dialog"][aria-modal="true"]');
-    expect(modal?.querySelector('.tw-modal-title')?.textContent).toContain('Context and grounding');
-    const tray = container.querySelector('.unit[aria-label="Research unit grounding scope"]');
-    expect(tray).not.toBeNull();
-    expect(tray?.classList.contains('unit--embedded')).toBe(true);
-    expect(contextButton?.getAttribute('aria-controls')).toBe('tw-panel-context');
-    expect(tray?.querySelector('[aria-label="Attached sources"]')).not.toBeNull();
-    expect(tray?.querySelector('[aria-label="Available to attach"]')).not.toBeNull();
-    expect(container.querySelectorAll('.chip').length).toBe(FIXTURE_STATE.chips.length);
-    act(() => modal?.querySelector<HTMLButtonElement>('.tw-modal-close')?.click());
-    expect(container.querySelector('.tw-modal-layer')?.hasAttribute('hidden')).toBe(true);
-    expect(contextButton?.getAttribute('aria-expanded')).toBe('false');
+    const toggle = container.querySelector<HTMLButtonElement>('.context-strip-toggle');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle?.click());
+    const add = [
+      ...container.querySelectorAll<HTMLButtonElement>('.context-strip .text-control'),
+    ].find((b) => /^(Add|Manage) sources/.test(b.textContent ?? ''));
+    act(() => add?.click());
+    expect(container.querySelectorAll('.smart-chip').length).toBe(FIXTURE_STATE.chips.length);
   });
 
   it('opens the searchable action library and disables execution at the approval gate', () => {
     render();
-    act(() =>
-      container.querySelector<HTMLButtonElement>('.tw-icon[aria-label="Actions"]')?.click(),
-    );
-    expect(container.querySelector('.tw-modal-title')?.textContent).toContain(
-      'Find your next action',
-    );
+    act(() => container.querySelector<HTMLButtonElement>('[data-panel="actions"]')?.click());
+    expect(container.querySelector('.tw-modal-title')?.textContent).toContain('Tools');
     expect(container.querySelector('.action-library input[type="search"]')).not.toBeNull();
     const buttons = [...container.querySelectorAll<HTMLButtonElement>('.library-run')];
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons.every((button) => button.disabled)).toBe(true);
   });
 
+  it('starts with the sidebar collapsed in a narrow pane, unless the user chose otherwise', () => {
+    const width = window.innerWidth;
+    localStorage.clear();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 });
+    try {
+      render();
+      expect(container.querySelector('.tw-rail')).toBeNull();
+      expect(container.querySelector('[aria-label="Open sidebar"]')).not.toBeNull();
+      act(() => root.unmount());
+      container.remove();
+      localStorage.setItem('ge.sidebar', 'open');
+      render();
+      expect(container.querySelector('.tw-rail')).not.toBeNull();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+      localStorage.clear();
+    }
+  });
+
+  it('follows the thread to the newest message unless the user scrolled up to read', () => {
+    const base = { ...FIXTURE_STATE, busy: false };
+    const withMessages = (extra: typeof base.messages) => ({
+      ...base,
+      messages: [...base.messages, ...extra],
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const show = (state: typeof base): void =>
+      act(() => {
+        root.render(createElement(App, { controller: makeMockController(state), surface: 'word' }));
+      });
+    show(base);
+    const region = container.querySelector<HTMLElement>('.thread-region')!;
+    Object.defineProperty(region, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(region, 'clientHeight', { configurable: true, value: 200 });
+
+    // A new question jumps to the bottom.
+    show(withMessages([{ id: 'u2', role: 'user', text: 'Next question' }]));
+    expect(region.scrollTop).toBe(1000);
+
+    // The user scrolls up to read: a streaming answer does not pull them down.
+    region.scrollTop = 100;
+    act(() => region.dispatchEvent(new Event('scroll')));
+    show(
+      withMessages([
+        { id: 'u2', role: 'user', text: 'Next question' },
+        { id: 'a2', role: 'assistant', text: 'Part of the answer' },
+      ]),
+    );
+    expect(region.scrollTop).toBe(100);
+  });
+
+  it('closes an open panel when a decision card appears behind it', () => {
+    const idle = {
+      ...FIXTURE_STATE,
+      busy: false,
+      pendingPlan: undefined,
+      pendingWrite: undefined,
+      pendingCommandPlan: undefined,
+      pendingShare: undefined,
+    };
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(createElement(App, { controller: makeMockController(idle), surface: 'excel' }));
+    });
+    act(() => container.querySelector<HTMLButtonElement>('[data-panel="actions"]')?.click());
+    expect(container.querySelector('.tw-modal')?.hasAttribute('hidden')).toBe(false);
+    // e.g. a workflow run from Tools stages its write: the plan approval shows in the main column.
+    act(() => {
+      root.render(
+        createElement(App, { controller: makeMockController(FIXTURE_STATE), surface: 'excel' }),
+      );
+    });
+    expect(container.querySelector('.plan-approval')).not.toBeNull();
+    expect(container.querySelector('.tw-modal')?.hasAttribute('hidden')).toBe(true);
+  });
+
   it('offers each available action once in the library for Excel', () => {
     render('excel');
-    act(() =>
-      container.querySelector<HTMLButtonElement>('.tw-icon[aria-label="Actions"]')?.click(),
-    );
+    act(() => container.querySelector<HTMLButtonElement>('[data-panel="actions"]')?.click());
     for (const id of ['create-chart', 'summarize-range', 'find-anomalies', 'excel-reconcile']) {
       expect(container.querySelectorAll(`.action-library [data-action-id="${id}"]`)).toHaveLength(
         1,
@@ -157,11 +231,12 @@ describe('<App/> render smoke', () => {
     render();
     const plan = container.querySelector('.plan-approval[aria-label="Plan approval required"]');
     expect(plan).not.toBeNull();
-    expect(plan?.querySelector('.pin')?.textContent).toBe('3 writes + 2 comments');
+    expect(plan?.querySelector('.plan-approval-title')?.textContent).toBe('Review 5 changes');
     expect(plan?.querySelectorAll('.plan-effect').length).toBe(
       FIXTURE_STATE.pendingPlan?.effects.length,
     );
     // Each effect renders its verbatim command line.
+    openPlanEffects(container);
     expect(plan?.textContent).toContain('set Sales!F2 =C2-D2');
     expect(plan?.textContent).toContain('comment Sales!F2');
     // The approve/reject actions gate real writes — both must be reachable buttons.
@@ -204,30 +279,18 @@ describe('<App/> render smoke', () => {
     expect(container.querySelector('.snd.cancel')).not.toBeNull();
   });
 
-  it('renders the skills surface with each skill signature, def confirmation and an invoke action', () => {
+  it('has no Skills item in the sidebar, even when skills are registered', () => {
     render();
-    const skillsButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label^="Skills"]',
-    );
-    act(() => skillsButton?.click());
-    const skills = container.querySelector('.skills[aria-label="Skills"]');
-    expect(skills).not.toBeNull();
-    expect(skills?.querySelectorAll('.skill').length).toBe(FIXTURE_STATE.skills?.length);
-    // The first skill renders its signature, registration badge, verbatim def and an Invoke button.
-    expect(skills?.querySelector('.skill-sig')?.textContent).toContain('flag-vendor-risk');
-    expect(skills?.querySelector('.skill-badge')?.textContent).toContain('registered');
-    expect(skills?.querySelector('.skill-def')?.textContent).toContain('def flag-vendor-risk');
-    expect(skills?.querySelector('[aria-label="Invoke flag-vendor-risk"]')).not.toBeNull();
-    // Param fields are bindable inputs prefilled from the declared examples.
-    const param = skills?.querySelector<HTMLInputElement>('input.skill-param-input');
-    expect(param?.value).toBe('Northwind Cloud');
+    expect(FIXTURE_STATE.skills?.length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-panel="skills"]')).toBeNull();
+    expect(container.querySelector('#tw-panel-skills')).toBeNull();
+    const labels = [...container.querySelectorAll('.tw-rail .tw-label')].map((n) => n.textContent);
+    expect(labels).not.toContain('Skills');
   });
 
   it('opens the conversations sheet with the active session and continue controls', () => {
     render();
-    const sessionsButton = container.querySelector<HTMLButtonElement>(
-      '.tw-icon[aria-label^="Conversations"]',
-    );
+    const sessionsButton = container.querySelector<HTMLButtonElement>('[data-panel="sessions"]');
     act(() => sessionsButton?.click());
     const sessions = container.querySelector('.sessions[aria-label="Conversations"]');
     expect(sessions).not.toBeNull();

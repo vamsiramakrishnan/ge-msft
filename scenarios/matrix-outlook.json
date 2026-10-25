@@ -1,0 +1,1544 @@
+[
+  {
+    "id": "mx-ol-read-01",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Summarise this email",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"],
+      "answerIncludes": ["payment gateway", "security review", "Friday"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-02",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "What is Rina asking for?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"],
+      "answerIncludes": ["owners", "Friday"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-03",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "List the open integration checks",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-04",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Apa yang diminta dalam email ini?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-05",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "What is the deadline mentioned?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-06",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Who sent this and what do they need?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-07",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Is there any action item for me?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-08",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Summarise this email in one sentence",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-09",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "What are the risks mentioned?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-10",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Extract the action items as a list",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-01",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a polite reply saying we will confirm by Friday",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-02",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply that the payment gateway test is done and the security review is next week",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-03",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Balas email ini dengan sopan bahwa kami akan konfirmasi hari Jumat",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-04",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a reply asking for one more week",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-05",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply with the owners: Budi for payment gateway, Sari for security review",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-06",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Write a short reply acknowledging the email",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-07",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply proposing 15 November as the launch date",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-08",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a reply asking who owns the security review",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-09",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply saying I am on leave and Budi will respond",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-10",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a reply with the target dates for both checks",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-01",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft a new email to the team about the Friday release freeze",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-02",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Write a new email to IT asking for the security review status",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-03",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Buat email baru ke tim tentang rapat koordinasi minggu depan",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-04",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft an email to Budi asking for the payment gateway test results",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-05",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Write a new email announcing the launch date",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-06",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft a new message to my manager summarising the open checks",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-07",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Create a new email inviting the team to a launch rehearsal",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-08",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Write an email to the vendor asking for an update",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-09",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft a new email to all staff about the new mobile app",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-10",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Compose a new email requesting budget approval",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Launch readiness for the new mobile banking app",
+      "body": "<p>Hi team,</p><p>Can we confirm the launch date for the new mobile banking app? Two integration checks are still open: the payment gateway test and the security review. Please send owners and target dates by Friday.</p><p>Thanks,<br>Rina</p>",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-11",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "tldr",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-12",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Summarise this email in three bullet points and tell me what the customer needs from us before 25 October.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-13",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Ringkas email ini dan sebutkan dokumen apa saja yang belum diterima",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-14",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Siapa yang harus saya hubungi dan apa risikonya jika tenggat terlewat?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-15",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "List every audit finding with its rating, owner and due date",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-16",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Which findings are high risk and what goes to the Audit Committee?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-17",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Summarise this whole thread: what was agreed, what is still open, and who owns each open item",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "RE: RE: RE: Treasury limit increase for PT Agro Mandiri",
+      "body": "<p>Hi Rizky,</p><p>Credit Risk is fine with the FX line increase from USD 5 million to USD 8 million, provided the cash collateral stays at 20%. Legal still needs the updated facility agreement.</p><p>Thanks,<br>Sari (Credit Risk)</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 10 October 2026</p><p>Sari, the client confirmed they can top up the collateral. Can we close this by end of next week? The client's import contracts start on 1 November.</p><hr><p><b>From:</b> Hendra Gunawan (Legal)<br><b>Sent:</b> 8 October 2026</p><p>We will need a board resolution from PT Agro Mandiri approving the higher limit, plus the amended facility agreement signed by two directors.</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 6 October 2026</p><p>Team, PT Agro Mandiri has requested a treasury FX line increase from USD 5 million to USD 8 million to hedge their soybean imports. Current utilisation is 85%. Please review.</p>",
+      "from": {
+        "displayName": "Sari Puspita",
+        "emailAddress": "sari.puspita@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-18",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Is this customer complaint urgent? What exactly is she asking for and what is the total amount in dispute?",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-19",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Compare the 2027 price with 2026 and tell me what the 2-year option would cost per ATM per month",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Proposal: ATM network maintenance contract renewal 2027",
+      "body": "<p>Dear Procurement Team,</p><p>Thank you for the opportunity. For 2027 we propose the following for 1,200 ATMs across Java and Bali:</p><ul><li>Preventive maintenance: IDR 1,150,000 per ATM per month (up 9% from 2026)</li><li>Response SLA: 4 hours in cities, 8 hours outside cities</li><li>Uptime commitment: 98.5%</li></ul><p>We kindly request your decision by 31 October so that we can secure spare parts stock. We are also open to a 2-year contract at a 4% discount.</p><p>Best regards,<br>Kevin Tan<br>Account Director, Nusantara ATM Services</p>",
+      "from": {
+        "displayName": "Kevin Tan",
+        "emailAddress": "kevin.tan@nusantara-atm.example"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-read-20",
+    "surface": "outlook",
+    "title": "read",
+    "prompt": "Data apa saja yang masih kurang dan kapan batasnya? Jawab dalam Bahasa Indonesia",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Pengingat: laporan bulanan ke OJK — data per 30 September 2026",
+      "body": "<p>Rekan-rekan,</p><p>Laporan bulanan ke OJK untuk posisi 30 September 2026 harus dikirim paling lambat 15 Oktober pukul 17.00. Data yang masih kurang:</p><ul><li>Rasio NPL per segmen (Treasury Ops)</li><li>Rekap pengaduan nasabah (Customer Care) — 214 pengaduan, 9 belum selesai</li><li>Posisi DPK per cabang (Finance)</li></ul><p>Mohon kirim data ke saya paling lambat 14 Oktober.</p><p>Salam,<br>Fajar Nugroho<br>Regulatory Reporting</p>",
+      "from": {
+        "displayName": "Fajar Nugroho",
+        "emailAddress": "fajar.nugroho@example.com"
+      }
+    },
+    "expect": {
+      "notApplied": ["reply-mail", "create-mail"]
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-11",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "reply: received, checking",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-12",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a formal reply to Mr Santoso confirming we received his salary slips and NPWP, that no other documents are missing, that approval is expected by 22 October, and that the 6.25% fixed rate for 3 years is still available. Keep it under 150 words and sign as Relationship Manager, KCP Bekasi.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-13",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Balas email ini: cabang akan mengirim dokumen sebelum 31 Oktober dan PIC-nya adalah Ibu Ratna (Customer Service Manager)",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-14",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Buatkan balasan sopan dan formal yang meminta perpanjangan waktu dua minggu karena direksi nasabah sedang dinas luar negeri",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-15",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a reply apologising to Ms Kurniawan, confirming the duplicate charge of IDR 7,499,000 will be refunded with the interest within 3 working days, and giving ticket CC-559201 as the reference. Empathetic but professional.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-16",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply to Andi with a remediation plan for findings 1 and 2 only, as a short table: action, owner, date",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-17",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Politely decline the 9% increase and ask them to keep the 2026 price; mention we are open to discussing the 2-year option",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Proposal: ATM network maintenance contract renewal 2027",
+      "body": "<p>Dear Procurement Team,</p><p>Thank you for the opportunity. For 2027 we propose the following for 1,200 ATMs across Java and Bali:</p><ul><li>Preventive maintenance: IDR 1,150,000 per ATM per month (up 9% from 2026)</li><li>Response SLA: 4 hours in cities, 8 hours outside cities</li><li>Uptime commitment: 98.5%</li></ul><p>We kindly request your decision by 31 October so that we can secure spare parts stock. We are also open to a 2-year contract at a 4% discount.</p><p>Best regards,<br>Kevin Tan<br>Account Director, Nusantara ATM Services</p>",
+      "from": {
+        "displayName": "Kevin Tan",
+        "emailAddress": "kevin.tan@nusantara-atm.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-18",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Reply to Sari saying I'll chase Legal for the facility agreement and the board resolution, aiming to close by 24 October",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "RE: RE: RE: Treasury limit increase for PT Agro Mandiri",
+      "body": "<p>Hi Rizky,</p><p>Credit Risk is fine with the FX line increase from USD 5 million to USD 8 million, provided the cash collateral stays at 20%. Legal still needs the updated facility agreement.</p><p>Thanks,<br>Sari (Credit Risk)</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 10 October 2026</p><p>Sari, the client confirmed they can top up the collateral. Can we close this by end of next week? The client's import contracts start on 1 November.</p><hr><p><b>From:</b> Hendra Gunawan (Legal)<br><b>Sent:</b> 8 October 2026</p><p>We will need a board resolution from PT Agro Mandiri approving the higher limit, plus the amended facility agreement signed by two directors.</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 6 October 2026</p><p>Team, PT Agro Mandiri has requested a treasury FX line increase from USD 5 million to USD 8 million to hedge their soybean imports. Current utilisation is 85%. Please review.</p>",
+      "from": {
+        "displayName": "Sari Puspita",
+        "emailAddress": "sari.puspita@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-19",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Balas ke Pak Fajar: data rekap pengaduan akan saya kirim tanggal 14 Oktober pagi, 9 pengaduan yang belum selesai sedang ditangani",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Pengingat: laporan bulanan ke OJK — data per 30 September 2026",
+      "body": "<p>Rekan-rekan,</p><p>Laporan bulanan ke OJK untuk posisi 30 September 2026 harus dikirim paling lambat 15 Oktober pukul 17.00. Data yang masih kurang:</p><ul><li>Rasio NPL per segmen (Treasury Ops)</li><li>Rekap pengaduan nasabah (Customer Care) — 214 pengaduan, 9 belum selesai</li><li>Posisi DPK per cabang (Finance)</li></ul><p>Mohon kirim data ke saya paling lambat 14 Oktober.</p><p>Salam,<br>Fajar Nugroho<br>Regulatory Reporting</p>",
+      "from": {
+        "displayName": "Fajar Nugroho",
+        "emailAddress": "fajar.nugroho@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-20",
+    "surface": "outlook",
+    "title": "reply",
+    "prompt": "Draft a reply escalating this complaint: tell her it has been escalated to the Card Operations head and she'll get a call within 24 hours. Casual is fine but keep it respectful.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-11",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "new email to branch managers: audit remediation due 22 Oct",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-12",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Write a new email to the Card Operations team asking them to investigate the double debit in this complaint (card ending 4417, IDR 7,499,000 twice on 28 September, ticket CC-559201), confirm the refund status, and reply before Friday so we can respond before the customer goes to OJK.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-13",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Buat email baru ke tim Legal yang meminta draf perjanjian fasilitas yang sudah diubah untuk PT Agro Mandiri",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "RE: RE: RE: Treasury limit increase for PT Agro Mandiri",
+      "body": "<p>Hi Rizky,</p><p>Credit Risk is fine with the FX line increase from USD 5 million to USD 8 million, provided the cash collateral stays at 20%. Legal still needs the updated facility agreement.</p><p>Thanks,<br>Sari (Credit Risk)</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 10 October 2026</p><p>Sari, the client confirmed they can top up the collateral. Can we close this by end of next week? The client's import contracts start on 1 November.</p><hr><p><b>From:</b> Hendra Gunawan (Legal)<br><b>Sent:</b> 8 October 2026</p><p>We will need a board resolution from PT Agro Mandiri approving the higher limit, plus the amended facility agreement signed by two directors.</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 6 October 2026</p><p>Team, PT Agro Mandiri has requested a treasury FX line increase from USD 5 million to USD 8 million to hedge their soybean imports. Current utilisation is 85%. Please review.</p>",
+      "from": {
+        "displayName": "Sari Puspita",
+        "emailAddress": "sari.puspita@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-14",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Tolong buatkan email baru ke nasabah PT Sinar Logistik Nusantara yang meminta akta perubahan terakhir, SK Kemenkumham, dan KTP direksi sebelum 31 Oktober 2026. Bahasa formal.",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-15",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Compose a new email to the Head of Procurement summarising the ATM vendor proposal as a table (price, SLA, uptime, deadline) and recommending we negotiate",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Proposal: ATM network maintenance contract renewal 2027",
+      "body": "<p>Dear Procurement Team,</p><p>Thank you for the opportunity. For 2027 we propose the following for 1,200 ATMs across Java and Bali:</p><ul><li>Preventive maintenance: IDR 1,150,000 per ATM per month (up 9% from 2026)</li><li>Response SLA: 4 hours in cities, 8 hours outside cities</li><li>Uptime commitment: 98.5%</li></ul><p>We kindly request your decision by 31 October so that we can secure spare parts stock. We are also open to a 2-year contract at a 4% discount.</p><p>Best regards,<br>Kevin Tan<br>Account Director, Nusantara ATM Services</p>",
+      "from": {
+        "displayName": "Kevin Tan",
+        "emailAddress": "kevin.tan@nusantara-atm.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-16",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft a new email to Credit Risk asking whether the KPR application for IDR 1,250,000,000 can be fast-tracked, casual tone",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-17",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Write a new escalation email to the Regional Head about findings 1 and 2 from the Surabaya Darmo audit",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-18",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Buat email baru ke Treasury Ops, Customer Care dan Finance untuk mengingatkan data OJK yang masih kurang, batas 14 Oktober",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Pengingat: laporan bulanan ke OJK — data per 30 September 2026",
+      "body": "<p>Rekan-rekan,</p><p>Laporan bulanan ke OJK untuk posisi 30 September 2026 harus dikirim paling lambat 15 Oktober pukul 17.00. Data yang masih kurang:</p><ul><li>Rasio NPL per segmen (Treasury Ops)</li><li>Rekap pengaduan nasabah (Customer Care) — 214 pengaduan, 9 belum selesai</li><li>Posisi DPK per cabang (Finance)</li></ul><p>Mohon kirim data ke saya paling lambat 14 Oktober.</p><p>Salam,<br>Fajar Nugroho<br>Regulatory Reporting</p>",
+      "from": {
+        "displayName": "Fajar Nugroho",
+        "emailAddress": "fajar.nugroho@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-19",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "new mail to the Collateral team: confirm PT Agro Mandiri's 20% cash collateral on the new USD 8 million line",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "RE: RE: RE: Treasury limit increase for PT Agro Mandiri",
+      "body": "<p>Hi Rizky,</p><p>Credit Risk is fine with the FX line increase from USD 5 million to USD 8 million, provided the cash collateral stays at 20%. Legal still needs the updated facility agreement.</p><p>Thanks,<br>Sari (Credit Risk)</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 10 October 2026</p><p>Sari, the client confirmed they can top up the collateral. Can we close this by end of next week? The client's import contracts start on 1 November.</p><hr><p><b>From:</b> Hendra Gunawan (Legal)<br><b>Sent:</b> 8 October 2026</p><p>We will need a board resolution from PT Agro Mandiri approving the higher limit, plus the amended facility agreement signed by two directors.</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 6 October 2026</p><p>Team, PT Agro Mandiri has requested a treasury FX line increase from USD 5 million to USD 8 million to hedge their soybean imports. Current utilisation is 85%. Please review.</p>",
+      "from": {
+        "displayName": "Sari Puspita",
+        "emailAddress": "sari.puspita@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-newmail-20",
+    "surface": "outlook",
+    "title": "newmail",
+    "prompt": "Draft a new email to all branch staff announcing new KYC refresh rules for dormant account reactivation, short and clear",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "applied": {
+        "create-mail": 1
+      }
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-01",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Send this email now",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-02",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Schedule a meeting with Budi Santoso tomorrow at 10:00 to discuss his KPR",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "KPR application #KPR-2026-08817 — documents and approval timeline",
+      "body": "<p>Dear Relationship Manager,</p><p>I submitted my mortgage (KPR) application on 2 October for a property in Bekasi. The requested amount is IDR 1,250,000,000 over 15 years. Your branch asked for my last 3 months of salary slips and my NPWP, which I sent on 7 October.</p><p>Could you tell me (1) whether anything else is missing, (2) the expected approval date, and (3) whether the 6.25% fixed rate for the first 3 years is still available? The developer needs confirmation by 25 October.</p><p>Regards,<br>Budi Santoso</p>",
+      "from": {
+        "displayName": "Budi Santoso",
+        "emailAddress": "budi.santoso@gmail.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-03",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Flag this email for follow-up and add the category 'Urgent'",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-04",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Move this email to the Audit 2026 folder",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Branch audit findings — KCP Surabaya Darmo (Q3 2026)",
+      "body": "<p>Hi all,</p><p>Summary of the Q3 audit at KCP Surabaya Darmo:</p><table><tr><th>#</th><th>Finding</th><th>Rating</th><th>Owner</th><th>Due</th></tr><tr><td>1</td><td>Cash vault dual-control log missing signatures on 4 days</td><td>High</td><td>Branch Manager</td><td>30 Oct</td></tr><tr><td>2</td><td>12 dormant accounts reactivated without CDD refresh</td><td>High</td><td>CS Supervisor</td><td>15 Nov</td></tr><tr><td>3</td><td>Teller cash limit exceeded (IDR 250,000,000 vs IDR 200,000,000) on 3 occasions</td><td>Medium</td><td>Head Teller</td><td>30 Nov</td></tr><tr><td>4</td><td>Fire extinguisher inspection overdue</td><td>Low</td><td>GA</td><td>15 Dec</td></tr></table><p>Please send remediation plans by 22 October. Findings 1 and 2 will be reported to the Audit Committee.</p><p>Thanks,<br>Andi Pratama<br>Internal Audit</p>",
+      "from": {
+        "displayName": "Andi Pratama",
+        "emailAddress": "andi.pratama@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-05",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Set my out-of-office from 20 to 24 October saying I'm on leave",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Pengingat: laporan bulanan ke OJK — data per 30 September 2026",
+      "body": "<p>Rekan-rekan,</p><p>Laporan bulanan ke OJK untuk posisi 30 September 2026 harus dikirim paling lambat 15 Oktober pukul 17.00. Data yang masih kurang:</p><ul><li>Rasio NPL per segmen (Treasury Ops)</li><li>Rekap pengaduan nasabah (Customer Care) — 214 pengaduan, 9 belum selesai</li><li>Posisi DPK per cabang (Finance)</li></ul><p>Mohon kirim data ke saya paling lambat 14 Oktober.</p><p>Salam,<br>Fajar Nugroho<br>Regulatory Reporting</p>",
+      "from": {
+        "displayName": "Fajar Nugroho",
+        "emailAddress": "fajar.nugroho@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-06",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Forward this thread to everyone in the Treasury department",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "RE: RE: RE: Treasury limit increase for PT Agro Mandiri",
+      "body": "<p>Hi Rizky,</p><p>Credit Risk is fine with the FX line increase from USD 5 million to USD 8 million, provided the cash collateral stays at 20%. Legal still needs the updated facility agreement.</p><p>Thanks,<br>Sari (Credit Risk)</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 10 October 2026</p><p>Sari, the client confirmed they can top up the collateral. Can we close this by end of next week? The client's import contracts start on 1 November.</p><hr><p><b>From:</b> Hendra Gunawan (Legal)<br><b>Sent:</b> 8 October 2026</p><p>We will need a board resolution from PT Agro Mandiri approving the higher limit, plus the amended facility agreement signed by two directors.</p><hr><p><b>From:</b> Rizky Hidayat<br><b>Sent:</b> 6 October 2026</p><p>Team, PT Agro Mandiri has requested a treasury FX line increase from USD 5 million to USD 8 million to hedge their soybean imports. Current utilisation is 85%. Please review.</p>",
+      "from": {
+        "displayName": "Sari Puspita",
+        "emailAddress": "sari.puspita@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-07",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Kirim email ini sekarang juga",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-08",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Jadwalkan rapat dengan tim Compliance hari Jumat jam 14.00",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-09",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Tandai email ini sebagai penting dan pindahkan ke folder Pengaduan",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "COMPLAINT: double debit on my credit card — still not refunded",
+      "body": "<p>To whom it may concern,</p><p>On 28 September I was charged twice for the same purchase at an electronics store: IDR 7,499,000 two times on my credit card ending 4417. I called the contact centre on 30 September (ticket CC-559201) and was told the refund would take 7 working days. It has now been more than two weeks and nothing has been refunded. I am also being charged interest on the duplicate amount.</p><p>I expect a full refund including the interest and a written explanation. If this is not resolved by Friday I will escalate to OJK.</p><p>Sincerely,<br>Maria Kurniawan</p>",
+      "from": {
+        "displayName": "Maria Kurniawan",
+        "emailAddress": "maria.k@yahoo.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-10",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Aktifkan balasan otomatis (out of office) selama saya cuti minggu depan",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Pengingat: laporan bulanan ke OJK — data per 30 September 2026",
+      "body": "<p>Rekan-rekan,</p><p>Laporan bulanan ke OJK untuk posisi 30 September 2026 harus dikirim paling lambat 15 Oktober pukul 17.00. Data yang masih kurang:</p><ul><li>Rasio NPL per segmen (Treasury Ops)</li><li>Rekap pengaduan nasabah (Customer Care) — 214 pengaduan, 9 belum selesai</li><li>Posisi DPK per cabang (Finance)</li></ul><p>Mohon kirim data ke saya paling lambat 14 Oktober.</p><p>Salam,<br>Fajar Nugroho<br>Regulatory Reporting</p>",
+      "from": {
+        "displayName": "Fajar Nugroho",
+        "emailAddress": "fajar.nugroho@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-11",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Delete this email and block the sender",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Proposal: ATM network maintenance contract renewal 2027",
+      "body": "<p>Dear Procurement Team,</p><p>Thank you for the opportunity. For 2027 we propose the following for 1,200 ATMs across Java and Bali:</p><ul><li>Preventive maintenance: IDR 1,150,000 per ATM per month (up 9% from 2026)</li><li>Response SLA: 4 hours in cities, 8 hours outside cities</li><li>Uptime commitment: 98.5%</li></ul><p>We kindly request your decision by 31 October so that we can secure spare parts stock. We are also open to a 2-year contract at a 4% discount.</p><p>Best regards,<br>Kevin Tan<br>Account Director, Nusantara ATM Services</p>",
+      "from": {
+        "displayName": "Kevin Tan",
+        "emailAddress": "kevin.tan@nusantara-atm.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-12",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Reply to the vendor and send it immediately without showing me a draft",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Proposal: ATM network maintenance contract renewal 2027",
+      "body": "<p>Dear Procurement Team,</p><p>Thank you for the opportunity. For 2027 we propose the following for 1,200 ATMs across Java and Bali:</p><ul><li>Preventive maintenance: IDR 1,150,000 per ATM per month (up 9% from 2026)</li><li>Response SLA: 4 hours in cities, 8 hours outside cities</li><li>Uptime commitment: 98.5%</li></ul><p>We kindly request your decision by 31 October so that we can secure spare parts stock. We are also open to a 2-year contract at a 4% discount.</p><p>Best regards,<br>Kevin Tan<br>Account Director, Nusantara ATM Services</p>",
+      "from": {
+        "displayName": "Kevin Tan",
+        "emailAddress": "kevin.tan@nusantara-atm.example"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-unsupported-13",
+    "surface": "outlook",
+    "title": "unsupported",
+    "prompt": "Create a calendar reminder for the 31 October KYC deadline",
+    "clarification": "Use sensible example content.",
+    "seed": {
+      "subject": "Permintaan dokumen KYC — PT Sinar Logistik Nusantara",
+      "body": "<p>Yth. Tim Compliance,</p><p>Sehubungan dengan pembaruan data nasabah korporasi, kami belum menerima dokumen berikut dari PT Sinar Logistik Nusantara: akta perubahan terakhir, SK Kemenkumham, dan KTP direksi yang masih berlaku. Batas waktu pembaruan adalah 31 Oktober 2026. Jika tidak dipenuhi, rekening giro akan dibatasi sesuai kebijakan.</p><p>Mohon konfirmasi siapa PIC dari sisi cabang.</p><p>Hormat kami,<br>Dewi Lestari<br>KYC Operations</p>",
+      "from": {
+        "displayName": "Dewi Lestari",
+        "emailAddress": "dewi.lestari@example.com"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true
+    },
+    "timeoutMs": 180000
+  },
+  {
+    "id": "mx-ol-reply-21",
+    "surface": "outlook",
+    "title": "SIT #1 accept a meeting invitation",
+    "prompt": "Create a polite reply that accepts the meeting invitation.",
+    "clarification": "NA",
+    "seed": {
+      "subject": "Invitation: Q4 Branch Network Review - Thu 23 Oct 10:00",
+      "body": "Dear team,\n\nYou are invited to the Q4 Branch Network Review on Thursday 23 October at 10:00 WIB, Contoso Tower, room 12A. Please confirm your attendance by replying to this email.\n\nRegards,\nRina Wijaya\nNetwork Strategy",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.co.id"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    }
+  },
+  {
+    "id": "mx-ol-reply-22",
+    "surface": "outlook",
+    "title": "SIT #2 accept, Bahasa criteria as prompt",
+    "prompt": "Re: [Subjek Undangan]\nIsi pesan (body) memuat teks balasan sopan yang menyatakan penerimaan undangan rapat\nEmail berstatus DRAFT dan TIDAK terkirim secara otomatis sebelum user menekan tombol Send",
+    "clarification": "NA",
+    "seed": {
+      "subject": "Invitation: Q4 Branch Network Review - Thu 23 Oct 10:00",
+      "body": "Dear team,\n\nYou are invited to the Q4 Branch Network Review on Thursday 23 October at 10:00 WIB, Contoso Tower, room 12A. Please confirm your attendance by replying to this email.\n\nRegards,\nRina Wijaya\nNetwork Strategy",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.co.id"
+      }
+    },
+    "expect": {
+      "applied": {
+        "reply-mail": 1
+      }
+    }
+  },
+  {
+    "id": "mx-ol-unsupported-14",
+    "surface": "outlook",
+    "title": "SIT #4 set subject while reading",
+    "prompt": "Change the subject to \"Release Freeze - Friday\".",
+    "clarification": "NA",
+    "seed": {
+      "subject": "Invitation: Q4 Branch Network Review - Thu 23 Oct 10:00",
+      "body": "Dear team,\n\nYou are invited to the Q4 Branch Network Review on Thursday 23 October at 10:00 WIB, Contoso Tower, room 12A. Please confirm your attendance by replying to this email.\n\nRegards,\nRina Wijaya\nNetwork Strategy",
+      "from": {
+        "displayName": "Rina Wijaya",
+        "emailAddress": "rina.wijaya@example.co.id"
+      }
+    },
+    "expect": {
+      "status": "any",
+      "noErrors": true,
+      "notApplied": ["create-mail"]
+    }
+  }
+]

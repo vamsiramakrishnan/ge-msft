@@ -11,7 +11,15 @@ export {
   HANDLED_ACTUATIONS,
 } from './excel-bridge.js';
 export { EXCEL_CAPABILITIES } from './capabilities.js';
-export { rangeToContext, selectionValuesToContext, splitHeaderRows } from './capture.js';
+export {
+  rangeToContext,
+  selectionValuesToContext,
+  splitHeaderRows,
+  commentsToRefs,
+  commentToContext,
+  type ExcelComment,
+  type ExcelCommentReply,
+} from './capture.js';
 export {
   deriveOrigin,
   selectionChanged,

@@ -4,6 +4,7 @@
     "intent",
     "surface",
     "scope",
+    "changes",
     "confidence"
   ],
   "listKeys": [
@@ -39,6 +40,10 @@
     "high",
     "medium",
     "low"
+  ],
+  "changes": [
+    "yes",
+    "no"
   ],
   "contextHints": [
     "incremental",

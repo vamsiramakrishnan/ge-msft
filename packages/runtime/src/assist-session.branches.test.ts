@@ -336,6 +336,62 @@ describe('AssistSession.runCommands — surface effect-arg expressions resolve a
       readRange: () => Promise.resolve(gfmTable()),
     });
 
+  it('counts a "3x3" table as 3 rows including the header before approval (user decision 2026-10-17)', async () => {
+    const bridge = new FlexBridge('powerpoint', {
+      actuations: [
+        { kind: 'add-table-slide', surface: 'powerpoint', title: 'Table', reversible: true },
+      ],
+    });
+    const long =
+      '/add-table-slide slide=4 rows="No\\tDimensi\\tCatatan\\n1\\tA\\ta\\n2\\tB\\tb\\n3\\tC\\tc"';
+    const right = '/add-table-slide slide=4 rows="No\\tDimensi\\tCatatan\\n1\\tA\\ta\\n2\\tB\\tb"';
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\n' + long + '\n```',
+      '```cmd\n' + right + '\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    await collectLoop(
+      session.runCommands('pada slide no 4 ini, generate table 3x3', { approvePlan: () => true }),
+    );
+    expect(JSON.stringify(bodies[1])).toContain('3 rows in total, the header row included');
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]!.params.tableGrid!.rows).toHaveLength(3);
+  });
+
+  it('adds the header on top only when the user asks for data rows (3x3 with 3 data rows)', async () => {
+    const bridge = new FlexBridge('powerpoint', {
+      actuations: [
+        { kind: 'add-table-slide', surface: 'powerpoint', title: 'Table', reversible: true },
+      ],
+    });
+    const four =
+      '/add-table-slide slide=4 rows="No\\tDimensi\\tCatatan\\n1\\tA\\ta\\n2\\tB\\tb\\n3\\tC\\tc"';
+    const { fetch } = scriptedFetch(['```cmd\n' + four + '\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    await collectLoop(
+      session.runCommands('generate table 3x3 with 3 data rows below the header', {
+        approvePlan: () => true,
+      }),
+    );
+    expect(bridge.applied[0]!.params.tableGrid!.rows).toHaveLength(4);
+  });
+
+  it('keeps writes that leave the document (Teams posts) at 8 per turn under the 30 cap', async () => {
+    const bridge = composeBridge();
+    const posts = Array.from({ length: 9 }, (_, i) => `post "update ${i}"`).join('\n');
+    const { fetch } = scriptedFetch(['```cmd\n' + posts + '\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    const events = await collectLoop(
+      session.runCommands('post nine updates', { approvePlan: () => true }),
+    );
+    expect(bridge.applied).toHaveLength(8);
+    expect(events.find((e) => e.type === 'capped')).toMatchObject({ reason: 'write cap 8/turn' });
+  });
+
   it('post (textExpr) resolves a composed scalar to concrete text', async () => {
     const bridge = composeBridge();
     const { fetch } = scriptedFetch([
@@ -652,8 +708,13 @@ describe('AssistSession.runCommands — loop bounds', () => {
 
   it('`exhausted.turns` reflects the actual last-started turn, not a hardcoded maxTurns', async () => {
     const bridge = new FlexBridge('word');
-    // Two consecutive no-fence replies end the loop at turn 2, well before maxTurns (6).
-    const { fetch } = scriptedFetch(['just prose, no fence', 'still no fence']);
+    // A program ran at turn 1; then two consecutive no-fence replies end the loop at turn 3, well
+    // before maxTurns (6).
+    const { fetch } = scriptedFetch([
+      '```cmd\noutline\n```',
+      'just prose, no fence',
+      'still no fence',
+    ]);
     const client = new StreamAssistClient(tokens, cfg, fetch);
     const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
 
@@ -661,7 +722,35 @@ describe('AssistSession.runCommands — loop bounds', () => {
     const exhausted = events.find((e) => e.type === 'exhausted') as
       | Extract<CommandLoopEvent, { type: 'exhausted' }>
       | undefined;
-    expect(exhausted?.turns).toBe(2);
+    expect(exhausted?.turns).toBe(3);
+  });
+
+  it('keeps a confirmed change plan incomplete when the model only replies in prose', async () => {
+    const bridge = new FlexBridge('word');
+    const { fetch } = scriptedFetch(['I will rewrite it.', 'Rewriting the paragraph now.']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    const task =
+      '<confirmed_plan>\noriginal_request: rewrite the intro\nintent: rewrite\nstep 1: rewrite the introduction paragraph\n</confirmed_plan>';
+
+    const events = await collectLoop(session.runCommands(task, { maxTurns: 6 }));
+    expect(events.some((e) => e.type === 'done' && 'answerOnly' in e)).toBe(false);
+    expect(events.some((e) => e.type === 'exhausted')).toBe(true);
+  });
+
+  it('ends as an answer when the model replies in prose twice and no command ran', async () => {
+    const bridge = new FlexBridge('word');
+    const { fetch } = scriptedFetch(['Hello! How can I help?', 'Hi! What would you like to do?']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const events = await collectLoop(session.runCommands('hii', { maxTurns: 6 }));
+    expect(events.some((e) => e.type === 'exhausted')).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      answerOnly: true,
+      answer: 'Hi! What would you like to do?',
+    });
   });
 });
 
@@ -705,7 +794,9 @@ describe('AssistSession.runCommands — ambient doc_state feeds each command tur
     // The turn-2 query has the result block but NO <doc_state> (capture threw).
     const turn2 = (bodies[1]!.query as { text?: string }).text ?? '';
     expect(turn2).toContain('```result');
-    expect(turn2).not.toContain('<doc_state');
+    // An unreadable document is said, never silently dropped (the model invented figures otherwise).
+    expect(turn2).toContain('<doc_state unavailable="true">');
+    expect(turn2).not.toContain('<doc_state surface=');
     expect(events.some((e) => e.type === 'done')).toBe(true);
     warn.mockRestore();
   });

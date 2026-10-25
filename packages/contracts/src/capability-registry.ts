@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { ActuationKindSchema, type ActuationKind } from './capability.js';
 import { ContextKindSchema, SurfaceSchema, type Surface } from './context.js';
 
+/** Shared by table help, planner and compact execution instructions. */
+export const TABLE_FACTS_RULE =
+  'For factual tables, use observed or user-supplied facts and preserve source precision. ' +
+  'Leave missing facts blank or mark TBD; never infer them from the topic. ' +
+  'Synthetic examples or proposals require an explicit user request and visible labelling.';
+
 /**
  * Capability registry: non-authorizing metadata for promoting host APIs into the product.
  *
@@ -100,6 +106,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Excel.Range.format.font.italic',
       'Excel.Range.format.fill.color',
       'Excel.Range.numberFormat',
+      'Excel.Range.format.font.color',
+      'Excel.Range.format.horizontalAlignment',
+      'Excel.Range.format.verticalAlignment',
+      'Excel.Range.format.borders',
     ],
     requirementSets: [{ name: 'ExcelApi', minVersion: '1.1' }],
     contextKinds: ['range', 'sheet', 'table'],
@@ -109,7 +119,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Preview the exact formatting facets and range.',
       'Emit one format command for the affected range.',
     ],
-    examples: ['format Sales!A1:C1 bold=true fill=#FFF2CC'],
+    examples: [
+      'format Sales!A1:C1 bold=true fill=#1F4E78 fontColor=#FFFFFF align=center',
+      'format Sales!A1:C9 border=thin borderColor=#D3D3D3',
+    ],
     preview: ['affected range', 'format facets', 'number format if present'],
     inverse: 'restore captured prior formatting facets on the same range',
     provenance: 'record range, formatting delta, prior formatting snapshot, and changeId',
@@ -283,9 +296,9 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
   entry({
     kind: 'sort-range',
     surface: 'excel',
-    status: 'promotable',
+    status: 'implemented',
     exposure: 'specialized',
-    priority: 'p1',
+    priority: 'p0',
     command: '/sort-range',
     title: 'Excel native sort',
     useWhen: 'sort a range or table in place using Excel sort semantics',
@@ -298,7 +311,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Preview the sort key, direction, and affected rows.',
       'Emit one /sort-range command.',
     ],
-    examples: ['/sort-range range=Sales!A1:G500 key=Revenue order=descending'],
+    examples: [
+      '/sort-range range=Sales!A1:G500 key=Revenue order=descending',
+      '/sort-range range=Sales!A1:G500 key=C headers=true',
+    ],
     preview: ['affected range/table', 'sort key', 'direction', 'header handling'],
     inverse: 'restore prior row order from captured values when within write budget',
     provenance: 'record source hash, sort key, order, and changeId',
@@ -388,7 +404,8 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     priority: 'p0',
     command: '/insert-text',
     title: 'Word plain-text insertion',
-    useWhen: 'insert grounded plain text at the current selection or after an exact anchor',
+    useWhen:
+      'insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text',
     hostApis: ['Word.Range.insertText', 'Word.Selection.insertText'],
     requirementSets: [{ name: 'WordApi', minVersion: '1.1' }],
     contextKinds: ['selection', 'paragraph', 'document'],
@@ -398,7 +415,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Preview the inserted text and position.',
       'Emit one /insert-text command only when insertion, not tracked rewrite, is intended.',
     ],
-    examples: ['/insert-text match="Appendix" position=after text="Reviewed by Legal."'],
+    examples: [
+      '/insert-text match="Appendix" position=after text="Reviewed by Legal."',
+      '/insert-text text="AI COE" bold=true font=Arial size=16',
+    ],
     preview: ['anchor/selection', 'position', 'inserted text summary'],
     inverse: 'delete the inserted text range when the inserted range is captured',
     provenance: 'record anchor, inserted text hash, position, and changeId',
@@ -588,7 +608,8 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     priority: 'p0',
     command: '/insert-table',
     title: 'Word native table insertion',
-    useWhen: 'insert a small grounded table into a Word document',
+    useWhen:
+      'insert a small grounded table into a Word document: "at the cursor" (pada lokasi kursor) = no match= (it goes after the cursor\'s paragraph); match="exact text" only when the user names a place. Empty rows the user asks for are tab-only lines',
     hostApis: ['Word.Range.insertTable', 'Word.Table'],
     requirementSets: [{ name: 'WordApi', minVersion: '1.3' }],
     contextKinds: ['selection', 'paragraph', 'table'],
@@ -598,7 +619,12 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Keep the table small enough for preview.',
       'Emit one /insert-table with a tableGrid payload or use OOXML when native table is unavailable.',
     ],
-    examples: ['/insert-table match="Appendix" rows="Metric\\tValue\\nRevenue\\t100"'],
+    examples: [
+      '/insert-table rows="#\\tAktivitas\\tDeliverable\\n\\t\\t\\n\\t\\t"',
+      '/insert-table match="Appendix" rows="Metric\\tValue\\nRevenue\\t100"',
+      // Turn existing paragraphs into a table: the table replaces them as one tracked edit.
+      '/insert-table match="Budi - send" replaceThrough="Rina - review" rows="Owner\\tAction\\nBudi\\tSend results\\nRina\\tReview SLA" headers=true',
+    ],
     preview: ['anchor', 'row/column count', 'first rows'],
     inverse: 'delete the inserted table when a stable inserted range can be re-resolved',
     provenance: 'record anchor, table hash, row/column count, and changeId',
@@ -771,17 +797,18 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     priority: 'p0',
     command: '/format-shape',
     title: 'PowerPoint shape formatting',
-    useWhen: 'change fill, line, font, or z-order for one addressed shape',
+    useWhen:
+      'change the colour of one addressed shape (fill/background, text colour, outline) or its font or z-order, e.g. make a title blue with white text',
     hostApis: ['PowerPoint.Shape.fill', 'PowerPoint.Shape.lineFormat', 'PowerPoint.TextRange.font'],
     requirementSets: [{ name: 'PowerPointApi', minVersion: '1.4' }],
     contextKinds: ['shape', 'slide'],
-    discovery: ['list shape', 'properties <shape-ref>', 'open <shape-ref>'],
+    discovery: ['read slide:<n>', 'list shape', 'properties <shape-ref>', 'open <shape-ref>'],
     sequence: [
-      'Inspect the shape ref first.',
+      'For the slide title use shape=title directly; otherwise read slide:<n>, which lists each shape id and type.',
       'Preview the exact formatting delta.',
       'Emit one /format-shape command.',
     ],
-    examples: ['/format-shape ref=pp:shape:s2:shape7 fill=#0F6CBD'],
+    examples: ['/format-shape slide=1 shape=title fill=#0F6CBD fontColor=#FFFFFF'],
     preview: ['shape id', 'prior formatting fields', 'new formatting fields'],
     inverse: 'restore captured formatting fields on the same shape id',
     provenance: 'record slide id, shape id, formatting delta, and changeId',
@@ -797,7 +824,7 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     command: '/add-shape',
     title: 'PowerPoint shape/textbox insertion',
     useWhen:
-      'add a text box, geometric shape, or line to an addressed slide with explicit geometry',
+      'add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command — never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, …); fill=#RRGGBB colours it',
     hostApis: [
       'PowerPoint.ShapeCollection.addTextBox',
       'PowerPoint.ShapeCollection.addGeometricShape',
@@ -812,7 +839,8 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Emit one /add-shape command; never infer placement from prose alone.',
     ],
     examples: [
-      '/add-shape slide=s2 shapeType=textBox text="Key risk" left=72 top=96 width=280 height=80',
+      '/add-shape slide=2 shapeType=textBox text="Key risk" left=72 top=300 width=400 height=50',
+      '/add-shape slide=2 shapeType=rectangle fill=#0F6CBD left=560 top=20 width=140 height=60',
     ],
     preview: ['target slide', 'shape type', 'geometry', 'text/style fields'],
     inverse: 'delete the inserted shape by captured shape id',
@@ -828,7 +856,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     priority: 'p0',
     command: '/add-table-slide',
     title: 'PowerPoint native slide table',
-    useWhen: 'insert a small native table onto a slide instead of flattening it into text',
+    useWhen:
+      'add a native table (rows and columns) to a new slide (slide=new title="…", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A "3x3" (N×M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so ("3 data rows"). ' +
+      TABLE_FACTS_RULE +
+      ' Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there',
     hostApis: ['PowerPoint.ShapeCollection.addTable'],
     requirementSets: [{ name: 'PowerPointApi', minVersion: '1.8' }],
     contextKinds: ['slide', 'table'],
@@ -839,7 +870,9 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
       'Emit one /add-table-slide with explicit geometry and TSV rows.',
     ],
     examples: [
-      '/add-table-slide slide=s3 rows="Metric\\tValue\\nARR\\t$12M" left=72 top=120 width=560 height=260',
+      '/add-table-slide slide=new title="Key metrics" rows="Metric\\tValue\\nARR\\t$12M" left=72 top=110 width=560 height=200',
+      '/add-table-slide slide=new at=2 title="Key metrics" rows="Metric\\tValue\\nARR\\t$12M"',
+      '/add-table-slide slide=4 rows="No\\tDimensi\\tDeskripsi\\n1\\tRegulasi\\tPatuh OJK\\n2\\tData\\tLokasi data\\n3\\tBiaya\\tTCO 3 tahun"',
     ],
     preview: ['target slide', 'row/column count', 'geometry', 'first rows'],
     inverse: 'delete the inserted table shape by captured shape id',
@@ -930,7 +963,8 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     priority: 'p0',
     command: '/add-attachment',
     title: 'Outlook draft attachment',
-    useWhen: 'attach a generated or approved file to a draft without sending mail',
+    useWhen:
+      'attach a file to a draft being written, without sending mail (on a received message, reply with the file instead: mail "reply text" attach="name.docx" text="file text"). A file the user describes ("a Word file titled X containing Y") is name="X.docx" text="Y": the pane builds a real Word file (or a text file for .txt). Never write base64 yourself; base64= is only for a file the host returned',
     hostApis: [
       'Office.MessageCompose.addFileAttachmentAsync',
       'Office.MessageCompose.addItemAttachmentAsync',
@@ -940,10 +974,10 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     discovery: ['attachments', 'properties <draft-ref>', 'context upload-preferred'],
     sequence: [
       'Confirm the active item is a draft/compose surface.',
-      'Use only a host-returned file or allowlisted URL/base64 artifact.',
+      'Describe a new file with name= and text= (.docx or .txt); use base64= only for a host-returned file.',
       'Emit one /add-attachment command.',
     ],
-    examples: ['/add-attachment name="brief.xlsx" base64=<base64>'],
+    examples: ['/add-attachment name="hello arjuna.docx" text="test script 1"'],
     preview: ['draft target', 'file name', 'size/hash', 'attachment type'],
     inverse: 'remove the created attachment by attachment id when available',
     provenance: 'record attachment name, size/hash, draft id when available, and changeId',

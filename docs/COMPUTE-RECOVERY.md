@@ -88,13 +88,20 @@ It follows the same plan, hooks, gates and readback path. Unsupported/unsafe for
 fails closed. Undo currently covers cell contents, not formatting, comments, charts, workbook
 structure or every inverse descriptor advertised elsewhere.
 
-The journal holds at most 32 effects and 2 MiB. Remove resolved receipts explicitly to free space;
-unresolved receipts are not silently evicted. Same-origin panes serialize through Web Locks where
+The journal holds at most 32 effects and 1.5 MiB. Oldest finished receipts make room for a new
+effect; unresolved receipts and replay parents are not silently evicted. Same-origin panes serialize through Web Locks where
 available, with an in-process queue otherwise. **Office settings are not a cross-device transaction
 log or compare-and-swap service.** Coauthor edits can race the pre-write check; readback detects
 mismatch but does not provide atomic isolation. No exactly-once execution claim is made. Unsaved
 workbooks do not reuse a recovery identity across pane lifetimes. Renamed/unavailable worksheets
 may need manual recovery.
+
+Overlapping writes in one approved batch may rebase onto an earlier effect's output only when
+a fresh capture matches that effect's correlated, verified after-hash and native source identity.
+Coauthor edits, changed formulas or recalculated values that no longer match that hash retain the
+later write's original precondition, so it refuses a stale destination. A later capture alone is
+never proof of batch output. This preserves the existing pre-dispatch checks without claiming
+atomic isolation from Office coauthoring.
 
 Formula-looking literal cells are distinguished with native formula-area reads when needed
 (ExcelApi 1.9). An older host that cannot make this distinction refuses the ambiguous snapshot.

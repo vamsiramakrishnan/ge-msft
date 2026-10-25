@@ -1,19 +1,35 @@
+import { parseEmphasis, type EmphasisInput, type EmphasisNode } from './emphasis.js';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ChatMessage } from '../../controller.js';
-import type { SourceRef, Surface } from '@ge/contracts';
+import type { ChatMessage, ResultChange } from '../../controller.js';
+import { uiStrings, type UiLanguage } from '../../ui-language.js';
+import {
+  ALL_VERBS,
+  CONFIRMED_PLAN_OPEN,
+  isCommandParseError,
+  parseCommandLine,
+  type SourceRef,
+  type Surface,
+} from '@ge/contracts';
 import type { InsertableArtifact } from '../insert-artifact.js';
 import { canRenderHostLocation } from '../../host-location.js';
+import { copyText } from './RunSteps.js';
+import { answerForClipboard } from '../answer-copy.js';
 
 export interface MessageThreadProps {
   messages: ChatMessage[];
   showEmpty?: boolean;
   disabled?: boolean;
-  onFollowUp?: (text: string) => void;
   surface?: Surface;
   onInsertArtifact?: (artifact: InsertableArtifact) => void;
   onRevealLocation?: (location: string) => void;
   insertArtifactDisabledReason?: string;
+  /** The conversation's language, for the pane's own text. */
+  language?: UiLanguage;
+  /** Undo what a result card lists (through the approval card). */
+  onUndoChanges?: (messageId: string) => void;
+  /** Send the last request again (shown on the latest failed answer only). */
+  onRetry?: () => void;
 }
 
 /**
@@ -69,7 +85,7 @@ function isBlockStart(lines: string[], index: number): boolean {
 }
 
 function findNextInlineMarker(text: string, start: number): number {
-  const markers = ['**', '`', '[', '*'];
+  const markers = ['`', '['];
   const indexes = markers.map((marker) => text.indexOf(marker, start)).filter((idx) => idx >= 0);
   return indexes.length ? Math.min(...indexes) : text.length;
 }
@@ -80,37 +96,24 @@ function renderInline(
   surface: Surface,
   onRevealLocation?: (location: string) => void,
 ): ReactNode[] {
-  const nodes: ReactNode[] = [];
+  // Code spans and links first (atoms), then emphasis by the CommonMark rules over what is left.
+  const pieces: EmphasisInput<ReactNode> = [];
   let i = 0;
   let key = 0;
   const pushText = (value: string): void => {
-    if (value) nodes.push(value);
+    if (!value) return;
+    const last = pieces[pieces.length - 1];
+    if (last?.kind === 'text') last.text += value;
+    else pieces.push({ kind: 'text', text: value });
   };
 
   while (i < text.length) {
-    if (text.startsWith('**', i)) {
-      const end = text.indexOf('**', i + 2);
-      if (end > i + 2) {
-        nodes.push(
-          <strong key={`${keyPrefix}-b-${key++}`}>
-            {renderInline(
-              text.slice(i + 2, end),
-              `${keyPrefix}-b-${key}`,
-              surface,
-              onRevealLocation,
-            )}
-          </strong>,
-        );
-        i = end + 2;
-        continue;
-      }
-    }
-
+    const atoms: ReactNode[] = [];
     if (text[i] === '`') {
       const end = text.indexOf('`', i + 1);
       if (end > i + 1) {
         const codeText = text.slice(i + 1, end);
-        nodes.push(
+        atoms.push(
           onRevealLocation && canRenderHostLocation(surface, codeText) ? (
             <button
               key={`${keyPrefix}-loc-${key++}`}
@@ -125,6 +128,7 @@ function renderInline(
             <code key={`${keyPrefix}-c-${key++}`}>{codeText}</code>
           ),
         );
+        pieces.push({ kind: 'atom', atom: atoms[0] });
         i = end + 1;
         continue;
       }
@@ -139,7 +143,7 @@ function renderInline(
         const rawTarget = text.slice(urlStart, urlEnd).trim();
         const hostLocation = citationLocation(rawTarget);
         const href = safeHttpUri(rawTarget);
-        nodes.push(
+        atoms.push(
           hostLocation && onRevealLocation && canRenderHostLocation(surface, hostLocation) ? (
             <button
               key={`${keyPrefix}-host-a-${key++}`}
@@ -166,25 +170,8 @@ function renderInline(
             </span>
           ),
         );
+        pieces.push({ kind: 'atom', atom: atoms[0] });
         i = urlEnd + 1;
-        continue;
-      }
-    }
-
-    if (text[i] === '*' && !text.startsWith('**', i)) {
-      const end = text.indexOf('*', i + 1);
-      if (end > i + 1) {
-        nodes.push(
-          <em key={`${keyPrefix}-i-${key++}`}>
-            {renderInline(
-              text.slice(i + 1, end),
-              `${keyPrefix}-i-${key}`,
-              surface,
-              onRevealLocation,
-            )}
-          </em>,
-        );
-        i = end + 1;
         continue;
       }
     }
@@ -194,7 +181,14 @@ function renderInline(
     i = next;
   }
 
-  return nodes;
+  const render = (nodes: EmphasisNode<ReactNode>[]): ReactNode[] =>
+    nodes.map((node) => {
+      if (node.kind === 'text') return node.text;
+      if (node.kind === 'atom') return node.atom;
+      const Tag = node.kind === 'em' ? 'em' : 'strong';
+      return <Tag key={`${keyPrefix}-${node.kind}-${key++}`}>{render(node.children)}</Tag>;
+    });
+  return render(parseEmphasis(pieces));
 }
 
 const USER_TOKEN_RE =
@@ -362,7 +356,7 @@ function commandSegment(raw: string): UserCommandSegment | undefined {
 }
 
 function internalPlanSegment(text: string): InternalPlanSegment | undefined {
-  if (!text.includes('<confirmed_plan>')) return undefined;
+  if (!text.includes(CONFIRMED_PLAN_OPEN)) return undefined;
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const value = (key: string): string | undefined => {
     const prefix = `${key}:`;
@@ -752,89 +746,202 @@ function Citation({ source, id }: { source: SourceRef; id: string }): JSX.Elemen
   );
 }
 
-function AnswerActions({
-  text,
-  onFollowUp,
-  disabled,
-}: {
-  text: string;
-  onFollowUp?: (text: string) => void;
-  disabled: boolean;
-}): JSX.Element {
+function AnswerActions({ text }: { text: string }): JSX.Element {
   const [copyState, setCopyState] = useState('');
   const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopyState('Copied');
-    } catch {
-      setCopyState('Select the answer to copy it.');
-    }
+    const { plain, html } = answerForClipboard(text);
+    setCopyState((await copyText(plain, html)) ? 'Copied' : 'Select the answer to copy it.');
   };
   return (
     <div className="answer-actions" aria-label="Use this answer">
       <button type="button" onClick={() => void copy()}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15V5a1 1 0 0 1 1-1h10" />
+        </svg>
         Copy answer
       </button>
-      {onFollowUp && (
-        <>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() =>
-              onFollowUp(
-                'Summarize the previous answer as a decision brief: recommendation, evidence, risks, and next steps. Preserve its citations and flag unknowns.',
-              )
-            }
-          >
-            Decision brief
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() =>
-              onFollowUp(
-                'Turn the previous answer into a checklist with stated owners, dates, and source references. Leave unstated owners and dates blank.',
-              )
-            }
-          >
-            Action checklist
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() =>
-              onFollowUp(
-                'Check the previous answer against the attached evidence. Separate supported facts, assumptions, contradictions, and unanswered questions. Cite the sources.',
-              )
-            }
-          >
-            Check evidence
-          </button>
-        </>
-      )}
       {copyState && <span role="status">{copyState}</span>}
     </div>
   );
 }
 
+/**
+ * A step that sends nothing visible for a while (planning, reading the document) must not look
+ * frozen: three bouncing dots, beside the activity label when there is one.
+ */
+function WorkingIndicator({ activity }: { activity?: string }): JSX.Element {
+  return (
+    <span
+      className="message-activity"
+      role="status"
+      aria-live="polite"
+      aria-label={activity ? undefined : 'Working'}
+    >
+      <span className="typing-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+      {activity ? <span>{activity}</span> : null}
+    </span>
+  );
+}
+
+/** Command structure a sentence rarely has: a sheet/cell reference, an `=` or a quoted value. */
+const COMMAND_STRUCTURE = /["=!]|\b[A-Z]{1,3}\d+\b/;
+
+/** Words that start a command or program line (`finish when=verified`, `let $x = …`). */
+const COMMAND_WORDS = new Set<string>([...ALL_VERBS, 'finish', 'let']);
+
+/**
+ * A line the model wrote as a command rather than prose: lowercase (sentences start with a capital),
+ * parsed by the real command grammar, and carrying command structure, so "Read the summary below." or
+ * "Done! The chart is ready." stay visible. A bare `done` closes a narrated program.
+ */
+function isNarratedCommand(line: string, inFence = false): boolean {
+  const t = line.trim();
+  if (t === 'done') return true;
+  // A command the grammar rejects is still a command (UAT 2026-10-16: `set I2 ""`,
+  // `finish when=verified`, a bare `save` in a fence showed in an Excel reply).
+  const word = /^\/?([a-z][\w-]*)/.exec(t)?.[1];
+  if (word && COMMAND_WORDS.has(word) && (inFence || COMMAND_STRUCTURE.test(t))) return true;
+  // A binding (`let $data = read 'Sheet'!A1:Q49`) is program syntax the line parser does not take.
+  const binding = /^let \$\w+ = (.+)$/.exec(t);
+  if (binding) return isNarratedCommand(binding[1] ?? '') || /^read\b/.test(binding[1] ?? '');
+  // A slash form (`/add-shape slide=2 …`) is the same grammar (live 2026-10-13: shown in a reply).
+  return (
+    /^\/?[a-z]/.test(t) && COMMAND_STRUCTURE.test(t) && !isCommandParseError(parseCommandLine(t))
+  );
+}
+
+/** Rejoin a command whose quoted argument runs onto the next line (`slide "T" "• a⏎• b"`). */
+function joinQuotedLines(lines: string[]): string[] {
+  const out: string[] = [];
+  let open = '';
+  for (const line of lines) {
+    open = open ? `${open} ${line}` : line;
+    if ((open.match(/"/g)?.length ?? 0) % 2 === 0) {
+      out.push(open);
+      open = '';
+    }
+  }
+  if (open) out.push(open);
+  return out;
+}
+
+/**
+ * Remove commands from a reply. They are how the model drives the add-in, not part of the answer; the
+ * approval card and Activity show what they do, and the reply says how many blocks were hidden.
+ * Hidden: ```cmd / ```plan fences (as the runtime parses them), any other fence whose every line is a
+ * command, and bare narrated command lines. An unclosed ```cmd / ```plan fence is hidden whole while
+ * the reply is still streaming; in a finished reply its leading command lines are hidden and anything
+ * after them stays visible, so prose after a stray fence is never lost.
+ */
+export function stripCommandBlocks(
+  text: string,
+  streaming = false,
+): { text: string; hidden: number } {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let hidden = 0;
+  let inNarration = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const fence = /^[ \t]*```([\w-]*)[ \t]*$/.exec(line);
+    if (fence) {
+      let end = i + 1;
+      while (end < lines.length && !/^[ \t]*```[ \t]*$/.test(lines[end] ?? '')) end++;
+      const closed = end < lines.length;
+      const body = lines.slice(i + 1, end);
+      const label = (fence[1] ?? '').toLowerCase();
+      const protocol = label === 'cmd' || label === 'plan';
+      const allCommands =
+        body.some((l) => l.trim()) &&
+        joinQuotedLines(body).every((l) => !l.trim() || isNarratedCommand(l, true));
+      if ((protocol && (closed || streaming)) || (closed && allCommands)) {
+        hidden++;
+        inNarration = false;
+        i = end;
+        continue;
+      }
+      if (protocol && !closed) {
+        // Finished reply, fence never closed (live 2026-10-13: the command showed as a code block).
+        let j = i + 1;
+        while (
+          j < lines.length &&
+          (!(lines[j] ?? '').trim() || isNarratedCommand(lines[j] ?? '', true))
+        )
+          j++;
+        if (j > i + 1) {
+          hidden++;
+          inNarration = false;
+          i = j - 1;
+          continue;
+        }
+      }
+      out.push(...lines.slice(i, closed ? end + 1 : lines.length));
+      inNarration = false;
+      i = closed ? end : lines.length;
+      continue;
+    }
+    if (isNarratedCommand(line)) {
+      if (!inNarration) hidden++;
+      inNarration = true;
+      continue;
+    }
+    inNarration = false;
+    out.push(line);
+  }
+  return {
+    text: out
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim(),
+    hidden,
+  };
+}
+
 function Message({
   message,
   disabled,
-  onFollowUp,
   surface,
   onInsertArtifact,
   onRevealLocation,
   insertArtifactDisabledReason,
+  language = 'en',
+  onUndoChanges,
+  onRetry,
 }: {
   message: ChatMessage;
   disabled: boolean;
-  onFollowUp?: (text: string) => void;
   surface: Surface;
   onInsertArtifact?: (artifact: InsertableArtifact) => void;
   onRevealLocation?: (location: string) => void;
   insertArtifactDisabledReason?: string;
-}): JSX.Element {
+  language?: UiLanguage;
+  onUndoChanges?: (messageId: string) => void;
+  onRetry?: () => void;
+}): JSX.Element | null {
   const isUser = message.role === 'user';
+  const stripped = isUser
+    ? { text: message.text, hidden: 0 }
+    : stripCommandBlocks(message.text, Boolean(message.streaming));
+  const text = stripped.text;
+  // Only a finished reply that ended up empty is dropped; a streaming one keeps its bubble.
+  if (
+    !isUser &&
+    !text &&
+    !message.streaming &&
+    stripped.hidden === 0 &&
+    !message.activity &&
+    !message.error &&
+    !message.cancelled &&
+    !message.note &&
+    !message.changes?.length &&
+    !(message.sources && message.sources.length > 0)
+  )
+    return null;
   return (
     <div className={`m ${isUser ? 'u' : 'a'}`}>
       {!isUser && <span className="ic" aria-hidden="true" />}
@@ -844,7 +951,7 @@ function Message({
             <UserMessageContent text={message.text} />
           ) : (
             <MarkdownContent
-              text={message.text}
+              text={text}
               surface={surface}
               onInsertArtifact={
                 message.streaming || message.cancelled || message.error
@@ -855,20 +962,48 @@ function Message({
               insertArtifactDisabledReason={insertArtifactDisabledReason}
             />
           )}
-          {message.streaming && message.activity ? (
-            <span className="message-activity" role="status" aria-live="polite">
-              <span className="message-activity-dot" aria-hidden="true" />
-              <span>{message.activity}</span>
-            </span>
+          {/* While waiting (a working step, or no text yet) show only the loader; the caret starts
+              with the text. */}
+          {message.streaming && (message.activity || !text) ? (
+            <WorkingIndicator activity={message.activity} />
           ) : null}
-          {message.streaming && <span className="caret" aria-label="streaming" />}
+          {/* Only when the bubble would otherwise be empty: next to an answer or a change card the
+              note was technical noise (UAT 2026-10-15, "chat by Contoso-AI in the bubble"). */}
+          {stripped.hidden > 0 && !text.trim() && !message.changes?.length && (
+            <span className="cmd-hidden-note muted small">
+              {stripped.hidden === 1
+                ? '1 command block sent to the add-in. See Activity.'
+                : `${stripped.hidden} command blocks sent to the add-in. See Activity.`}
+            </span>
+          )}
+          {message.streaming && text && !message.activity && (
+            <span className="caret" aria-label="streaming" />
+          )}
         </div>
         {message.error && (
-          <div className="msg-error" role="alert">
-            {message.error}
+          <ErrorCard
+            blocked={message.blocked === true}
+            made={message.changes?.filter((c) => !c.undone).length ?? 0}
+            language={language}
+            onRetry={onRetry}
+          />
+        )}
+        {message.changes?.length && !message.streaming ? (
+          <ResultCard
+            changes={message.changes}
+            surface={surface}
+            language={language}
+            disabled={disabled}
+            onShow={onRevealLocation}
+            onUndo={onUndoChanges ? () => onUndoChanges(message.id) : undefined}
+          />
+        ) : null}
+        {message.cancelled && <div className="muted small">Cancelled.</div>}
+        {message.note && !message.streaming && (
+          <div className="muted small" role="note">
+            {message.note}
           </div>
         )}
-        {message.cancelled && <div className="muted small">Cancelled.</div>}
         {message.sources && message.sources.length > 0 && (
           <div className="cites" aria-label="Citations">
             <span className="cites-h eyebrow">Sources</span>
@@ -877,9 +1012,12 @@ function Message({
             ))}
           </div>
         )}
-        {!isUser && message.text && !message.streaming && !message.cancelled && !message.error && (
-          <AnswerActions text={message.text} onFollowUp={onFollowUp} disabled={disabled} />
-        )}
+        {!isUser &&
+          text &&
+          !message.streaming &&
+          !message.cancelled &&
+          !message.error &&
+          !message.clarifying && <AnswerActions text={text} />}
       </div>
     </div>
   );
@@ -902,11 +1040,13 @@ export function MessageThread({
   messages,
   showEmpty = true,
   disabled = false,
-  onFollowUp,
   surface = 'word',
   onInsertArtifact,
   onRevealLocation,
   insertArtifactDisabledReason,
+  language,
+  onUndoChanges,
+  onRetry,
 }: MessageThreadProps): JSX.Element {
   return (
     <div className="thread" role="log" aria-live="polite" aria-label="Conversation">
@@ -927,13 +1067,114 @@ export function MessageThread({
           key={m.id}
           message={m}
           disabled={disabled}
-          onFollowUp={m === messages[messages.length - 1] ? onFollowUp : undefined}
           surface={surface}
           onInsertArtifact={onInsertArtifact}
           onRevealLocation={onRevealLocation}
           insertArtifactDisabledReason={insertArtifactDisabledReason}
+          language={language}
+          onUndoChanges={onUndoChanges}
+          onRetry={m === messages[messages.length - 1] ? onRetry : undefined}
         />
       ))}
+    </div>
+  );
+}
+
+/**
+ * What a request changed, in plain words, with Show me (reveal in the document) and Undo. Undo is
+ * offered only where a safe restore exists; otherwise the card points to Office's own Undo.
+ */
+function ResultCard({
+  changes,
+  surface,
+  language,
+  disabled,
+  onShow,
+  onUndo,
+}: {
+  changes: ResultChange[];
+  surface: Surface;
+  language: UiLanguage;
+  disabled: boolean;
+  onShow?: (location: string) => void;
+  onUndo?: () => void;
+}): JSX.Element {
+  const t = uiStrings(language);
+  const allUndone = changes.every((c) => c.undone);
+  const shown = changes.find(
+    (c) => c.location && !c.undone && canRenderHostLocation(surface, c.location),
+  );
+  const undoable = changes.filter((c) => c.undoable && !c.undone);
+  return (
+    <div
+      className={`result-card${allUndone ? ' is-undone' : ''}`}
+      role="group"
+      aria-label={allUndone ? t.undone : t.doneOne}
+    >
+      <div className="result-card-title">
+        {allUndone ? t.undone : changes.length === 1 ? t.doneOne : t.doneMany(changes.length)}
+      </div>
+      <ul className="result-card-list">
+        {changes.map((c) => (
+          <li key={c.changeId} className={c.undone ? 'is-undone' : undefined}>
+            {c.label}
+          </li>
+        ))}
+      </ul>
+      {!allUndone && (
+        <div className="result-card-actions">
+          {shown && onShow ? (
+            <button
+              type="button"
+              className="btn sm"
+              disabled={disabled}
+              onClick={() => onShow(shown.location!)}
+            >
+              {t.showMe}
+            </button>
+          ) : null}
+          {undoable.length > 0 && onUndo ? (
+            <button type="button" className="btn sm" disabled={disabled} onClick={onUndo}>
+              {changes.length > 1 ? t.undoAll : t.undo}
+            </button>
+          ) : (
+            <span className="result-card-hint">{t.undoInOffice}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A failed answer, in plain words and the conversation's language. The error itself is never shown
+ * here: it is in Copy diagnostics (redacted).
+ */
+function ErrorCard({
+  blocked,
+  made,
+  language,
+  onRetry,
+}: {
+  blocked: boolean;
+  made: number;
+  language: UiLanguage;
+  onRetry?: () => void;
+}): JSX.Element {
+  const t = uiStrings(language);
+  return (
+    <div className="error-card" role="alert">
+      <div className="error-card-title">{blocked ? t.blockedTitle : t.failedTitle}</div>
+      {blocked ? (
+        <div className="error-card-body">{t.blockedBody}</div>
+      ) : made > 0 ? (
+        <div className="error-card-body">{t.failedPartial(made)}</div>
+      ) : null}
+      {!blocked && onRetry ? (
+        <button type="button" className="btn sm pr error-card-retry" onClick={onRetry}>
+          {t.tryAgain}
+        </button>
+      ) : null}
     </div>
   );
 }

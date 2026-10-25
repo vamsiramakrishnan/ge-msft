@@ -7,7 +7,7 @@ import type { CapabilityManifest } from '@ge/contracts';
  */
 export const EXCEL_CAPABILITIES: CapabilityManifest = {
   surface: 'excel',
-  contextKinds: ['selection', 'range', 'sheet', 'table'],
+  contextKinds: ['selection', 'range', 'sheet', 'table', 'comment'],
   // Read verbs Excel serves (ADR-0006 closure): `outline` via `captureDocState`, addressable
   // `read <A1|NamedRange>` via `readRange`, `search` via `searchDocument`.
   reads: ['outline', 'read', 'search'],
@@ -66,6 +66,13 @@ export const EXCEL_CAPABILITIES: CapabilityManifest = {
       title: 'Reply & resolve comment',
       reversible: true,
       appliesTo: ['comment'],
+    },
+    {
+      kind: 'sort-range',
+      surface: 'excel',
+      title: 'Sort a range',
+      reversible: true,
+      appliesTo: ['range', 'table'],
     },
   ],
 };

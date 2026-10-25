@@ -39,6 +39,15 @@ const ANCHOR_PREFIX_CHARS = 64;
 
 /** Per-field hard cap at render time, so one huge field can't blow the prompt budget. */
 const RENDER_FIELD_CHARS = 240;
+/**
+ * The selection is what a "rewrite my selection" task works on, so the model needs all of it: at
+ * 240 characters a two-paragraph selection was cut mid-sentence and every rewrite anchored on a
+ * fragment that matched nothing.
+ */
+const SELECTION_PREVIEW_CHARS = 2000;
+
+/** A table's header row is its column list; allow a wide sheet's header before eliding. */
+const INVENTORY_TITLE_CHARS = 480;
 
 /** Code-point-safe truncation (never splits a surrogate pair mid-character). */
 function clip(text: string, n: number): string {
@@ -75,6 +84,11 @@ export interface BuildDocStateInput {
   blocks: Block[];
   selection?: DocStateSelection;
   namedRanges?: DocStateNamedRange[];
+  /**
+   * Every worksheet in an Excel workbook (name + used range). Without it the model saw only the
+   * active sheet and could not fill a sheet "from the Jakarta and Surabaya sheets".
+   */
+  sheets?: DocStateSheet[];
   comments?: DocStateComment[];
   /** ISO 8601 capture time; defaults to now. */
   capturedAt?: string;
@@ -104,17 +118,79 @@ function headingAnchor(block: Block): Anchor {
   return anchor;
 }
 
-/** Map a table block to a one-line dimension summary, when native structure is present. */
+/**
+ * Map a table block to a one-line dimension summary, when native structure is present. Native
+ * tables keep the header in `columns` and only data in `rows`, so the header row is named
+ * explicitly: "10 rows" alone was read as "rows 1–10" and the model dropped the last data row.
+ */
 function tableSummary(block: Block): string | undefined {
   if (block.data === undefined) return undefined;
   const cols = block.data.columns.length;
   const rows = block.data.rows.length;
-  return `${rows} row${rows === 1 ? '' : 's'} × ${cols} col${cols === 1 ? '' : 's'}`;
+  return `header row + ${rows} data row${rows === 1 ? '' : 's'}, ${cols} col${cols === 1 ? '' : 's'}`;
+}
+
+/**
+ * A table's inventory label: its full header row when native structure is present, so the model
+ * can see every column it may chart or query (a 64-char clip hid columns like `Total`), else the
+ * first text line. Rendering still escapes and caps it.
+ */
+function tableTitle(block: Block, count: number): string {
+  const header = block.data?.columns.map((c) => oneLine(String(c))).filter(Boolean);
+  // One code point past the render cap, so rendering elides a wider header with `…` instead of
+  // silently hiding its last columns.
+  if (header?.length) return clip(header.join(' | '), INVENTORY_TITLE_CHARS + 1);
+  return clip(block.text.split('\n')[0] ?? '', ANCHOR_PREFIX_CHARS) || `Table ${count}`;
+}
+
+/** Ids this builder invents for blocks without a host locator; no command can address them. */
+const SYNTHETIC_ID = /^(?:heading|table):\d+$/;
+
+/**
+ * The target a command should name for an inventory entry, or `undefined` when the entry has no
+ * host locator. Excel ranges are addressed by their bare A1 address (`read Sheet2!A1:J11`); every
+ * other host locator (`slide:<id>`, `cc:<id>`, …) is used verbatim.
+ */
+export function commandRef(id: string): string | undefined {
+  if (SYNTHETIC_ID.test(id)) return undefined;
+  return id.startsWith('range:') ? id.slice('range:'.length) : id;
+}
+
+/** One worksheet of an Excel workbook, as the bridge read it. */
+export interface DocStateSheet {
+  name: string;
+  /** The used range with its sheet prefix (`Jakarta!A1:E31`); absent when the sheet is empty. */
+  usedAddress?: string;
+  active?: boolean;
+  hidden?: boolean;
+}
+
+/** A sheet name as an A1 prefix: quoted unless it is a plain identifier. */
+function sheetPrefix(name: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`;
+}
+
+/** A worksheet's inventory entry: `read <ref>` reads its used range. */
+function sheetEntry(sheet: DocStateSheet): DocStateInventoryEntry {
+  const notes = [
+    ...(sheet.active ? ['active sheet'] : []),
+    ...(sheet.hidden ? ['hidden'] : []),
+    ...(sheet.usedAddress ? [] : ['empty']),
+  ];
+  return {
+    kind: 'sheet',
+    id: `range:${sheet.usedAddress ?? `${sheetPrefix(sheet.name)}!A1`}`,
+    title: clip(sheet.name, ANCHOR_PREFIX_CHARS),
+    ...(notes.length > 0 ? { summary: notes.join(', ') } : {}),
+  };
 }
 
 export function buildDocStateSnapshot(input: BuildDocStateInput): DocStateSnapshot {
   const outlineAll: DocStateOutlineEntry[] = [];
-  const inventoryAll: DocStateInventoryEntry[] = [];
+  // Sheets come first, so a long outline cannot push them past the inventory cap. One sheet is
+  // already the snapshot's title and used range.
+  const inventoryAll: DocStateInventoryEntry[] =
+    input.sheets !== undefined && input.sheets.length > 1 ? input.sheets.map(sheetEntry) : [];
 
   let tableCount = 0;
   let slideCount = 0;
@@ -128,10 +204,15 @@ export function buildDocStateSnapshot(input: BuildDocStateInput): DocStateSnapsh
         anchor: headingAnchor(block),
       };
       outlineAll.push(entry);
+      // A slide's title heading: its number is this builder's count, kept apart from the quoted
+      // title, so a slide titled "Slide 2: …" cannot pass for slide 2.
+      const isSlide = block.locator?.startsWith('slide:') === true;
+      if (isSlide) slideCount += 1;
       inventoryAll.push({
-        kind: 'paragraph',
+        kind: isSlide ? 'slide' : 'paragraph',
         id: block.locator ?? `heading:${outlineAll.length}`,
         title: clip(headingText, ANCHOR_PREFIX_CHARS),
+        ...(isSlide ? { summary: `slide ${slideCount}` } : {}),
       });
       continue;
     }
@@ -142,7 +223,7 @@ export function buildDocStateSnapshot(input: BuildDocStateInput): DocStateSnapsh
       const inv: DocStateInventoryEntry = {
         kind: 'table',
         id,
-        title: clip(block.text.split('\n')[0] ?? '', ANCHOR_PREFIX_CHARS) || `Table ${tableCount}`,
+        title: tableTitle(block, tableCount),
       };
       const summary = tableSummary(block);
       if (summary !== undefined) inv.summary = summary;
@@ -208,8 +289,27 @@ export function renderDocState(snapshot: DocStateSnapshot): string {
 
   if (snapshot.selection !== undefined) {
     const sel = snapshot.selection;
-    const preview = sel.preview !== undefined ? ` — "${safe(sel.preview)}"` : '';
-    lines.push(`selection: [${sel.kind}] "${safe(sel.title)}"${preview}`);
+    // Paragraphs stay apart: flattened to one line, two selected paragraphs came back merged.
+    // Each still passes through safe(), and all of them share the one preview budget.
+    const paragraphs = (sel.preview ?? '')
+      .split(/\r\n|[\r\n\u2029]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (paragraphs.length > 1) {
+      lines.push(
+        `selection: [${sel.kind}] "${safe(sel.title)}" — ${paragraphs.length} paragraphs:`,
+      );
+      let budget = SELECTION_PREVIEW_CHARS;
+      for (const [i, paragraph] of paragraphs.entries()) {
+        if (budget <= 0) break;
+        lines.push(`  ¶${i + 1} "${safe(paragraph, budget)}"`);
+        budget -= Array.from(paragraph).length;
+      }
+    } else {
+      const preview =
+        sel.preview !== undefined ? ` — "${safe(sel.preview, SELECTION_PREVIEW_CHARS)}"` : '';
+      lines.push(`selection: [${sel.kind}] "${safe(sel.title)}"${preview}`);
+    }
   }
 
   if (snapshot.outline.length > 0) {
@@ -223,7 +323,10 @@ export function renderDocState(snapshot: DocStateSnapshot): string {
     lines.push('inventory:');
     for (const i of snapshot.inventory) {
       const summary = i.summary !== undefined ? ` (${safe(i.summary)})` : '';
-      lines.push(`  - [${i.kind}] "${safe(i.title)}"${summary}`);
+      // `ref` is host-derived (sheet names are user text), so it is escaped and quoted like a title.
+      const ref = commandRef(i.id);
+      const target = ref !== undefined ? ` ref="${safe(ref)}"` : '';
+      lines.push(`  - [${i.kind}]${target} "${safe(i.title, INVENTORY_TITLE_CHARS)}"${summary}`);
     }
   }
 

@@ -39,6 +39,24 @@ import { composeEvent, receivedEvent } from './events.js';
  * host wiring.
  */
 
+// No quotes: the snapshot renderer escapes them, which garbles a command example.
+// mail/compose open a separate window the add-in cannot edit or address (recipients are never
+// auto-filled): live 2026-10-09 the model followed them with set-recipients/set-body and repeats.
+// At most 240 characters (the snapshot renderer clips a summary there); the sender comes first so a
+// request to someone else reads as a new email, not a reply (live 2026-10-09).
+const receivedNote = (from: string | undefined): string =>
+  `received message${plainAddress(from) ? ` from ${plainAddress(from)}` : ''}: reply = mail (a file: attach=); email to anyone else = compose. ` +
+  'Each opens a window the user reviews (no later edits): one completes it. set-* and add-attachment: drafts only';
+
+/** The sender only when it is a plain address: a quoted local part could carry `)` or `;`. */
+function plainAddress(from: string | undefined): string | undefined {
+  return from && /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$/.test(from) && from.length <= 40
+    ? from
+    : undefined;
+}
+const DRAFT_NOTE =
+  'a draft being written: set-subject, set-body, set-recipients and add-attachment edit it';
+
 export class OutlookBridge implements DocBridge {
   private static readonly dispatcher = createBridgeDispatch<OutlookBridge>(
     'outlook',
@@ -112,18 +130,33 @@ export class OutlookBridge implements DocBridge {
    * from the subject (heading) + sender + leading body lines (bounded). Read-only; no active item →
    * `undefined`. Version increments per capture.
    */
+  documentKey(): string | undefined {
+    try {
+      return Office.context?.mailbox?.item?.itemId || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async captureDocState(): Promise<DocStateSnapshot | undefined> {
     const mail = await this.readMailItem();
     if (!mail) return undefined;
     const blocks = mailItemToDocStateBlocks(mail);
     if (blocks.length === 0) return undefined;
     this.docStateVersion += 1;
-    return buildDocStateSnapshot({
+    const snapshot = buildDocStateSnapshot({
       surface: 'outlook',
       version: this.docStateVersion,
       ...(mail.subject?.trim() ? { title: mail.subject } : {}),
       blocks,
     });
+    // Say up front which writes this item takes. Without it the model learned only from a failed
+    // write: it edited a received message's body/recipients, and used compose (a NEW message) for a
+    // reply (live scenarios 2026-10-09).
+    const item = Office.context.mailbox?.item;
+    const entry = snapshot.inventory.find((e) => e.id === 'mail:item') ?? snapshot.inventory[0];
+    if (item && entry) entry.summary = draftView(item) ? DRAFT_NOTE : receivedNote(mail.from);
+    return snapshot;
   }
 
   /**
@@ -221,9 +254,36 @@ export class OutlookBridge implements DocBridge {
         error: { code: 'no_body', message: 'reply-mail needs params.mail.body or params.text' },
       };
     }
+    // A file opened with the reply (`mail … attach=`): a received message cannot take
+    // add-attachment, but its reply form can carry a base64 file (Mailbox 1.15).
+    let attachments: Array<{ type: string; name: string; base64file: string }> | undefined;
+    if (req.params.attachment) {
+      // Same checks as add-attachment: a base64 file with a name, under the 3 MB ceiling.
+      const file = planAttachment(req);
+      if (!file.ok) return actuationError(req, file.reason, ATTACHMENT_ERROR_MESSAGES[file.reason]);
+      if (file.transport !== 'base64')
+        return actuationError(req, 'invalid_attachment', 'A reply carries only a built file.');
+      attachments = [{ type: 'base64', name: file.name, base64file: file.value }];
+    }
+    if (attachments && !Office.context.requirements?.isSetSupported?.('Mailbox', '1.15')) {
+      return actuationError(
+        req,
+        'unsupported',
+        'This Outlook version cannot open a reply with a file attached (needs Mailbox 1.15). ' +
+          'Nothing was opened. Reply without attach= and tell the user to attach the file themselves.',
+      );
+    }
     // Open a reviewable reply form rather than sending — the user confirms before it leaves.
-    item.displayReplyForm({ htmlBody: plan.body });
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'reply-form' };
+    item.displayReplyForm({
+      htmlBody: plan.body,
+      ...(attachments ? { attachments: attachments as Office.ReplyFormAttachment[] } : {}),
+    });
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: attachments ? 'reply-form+attachment' : 'reply-form',
+    };
   }
 
   /**
@@ -276,7 +336,17 @@ export class OutlookBridge implements DocBridge {
           error: actuationError(
             req,
             'no_compose',
-            'The active mail item is not an open draft (compose mode).',
+            // Say what to do instead: without it the model tried every draft verb in turn, then
+            // `compose` (a NEW message) when a reply was wanted. But a bare "use mail" hint made it
+            // answer "change the subject" of a draft in another window by opening an unrelated
+            // reply (live 2026-10-14), so the hint is conditional on what the user asked for.
+            'The open item is a received message, not a draft being written, so set-subject, ' +
+              'set-body, set-recipients and add-attachment cannot run here. A draft opened in its ' +
+              'own window cannot be edited from this pane: do not open a reply or a new message ' +
+              'instead; emit done and tell the user to make the change in that draft window, or ' +
+              'to open this add-in from it. Only if the user asked to reply: mail "reply text" (with a ' +
+              'file: mail "reply text" attach="name.docx" text="file text"). ' +
+              'Only if they asked for a new email: compose "Subject" "body".',
           ),
         };
   }
@@ -355,8 +425,9 @@ export class OutlookBridge implements DocBridge {
       return actuationError(req, 'no_compose', 'Attachment APIs are unavailable on this draft.');
     }
     try {
+      // Call ON the draft: Office.js methods need their item as `this`, and a detached call fails.
       const id = await getAsync<string>((cb) =>
-        add(plan.value, plan.name, { isInline: plan.isInline }, cb),
+        add.call(resolved.draft, plan.value, plan.name, { isInline: plan.isInline }, cb),
       );
       return {
         ok: true,
@@ -566,7 +637,7 @@ const ATTACHMENT_ERROR_MESSAGES: Record<
   string
 > = {
   no_attachment:
-    'add-attachment needs params.attachment base64, https uri, or itemId plus a file name',
+    'add-attachment needs a file name plus one of: text="plain text", base64=<base64>, or uri="https://…" — e.g. /add-attachment name="hello.txt" text="Hello"',
   attachment_too_large: 'add-attachment base64 payload exceeds the 3 MB ceiling',
   invalid_attachment: 'add-attachment payload is not valid base64, or its uri is not an https link',
 };

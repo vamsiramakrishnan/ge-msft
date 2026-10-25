@@ -1,7 +1,20 @@
-import type { ActuationResult, Surface } from '@ge/contracts';
+import {
+  ActuationErrorReasonSchema,
+  type ActuationErrorReason,
+  type ActuationResult,
+  type Surface,
+} from '@ge/contracts';
 
 export type TaskMode = 'chat' | 'command' | 'program' | 'planner' | 'proposal' | 'analysis';
-export type RunStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled' | 'incomplete';
+export type RunStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'incomplete'
+  /** Stopped for the user to act: the host refused a fixable change, or the write is unsupported. */
+  | 'needs-user';
 /** Full outcomes are ephemeral hook inputs, including inverse receipts when the host supplies them. */
 export interface RunOutcome {
   taskId: string;
@@ -30,6 +43,7 @@ export interface RunRecord extends Omit<RunOutcome, 'effects'> {
     kind: ActuationResult['kind'];
     ok: boolean;
     errorCode?: string;
+    errorReason?: ActuationErrorReason;
   }>;
 }
 export class ExecutionLedger {
@@ -51,6 +65,10 @@ export class ExecutionLedger {
         kind: r.kind,
         ok: r.ok,
         ...(r.error ? { errorCode: r.error.code } : {}),
+        // Closed codes only: a bridge result that skipped the schema cannot put text in diagnostics.
+        ...(ActuationErrorReasonSchema.safeParse(r.error?.reason).success
+          ? { errorReason: r.error!.reason as ActuationErrorReason }
+          : {}),
       })),
     };
     const index = this.runs.findIndex((r) => r.taskId === outcome.taskId);

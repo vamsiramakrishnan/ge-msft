@@ -95,10 +95,21 @@ export function parseMarkdownBlocks(md: string): Block[] {
   return blocks;
 }
 
+/**
+ * One table cell as GFM text. A `|` or line break inside host content would otherwise end the cell
+ * or start a new row, so a cell could forge rows (including a fake sheet row number) in what the
+ * model reads (security review, 2026-09-30).
+ */
+function cellText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n|\r/g, ' ');
+}
+
 /** Render a structured table (e.g. an Excel range) as a GitHub-flavored Markdown table. */
 export function tableToMarkdown(columns: string[], rows: (string | number)[][]): string {
-  const head = `| ${columns.join(' | ')} |`;
+  const head = `| ${columns.map(cellText).join(' | ')} |`;
   const sep = `| ${columns.map(() => '---').join(' | ')} |`;
-  const body = rows.map((r) => `| ${r.map((c) => String(c)).join(' | ')} |`).join('\n');
+  const body = rows.map((r) => `| ${r.map(cellText).join(' | ')} |`).join('\n');
   return [head, sep, body].join('\n');
 }

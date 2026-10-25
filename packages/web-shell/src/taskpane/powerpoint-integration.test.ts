@@ -33,6 +33,7 @@ describe('PowerPoint full-stack integration', () => {
     await ui!.act(() => void ui!.controller.refreshContext());
     await ui!.flush();
 
+    await ui!.showSources();
     const text = ui!.container.textContent ?? '';
     // The default deck selects slide index 1 → "Slide 2"; the whole-deck chip is always present.
     expect(text).toContain('Slide 2');
@@ -62,7 +63,7 @@ describe('PowerPoint full-stack integration', () => {
     // params.slide, which the host write consumes; we assert the title landed on the deck below.)
     const plan = ui!.container.querySelector('.plan-approval');
     expect(plan).not.toBeNull();
-    expect(plan?.querySelector('.pin')?.textContent).toContain('insert-slide');
+    expect(plan?.querySelector('.plan-effect-kind')?.textContent).toBe('New slide');
 
     await ui!.act(() => ui!.controller.approvePlan());
     await ui!.waitFor((s) => !s.busy);
@@ -98,5 +99,28 @@ describe('PowerPoint full-stack integration', () => {
     await ui!.flush();
 
     expect(sim.snapshot().slides.length).toBe(before);
+  });
+
+  it('a table added without headerFill gets the brand colour on its header row (UAT #16)', async () => {
+    sim = installFakePowerPoint();
+    ui = mountStack({
+      surface: 'powerpoint',
+      tableHeaderFill: '#C8102E',
+      client: scriptedClient([
+        '```cmd\n/add-table-slide slide=1 rows="No\\tDimensi\\n1\\tRegulasi" left=72 top=110 width=400 height=120\n```',
+        '```cmd\ndone "Added."\n```',
+      ]),
+    });
+    await ui!.flush();
+    let run!: Promise<void>;
+    await ui!.act(() => {
+      run = ui!.controller.runCommands('add a table');
+    });
+    await ui!.waitFor((s) => s.pendingPlan !== undefined);
+    await ui!.act(() => ui!.controller.approvePlan());
+    await ui!.waitFor((s) => !s.busy);
+    await run;
+    const table = sim.snapshot().slides[0]?.shapes.find((sh) => sh.type === 'Table');
+    expect(table?.tableHeaderFill).toBe('#C8102E');
   });
 });

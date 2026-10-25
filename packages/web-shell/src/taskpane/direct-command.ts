@@ -38,6 +38,8 @@ export function extractDirectCommandProgram(raw: string): string | undefined {
   let current: ParsedLine[] = [];
   for (const line of lines) {
     const parsed = parseNakedCliLine(line);
+    // A set-shaped sentence must reach the planner in full, not vanish from a partial CLI run.
+    if (parsed === 'ambiguous-set') return undefined;
     if (parsed) {
       current.push(parsed);
       continue;
@@ -55,18 +57,20 @@ export function extractDirectCommandProgram(raw: string): string | undefined {
   return undefined;
 }
 
-function parseNakedCliLine(line: string): ParsedLine | undefined {
+function parseNakedCliLine(line: string): ParsedLine | 'ambiguous-set' | undefined {
   const { found, entries } = parseProgramBlock(`\`\`\`cmd\n${line}\n\`\`\``);
   if (!found || entries.length !== 1) return undefined;
   const entry = entries[0]!;
   if ('error' in entry) return undefined;
   if (!isNakedDirectEntry(entry)) return undefined;
+  if (isProgramCommand(entry) && entry.verb === 'set' && readsAsProse(line, entry))
+    return 'ambiguous-set';
   // Read/search/outline overlap ordinary English. Bare read syntax must be recognisably
   // addressed; arbitrary selectors and search expressions remain available in explicit fences.
   if (isProgramCommand(entry)) {
     if (
       entry.verb === 'read' &&
-      !/^(?:read|read\s+(?:document(?::[\d:]+)?|(?:'[^']+'|[\w.-]+)!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|slide:\d+))$/i.test(
+      !/^(?:read|read\s+(?:selection|document(?::[\d:]+)?|(?:'[^']+'|[\w.-]+)!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?|slide:\d+))$/i.test(
         line,
       )
     )
@@ -77,15 +81,41 @@ function parseNakedCliLine(line: string): ParsedLine | undefined {
   return {
     line,
     actionable: isActionableEntry(entry),
-    explicitSingle: isExplicitSingleLine(entry),
+    explicitSingle: isExplicitSingleLine(entry) && !readsAsProse(line, entry),
   };
+}
+
+/**
+ * A lone line whose arguments are mostly plain words is a sentence that happens to start with a
+ * CLI verb ("Read the last row for me", "Search for the payment clause"), not a command. CLI
+ * arguments are refs (`A1:B9`, `slide:2`, `result:x`), key=value props or quoted strings, so
+ * count only the bare alphabetic words left after the verb once quoted spans are removed.
+ * Naked `set` text values must be quoted; otherwise `set A1 to ...` writes prose as a value.
+ */
+function readsAsProse(line: string, entry: ProgramEntry): boolean {
+  const set = isProgramCommand(entry) && entry.verb === 'set';
+  if (
+    set &&
+    (entry.valueExpr || entry.value.startsWith('=') || /^(true|false|null)$/i.test(entry.value))
+  )
+    return false;
+  const args = line
+    .replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .slice(1);
+  return args.filter((token) => /^[a-z]+[.,!?]?$/i.test(token)).length >= (set ? 1 : 2);
 }
 
 function isNakedDirectEntry(entry: ProgramEntry): boolean {
   if (isProgramExpr(entry)) return true;
   if (!isProgramCommand(entry)) return false;
   // `/summarize @this` and friends are composer intents, not direct CLI specialized invocations.
-  return entry.verb !== 'invoke';
+  if (entry.verb === 'invoke') return false;
+  // `find` takes a workspace path. "Find and replace X with Y" also parses (path "and"), so a typed
+  // `find` runs directly only when its first argument looks like a path; otherwise it is prose.
+  if (entry.verb === 'find') return /^[/.~]/.test(entry.path);
+  return true;
 }
 
 function isActionableEntry(entry: ProgramEntry): boolean {

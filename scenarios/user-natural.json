@@ -1,0 +1,632 @@
+[
+  {
+    "id": "u-xl-make-it-nice",
+    "surface": "excel",
+    "title": "Vague: make this look nice",
+    "prompt": "make this look nice",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "clarification": "Whatever you think looks professional.",
+    "expect": {
+      "appliedAny": ["format-cells", "create-table"]
+    }
+  },
+  {
+    "id": "u-xl-what-stands-out",
+    "surface": "excel",
+    "title": "Question about the selection",
+    "prompt": "what stands out here?",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "expect": {
+      "notApplied": [
+        "write-cells",
+        "format-cells",
+        "create-table",
+        "insert-chart",
+        "format-conditional",
+        "add-comment"
+      ]
+    }
+  },
+  {
+    "id": "u-xl-add-total",
+    "surface": "excel",
+    "title": "Add a total at the bottom",
+    "prompt": "can you add a total at the bottom",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "clarification": "Total every quarter column.",
+    "expect": {
+      "applied": {
+        "write-cells": 1
+      }
+    }
+  },
+  {
+    "id": "u-xl-highlight-big",
+    "surface": "excel",
+    "title": "Highlight the big numbers",
+    "prompt": "highlight the big numbers",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!B2:E11"
+    },
+    "clarification": "Anything over 120000.",
+    "expect": {
+      "appliedAny": ["format-conditional", "format-cells"]
+    }
+  },
+  {
+    "id": "u-xl-chart-this",
+    "surface": "excel",
+    "title": "Chart this",
+    "prompt": "can you chart this?",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "clarification": "A column chart is fine.",
+    "expect": {
+      "applied": {
+        "insert-chart": 1
+      }
+    }
+  },
+  {
+    "id": "u-xl-proper-table",
+    "surface": "excel",
+    "title": "Turn this into a proper table",
+    "prompt": "turn this into a proper table",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "expect": {
+      "applied": {
+        "create-table": 1
+      }
+    }
+  },
+  {
+    "id": "u-xl-note-on-lowest",
+    "surface": "excel",
+    "title": "Note on the lowest one",
+    "prompt": "which one is the lowest? leave a note on it asking why",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!D1:D11"
+    },
+    "expect": {
+      "applied": {
+        "add-comment": 1
+      },
+      "documentIncludes": ["D7"]
+    }
+  },
+  {
+    "id": "u-xl-messy-dates",
+    "surface": "excel",
+    "title": "Messy dates",
+    "prompt": "these dates are all over the place, can you make them consistent",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Invoice", "Date", "Amount"],
+            ["INV-01", "2023-01-15", "1200"],
+            ["INV-02", "15/02/2023", "860"],
+            ["INV-03", "March 3 2023", "2400"],
+            ["INV-04", "2023.04.20", "540"],
+            ["INV-05", "5-May-23", "1310"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!B2:B6"
+    },
+    "clarification": "Use YYYY-MM-DD.",
+    "expect": {
+      "applied": {
+        "write-cells": 1
+      },
+      "documentExcludes": ["15/02/2023", "March 3 2023", "2023.04.20", "5-May-23"]
+    }
+  },
+  {
+    "id": "u-xl-casual-typing",
+    "surface": "excel",
+    "title": "Casual typing with abbreviations",
+    "prompt": "pls make the headers bold n blue",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "expect": {
+      "applied": {
+        "format-cells": 1
+      },
+      "formatsInclude": ["bold"]
+    }
+  },
+  {
+    "id": "u-xl-id-casual-tidy",
+    "surface": "excel",
+    "title": "Indonesian, casual: tidy this table",
+    "prompt": "tolong rapikan tabel ini ya",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "clarification": "Bebas, yang penting rapi dan profesional.",
+    "expect": {
+      "appliedAny": ["format-cells", "create-table"]
+    }
+  },
+  {
+    "id": "u-xl-total-question",
+    "surface": "excel",
+    "title": "Question only: how much in total",
+    "prompt": "how much did we make in total this year?",
+    "seed": {
+      "sheets": [
+        {
+          "name": "Sheet1",
+          "origin": "A1",
+          "values": [
+            ["Region", "Q1", "Q2", "Q3", "Q4"],
+            ["North", "92000", "98000", "121000", "110000"],
+            ["South", "81000", "85000", "94000", "99000"],
+            ["East", "105000", "112000", "134000", "128000"],
+            ["West", "140000", "151000", "182000", "170000"],
+            ["Central", "76000", "79000", "88000", "91000"],
+            ["North-East", "52000", "50000", "48000", "55000"],
+            ["South-West", "99000", "104000", "117000", "119000"],
+            ["Coastal", "66000", "70000", "73000", "80000"],
+            ["Mountain", "58000", "61000", "64000", "67000"],
+            ["Islands", "71000", "69000", "102000", "95000"]
+          ]
+        }
+      ],
+      "selection": "Sheet1!A1:E11"
+    },
+    "expect": {
+      "notApplied": [
+        "write-cells",
+        "format-cells",
+        "create-table",
+        "insert-chart",
+        "format-conditional",
+        "add-comment"
+      ]
+    }
+  },
+  {
+    "id": "u-ppt-make-it-pop",
+    "surface": "powerpoint",
+    "title": "Vague: make this slide pop",
+    "prompt": "make this slide pop",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            {
+              "text": "Quarterly business review",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            {
+              "text": "Highlights",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Revenue up 12%\nTwo new enterprise clients\nChurn down to 3%",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            {
+              "text": "Challenges",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Hiring is slow\nSupport backlog growing",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [1]
+    },
+    "clarification": "Make the title stand out.",
+    "expect": {
+      "appliedAny": ["format-shape", "set-shape-text", "add-shape"]
+    }
+  },
+  {
+    "id": "u-ppt-slide-after",
+    "surface": "powerpoint",
+    "title": "Add a slide after this one",
+    "prompt": "add a slide after this one about next steps",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            {
+              "text": "Quarterly business review",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            {
+              "text": "Highlights",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Revenue up 12%\nTwo new enterprise clients\nChurn down to 3%",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            {
+              "text": "Challenges",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Hiring is slow\nSupport backlog growing",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [1]
+    },
+    "clarification": "Three short bullets.",
+    "expect": {
+      "applied": {
+        "insert-slide": 1
+      },
+      "insertedSlidePositions": [3]
+    }
+  },
+  {
+    "id": "u-ppt-shorten-title",
+    "surface": "powerpoint",
+    "title": "Fix a too-long title",
+    "prompt": "the title on this slide is way too long, fix it",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            {
+              "text": "Overview of the results of our quarterly business performance review for the third quarter of the 2026 financial year",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Key numbers inside",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [0]
+    },
+    "expect": {
+      "applied": {
+        "set-shape-text": 1
+      }
+    }
+  },
+  {
+    "id": "u-ppt-summarize",
+    "surface": "powerpoint",
+    "title": "Question only: summarize the deck",
+    "prompt": "give me a quick summary of this deck",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            {
+              "text": "Quarterly business review",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            {
+              "text": "Highlights",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Revenue up 12%\nTwo new enterprise clients\nChurn down to 3%",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            {
+              "text": "Challenges",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Hiring is slow\nSupport backlog growing",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [1]
+    },
+    "expect": {
+      "notApplied": [
+        "insert-slide",
+        "set-shape-text",
+        "add-shape",
+        "format-shape",
+        "add-table-slide"
+      ]
+    }
+  },
+  {
+    "id": "u-ppt-id-casual-risk",
+    "surface": "powerpoint",
+    "title": "Indonesian, casual: add a risk slide",
+    "prompt": "tambahin slide soal risiko proyek dong",
+    "seed": {
+      "slides": [
+        {
+          "id": "s1",
+          "shapes": [
+            {
+              "text": "Quarterly business review",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "shapes": [
+            {
+              "text": "Highlights",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Revenue up 12%\nTwo new enterprise clients\nChurn down to 3%",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "shapes": [
+            {
+              "text": "Challenges",
+              "type": "Placeholder",
+              "placeholderType": "Title"
+            },
+            {
+              "text": "Hiring is slow\nSupport backlog growing",
+              "type": "Placeholder",
+              "placeholderType": "Body"
+            }
+          ]
+        }
+      ],
+      "selectedIndices": [1]
+    },
+    "clarification": "Tiga risiko utama saja.",
+    "expect": {
+      "appliedAny": ["insert-slide", "add-table-slide"]
+    }
+  }
+]

@@ -23,6 +23,11 @@ import type { HostEvent, Unsubscribe } from '@ge/triggers';
 export interface DocBridge {
   readonly surface: Surface;
 
+  /**
+   * An identity for the open document or item (its URL, or a mail item id), so the pane can tell
+   * whether something it remembered belongs to this document. Never sent anywhere; hashed by callers.
+   */
+  documentKey?(): string | undefined;
   /** Sequential, bounded host reads. Must expose EOF and omissions; never silently sample. */
   readDocumentPage?(options: DocumentReadOptions): Promise<DocumentPage>;
 
@@ -76,6 +81,12 @@ export interface DocBridge {
    * still streams, just without the ambient part). Returns `undefined` when nothing to report.
    */
   captureDocState?(): Promise<DocStateSnapshot | undefined>;
+
+  /**
+   * Every sheet name in the workbook, hidden ones included, read live (Excel). Used only to match a
+   * sheet the model named without its stray spaces; never sent to the model.
+   */
+  listSheetNames?(): Promise<string[]>;
 
   /**
    * Lazily read the working-document slices relevant to a query (ADR-0003, Layer B element 2):

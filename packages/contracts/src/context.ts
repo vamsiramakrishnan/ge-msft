@@ -78,6 +78,7 @@ export const ContextRefSchema = z.object({
   surface: SurfaceSchema,
   title: z.string(), // human label for the chip ("Selection", "Slide 4", "Email: SLA concerns")
   preview: z.string().optional(), // short snippet for the UI
+  notice: z.string().optional(), // user-facing warning, e.g. a selection too large to read in full
   mimeType: z.string().optional(),
   sizeBytes: z.number().optional(), // for budgeting/large-object warnings
   tokensEstimate: z.number().optional(), // approximate token cost (context-budget UI)

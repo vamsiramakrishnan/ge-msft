@@ -14,6 +14,7 @@ import type {
   Skill,
   Suggestion,
 } from '../controller.js';
+import { brand } from '../brand.js';
 
 /**
  * Realistic, hand-authored `PanelState` fixtures that exercise EVERY card the panel can render — a
@@ -201,7 +202,7 @@ export const FIXTURE_PROPOSALS: Proposal[] = [
     status: 'pending',
     entityCard: {
       title: 'Northwind Cloud',
-      subtitle: 'Entity · enriched by Gemini Enterprise',
+      subtitle: `Entity · enriched by ${brand.name}`,
       rows: [
         { key: 'Contract status', value: 'Active · renews Nov 26' },
         { key: 'SLA', value: '99.5% (below policy)' },
@@ -259,6 +260,7 @@ export const FIXTURE_CONVERSATIONS = {
       name: 'projects/proj/locations/global/collections/default_collection/engines/eng/sessions/7071648217932584245',
       id: '7071648217932584245',
       title: 'Google SWE mock schedule',
+      surface: 'word',
       turnCount: 10,
       isPinned: true,
       active: true,
@@ -268,6 +270,7 @@ export const FIXTURE_CONVERSATIONS = {
       name: 'projects/proj/locations/global/collections/default_collection/engines/eng/sessions/11553926318396598036',
       id: '11553926318396598036',
       title: 'Project schedule Gantt chart',
+      surface: 'excel',
       turnCount: 6,
       isPinned: false,
       active: false,

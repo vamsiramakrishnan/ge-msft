@@ -96,7 +96,13 @@ export function connectPanelRuntime(input: {
     controller.onRuntimeNotice(`Extension ${record.triggerId}: check failed at ${record.event}.`),
   );
   const offRuns = session.executions.subscribe((run) => {
-    if (run.status !== 'running')
+    // A chat answer or a planner turn writes nothing; "0 changes applied" there read as a finished
+    // write task that did nothing. Command runs always report, so an empty one stays visible.
+    const silent =
+      (run.mode === 'chat' || run.mode === 'planner') &&
+      run.effects.length === 0 &&
+      run.status === 'completed';
+    if (run.status !== 'running' && !silent)
       controller.onRuntimeNotice(
         `Task ${run.status}. ${run.effects.filter((e) => e.ok).length} changes applied; ${run.effects.filter((e) => !e.ok).length} not applied.`,
       );

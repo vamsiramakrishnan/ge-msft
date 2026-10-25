@@ -1,76 +1,76 @@
 import type { QuickAction, Surface } from '@ge/contracts';
 import { modeLabel } from './mode-labels.js';
 
-const COPY: Record<Surface, { title: string; detail: string }> = {
-  word: {
-    title: 'Make the next draft better.',
-    detail: 'Tighten the argument, check the evidence, or review the whole document.',
-  },
-  excel: {
-    title: 'Find the story in the numbers.',
-    detail: 'Investigate a range, build a chart, or turn a question into a formula.',
-  },
-  powerpoint: {
-    title: 'Give the deck a clear point.',
-    detail: 'Build from your sources, test the narrative, or prepare the talk track.',
-  },
-  onenote: {
-    title: 'Turn research into something useful.',
-    detail: 'Connect the evidence, compare sources, and write a cited synthesis.',
-  },
-  outlook: {
-    title: 'Get to the next action.',
-    detail: 'Catch up on the thread, prepare a reply, or extract commitments.',
-  },
-  teams: {
-    title: 'Leave with decisions and owners.',
-    detail: 'Catch up on the discussion and turn the transcript into an actionable recap.',
-  },
+/** "Lee, Ann" (directory order) and "Ann Lee" both greet "Ann"; an email-like name is skipped. */
+export function firstName(displayName: string | undefined): string | undefined {
+  const name = displayName?.trim();
+  if (!name || name.includes('@')) return undefined;
+  const given = name.includes(',') ? name.split(',')[1] : name;
+  return given?.trim().split(/\s+/)[0] || undefined;
+}
+
+const ICON: Record<QuickAction['output'], JSX.Element> = {
+  chat: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M9.6 9.6a2.4 2.4 0 1 1 3.4 2.2c-.6.3-1 .8-1 1.4v.6M12 16.6v.1" />
+    </>
+  ),
+  annotation: (
+    <>
+      <path d="M4 6h16M4 10h16M4 14h10M4 18h7" />
+    </>
+  ),
+  write: (
+    <>
+      <path d="M4 20h4L19 9l-4-4L4 16z" />
+      <path d="M13 7l4 4" />
+    </>
+  ),
 };
 
 export function WorkspaceHome({
-  surface,
+  userName,
   actions,
   disabled,
   onAction,
 }: {
   surface: Surface;
+  userName?: string;
   actions: QuickAction[];
   disabled: boolean;
   onAction: (action: QuickAction) => void;
 }): JSX.Element {
+  const name = firstName(userName);
   return (
     <section className="workspace-home" aria-label="Start a task">
-      <span className="workspace-kicker">Your work, in context</span>
-      <h1>{COPY[surface].title}</h1>
-      <p>{COPY[surface].detail}</p>
-      <div className="workspace-actions">
-        {actions.map((action, i) => (
-          <button
-            type="button"
-            className="workspace-action"
-            key={action.id}
-            data-action-id={action.id}
-            disabled={disabled}
-            onClick={() => onAction(action)}
-          >
-            <span className="workspace-action-index" aria-hidden="true">
-              0{i + 1}
-            </span>
-            <span>
-              <strong>{action.label}</strong>
-              <small>
-                {modeLabel(action)} ·{' '}
-                {action.ground.includes('unit') ? 'Attached sources' : 'Current context'}
-              </small>
-            </span>
-            <span className="workspace-action-arrow" aria-hidden="true">
-              ↗
-            </span>
-          </button>
-        ))}
-      </div>
-      <div className="workspace-hint">Choose an action, or describe what you need below.</div>
+      <h1>{name ? `Hi ${name}` : 'Hi'}</h1>
+      <p>What can I help you with?</p>
+      {actions.length > 0 && (
+        <>
+          <div className="workspace-try">Try these</div>
+          <div className="workspace-actions">
+            {actions.map((action) => (
+              <button
+                type="button"
+                className="workspace-action"
+                key={action.id}
+                data-action-id={action.id}
+                disabled={disabled}
+                title={`${modeLabel(action)} · ${
+                  action.ground.includes('unit') ? 'Attached sources' : 'Current context'
+                }`}
+                onClick={() => onAction(action)}
+              >
+                <svg className="workspace-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  {ICON[action.output]}
+                </svg>
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }

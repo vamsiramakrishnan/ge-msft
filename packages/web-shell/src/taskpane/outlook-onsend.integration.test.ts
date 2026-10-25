@@ -6,7 +6,12 @@ import {
   activeItemIdResolver,
   type OnSendCompletedOptions,
 } from '@ge/bridge-outlook';
-import { scriptedClient, mountStack, type MountedStack } from '../test-harness/index.js';
+import {
+  openPlanEffects,
+  scriptedClient,
+  mountStack,
+  type MountedStack,
+} from '../test-harness/index.js';
 import {
   installFakeOutlook,
   outlookSeed,
@@ -71,8 +76,9 @@ describe('Outlook on-send full-stack interplay', () => {
 
     // The plan-approval card stages the reply effect for review (the reply-mail actuation kind).
     // (The reply BODY lands on the host below — that is the load-bearing cross-boundary assertion.)
+    openPlanEffects(ui!.container);
     const planCmd = ui!.container.querySelector('.plan-approval .cmd')?.textContent ?? '';
-    expect(planCmd).toContain('reply-mail');
+    expect(planCmd).toMatch(/^mail "/);
 
     await ui!.act(() => ui!.controller.approvePlan());
     await ui!.waitFor((s) => !s.busy);

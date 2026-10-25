@@ -39,6 +39,8 @@ export interface MailFromSeed {
 /** A recorded reviewable reply form the bridge opened via `displayReplyForm`. */
 export interface ReplyFormSeed {
   htmlBody: string;
+  /** Files the reply form opened with (Mailbox 1.15 base64 attachments). */
+  attachments?: Array<{ type: string; name: string; base64file?: string }>;
 }
 
 /** A recorded compose draft the bridge opened via `displayNewMessageForm`. */
@@ -110,8 +112,14 @@ class FakeMailItem {
     return this.seed.from;
   }
   /** Reviewable reply WRITE — record the opened form rather than sending. */
-  displayReplyForm(options: { htmlBody: string }): void {
-    this.seed.replyForms.push({ htmlBody: options.htmlBody });
+  displayReplyForm(options: {
+    htmlBody: string;
+    attachments?: ReplyFormSeed['attachments'];
+  }): void {
+    this.seed.replyForms.push({
+      htmlBody: options.htmlBody,
+      ...(options.attachments ? { attachments: options.attachments } : {}),
+    });
   }
 }
 
@@ -163,9 +171,15 @@ class FakeMailbox {
   }
 }
 
+/** The newest Mailbox requirement set the simulated host supports. */
+const MAILBOX_VERSION = 1.15;
+
 /** The fake `Office` namespace object installed onto `globalThis.Office` for the Outlook surface. */
 interface FakeOutlookOffice {
-  context: { mailbox?: FakeMailbox };
+  context: {
+    mailbox?: FakeMailbox;
+    requirements: { isSetSupported(name: string, version?: string): boolean };
+  };
   CoercionType: typeof COERCION_TYPE;
   AsyncResultStatus: typeof ASYNC_RESULT_STATUS;
   EventType: typeof EVENT_TYPE;
@@ -205,7 +219,14 @@ export function installFakeOutlook(
 ): OutlookSimulator {
   const mailbox = new FakeMailbox(seed);
   const office: FakeOutlookOffice = {
-    context: { ...(opts.mailbox === false ? {} : { mailbox }) },
+    context: {
+      ...(opts.mailbox === false ? {} : { mailbox }),
+      // Outlook on the web today: Mailbox up to 1.15 (base64 files on a reply form).
+      requirements: {
+        isSetSupported: (name, version = '1.1') =>
+          name === 'Mailbox' && Number(version) <= MAILBOX_VERSION,
+      },
+    },
     CoercionType: COERCION_TYPE,
     AsyncResultStatus: ASYNC_RESULT_STATUS,
     EventType: EVENT_TYPE,

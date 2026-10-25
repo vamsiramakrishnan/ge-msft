@@ -54,7 +54,8 @@ describe('preview bootstrap + Preview toolbar', () => {
     expect(root.querySelector('.approval')).not.toBeNull();
     expect(root.querySelector('.proposals')).not.toBeNull();
     expect(root.querySelector('.panel-error')).not.toBeNull();
-    expect(root.querySelector('.skills')).not.toBeNull();
+    // Skills are not used: no Skills panel in the pane.
+    expect(root.querySelector('.skills')).toBeNull();
   });
 
   it('switches the host surface via the toolbar, re-rendering the panel', async () => {

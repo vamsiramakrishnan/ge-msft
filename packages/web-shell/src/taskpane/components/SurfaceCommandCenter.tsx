@@ -1,5 +1,6 @@
 import type { Intent, QuickAction, Surface } from '@ge/contracts';
 import { quickActionsForSurface } from '@ge/contracts';
+import { brand } from '../../brand.js';
 
 export interface SurfaceCommandCenterProps {
   surface: Surface;
@@ -164,7 +165,10 @@ export function SurfaceCommandCenter({
                 </span>
               </div>
 
-              <div className="surface-entrypoints" aria-label="Ways to use Gemini in this host">
+              <div
+                className="surface-entrypoints"
+                aria-label={`Ways to use ${brand.assistantName} in this host`}
+              >
                 {entrypoints(copy.object).map((entry) => (
                   <span key={entry.id} className="detail-hover surface-entry-wrap">
                     <span

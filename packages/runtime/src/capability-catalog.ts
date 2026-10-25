@@ -2,6 +2,7 @@ import {
   COMMAND_HELP,
   grammarFor,
   registryEntryForKindAndSurface,
+  WRITE_VERB_TO_KIND,
   type ActuationKind,
   type CapabilityManifest,
   type CommandHelpEntry,
@@ -20,6 +21,9 @@ export interface CommandCard {
 
 export const COMMAND_DISCOVERY_LIMIT = 4;
 
+/** Ranking bonus when every word of a command's name appears in the task (see `discoverCommands`). */
+const WHOLE_NAME_BONUS = 25;
+
 /**
  * Deterministic lexical discovery over the same grammar/help used by execution. No model, network,
  * document content or dynamic registrations are involved. An unrelated query returns no cards;
@@ -27,20 +31,37 @@ export const COMMAND_DISCOVERY_LIMIT = 4;
  */
 export function discoverCommands(manifest: CapabilityManifest, query: string): CommandCard[] {
   const specs = grammarFor(manifest);
-  const terms = words(query.slice(0, 1024)).slice(0, 32);
+  // "slide 3" / "slides 2-4" name WHERE to act, not the `slide` command: ranking on them made every
+  // "… on slide 1" request surface `slide` instead of the shape/format command it needed.
+  const raw = query.slice(0, 1024);
+  const located = raw.replace(/\bslides?\s+\d+(?:\s*(?:-|–|to|and|,)\s*\d+)*/gi, ' ');
+  const terms = words(located).slice(0, 32);
   if (terms.length === 0) return [];
+  const termSet = new Set(terms);
+  // The whole-name check may still see the location words ("add a table to slide 3" names all of
+  // add-table-slide), but only once some name word was requested outside them.
+  const allTerms = new Set(words(raw));
   const allowed = new Set(specs.map((spec) => spec.verb));
   return specs
     .map((spec, order) => {
       const entry = helpFor(manifest, spec);
-      const name = new Set(words(spec.verb));
+      const nameWords = words(spec.verb);
+      const name = new Set(nameWords);
       const purpose = new Set(words(`${entry.useWhen} ${spec.hint}`));
       const detail = new Set(words(`${entry.syntax} ${entry.examples.join(' ')}`));
-      const score = terms.reduce(
+      const matched = terms.reduce(
         (total, term) =>
           total + (name.has(term) ? 20 : purpose.has(term) ? 4 : detail.has(term) ? 1 : 0),
         0,
       );
+      // The task names the WHOLE command (e.g. "slide" in "add a slide"): a stronger signal than
+      // sharing some words with a longer name (`add-table-slide` for the same task), which would
+      // otherwise outscore the command the user actually asked for.
+      const wholeName =
+        nameWords.length > 0 &&
+        nameWords.some((word) => termSet.has(word)) &&
+        nameWords.every((word) => allTerms.has(word));
+      const score = matched > 0 && wholeName ? matched + WHOLE_NAME_BONUS : matched;
       return { spec, entry, order, score };
     })
     .filter(({ score }) => score > 0)
@@ -58,6 +79,37 @@ export function discoverCommands(manifest: CapabilityManifest, query: string): C
       limits: [...entry.failureModes, ...entry.safety].slice(0, 3).map((line) => clip(line, 180)),
       example: exampleFor(spec, entry, terms),
     }));
+}
+
+/** A grammar spec that changes the document: a core write verb or a `/<kind>` specialized command. */
+function isWriteSpec(spec: VerbSpec): boolean {
+  return Object.hasOwn(WRITE_VERB_TO_KIND, spec.verb) || spec.usage.startsWith('/');
+}
+
+/**
+ * One exact line for every write the surface advertises, in grammar order. A specialized command's
+ * usage is only `/<kind> [key=value ...]`, which names no parameter, so its registry example is
+ * shown instead. Every write is listed, not a task-ranked subset: a write the model has only seen by
+ * name gets an invented syntax (live 2026-09-30: four different `chart` forms in four identical runs).
+ */
+export function writeSignatures(manifest: CapabilityManifest): string[] {
+  return grammarFor(manifest)
+    .filter(isWriteSpec)
+    .map((spec) => (spec.usage.startsWith('/') ? signatureExample(manifest, spec) : spec.usage));
+}
+
+/**
+ * A specialized command's first registry example that is one complete line of that same command.
+ * Unlike {@link exampleFor}, a `<placeholder>` is allowed: this line is syntax, like a usage line.
+ */
+function signatureExample(manifest: CapabilityManifest, spec: VerbSpec): string {
+  const example = helpFor(manifest, spec).examples.find(
+    (value) =>
+      !value.includes('\n') &&
+      value.length <= 240 &&
+      value.replace(/^\//, '').split(/\s/, 1)[0] === spec.verb,
+  );
+  return example ?? spec.usage;
 }
 
 export function renderCommandCard(card: CommandCard): string {
@@ -113,9 +165,17 @@ const STOP_WORDS = new Set(
   ),
 );
 
+/** Colour names count as "color", so "make it blue" finds the command that changes colours. */
+const COLOR_WORDS = new Set(
+  'colour color red blue green yellow orange purple pink black white grey gray navy teal'.split(
+    ' ',
+  ),
+);
+
 function words(value: string): string[] {
   return [...new Set(value.toLowerCase().match(/[a-z0-9]+/g) ?? [])]
     .filter((word) => !STOP_WORDS.has(word))
+    .map((word) => (COLOR_WORDS.has(word) ? 'color' : word))
     .map((word) => (word.length > 3 && word.endsWith('s') ? word.slice(0, -1) : word));
 }
 

@@ -249,3 +249,23 @@ An isolated skill forward-test selected the supplied text continuation before pr
 Commander bootstrap remains below four KiB. Reviewed DocFs-only absolute path routing, hook guards,
 source-data trust, native target separation and evidence freshness. Tenant provisioning is separate
 and was not performed by this repository update.
+
+## User-directed PR 13 review fixes — October 2026
+
+- [x] Bound Excel snapshot value extraction before reading headers; retain addresses and dimensions.
+- [x] Preserve worksheet/named-range omissions and PowerPoint total count/truncated inventories.
+- [x] Preserve Word selection token boundaries while supporting long and multi-paragraph edits.
+- [x] Bind same-batch cell rebasing to the actual correlated, verified output hash.
+- [x] Use paged automatic document fallback and bounded serialized chat context with explicit coverage.
+- [x] Complete repository checks and independent security review before merging the fixes.
+- [ ] Live Office/Gemini tenant acceptance of final-head large-source reads and coauthoring races.
+
+The regressions use labelled Office simulators; they do not establish live tenant or host performance.
+
+Validation: frozen Bun 1.3.13 install, TypeScript, ESLint/Prettier/design checks, all production
+builds and generated skill/resource checks passed. Vitest passed 3,663 tests with 22 optional live
+skips (247 files). Skill CI passed 74 corpus cases, six manifest tests, 40 tooling tests and
+14 deterministic eval cases, including rebuilt exact-source archives. Independent security review
+covered native-target freshness, selection authority, serialized context bounds and Python framing.
+The Excel simulator now consumes queued writes once and preserves formula identity, so a verified
+formula hash matches a fresh capture without relaxing the production freshness check.

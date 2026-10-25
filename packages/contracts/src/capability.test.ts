@@ -5,7 +5,9 @@ import {
   CapabilityManifestSchema,
   ContextRefSchema,
   InverseDescriptorSchema,
+  POWERPOINT_GEOMETRIES,
   ResolvedContextSchema,
+  powerpointGeometry,
 } from './index.js';
 
 describe('context + capability model', () => {
@@ -168,5 +170,19 @@ describe('context + capability model', () => {
         params: {},
       }),
     ).toThrow();
+  });
+});
+
+describe('powerpointGeometry', () => {
+  it('reads a geometry name in any case', () => {
+    for (const geometry of POWERPOINT_GEOMETRIES) {
+      expect(powerpointGeometry(geometry)).toBe(geometry);
+      expect(powerpointGeometry(geometry.toLowerCase())).toBe(geometry);
+    }
+  });
+
+  it('names no geometry for anything else', () => {
+    for (const name of [undefined, '', ' ', 'hexagram', 'textBox', 'constructor', 'toString'])
+      expect(powerpointGeometry(name)).toBeUndefined();
   });
 });

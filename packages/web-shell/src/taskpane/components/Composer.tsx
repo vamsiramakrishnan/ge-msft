@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ComposerSources, mentionKey, mentionLabel } from './ComposerSources.js';
+import { mentionKey, mentionLabel } from './ComposerSources.js';
 import { extractDirectCommandProgram } from '../direct-command.js';
 import type { Surface, Intent, CommandScope, GroundSource } from '@ge/contracts';
-import {
-  commandPaletteFor,
-  type CommandVerb,
-  type CommandPaletteSpec,
-  type ScopeOption,
-} from '@ge/contracts';
+import { commandPaletteFor, type CommandVerb, type CommandPaletteSpec } from '@ge/contracts';
+import { brand } from '../../brand.js';
 
 /** One typed `@`-mention: the ground kind and an optional addressable handle (e.g. a person/doc id). */
 export interface ComposerMention {
@@ -58,6 +54,8 @@ export interface ComposerProps {
    * entry here (or an empty list) just has no refinement step — `@kind ` alone is still accepted.
    */
   mentionOptions?: Partial<Record<GroundSource, { id: string; label: string }[]>>;
+  /** Answer format and style from the pane Settings; applied to each typed request. */
+  answerOptions?: { format?: string; style?: string };
 }
 
 /** A `GroundSource` kind, as a fast membership test for the tokenizer's `@kind` recognition. */
@@ -155,29 +153,48 @@ export function Composer({
   onInvoke,
   placeholder,
   mentionOptions,
+  answerOptions = {},
 }: ComposerProps): JSX.Element {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [intentChoice, setIntentChoice] = useState<Intent | ''>('');
   const [sourcePicks, setSourcePicks] = useState<ComposerMention[]>([]);
-  const [format, setFormat] = useState('');
-  const [tone, setTone] = useState('');
+  const format = answerOptions.format ?? '';
+  const tone = answerOptions.style ?? '';
+  // The pane opens ready to type: put the cursor in the box on load, whenever Office shows the
+  // pane again (it keeps a hidden task pane alive), and when the box becomes usable again (it is
+  // disabled during sign-in, a turn or an approval). Never take focus from another pane control.
+  const locked = busy || Boolean(disabled);
+  useEffect(() => {
+    const focusComposer = (): void => {
+      const box = textareaRef.current;
+      if (!box || box.disabled || document.visibilityState === 'hidden') return;
+      const active = document.activeElement;
+      if (active && active !== document.body && active !== box) return;
+      // Desktop Office hosts the pane in a frame that may not hold keyboard focus yet.
+      if (!document.hasFocus()) window.focus();
+      box.focus({ preventScroll: true });
+    };
+    focusComposer();
+    // Office can finish laying out the pane after first paint; try once more when it settles.
+    const settle = window.setTimeout(focusComposer, 300);
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') focusComposer();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(settle);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [locked]);
   useEffect(() => {
     if (draft) {
       setValue(draft.text);
-      setIntentChoice('');
       setSourcePicks([]);
-      setFormat('');
-      setTone('');
       textareaRef.current?.focus();
     }
   }, [draft]);
   useEffect(() => {
-    setScopeIdx(0);
-    setIntentChoice('');
     setSourcePicks([]);
-    setFormat('');
-    setTone('');
   }, [surface]);
 
   const palette = useMemo(
@@ -185,10 +202,9 @@ export function Composer({
     [surface, allowedIntents],
   );
 
-  const scopeOptions: ScopeOption[] = palette?.scopeOptions ?? [];
-  // The selected scope index — defaults to the per-surface first option (EXPERIENCE.md §1, Tier 2).
-  const [scopeIdx, setScopeIdx] = useState(0);
-  const scope: CommandScope = scopeOptions[scopeIdx]?.scope ?? { kind: 'selection' };
+  // Every request acts on the live selection. The old Selection / Whole document / This section chips
+  // only appended a `scope:` token; they never attached that content, so they were removed.
+  const scope: CommandScope = { kind: 'selection' };
 
   // The trailing token decides which affordance is open: `/…` → verb palette, `@…` → ground kinds
   // (or, once a kind + `:` is typed and that kind has options, the REFINEMENT list of concrete picks).
@@ -270,10 +286,8 @@ export function Composer({
 
   const parsed = parseComposerInput(value, scope, palette);
   const directProgram = Boolean(extractDirectCommandProgram(value));
-  const pickedIntent = palette?.verbs.some((verb) => verb.intent === intentChoice)
-    ? intentChoice || undefined
-    : undefined;
-  const activeIntent = parsed.intent ?? pickedIntent;
+  // The planner chooses the intent; only a typed `/verb` sets one here.
+  const activeIntent = parsed.intent;
   const typedSourceKeys = new Set(parsed.mentions.map(mentionKey));
   const allSources = [
     ...parsed.mentions,
@@ -314,56 +328,6 @@ export function Composer({
         submit();
       }}
     >
-      <div className="composer-intent-row">
-        <label className="composer-intent">
-          <span className="visually-hidden">Task intent</span>
-          <select
-            aria-label="Task intent"
-            disabled={busy || disabled || directProgram || value.trim().startsWith('/')}
-            value={parsed.intent ?? intentChoice}
-            onChange={(event) => setIntentChoice(event.target.value as Intent | '')}
-          >
-            <option value="">Auto</option>
-            {palette?.verbs.map((verb) => (
-              <option key={verb.intent} value={verb.intent}>
-                {verb.intent[0]?.toUpperCase()}
-                {verb.intent.slice(1)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="composer-intent-hint">
-          {directProgram
-            ? 'Command program'
-            : activeIntent && !['ask', 'summarize', 'explain'].includes(activeIntent)
-              ? 'Preview before applying'
-              : 'Grounded answer'}
-        </span>
-      </div>
-      {scopeOptions.length > 1 && (
-        <div
-          className="comp-scope"
-          role="radiogroup"
-          aria-label="Scope"
-          data-testid="scope-control"
-        >
-          {scopeOptions.map((opt, i) => (
-            <button
-              key={opt.label}
-              type="button"
-              className="scope-option"
-              role="radio"
-              aria-checked={i === scopeIdx}
-              data-scope-kind={opt.scope.kind}
-              data-selected={i === scopeIdx ? 'true' : 'false'}
-              disabled={busy || disabled}
-              onClick={() => setScopeIdx(i)}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
       {showVerbs && verbMatches.length > 0 && (
         <ul
           id="composer-options"
@@ -482,12 +446,11 @@ export function Composer({
       )}
       <div className="cb">
         <label className="visually-hidden" htmlFor="ask">
-          Ask Gemini
+          Ask {brand.assistantName}
         </label>
         <textarea
           ref={textareaRef}
           id="ask"
-          aria-describedby="composer-help"
           aria-controls={paletteOpen ? 'composer-options' : undefined}
           aria-activedescendant={paletteOpen ? optionId(clampedActive) : undefined}
           value={value}
@@ -559,49 +522,14 @@ export function Composer({
           </button>
         )}
       </div>
-      <div className="composer-tools">
-        <ComposerSources
-          selected={sourcePicks}
-          options={mentionOptions}
-          disabled={busy || disabled || directProgram}
-          onChange={setSourcePicks}
-        />
-        <details className="composer-options">
-          <summary>Response{format || tone ? ' •' : ''}</summary>
-          <div className="composer-options-popover">
-            <label>
-              Format
-              <select
-                aria-label="Response format"
-                disabled={busy || disabled || directProgram}
-                value={format}
-                onChange={(event) => setFormat(event.target.value)}
-              >
-                <option value="">Let Gemini choose</option>
-                <option>Concise bullets</option>
-                <option>Comparison table</option>
-                <option>Decision brief</option>
-                <option>Checklist with owners</option>
-              </select>
-            </label>
-            <label>
-              Style
-              <select
-                aria-label="Writing style"
-                disabled={busy || disabled || directProgram}
-                value={tone}
-                onChange={(event) => setTone(event.target.value)}
-              >
-                <option value="">Default</option>
-                <option>Plain language</option>
-                <option>Executive</option>
-                <option>Technical</option>
-              </select>
-            </label>
-          </div>
-        </details>
-        <span id="composer-help">Enter to send · Shift + Enter for a new line</span>
-      </div>
+      <p className="cb-disclaimer">{disclaimerText()}</p>
     </form>
   );
+}
+
+/** The model can be wrong: say so under the ask box, in Indonesian for an Indonesian browser. */
+function disclaimerText(): string {
+  return /^id\b/i.test(globalThis.navigator?.language ?? '')
+    ? `${brand.name} dapat membuat kesalahan. Verifikasi informasi penting.`
+    : `${brand.name} can make mistakes. Check important information.`;
 }

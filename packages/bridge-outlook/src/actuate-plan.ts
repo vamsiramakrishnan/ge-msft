@@ -1,5 +1,27 @@
 import type { ActuationRequest } from '@ge/contracts';
 
+/** True when the body already carries HTML tags (the model wrote markup, e.g. `<p>…</p>`). */
+const HTML_TAG = /<\/?[a-z][\w-]*(?:\s[^>]*)?\/?>/i;
+
+/**
+ * Plain prose → HTML for an HTML mail body. Outlook renders the body as HTML, which collapses
+ * line breaks, so a multi-paragraph reply showed as one paragraph. A blank line starts a new `<p>`;
+ * a single line break becomes `<br>`. The model may write a literal `\n` inside a quoted command
+ * string, so that is read as a line break too. Text is escaped; a body with tags is left as is.
+ */
+export function plainTextToHtml(body: string): string {
+  if (!body.trim() || HTML_TAG.test(body)) return body;
+  const escape = (text: string): string =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return body
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n?/g, '\n')
+    .trim()
+    .split(/\n[^\S\n]*\n\s*/)
+    .map((para) => `<p>${para.split('\n').map(escape).join('<br>')}</p>`)
+    .join('');
+}
+
 /**
  * Pure translation of an actuation into a host plan — testable without Office.js. A reply/compose
  * draft is built from `params.mail` (explicit to/subject/body) falling back to `params.text` for
@@ -13,7 +35,7 @@ export interface ReplyPlan {
 
 export function planReply(req: ActuationRequest): ReplyPlan {
   const mail = req.params.mail;
-  const body = mail?.body ?? req.params.text ?? '';
+  const body = plainTextToHtml(mail?.body ?? req.params.text ?? '');
   return {
     body,
     ...(mail?.to ? { to: mail.to } : {}),
@@ -36,7 +58,7 @@ export function planCompose(req: ActuationRequest): ComposePlan {
   const mail = req.params.mail;
   return {
     subject: mail?.subject ?? '',
-    body: mail?.body ?? req.params.text ?? '',
+    body: plainTextToHtml(mail?.body ?? req.params.text ?? ''),
     ...(mail?.to ? { to: mail.to } : {}),
   };
 }
@@ -84,7 +106,7 @@ export function planDraftBody(req: ActuationRequest): DraftBodyPlan {
     coercionType = 'text';
   }
   if (mail?.coercion) coercionType = mail.coercion;
-  return { data, coercionType };
+  return { data: coercionType === 'html' ? plainTextToHtml(data) : data, coercionType };
 }
 
 /**

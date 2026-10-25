@@ -80,8 +80,40 @@ const SAMPLE: Record<
   },
 };
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Stream scripted text the way a live reply arrives: a short working step, then a few words at a
+ * time. `pace` is the delay per chunk in milliseconds; 0 sends the text at once (tests).
+ */
+async function* streamScripted(
+  text: string,
+  pace: number,
+  signal?: AbortSignal,
+  activity?: string,
+): AsyncGenerator<{ type: 'activity'; text: string } | { type: 'token'; text: string }> {
+  if (pace <= 0) {
+    yield { type: 'token', text };
+    return;
+  }
+  if (activity) {
+    yield { type: 'activity', text: activity };
+    await sleep(pace * 25);
+  }
+  for (const chunk of text.match(/\S+\s*|\s+/g) ?? []) {
+    if (signal?.aborted) return;
+    yield { type: 'token', text: chunk };
+    await sleep(pace);
+  }
+}
+
 /** A real controller over an explicitly scripted session. No credentials, network, or Office writes. */
-export function makeDemoController(surface: Surface): PanelController {
+export function makeDemoController(
+  surface: Surface,
+  { pace = 30, resume = false }: { pace?: number; resume?: boolean } = {},
+): PanelController {
+  // Demo-only recovery journal: each landed sample change can be undone (shows the Undo button).
+  const journal = new Map<string, 'applied' | 'undone'>();
   const sample = SAMPLE[surface];
   let sequence = 0;
   const refs: ContextRef[] = [
@@ -105,8 +137,19 @@ export function makeDemoController(surface: Surface): PanelController {
     context: { size: 0 },
     attachRef: async () => undefined,
     detach: () => undefined,
-    async *ask() {
-      yield { type: 'token', text: sample.answer };
+    async *ask(query, opts) {
+      // Type "fail" (or "gagal") to see how a failed answer looks.
+      if (/\b(?:fail|gagal)\b/i.test(query)) {
+        yield { type: 'activity', text: `Reading ${sample.title}…` };
+        yield {
+          type: 'error',
+          code: 'demo',
+          message: 'Demo failure (PowerPoint: GeneralException)',
+        };
+        return;
+      }
+      yield* streamScripted(sample.answer, pace, opts?.signal, `Reading ${sample.title}…`);
+      if (opts?.signal?.aborted) return;
       yield { type: 'citation', source: { title: sample.title, excerpt: sample.body } };
       yield { type: 'done' };
     },
@@ -129,15 +172,36 @@ export function makeDemoController(surface: Surface): PanelController {
           },
         },
       ];
-      yield { type: 'token', text: 'This is a scripted preview. Review the sample change below.' };
+      yield* streamScripted(
+        'This is a scripted preview. Review the sample change below.',
+        pace,
+        options?.signal,
+        'Preparing the sample change…',
+      );
       const approved = await options?.approvePlan?.(effects);
       if (options?.signal?.aborted) return;
-      yield {
-        type: 'token',
-        text: approved
+      if (approved) {
+        journal.set(request.changeId, 'applied');
+        // A landed change, so the demo shows the result card (Show me / Undo).
+        yield {
+          type: 'write-result',
+          turn: 1,
+          changeId: request.changeId,
+          result: {
+            ok: true,
+            changeId: request.changeId,
+            kind: request.kind,
+            ...(sample.params.target?.range ? { location: sample.params.target.range } : {}),
+          },
+        };
+      }
+      yield* streamScripted(
+        approved
           ? '\n\nSample change approved. No Office document was modified.'
           : '\n\nSample change rejected. Nothing was applied.',
-      };
+        pace,
+        options?.signal,
+      );
       yield { type: 'done' };
     },
     async plan(task) {
@@ -168,11 +232,94 @@ export function makeDemoController(surface: Surface): PanelController {
       location: 'Scripted preview only',
     }),
     ingest: async () => undefined,
+    recovery: {
+      durable: false,
+      list: () =>
+        [...journal].map(([id, state]) => ({
+          id,
+          createdAt: new Date().toISOString(),
+          state,
+          target: sample.params.target?.range ?? sample.title,
+          rows: 1,
+          columns: 1,
+          canUndo: state === 'applied' && surface === 'excel',
+          canResume: false,
+        })),
+    },
+    async *runAnalysis(action) {
+      if (action.kind === 'undo' && 'id' in action && journal.has(action.id))
+        journal.set(action.id, 'undone');
+      yield { type: 'done', turn: 1 };
+    },
+    startNewSession: () => undefined,
+    resumeSession: () => undefined,
+    // Two sample chats so History, the app filter and the other-app confirmation can be tried.
+    listConversations: async () => ({
+      conversations: [
+        {
+          name: 'sessions/demo-here',
+          id: 'demo-here',
+          title: `Earlier ${surface} chat (sample)`,
+          turnCount: 1,
+          isPinned: false,
+          surface,
+          updatedAt: '2026-10-08T09:00:00Z',
+        },
+        {
+          name: 'sessions/demo-outlook',
+          id: 'demo-outlook',
+          title: 'Launch readiness email (sample)',
+          turnCount: 1,
+          isPinned: false,
+          surface: surface === 'outlook' ? 'word' : 'outlook',
+          updatedAt: '2026-10-07T15:30:00Z',
+        },
+      ],
+    }),
+    getConversation: async (name) => ({
+      name,
+      id: name,
+      title: name,
+      turnCount: 1,
+      isPinned: false,
+      turns: [
+        {
+          userText: 'What does this email ask for?',
+          answerText:
+            'It asks to **confirm the launch date**. Two integration checks are still open, so the date cannot be confirmed yet.',
+        },
+      ],
+    }),
   };
   const controller = new PanelController(session, {
     listContext: async () => refs,
     canRevealContext: () => false,
+    documentKey: () => `demo-${surface}`,
   });
+  if (resume) {
+    // ?demo=1&resume=1: a task the pane was "closed" during, to see the resume card.
+    const record = {
+      doc: 'demo',
+      request:
+        surface === 'excel'
+          ? 'Add a total for each region in column F'
+          : 'Add 3 slides about work life balance',
+      changes:
+        surface === 'excel'
+          ? ['Cells Sales!F2:F6']
+          : ['Slide added: Understanding balance', 'Slide added: Boundaries'],
+      startedAt: new Date().toISOString(),
+    };
+    let held: typeof record | undefined = record;
+    void controller.attachResumeStore({
+      read: () => held,
+      start: () => undefined,
+      landed: () => undefined,
+      clear: () => {
+        held = undefined;
+      },
+    });
+  }
   controller.setDiscoveredCatalog(
     [],
     [

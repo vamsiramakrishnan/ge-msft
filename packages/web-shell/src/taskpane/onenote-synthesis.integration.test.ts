@@ -2,7 +2,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import type { ProvenancePayload, SourceRef } from '@ge/contracts';
 import { asChangeId } from '@ge/contracts';
-import { scriptedClient, mountStack, type MountedStack } from '../test-harness/index.js';
+import {
+  openPlanEffects,
+  scriptedClient,
+  mountStack,
+  type MountedStack,
+} from '../test-harness/index.js';
 import {
   installFakeOneNote,
   oneNoteSeed,
@@ -85,6 +90,7 @@ describe('OneNote page-synthesis full-stack integration', () => {
 
     // The approval preview surfaces the append-page effect (kind + the synthesized body) the model
     // emitted, shown to the user before anything lands on the host.
+    openPlanEffects(ui!.container);
     const planText = ui!.container.querySelector('.plan-approval')?.textContent ?? '';
     expect(planText).toContain('append-page');
     expect(planText).toContain('The SLA sits below the customer standard.');

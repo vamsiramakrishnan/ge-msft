@@ -5,6 +5,40 @@ import { ContextKindSchema, SurfaceSchema, type Surface } from './context.js';
 import { SourceRefSchema } from './finding.js';
 import { ProvenancePayloadSchema } from './provenance.js';
 
+/** One A1 area, optionally sheet-qualified (`Sheet2!A1:J11`, `'Q3 Sales'!$B$2`). */
+const A1_AREA = String.raw`(?:(?:'[^']+'|[^!,\s'"{}\[\]]+)!)?\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?`;
+/** A chart source: comma-separated A1 areas, or a defined name. */
+export const CHART_SOURCE_PATTERN = new RegExp(
+  String.raw`^(?:${A1_AREA}(?:\s*,\s*${A1_AREA})*|[A-Za-z_\\][A-Za-z0-9_.]*)$`,
+);
+
+/**
+ * The geometric shapes `add-shape` draws: PowerPoint `GeometricShapeType` literals (PowerPointApi
+ * 1.4) that the bridge passes to the host unchanged.
+ */
+export const POWERPOINT_GEOMETRIES = [
+  'Rectangle',
+  'RoundRectangle',
+  'Ellipse',
+  'Triangle',
+  'Diamond',
+  'Pentagon',
+  'Hexagon',
+  'Octagon',
+  'Star5',
+  'Chevron',
+  'RightArrow',
+  'LeftRightArrow',
+  'Cloud',
+] as const;
+export type PowerPointGeometry = (typeof POWERPOINT_GEOMETRIES)[number];
+
+/** The geometry a name means in any case (`rectangle` → `Rectangle`); undefined for any other name. */
+export function powerpointGeometry(name: string | undefined): PowerPointGeometry | undefined {
+  const key = name?.trim().toLowerCase();
+  return POWERPOINT_GEOMETRIES.find((g) => g.toLowerCase() === key);
+}
+
 /**
  * The capability foundation (part 2 of 2): **actuation**.
  *
@@ -138,6 +172,12 @@ export const ActuationSchema = z.object({
   description: z.string().optional(),
   reversible: z.boolean(), // false ⇒ the UI must warn before invoking
   appliesTo: z.array(ContextKindSchema).optional(), // context kinds this can target
+  /**
+   * The writes that can deliver what this one asks for when the host refuses it as aimed at the
+   * wrong target (an Outlook draft edit on a received message, answered by a new message).
+   * Omitted: any later write of another kind may count as the recovery. Empty: none can.
+   */
+  substitutes: z.array(ActuationKindSchema).optional(),
 });
 export type Actuation = z.infer<typeof ActuationSchema>;
 
@@ -189,6 +229,26 @@ export const ActuationParamsSchema = z.object({
       italic: z.boolean().optional(),
       fill: z.string().optional(), // background color, e.g. "#FFF2CC"
       numberFormat: z.string().optional(), // e.g. "$#,##0.00"
+      fontColor: z
+        .string()
+        .regex(/^#[0-9A-F]{6}$/)
+        .optional(),
+      fontSize: z.number().min(6).max(96).optional(),
+      align: z.enum(['left', 'center', 'right', 'justify']).optional(),
+      valign: z.enum(['top', 'center', 'bottom']).optional(),
+      wrap: z.boolean().optional(),
+      /** Applied to all six edges (outside and inside); `none` clears them. */
+      border: z.enum(['thin', 'medium', 'thick', 'none']).optional(),
+      /** The four outer edges only; overrides `border` there (WS4b: thick outside, thin inside). */
+      borderOutside: z.enum(['thin', 'medium', 'thick', 'none']).optional(),
+      /** The inner horizontal and vertical lines only; overrides `border` there. */
+      borderInside: z.enum(['thin', 'medium', 'thick', 'none']).optional(),
+      borderColor: z
+        .string()
+        .regex(/^#[0-9A-F]{6}$/)
+        .optional(),
+      /** Fit the range's column widths to their content. */
+      autofit: z.literal(true).optional(),
     })
     .optional(),
   /** create-table (ADR-0007): promote `range` to a native Table. */
@@ -199,11 +259,21 @@ export const ActuationParamsSchema = z.object({
       name: z.string().optional(), // table name; the bridge mints one if absent
     })
     .optional(),
-  /** insert-chart (ADR-0007): a chart over `sourceRange`. */
+  /**
+   * insert-chart (ADR-0007): a chart over `sourceRange`, one or more comma-separated A1 areas on one
+   * sheet (`Sheet2!C1:C11,Sheet2!G1:G11`: the first area is the categories) or a defined name. Any
+   * other text is refused at dry-run, before approval: a model once passed a JSON object here, which
+   * reached the approval card and only failed inside Excel (docs/COMMAND-RELIABILITY.md, fix C).
+   */
   chart: z
     .object({
       chartType: z.enum(['column', 'bar', 'line', 'pie', 'scatter', 'area']),
-      sourceRange: z.string(),
+      sourceRange: z
+        .string()
+        .regex(
+          CHART_SOURCE_PATTERN,
+          'chart range must be A1 areas on one sheet (Sheet1!A1:B9 or Sheet1!C1:C9,Sheet1!G1:G9) or a defined name',
+        ),
       seriesBy: z.enum(['rows', 'columns', 'auto']).default('auto'),
       title: z.string().optional(),
     })
@@ -328,6 +398,16 @@ export const ActuationParamsSchema = z.object({
     .object({
       rows: z.array(z.array(z.string())),
       hasHeaders: z.boolean().default(false),
+      /**
+       * Word: the table REPLACES the paragraphs from the `target.matchText` paragraph through the
+       * paragraph containing this text, as one tracked edit ("turn these paragraphs into a table").
+       */
+      replaceThrough: z.string().min(1).optional(),
+      /** PowerPoint: the header row's fill (#RRGGBB), with white bold text — the deck's colour. */
+      headerFill: z
+        .string()
+        .regex(/^#[0-9A-Fa-f]{6}$/, 'headerFill must be #RRGGBB')
+        .optional(),
       left: z.number().optional(),
       top: z.number().optional(),
       width: z.number().optional(),
@@ -430,6 +510,20 @@ export const ActuationParamsSchema = z.object({
       height: z.number().optional(),
     })
     .optional(),
+  /** insert-text (Word): the font of the inserted text (`bold=true font=Arial size=16`). */
+  textFont: z
+    .object({
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
+      underline: z.boolean().optional(),
+      color: z
+        .string()
+        .regex(/^#[0-9A-Fa-f]{6}$/)
+        .optional(),
+      size: z.number().min(1).max(400).optional(),
+      name: z.string().max(64).optional(),
+    })
+    .optional(),
   /** format-shape (PowerPoint): in-place shape formatting (snapshot-prior inverse). */
   shapeFormat: z
     .object({
@@ -481,6 +575,8 @@ export const ActuationParamsSchema = z.object({
       attachmentId: z.string().optional(),
       name: z.string().optional(),
       isInline: z.boolean().optional(),
+      /** The text a .docx/.txt file was built from, shown in full on the approval card. */
+      text: z.string().optional(),
     })
     .optional(),
   /** add-categories (Outlook): names must pre-exist in the master-categories list. */
@@ -743,9 +839,72 @@ export const ActuationResultSchema = z.object({
   // provenance to stamp). Distinct from `provenanceDropped` (had a record, failed to persist) — this
   // is an unattributed write, surfaced so it is never mistaken for an attributed one.
   provenanceMissing: z.boolean().optional(),
-  error: z.object({ code: z.string(), message: z.string() }).optional(),
+  // The write LANDED on a host that cannot store provenance at all (Outlook, PowerPoint, OneNote,
+  // Teams): expected, not a failure. Distinct from `provenanceDropped` (a host that can store it
+  // tried and failed). The record still exists in the panel's own store and the run ledger.
+  provenanceUnsupported: z.boolean().optional(),
+  // `reason` refines `code` for diagnostics, which never export `message` (it can quote document
+  // text). A closed enum, so no host or document text can ever ride it.
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      reason: z.lazy(() => ActuationErrorReasonSchema).optional(),
+    })
+    .optional(),
 });
 export type ActuationResult = z.infer<typeof ActuationResultSchema>;
+
+/** Content-free refinements of an actuation error `code`, exported to Copy diagnostics. */
+export const ActuationErrorReasonSchema = z.enum([
+  'no_slides',
+  'slide_not_found',
+  'shape_not_found',
+  'shape_gone',
+  'no_text',
+  'reread_failed',
+  'format_failed',
+  // `host_refused`: Office rejected the change for a reason the user can fix.
+  'protected',
+  'edit_mode',
+  'conflict',
+  'not_found',
+  'unsupported_api',
+]);
+export type ActuationErrorReason = z.infer<typeof ActuationErrorReasonSchema>;
+
+/** The `ActuationErrorReason`s that refine a `host_refused` result. */
+export const HostRefusalReasonSchema = ActuationErrorReasonSchema.extract([
+  'protected',
+  'edit_mode',
+  'conflict',
+  'not_found',
+  'unsupported_api',
+]);
+export type HostRefusalReason = z.infer<typeof HostRefusalReasonSchema>;
+
+/**
+ * Why a task stopped to wait for the user rather than failing: the host refused the change for a
+ * reason the user can fix, or the request needs a write this surface does not offer. Neither is
+ * retried by the model, and neither is an error.
+ */
+export type TaskBlocker =
+  | {
+      cause: 'host_refused';
+      reason: HostRefusalReason;
+      kind: ActuationKind;
+      /** The target the host refused (e.g. `Sheet2!A1`), when the bridge knows it. */
+      location?: string;
+    }
+  | {
+      cause: 'not_supported';
+      /** The missing write, when known; absent when a read/help loop showed no way forward. */
+      kind?: ActuationKind;
+      /** The writes this surface does offer, for the "what I can do instead" line. */
+      available: ActuationKind[];
+    }
+  /** The model repeated the same read-only program: it has no way forward with these tools. */
+  | { cause: 'no_progress' };
 
 /**
  * The read verbs a surface can serve (ADR-0006 capability closure). The CLI grammar scopes host read

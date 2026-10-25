@@ -36,3 +36,6 @@ __pycache__/
 
 # local unified package sideload state (Agents Toolkit title IDs)
 .ge-sideload/
+
+# Live scenario reports (contain Gemini transcripts)
+scenarios/.results/

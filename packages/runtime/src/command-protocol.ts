@@ -993,6 +993,8 @@ function targetFromInvokeProps(
   if (props.slideId !== undefined) target.slideId = props.slideId;
   if (props.shape !== undefined) target.shapeId = props.shape;
   if (props.shapeId !== undefined) target.shapeId = props.shapeId;
+  if (props.expectedDocumentId !== undefined) target.expectedDocumentId = props.expectedDocumentId;
+  if (props.expectedTextHash !== undefined) target.expectedTextHash = props.expectedTextHash;
   return Object.keys(target).length > 0 ? target : undefined;
 }
 

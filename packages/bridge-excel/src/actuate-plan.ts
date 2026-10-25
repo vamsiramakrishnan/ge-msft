@@ -1,5 +1,6 @@
 import {
   gridForRequest,
+  isUnsafeFormula,
   type ActuationRequest,
   type CellValue,
   type SourceRef,
@@ -145,17 +146,7 @@ function isFormula(cell: string): boolean {
  * rejected and the write degrades, rather than being silently evaluated. See ADR-0003 §untrusted
  * boundary — untrusted content must stay data, never become an executable instruction.
  */
-const UNSAFE_FORMULA_FN =
-  /\b(WEBSERVICE|STOCKHISTORY|IMPORTDATA|IMPORTXML|IMPORTHTML|IMPORTRANGE|IMPORTFEED|RTD|CALL|EVALUATE|EXEC|FILES|FOPEN|FWRITE|FREAD|IMAGE)\s*\(/i;
-const EXTERNAL_WORKBOOK_REF = /\[[^\]]*\.(xls|xlsx|xlsm|xlsb|csv)/i;
-
-/** True iff an `=`-formula must not be evaluated because it is an untrusted active-content vector. */
-export function isUnsafeFormula(cell: string): boolean {
-  if (UNSAFE_FORMULA_FN.test(cell)) return true;
-  if (cell.includes('|')) return true; // DDE-style payload, e.g. =cmd|'/c calc'!A1
-  if (EXTERNAL_WORKBOOK_REF.test(cell)) return true;
-  return false;
-}
+export { isUnsafeFormula } from '@ge/contracts';
 
 /**
  * Route a string grid into parallel formula/value grids. Pure, so it's unit-tested. A *safe*

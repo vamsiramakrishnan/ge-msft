@@ -548,6 +548,7 @@ class FakeCustomXmlPartCollection {
 }
 
 class FakeWordDocument {
+  readonly contentControls = { items: [], load: () => undefined };
   private _mode = '';
   readonly body: FakeBody;
   readonly customXmlParts: FakeCustomXmlPartCollection;

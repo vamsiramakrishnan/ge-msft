@@ -282,7 +282,8 @@ function installOutlook(
       mailbox,
       requirements: {
         isSetSupported: (name: string, version?: string) =>
-          name === 'Mailbox' && Number(version ?? '1.1') <= mailboxVersion,
+          name === 'Mailbox' &&
+          Number((version ?? '1.1').split('.')[1]) <= Number(String(mailboxVersion).split('.')[1]),
       },
     },
     CoercionType: { Html: 'html', Text: 'text' },

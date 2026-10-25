@@ -1,5 +1,10 @@
+import { nativeTraces } from './native-trace.js';
 import {
   ActuationKindSchema,
+  capabilityModule,
+  CAPABILITY_REGISTRY,
+  contentHash,
+  type CapabilityManifest,
   ActuationRequestSchema,
   ChangeIdSchema,
   type ActuationKind,
@@ -20,9 +25,13 @@ export interface BridgeDispatch<Host> {
   readonly handledActuations: readonly ActuationKind[];
   dispatch(host: Host, request: ActuationRequest): Promise<ActuationResult>;
 }
-export interface BridgeDispatchOptions {
+export interface BridgeDispatchOptions<Host = unknown> {
   /** Reported adapters persist locally; unsupported adapters must not imply durable attribution. */
   provenance: 'reported' | 'unsupported';
+  capabilities?: (host: Host) => CapabilityManifest | Promise<CapabilityManifest>;
+  /** Preserve a surface's precise read-only preflight refusal without dispatching a write. */
+  unavailable?: (host: Host, request: ActuationRequest) => ActuationResult | undefined;
+  documentKey?: (host: Host) => string | undefined;
 }
 
 const SURFACE_NAMES: Record<Surface, string> = {
@@ -54,7 +63,7 @@ const HOST_REFUSALS: Readonly<Record<string, HostRefusalReason>> = {};
 export function createBridgeDispatch<Host>(
   surface: Surface,
   handlers: BridgeActuationHandlers<Host>,
-  options: BridgeDispatchOptions,
+  options: BridgeDispatchOptions<Host>,
 ): BridgeDispatch<Host> {
   const table = Object.freeze({ ...handlers });
   const provenance = options.provenance;
@@ -107,9 +116,76 @@ export function createBridgeDispatch<Host>(
             message: `${SURFACE_NAMES[surface]} bridge cannot ${request.kind}`,
           },
         };
+      const module = capabilityModule(surface, request.kind);
+      if (module && !module.params.safeParse(input.params).success)
+        return {
+          ok: false,
+          changeId: request.changeId,
+          kind: request.kind,
+          error: {
+            code: 'invalid_request',
+            message: 'Parameters do not match this capability contract.',
+          },
+        };
+      if (
+        request.params.target?.expectedTextHash &&
+        !['set-shape-text', 'fill-content-control'].includes(request.kind)
+      )
+        return {
+          ok: false,
+          changeId: request.changeId,
+          kind: request.kind,
+          error: {
+            code: 'unsupported_precondition',
+            message: 'This capability cannot verify an expected text hash.',
+          },
+        };
+      if (request.params.target?.expectedDocumentId) {
+        const key = options.documentKey?.(host);
+        if (
+          !key ||
+          (await contentHash({ surface, documentKey: key })) !==
+            request.params.target.expectedDocumentId
+        )
+          return {
+            ok: false,
+            changeId: request.changeId,
+            kind: request.kind,
+            error: {
+              code: 'target_conflict',
+              message: 'The approved target belongs to a different or unidentified document.',
+            },
+          };
+      }
+      if (options.capabilities) {
+        const effective = await options.capabilities(host);
+        if (!effective.actuations.some((operation) => operation.kind === request.kind))
+          return (
+            options.unavailable?.(host, request) ?? {
+              ok: false,
+              degraded: true,
+              changeId: request.changeId,
+              kind: request.kind,
+              error: {
+                code: 'unsupported',
+                message:
+                  'This operation is unavailable in the current host or mode. Requires ' +
+                  (CAPABILITY_REGISTRY.find(
+                    (entry) => entry.kind === request.kind && entry.surface === surface,
+                  )
+                    ?.requirementSets.map((set) => set.name + ' ' + set.minVersion)
+                    .join(', ') || 'a supported native API') +
+                  '.',
+              },
+            }
+          );
+      }
+      const started = performance.now();
+      let outcome: 'completed' | 'refused' | 'unknown' = 'unknown';
       let result: ActuationResult;
       try {
         result = await table[request.kind]!(host, request);
+        outcome = result.ok ? 'completed' : result.recoveryPending ? 'unknown' : 'refused';
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
         const reason = typeof code === 'string' ? HOST_REFUSALS[code] : undefined;
@@ -121,6 +197,18 @@ export function createBridgeDispatch<Host>(
           kind: request.kind,
           error: { code: 'host_refused', reason, message: `Office refused the change (${code}).` },
         };
+      } finally {
+        nativeTraces.record({
+          id: crypto.randomUUID(),
+          surface,
+          kind: request.kind,
+          changeId: request.changeId,
+          stage: 'dispatch',
+          syncs: 0,
+          syncMs: 0,
+          durationMs: performance.now() - started,
+          outcome,
+        });
       }
       return provenance === 'unsupported' && result.ok
         ? {

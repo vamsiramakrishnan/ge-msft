@@ -1,3 +1,5 @@
+import { prepareOfficeWorkflow, type OfficeWorkflow } from './office-workflows.js';
+import { TaskJournal } from './task-journal.js';
 import { EvidenceWorkspace, EvidenceBinding, type EvidenceSource } from './evidence/index.js';
 import type { ContextProjectionRequest, ContextProjection, SourceLimits } from '@ge/contracts';
 import type { EvidencePipeline } from './evidence.js';
@@ -552,6 +554,8 @@ export interface AssistSessionOptions {
   commandCapsuleBytes?: number;
   compute?: () => Promise<ComputeEngine>;
   recoveryOwner?: string;
+  taskJournal?: TaskJournal;
+  taskJournalFactory?: (documentKey: string) => Promise<TaskJournal>;
   evidence?: EvidencePipeline;
   /** Caller-owned, principal-scoped source storage and retrieval policies. */
   sourceWorkspace?: EvidenceWorkspace;
@@ -672,6 +676,9 @@ export class AssistSession {
   readonly executions = new ExecutionLedger();
   readonly analysis?: AnalysisWorkspace;
   readonly recovery: RecoveryCoordinator;
+  journal?: TaskJournal;
+  private journalDocumentKey?: string;
+  private taskDocumentKey?: string;
   readonly evidence?: EvidencePipeline;
   readonly sourceWorkspace: EvidenceWorkspace;
   private readonly evidenceBindings = new Map<string, EvidenceBinding>();
@@ -696,6 +703,32 @@ export class AssistSession {
   private readonly instanceId =
     globalThis.crypto?.randomUUID?.() ??
     `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  async refreshJournal(): Promise<void> {
+    if (!this.task) {
+      if (this.options.taskJournal || this.options.taskJournalFactory) {
+        try {
+          await this.bindTaskJournal();
+        } catch {
+          this.journal = undefined;
+        }
+      }
+    }
+  }
+  private async bindTaskJournal(): Promise<void> {
+    const key = this.bridge.documentKey?.();
+    if (key === this.journalDocumentKey && this.journal) return;
+    if (!this.options.taskJournalFactory) {
+      if (this.options.taskJournal && key !== this.journalDocumentKey)
+        throw new Error('The document changed. Rebind the task journal before writing.');
+      return;
+    }
+    const journal = key ? await this.options.taskJournalFactory(key) : undefined;
+    if (this.bridge.documentKey?.() !== key)
+      throw new Error('The active Office item changed during journal binding.');
+    this.journal = journal;
+    this.journalDocumentKey = key;
+  }
 
   private hookContext() {
     return {
@@ -729,11 +762,19 @@ export class AssistSession {
       signal,
     };
     this.task = task;
+    this.taskDocumentKey = this.bridge.documentKey?.();
     this.executions.record(task);
     const contextIds: string[] = [];
     let consumed = false;
     let completion: T | undefined;
     try {
+      if (this.options.taskJournal || this.options.taskJournalFactory) {
+        try {
+          await this.bindTaskJournal();
+        } catch {
+          this.journal = undefined;
+        }
+      }
       if (evidenceBinding !== undefined) {
         const binding = this.evidenceBindings.get(evidenceBinding);
         if (!binding) throw new Error('Unknown or released evidence binding.');
@@ -916,6 +957,7 @@ export class AssistSession {
         this.recovery.clearPrepared();
         this.activeEvidence = undefined;
         this.task = undefined;
+        this.taskDocumentKey = undefined;
       }
     }
   }
@@ -1077,6 +1119,8 @@ export class AssistSession {
       options.sourceWorkspace ?? options.evidence?.workspace ?? new EvidenceWorkspace();
     this.disposeEvidence = this.evidence?.install(this.hooks);
     this.recovery = new RecoveryCoordinator(bridge, options.recoveryOwner ?? 'session');
+    this.journal = options.taskJournal;
+    this.journalDocumentKey = bridge.documentKey?.();
     if (bridge.captureCells && options.compute)
       this.analysis = new AnalysisWorkspace(bridge, options.compute);
     this.model = new ContextModel(bridge.surface);
@@ -1099,6 +1143,9 @@ export class AssistSession {
       preview: true,
       write: manifest.actuations.some((actuation) => actuation.kind === 'write-cells'),
     };
+  }
+  async getEffectiveCapabilities(): Promise<CapabilityManifest> {
+    return structuredClone(await this.effectiveCapabilities());
   }
 
   async *runAnalysis(
@@ -2004,6 +2051,18 @@ export class AssistSession {
       undefined,
       opts.evidenceBinding,
     );
+  }
+
+  /** Versioned workflow entry point. All writes still use the existing gated command executor. */
+  async *runOfficeWorkflow(
+    workflow: OfficeWorkflow,
+    opts: RunCommandsOptions = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    const prepared = prepareOfficeWorkflow(workflow);
+    if (prepared.surface !== this.bridge.surface)
+      throw new Error('Open the workflow in its target Office application.');
+    if (prepared.mode === 'program') yield* this.runCommandProgram(prepared.body, opts);
+    else yield* this.runCommands(prepared.body, opts);
   }
 
   /** Typed SDK entry point; uses the identical CLI compiler, approval, recovery and verification path. */
@@ -4333,6 +4392,19 @@ export class AssistSession {
     // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
     // A turn with no provenance stamps none (rather than inheriting a previous turn's). Durable
     // persistence is reported by the bridge; unsupported hosts mark it explicitly.
+    const documentKey = this.bridge.documentKey?.();
+    if (this.task && this.taskDocumentKey !== undefined && documentKey !== this.taskDocumentKey)
+      return {
+        ok: false,
+        changeId: request.changeId,
+        kind: request.kind,
+        error: {
+          code: 'target_conflict',
+          message:
+            'The active document changed during this task. Start a new task in the current document.',
+        },
+      };
+    if (this.options.taskJournal || this.options.taskJournalFactory) await this.bindTaskJournal();
     const admission = admitActuationRequest(
       { ...request, ...(provenance ? { provenance } : {}) },
       this.bridge.surface,
@@ -4393,14 +4465,54 @@ export class AssistSession {
             kind: stamped.kind,
             error: { code: 'cancelled', message: 'Cancelled before host dispatch.' },
           };
-        if (this.activeEvidence) {
-          await this.toolOperation('evidence:before-effect', { kind: stamped.kind }, () =>
-            this.activeEvidence!.beforeEffect(stamped, this.task?.signal),
+        const dispatch = async (): Promise<ActuationResult> => {
+          if (this.task?.signal?.aborted)
+            return {
+              ok: false,
+              changeId: stamped.changeId,
+              kind: stamped.kind,
+              error: { code: 'cancelled', message: 'Cancelled before host dispatch.' },
+            };
+          if (documentKey !== undefined && this.bridge.documentKey?.() !== documentKey)
+            return {
+              ok: false,
+              changeId: stamped.changeId,
+              kind: stamped.kind,
+              error: {
+                code: 'target_conflict',
+                message: 'The active document or mail item changed after approval.',
+              },
+            };
+          const latest = admitActuationRequest(
+            stamped,
+            this.bridge.surface,
+            await this.effectiveCapabilities(),
           );
-          this.activeEvidence.dispatched();
-        }
-        dispatched = true;
-        return this.bridge.actuate(stamped);
+          if (latest.rejection) return latest.rejection;
+          if (this.activeEvidence) {
+            try {
+              await this.toolOperation('evidence:before-effect', { kind: stamped.kind }, () =>
+                this.activeEvidence!.beforeEffect(stamped, this.task?.signal),
+              );
+            } catch {
+              return {
+                ok: false,
+                changeId: stamped.changeId,
+                kind: stamped.kind,
+                error: {
+                  code: 'stale_source',
+                  message: 'Evidence changed before dispatch. Refresh and review the change again.',
+                },
+              };
+            }
+            this.activeEvidence.dispatched();
+          }
+          dispatched = true;
+          return this.bridge.actuate(stamped);
+        };
+        return this.journal
+          ? this.journal.execute(this.task?.taskId ?? this.hookContext().taskId, stamped, dispatch)
+          : dispatch();
       });
       await this.recordEffect(stamped, result);
       return result;

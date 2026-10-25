@@ -94,3 +94,12 @@ export * from './result-store.js';
 export { discoverCommands, type CommandCard } from './capability-catalog.js';
 export * from './document-summary.js';
 export * from './evidence/index.js';
+
+export * from './host-profile.js';
+export * from './native-trace.js';
+
+export * from './task-journal.js';
+
+export * from './office-workflows.js';
+
+export * from './native-certification.js';

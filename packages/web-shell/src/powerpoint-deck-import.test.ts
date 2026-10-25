@@ -3,6 +3,13 @@ import { ActuationRequestSchema } from '@ge/contracts';
 import { buildPowerPointDeckImportRequest } from './powerpoint-deck-import.js';
 
 describe('buildPowerPointDeckImportRequest', () => {
+  it('uses a fresh operation ID for separately approved imports of the same spec', async () => {
+    const deckSpec = { slides: [{ title: 'Same content', elements: [] }] };
+    const first = await buildPowerPointDeckImportRequest({ deckSpec });
+    const second = await buildPowerPointDeckImportRequest({ deckSpec });
+    expect(first.artifact.specFingerprint).toBe(second.artifact.specFingerprint);
+    expect(first.request.changeId).not.toBe(second.request.changeId);
+  });
   it('compiles a DeckSpec into one typed PowerPoint insert-slide deck actuation', async () => {
     const plan = await buildPowerPointDeckImportRequest({
       changeId: 'deck-test',

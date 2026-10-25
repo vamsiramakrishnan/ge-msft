@@ -107,6 +107,12 @@ def _check_block(expect: dict) -> list:
     if "has_error" in expect and has_error != expect["has_error"]:
         errs.append(f"has_error={has_error} != expected {expect['has_error']}")
 
+    if "command_kind" in expect:
+        if len(cmds) != 1 or cmds[0].get("kind") != expect["command_kind"]:
+            errs.append(f"expected one {expect['command_kind']} command, got {cmds!r}")
+        elif cmds[0].get("props", {}).get("text") != expect["argument_text"]:
+            errs.append(f"escaped argument mismatch: {cmds[0]!r}")
+
     if "complete" in expect:
         complete = block_is_complete(parsed)
         if complete != expect["complete"]:

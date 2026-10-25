@@ -199,6 +199,14 @@ export const ActuationParamsSchema = z.object({
       // ADR-0007 cross-surface anchors: PowerPoint shapes, OneNote outline/paragraph/region,
       // and Plane-B Graph message ids. All optional — a kind reads the anchor it needs.
       shapeId: z.string().optional(),
+      expectedDocumentId: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
+      expectedTextHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
       shapeName: z.string().optional(),
       outlineId: z.string().optional(),
       paragraphId: z.string().optional(),
@@ -825,11 +833,16 @@ export const ActuationResultSchema = z.object({
   changeId: ChangeIdSchema,
   kind: ActuationKindSchema,
   location: z.string().optional(), // where it landed (range, slide #, comment id, draft id)
+  /** Observed host state. Opening a review form never establishes creation or delivery of mail. */
+  completion: z
+    .enum(['applied', 'verified', 'review-opened', 'draft-updated', 'unknown'])
+    .optional(),
   // How to reverse this write (ADR-0007). Populated by the bridge at apply-time once it knows the
   // minted object name / prior state; persisted with provenance so undo is recorded, not implicit.
   inverse: InverseDescriptorSchema.optional(),
   verification: VerificationSchema.optional(),
   recoveryPending: z.boolean().optional(),
+  trackingModeRestoreFailed: z.boolean().optional(),
   degraded: z.boolean().optional(), // e.g. anchor drifted → applied as a panel item
   // Observability: the reversible write LANDED but its durable provenance could not be persisted
   // (host metadata write failed / unavailable). The change is real but unprovenanced — surface it so

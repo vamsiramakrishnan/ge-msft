@@ -80,6 +80,23 @@ function surfaceFromParams(params: URLSearchParams): Surface {
 
 function buildState(t: Toggles): PanelState {
   return {
+    ...(previewParams().get('office-workflows') === '1'
+      ? {
+          officeCapabilities: ['fill-content-control' as const, 'set-shape-text' as const],
+          taskJournal: {
+            durable: true,
+            entries: [
+              {
+                id: 'preview-only',
+                taskId: 'preview-task',
+                kind: 'set-shape-text' as const,
+                state: 'uncertain' as const,
+                updatedAt: '2026-10-25T00:00:00Z',
+              },
+            ],
+          },
+        }
+      : {}),
     messages: t.messages ? FIXTURE_MESSAGES : [],
     chips: t.chips ? FIXTURE_CHIPS : [],
     suggestions: t.suggestions ? FIXTURE_SUGGESTIONS : [],
@@ -92,7 +109,7 @@ function buildState(t: Toggles): PanelState {
     conversations: FIXTURE_CONVERSATIONS,
     ...(t.write ? { pendingWrite: FIXTURE_PENDING_WRITE } : {}),
     ...(t.plan ? { pendingPlan: FIXTURE_PLAN } : {}),
-    busy: t.busy,
+    busy: previewParams().get('office-workflows') === '1' ? false : t.busy,
     ...(t.error ? { error: FIXTURE_ERROR } : {}),
   };
 }
@@ -112,6 +129,14 @@ export function makeMockController(state: PanelState): PanelController {
   const mock = {
     getState: () => state,
     subscribe: (_listener: (s: PanelState) => void) => () => undefined,
+    managedTextTargets: () => [
+      {
+        id: 'preview-output',
+        kind: 'content-control',
+        title: 'Sample managed output',
+        surface: 'word',
+      },
+    ],
     refreshContext: async () => log('refreshContext')(),
     attach: async (id: string) => log('attach')(id),
     detach: (id: string) => log('detach')(id),

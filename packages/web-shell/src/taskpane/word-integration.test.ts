@@ -82,7 +82,8 @@ describe('Word full-stack integration', () => {
     expect(snap.inserts[0]).toMatchObject({ anchor: '99.5%.', text: '~99.5% (source needed).' });
     expect(snap.bodyText).toContain('The SLA is ~99.5% (source needed).');
     // Tracked changes were turned on before the edit.
-    expect(snap.changeTrackingMode).toBe('TrackAll');
+    expect(snap.inserts[0]?.tracked).toBe(true);
+    expect(snap.changeTrackingMode).toBe('');
     // Durable provenance landed as a custom XML part (Word's durable metadata).
     expect(sim.office.customXmlParts.length).toBeGreaterThan(0);
     expect(sim.office.customXmlParts[0]).toContain('sim.user@acme');

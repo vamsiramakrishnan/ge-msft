@@ -23,9 +23,9 @@ function buildId(env: Record<string, string | undefined>): string {
   let commit = env.GE_BUILD_COMMIT;
   if (!commit) {
     try {
-      commit = execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: 'pipe' })
-        .toString()
-        .trim();
+      commit = execSync('git rev-parse HEAD', { cwd: __dirname, stdio: 'pipe' }).toString().trim();
+      if (execSync('git status --porcelain', { cwd: __dirname, stdio: 'pipe' }).toString().trim())
+        commit += '-dirty';
     } catch {
       commit = undefined;
     }

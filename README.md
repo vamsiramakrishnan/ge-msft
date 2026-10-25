@@ -254,6 +254,7 @@ docs/              ADRs, API notes, mockups, status and architecture docs
 
 ## Read next
 
+- [Verified Office workflows](docs/VERIFIED-OFFICE-WORKFLOWS.md): host support, native verification, durable checkpoints, managed refresh and certification
 - [`docs/STATUS.md`](docs/STATUS.md): implemented surface and known gaps
 - [Runtime extensions](docs/RUNTIME-EXTENSIONS.md): message hooks, context providers, event reactions, and outcome verification
 - [`setup/README.md`](setup/README.md): setup path

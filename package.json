@@ -83,7 +83,11 @@
     "docs:gifs": "bun scripts/render-readme-gifs.mjs",
     "docs:gifs:check": "bun scripts/render-readme-gifs.mjs --check",
     "emit:language": "tsc -b packages/contracts && bun packages/contracts/scripts/emit-language-manifest.mjs",
-    "emit:language:check": "tsc -b packages/contracts && bun packages/contracts/scripts/emit-language-manifest.mjs --check"
+    "emit:language:check": "tsc -b packages/contracts && bun packages/contracts/scripts/emit-language-manifest.mjs --check",
+    "office:lab": "bun scripts/office-lab.ts",
+    "office:doctor": "bun scripts/office-lab.ts doctor",
+    "test:native:check": "bun scripts/office-lab.ts check-native",
+    "test:browser-contracts": "GE_BROWSER_CONTRACTS=1 vitest run packages/runtime/src/task-journal.browser.test.ts --testTimeout=30000"
   },
   "devDependencies": {
     "@inquirer/prompts": "^8.5.2",

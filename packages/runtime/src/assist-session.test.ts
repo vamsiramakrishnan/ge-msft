@@ -2001,12 +2001,11 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
       const { fetch } = scriptedFetch(['```cmd\nread A1:B3\n```', '```cmd\ndone "n/a"\n```']);
       const client = new StreamAssistClient(tokens, cfg, fetch);
       const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
-      let settled = false;
-      const run = collectLoop(session.runCommands('read the table')).finally(() => {
-        settled = true;
-      });
-      for (let i = 0; i < 20 && !settled; i++)
-        await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS / 4);
+      const readRange = vi.spyOn(bridge, 'readRange');
+      const run = collectLoop(session.runCommands('read the table'));
+      // Wait for async setup to reach the actual native read before advancing its timer.
+      await vi.waitFor(() => expect(readRange).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS + 1);
       const events = await run;
       const read = events.find((e) => e.type === 'read-result');
       expect(JSON.stringify(read)).toContain('did not answer read A1:B3');

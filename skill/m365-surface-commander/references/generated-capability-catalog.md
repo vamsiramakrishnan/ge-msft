@@ -63,7 +63,7 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | word | implemented | `/insert-table` | `insert-table` | Word native table insertion | WordApi 1.3 | insert a small grounded table into a Word document: "at the cursor" (pada lokasi kursor) = no match= (it goes after the cursor's paragraph); match="exact text" only when the user names a place. Empty rows the user asks for are tab-only lines |
 | word | implemented | `/insert-text` | `insert-text` | Word plain-text insertion | WordApi 1.1 | insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text |
 | word | implemented | `/replace-selection` | `replace-selection` | Word selection replacement | WordApi 1.1 | replace the current Word selection after previewing prior and new text |
-| word | implemented | `suggest` | `tracked-change` | Word tracked rewrite | WordApi 1.1 | replace exact existing text as a reviewable tracked change |
+| word | implemented | `suggest` | `tracked-change` | Word tracked rewrite | WordApi 1.4 | replace exact existing text as a reviewable tracked change |
 
 ## Implemented live capabilities
 

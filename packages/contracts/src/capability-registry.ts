@@ -484,8 +484,12 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     command: 'suggest',
     title: 'Word tracked rewrite',
     useWhen: 'replace exact existing text as a reviewable tracked change',
-    hostApis: ['Word.Range.insertText', 'Word.ChangeTrackingMode'],
-    requirementSets: [{ name: 'WordApi', minVersion: '1.1' }],
+    hostApis: [
+      'Word.Range.insertText',
+      'Word.Document.changeTrackingMode',
+      'Word.Range.getReviewedText',
+    ],
+    requirementSets: [{ name: 'WordApi', minVersion: '1.4' }],
     contextKinds: ['selection', 'paragraph', 'document'],
     discovery: ['search <exact text>', 'inspect <paragraph-ref>', 'open <paragraph-ref>'],
     sequence: [

@@ -224,7 +224,8 @@ export function installFakeOutlook(
       // Outlook on the web today: Mailbox up to 1.15 (base64 files on a reply form).
       requirements: {
         isSetSupported: (name, version = '1.1') =>
-          name === 'Mailbox' && Number(version) <= MAILBOX_VERSION,
+          name === 'Mailbox' &&
+          Number(version.split('.')[1]) <= Number(String(MAILBOX_VERSION).split('.')[1]),
       },
     },
     CoercionType: COERCION_TYPE,

@@ -10,6 +10,7 @@ export type ActuationOutcome = 'verified' | 'unverified' | 'uncertain' | 'reject
 export function assessActuationResult(result: ActuationResult): ActuationOutcome {
   if (
     result.recoveryPending ||
+    result.completion === 'unknown' ||
     (result.ok && result.error) ||
     (!result.ok && result.verification?.status === 'verified') ||
     result.error?.code === 'outcome_unknown' ||
@@ -49,7 +50,12 @@ export function validateActuationResult(request: ActuationRequest, raw: unknown)
       'The host returned an invalid or mismatched write receipt. Inspect the document before retrying.',
     );
   const result = parsed.data;
-  if ((result.ok && result.error) || (!result.ok && result.verification?.status === 'verified'))
+  if (
+    (result.ok && result.error) ||
+    (!result.ok && result.verification?.status === 'verified') ||
+    (result.completion === 'verified' && result.verification?.status !== 'verified') ||
+    (result.completion === 'review-opened' && result.verification?.status === 'verified')
+  )
     return unknownActuationResult(
       request,
       'The host returned contradictory write evidence. Inspect the document before retrying.',

@@ -1,4 +1,10 @@
-import type { ActuationRequest, ContextRef } from '@ge/contracts';
+import { nativeRun } from './native-run.js';
+import {
+  contentHash,
+  type ActuationRequest,
+  type ContextRef,
+  type Verification,
+} from '@ge/contracts';
 import { isSet } from './capabilities-runtime.js';
 import { chooseAnchorIndex, wordEdits } from './actuate-plan.js';
 import type { WordSearchHit } from './capture.js';
@@ -59,7 +65,12 @@ export interface WordParagraph {
 
 /** The outcome of an apply-time anchor resolution + insert. */
 export type TrackedChangeOutcome =
-  | { readonly status: 'applied'; readonly location: string }
+  | {
+      readonly status: 'applied';
+      readonly location: string;
+      readonly verification?: Verification;
+      trackingModeRestoreFailed?: boolean;
+    }
   | { readonly status: 'drift' }; // 0 hits, or the chooser rejected every hit
 
 /**
@@ -108,8 +119,14 @@ export type ReplaceSelectionOutcome =
  * to a panel item rather than throwing.
  */
 export type FillContentControlOutcome =
-  | { readonly status: 'applied'; readonly location: string; readonly priorText: string }
-  | { readonly status: 'gone' };
+  | {
+      readonly status: 'applied';
+      readonly location: string;
+      readonly priorText: string;
+      readonly verification?: Verification;
+    }
+  | { readonly status: 'gone' }
+  | { readonly status: 'conflict' };
 
 /**
  * The outcome of an `apply-style` (ADR-0007). On success it carries the range's PRIOR style name so
@@ -191,6 +208,7 @@ export interface WordHandlers {
  * `Word.run`/`Office.context` batching, the bridge owns the decisions.
  */
 export interface WordHost {
+  readonly supportsTextPreconditions?: true;
   /** The current selection's text (empty string when nothing is selected). */
   readSelectionText(): Promise<string>;
 
@@ -218,6 +236,11 @@ export interface WordHost {
    * and the replies. Read-only. Never throws; a host without the comments API yields `[]`.
    */
   readComments(): Promise<WordComment[]>;
+  listContentControls?(): Promise<{
+    items: Array<{ id: string; title: string; tag: string }>;
+    complete: boolean;
+  }>;
+  readContentControlText?(id: string): Promise<string>;
 
   /** Bring an addressable Word object into view without changing document content. */
   revealContext(ref: ContextRef): Promise<void>;
@@ -285,7 +308,11 @@ export interface WordHost {
    * ADR-0007 `fill-content-control`: populate the content control with `contentControlId`, CAPTURING
    * its prior text first so the fill is reversible. `gone` when no control with that id exists.
    */
-  fillContentControl(contentControlId: string, text: string): Promise<FillContentControlOutcome>;
+  fillContentControl(
+    contentControlId: string,
+    text: string,
+    expectedTextHash?: string,
+  ): Promise<FillContentControlOutcome>;
 
   /**
    * ADR-0007 `apply-style`: set `styleName` on the resolved range — as a built-in style
@@ -384,11 +411,47 @@ export interface WordHost {
  * re-resolve that degrades a drifted finding, and the defensive event registration/teardown.
  */
 export class OfficeWordHost implements WordHost {
+  readonly supportsTextPreconditions = true;
   /**
    * `trackEdits` (default on): every text edit is recorded as a Word tracked change, so a reviewer
    * accepts or rejects each one (product decision 2026-10-15). It is the one switch for all edits.
    */
   constructor(private readonly options: { readonly trackEdits?: boolean } = {}) {}
+  async listContentControls(): Promise<{
+    items: Array<{ id: string; title: string; tag: string }>;
+    complete: boolean;
+  }> {
+    return nativeRun(async (ctx) => {
+      const controls = ctx.document.contentControls;
+      controls.load({ select: 'id,title,tag', top: 101 });
+      await ctx.sync();
+      if (controls.items.length > 101)
+        throw new Error('Word did not honor bounded content-control discovery.');
+      return {
+        items: controls.items
+          .slice(0, 100)
+          .map((control) => ({ id: String(control.id), title: control.title, tag: control.tag })),
+        complete: controls.items.length <= 100,
+      };
+    });
+  }
+  async readContentControlText(id: string): Promise<string> {
+    if (!/^-?\d+$/.test(id) || !Number.isSafeInteger(Number(id)) || !isSet('WordApi', '1.4'))
+      throw new Error(
+        'A valid content control and WordApi 1.4 are required for revision-aware capture.',
+      );
+    return nativeRun(async (ctx) => {
+      const control = ctx.document.contentControls.getByIdOrNullObject(Number(id));
+      control.load('isNullObject');
+      await ctx.sync();
+      if (control.isNullObject) throw new Error('The content control no longer exists.');
+      const text = control.getRange().getReviewedText('Current');
+      await ctx.sync();
+      if (new TextEncoder().encode(text.value).byteLength > 32 * 1024)
+        throw new Error('The content control exceeds the refresh budget.');
+      return text.value;
+    });
+  }
 
   /**
    * Runs one document edit as a tracked change when `trackEdits` is on, then puts the user's own
@@ -396,7 +459,7 @@ export class OfficeWordHost implements WordHost {
    * (`withoutTrackedDeletions`), which needs 1.6, so tracking is never on without that filter.
    */
   private edit<T>(batch: (ctx: Word.RequestContext) => Promise<T>): Promise<T> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       if (this.options.trackEdits === false || !isSet('WordApi', '1.6')) return batch(ctx);
       const doc = ctx.document;
       doc.load('changeTrackingMode');
@@ -416,7 +479,7 @@ export class OfficeWordHost implements WordHost {
   }
 
   async readSelectionText(): Promise<string> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const sel = ctx.document.getSelection();
       sel.load('text');
       await ctx.sync();
@@ -426,7 +489,7 @@ export class OfficeWordHost implements WordHost {
 
   async readCursorParagraph(): Promise<string | undefined> {
     try {
-      return await Word.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const paragraph = ctx.document.getSelection().paragraphs.getFirstOrNullObject();
         paragraph.load('text,isNullObject');
         await ctx.sync();
@@ -438,7 +501,7 @@ export class OfficeWordHost implements WordHost {
   }
 
   async readBodyText(): Promise<string> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const body = ctx.document.body;
       body.load('text');
       await ctx.sync();
@@ -447,7 +510,7 @@ export class OfficeWordHost implements WordHost {
   }
 
   async readParagraphs(): Promise<WordParagraph[]> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const paras = ctx.document.body.paragraphs;
       paras.load('items/text,items/styleBuiltIn');
       await ctx.sync();
@@ -459,7 +522,7 @@ export class OfficeWordHost implements WordHost {
   }
 
   async readParagraphPage(offset: number, count: number): Promise<WordParagraph[]> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const paragraphs = ctx.document.body.paragraphs;
       paragraphs.load({ select: 'text,styleBuiltIn', skip: offset, top: count });
       await ctx.sync();
@@ -472,7 +535,7 @@ export class OfficeWordHost implements WordHost {
     const q = query.trim();
     if (!q) return [];
     try {
-      return await Word.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const results = ctx.document.body.search(q, { matchCase });
         // Load the match text plus its surrounding paragraph (the short contextHint). `body.search`
         // → WordApi 1.1; reading a result's `paragraphs` is broadly available, but we guard the
@@ -514,7 +577,7 @@ export class OfficeWordHost implements WordHost {
     // `Body.getComments`, `Comment.getRange` and `Comment.replies` → WordApi 1.4.
     if (!isSet('WordApi', '1.4')) return [];
     try {
-      return await Word.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const comments = ctx.document.body.getComments();
         comments.load('items/id,items/authorName,items/content,items/resolved');
         await ctx.sync();
@@ -574,7 +637,7 @@ export class OfficeWordHost implements WordHost {
     }
 
     if (ref.kind === 'selection' || ref.id === 'word:selection') {
-      await Word.run(async (ctx) => {
+      await nativeRun(async (ctx) => {
         ctx.document.getSelection().select();
         await ctx.sync();
       });
@@ -583,7 +646,7 @@ export class OfficeWordHost implements WordHost {
 
   private async revealParagraph(index: number): Promise<void> {
     if (!Number.isInteger(index) || index < 1) return;
-    await Word.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       const paras = ctx.document.body.paragraphs;
       paras.load('items');
       await ctx.sync();
@@ -598,7 +661,7 @@ export class OfficeWordHost implements WordHost {
     matchText: string,
     contextHint: string | undefined,
   ): Promise<void> {
-    await Word.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       const results = ctx.document.body.search(matchText, { matchCase: false });
       results.load('items/text');
       await ctx.sync();
@@ -617,7 +680,7 @@ export class OfficeWordHost implements WordHost {
     if (!isSet('WordApi', '1.3')) return;
     const id = Number(contentControlId);
     if (!Number.isInteger(id)) return;
-    await Word.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       const cc = ctx.document.contentControls.getByIdOrNullObject(id);
       cc.load('isNullObject');
       await ctx.sync();
@@ -629,7 +692,7 @@ export class OfficeWordHost implements WordHost {
 
   private async revealComment(commentId: string): Promise<void> {
     if (!isSet('WordApi', '1.4')) return;
-    await Word.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       const comments = ctx.document.body.getComments();
       comments.load('items/id');
       await ctx.sync();
@@ -646,8 +709,8 @@ export class OfficeWordHost implements WordHost {
     text: string,
     choose: ChooseHit,
   ): Promise<TrackedChangeOutcome> {
-    return Word.run(async (ctx) => {
-      ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+    return nativeRun(async (ctx) => {
+      ctx.document.load('changeTrackingMode');
       const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
       results.load('items/text');
       // First sync is required: the anchor index is chosen from the *read-back* match texts
@@ -661,9 +724,28 @@ export class OfficeWordHost implements WordHost {
       const range = idx >= 0 ? live[idx] : undefined;
       if (!range) return { status: 'drift' };
 
-      await replaceTracked(ctx, range, range.text, text);
-      await ctx.sync();
-      return { status: 'applied', location: 'tracked-change' };
+      const previousMode = ctx.document.changeTrackingMode;
+      let outcome: TrackedChangeOutcome | undefined;
+      try {
+        ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+        await replaceTracked(ctx, range, range.text, text);
+        await ctx.sync();
+        const verification = await verifyTrackedRange(ctx, range, text);
+        outcome = {
+          status: 'applied',
+          location: 'tracked-change',
+          ...(verification ? { verification } : {}),
+        };
+        return outcome;
+      } finally {
+        try {
+          ctx.document.changeTrackingMode = previousMode;
+          await ctx.sync();
+        } catch {
+          // The edit already landed. Preserve its receipt so recovery never retries it.
+          if (outcome?.status === 'applied') outcome.trackingModeRestoreFailed = true;
+        }
+      }
     });
   }
 
@@ -671,15 +753,34 @@ export class OfficeWordHost implements WordHost {
     text: string,
     matches: (selectionText: string) => boolean,
   ): Promise<TrackedChangeOutcome> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
+      ctx.document.load('changeTrackingMode');
       const sel = ctx.document.getSelection();
       sel.load('text');
       await ctx.sync();
       if (!sel.text.trim() || !matches(sel.text)) return { status: 'drift' };
-      ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
-      await replaceTracked(ctx, sel, sel.text, text);
-      await ctx.sync();
-      return { status: 'applied', location: 'tracked-change' };
+      const previousMode = ctx.document.changeTrackingMode;
+      let outcome: TrackedChangeOutcome | undefined;
+      try {
+        ctx.document.changeTrackingMode = Word.ChangeTrackingMode.trackAll;
+        await replaceTracked(ctx, sel, sel.text, text);
+        await ctx.sync();
+        const verification = await verifyTrackedRange(ctx, sel, text);
+        outcome = {
+          status: 'applied',
+          location: 'tracked-change',
+          ...(verification ? { verification } : {}),
+        };
+        return outcome;
+      } finally {
+        try {
+          ctx.document.changeTrackingMode = previousMode;
+          await ctx.sync();
+        } catch {
+          // The edit already landed. Preserve its receipt so recovery never retries it.
+          if (outcome?.status === 'applied') outcome.trackingModeRestoreFailed = true;
+        }
+      }
     });
   }
 
@@ -689,7 +790,7 @@ export class OfficeWordHost implements WordHost {
     // so a missing citation comment never disturbs the already-applied tracked change.
     if (!isSet('WordApi', '1.4')) return { ok: false };
     try {
-      return await Word.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const results = ctx.document.body.search(query, { matchCase });
         results.load('items');
         // Re-resolve the anchor at apply-time: the comment lands on the live range, or nowhere.
@@ -712,7 +813,7 @@ export class OfficeWordHost implements WordHost {
     // degrade silently on an older host so a missing provenance part never disturbs the write.
     if (!isSet('WordApi', '1.4')) return { ok: false };
     try {
-      return await Word.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         ctx.document.customXmlParts.add(xml);
         await ctx.sync();
         return { ok: true };
@@ -728,7 +829,7 @@ export class OfficeWordHost implements WordHost {
     reply: string,
     resolve: boolean,
   ): Promise<CommentReplyOutcome> {
-    return Word.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const comments = ctx.document.body.getComments();
       comments.load('items/id');
       await ctx.sync();
@@ -824,6 +925,7 @@ export class OfficeWordHost implements WordHost {
   async fillContentControl(
     contentControlId: string,
     text: string,
+    expectedTextHash?: string,
   ): Promise<FillContentControlOutcome> {
     return this.edit(async (ctx) => {
       // `getByIdOrNullObject` resolves the named container; a stale id yields a null object (no
@@ -834,9 +936,25 @@ export class OfficeWordHost implements WordHost {
       if (cc.isNullObject) return { status: 'gone' };
       // Capture the prior text BEFORE replacing — the inverse restores it.
       const priorText = cc.text;
+      if (expectedTextHash) {
+        if (!isSet('WordApi', '1.4')) return { status: 'conflict' };
+        const reviewed = cc.getRange().getReviewedText('Current');
+        await ctx.sync();
+        if ((await contentHash({ text: reviewed.value })) !== expectedTextHash)
+          return { status: 'conflict' };
+      }
       cc.insertText(text, Word.InsertLocation.replace);
       await ctx.sync();
-      return { status: 'applied', location: `content-control:${contentControlId}`, priorText };
+      const verification =
+        typeof cc.getRange === 'function'
+          ? await verifyTrackedRange(ctx, cc.getRange(), text)
+          : undefined;
+      return {
+        status: 'applied',
+        location: `content-control:${contentControlId}`,
+        priorText,
+        ...(verification ? { verification } : {}),
+      };
     });
   }
 
@@ -1493,4 +1611,28 @@ async function replaceTracked(
     }
   }
   range.insertText(text, Word.InsertLocation.replace);
+}
+
+/** Read the current revision at the same target; old tracked deletions are excluded explicitly. */
+async function verifyTrackedRange(
+  ctx: Word.RequestContext,
+  range: Word.Range,
+  expected: string,
+): Promise<Verification | undefined> {
+  if (!isSet('WordApi', '1.4') || typeof range.getReviewedText !== 'function') return undefined;
+  try {
+    const reviewed = range.getReviewedText('Current');
+    await ctx.sync();
+    if (typeof reviewed.value !== 'string') return { status: 'unknown' };
+    const canonical = (value: string) => value.replace(/\r\n?/g, '\n');
+    return {
+      status: canonical(reviewed.value) === canonical(expected) ? 'verified' : 'mismatch',
+      afterHash: await contentHash({ text: reviewed.value }),
+    };
+  } catch {
+    return {
+      status: 'unknown',
+      message: 'The tracked edit was dispatched but current-revision readback failed.',
+    };
+  }
 }

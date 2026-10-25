@@ -7,9 +7,16 @@ import type {
   RunRecord,
 } from '@ge/runtime';
 import {
+  nativeTraces,
   compileWorkflowRecipe,
   getWorkflowRecipe,
   validateWorkflowRecipeInputs,
+  prepareOfficeWorkflow,
+  prepareManagedTextRefresh,
+  type OfficeWorkflow,
+  nativeFixture,
+  certifyNativeFixture,
+  type NativeCertificationReport,
 } from '@ge/runtime';
 import type {
   ActuationParams,
@@ -122,12 +129,15 @@ export type PlanRunCommandsOptions = RunCommandsOptions;
  * so the controller is unit-testable against a fake and carries no host/network dependency.
  */
 export interface AssistLike {
+  getEffectiveCapabilities?(): Promise<import('@ge/contracts').CapabilityManifest>;
   getAnalysisCapabilities?(): Promise<{ preview: boolean; write: boolean }>;
   readonly analysis?: { state(): AnalysisState };
   readonly recovery?: { durable: boolean; list(): RecoverySummary[] };
   readonly evidence?: { state(): EvidenceState };
   /** The content-free run ledger (see execution-ledger.ts), for "Copy diagnostics". */
   readonly executions?: { list(): RunRecord[] };
+  readonly journal?: import('@ge/runtime').TaskJournal;
+  refreshJournal?(): Promise<void>;
   runAnalysis?(
     action: AnalysisAction,
     opts?: RunCommandsOptions,
@@ -207,9 +217,13 @@ export interface AssistLike {
 
 /** Lists what can be attached right now (the bridge). */
 export interface ContextLister {
+  readonly surface?: Surface;
+  getHostProfile?(): import('@ge/contracts').HostCapabilityProfile | undefined;
   /** The open document's identity (see DocBridge.documentKey), when the host has one. */
   documentKey?(): string | undefined;
   listContext(): Promise<ContextRef[]>;
+  captureTextTarget?(ref: ContextRef): Promise<import('@ge/contracts').TextTargetCapture>;
+  readRange?(selector: string): Promise<import('@ge/contracts').ResolvedContext[]>;
   canRevealContext?(ref: ContextRef): boolean;
   revealContext?(ref: ContextRef): Promise<void>;
 }
@@ -518,8 +532,11 @@ export interface WorkflowRun {
 }
 
 export interface PanelState {
+  officeCapabilities?: import('@ge/contracts').ActuationKind[];
   workflowRecipesAvailable?: boolean;
   workflowWritesAvailable?: boolean;
+  taskJournal?: { durable: boolean; entries: import('@ge/runtime').TaskJournalSummary[] };
+  nativeCertification?: NativeCertificationReport;
   workflowRun?: WorkflowRun;
   analysis?: AnalysisState;
   recovery?: { durable: boolean; records: RecoverySummary[] };
@@ -663,6 +680,12 @@ export class PanelController {
     private readonly store: ProvenanceStore = new ProvenanceStore(),
   ) {
     this.syncServices();
+    void session
+      .getEffectiveCapabilities?.()
+      .then((manifest) =>
+        this.set({ officeCapabilities: manifest.actuations.map((entry) => entry.kind) }),
+      )
+      .catch(() => this.set({ officeCapabilities: [] }));
     if (session.getAnalysisCapabilities) {
       void session.getAnalysisCapabilities().then(
         (capabilities) => {
@@ -726,6 +749,14 @@ export class PanelController {
           }
         : {}),
       ...(this.session.evidence ? { evidence: this.session.evidence.state() } : {}),
+      ...(this.session.journal
+        ? {
+            taskJournal: {
+              durable: this.session.journal.durable,
+              entries: this.session.journal.list(),
+            },
+          }
+        : {}),
     });
   }
 
@@ -967,9 +998,14 @@ export class PanelController {
           this.state.pendingCommandPlan
         ));
     try {
+      await this.session.refreshJournal?.();
       const refs = await this.lister.listContext();
+      const capabilities = await this.session.getEffectiveCapabilities?.();
       if (!canCommit()) return;
+      if (capabilities)
+        this.set({ officeCapabilities: capabilities.actuations.map((entry) => entry.kind) });
       const attachedIds = new Set(this.state.chips.filter((c) => c.attached).map((c) => c.id));
+      this.syncServices();
       this.refs.clear();
       const chips = refs.map((r): ContextChip => {
         this.refs.set(r.id, r);
@@ -1435,6 +1471,107 @@ export class PanelController {
    * plan/approval loop as model-emitted commands, but without a Gemini echo turn. This is the manual
    * command escape hatch for power users and for copied examples from docs.
    */
+  async runOfficeWorkflow(workflow: OfficeWorkflow, surface: Surface): Promise<void> {
+    if (this.switchBlocked()) return;
+    try {
+      const prepared = prepareOfficeWorkflow(workflow);
+      if (
+        prepared.surface !== surface ||
+        (this.lister.surface && prepared.surface !== this.lister.surface)
+      )
+        throw new Error('Open this workflow in its target Office application.');
+      if (prepared.mode === 'program') await this.runDirectCommands(prepared.body, prepared.id);
+      else await this.runCommands(prepared.body, undefined, prepared.id);
+    } catch (error) {
+      this.set({ error: errorText(error) });
+    }
+  }
+  async refreshManagedText(ref: ContextRef, nextText: string): Promise<void> {
+    if (this.switchBlocked()) return;
+    try {
+      if (!this.lister.captureTextTarget)
+        throw new Error('Managed text capture is unavailable in this application.');
+      const capture = await this.lister.captureTextTarget(ref);
+      const previous = this.session.journal?.lastGeneratedText(
+        capture.target.surface,
+        capture.target.objectId,
+        capture.target.parentObjectId,
+      );
+      const prepared = await prepareManagedTextRefresh(capture, nextText, previous);
+      await this.runDirectCommands(prepared.body, `Refresh ${ref.title}`);
+    } catch (error) {
+      this.set({ error: errorText(error) });
+    }
+  }
+  managedTextTargets(): ContextRef[] {
+    return [...this.refs.values()]
+      .filter(
+        (ref) =>
+          ref.hostRef?.type === 'powerpoint.shape' || ref.hostRef?.type === 'word.contentControl',
+      )
+      .map((ref) => structuredClone(ref));
+  }
+  async acknowledgeTaskJournal(id: string): Promise<void> {
+    if (this.switchBlocked() || !this.session.journal) return;
+    try {
+      await this.session.journal.acknowledge(id);
+      this.syncServices();
+    } catch (error) {
+      this.set({ error: errorText(error) });
+    }
+  }
+  async runNativeCertification(
+    surface: Surface,
+    commit: string,
+    targetRange?: string,
+  ): Promise<void> {
+    if (this.switchBlocked() || !this.session.runCommandProgram) return;
+    if (this.lister.surface && this.lister.surface !== surface) return;
+    const reply: ChatMessage = {
+      id: this.id('native'),
+      role: 'assistant',
+      text: '',
+      streaming: true,
+    };
+    const owner = this.beginExecution({ messages: [...this.state.messages, reply], steps: [] });
+    try {
+      const fixture = nativeFixture(surface, targetRange);
+      const report = await certifyNativeFixture(
+        {
+          runCommandProgram: (program, options) =>
+            this.session.runCommandProgram!(program, options),
+        },
+        {
+          surface,
+          getHostProfile: () => this.lister.getHostProfile?.(),
+          ...(this.lister.readRange
+            ? { readRange: (selector: string) => this.lister.readRange!(selector) }
+            : {}),
+        },
+        fixture,
+        commit,
+        { ...this.commandApprovals(owner.signal), signal: owner.signal },
+        (event) => {
+          if (this.inflight === owner) {
+            this.reduceOwnedLoopEvent(owner, event, reply.id, []);
+            this.syncServices();
+          }
+        },
+      );
+      if (this.inflight === owner) {
+        this.set({ nativeCertification: report });
+        this.patchMessage(reply.id, () => ({
+          text: `Native certification: ${report.status}. ${report.status === 'unavailable' ? 'A native Office host with platform and build diagnostics is required.' : fixture.cleanup}`,
+          streaming: false,
+        }));
+      }
+    } catch (error) {
+      if (this.inflight === owner)
+        this.patchMessage(reply.id, () => ({ error: errorText(error), streaming: false }));
+    } finally {
+      if (this.inflight === owner) this.finishExecution(owner);
+    }
+  }
   async runDirectCommands(program: string, displayText?: string): Promise<void> {
     const p = program.trim();
     if (!p) return;
@@ -2357,6 +2494,12 @@ export class PanelController {
         steps: this.state.steps.map(diagnosticStep),
         errors: this.errorLog,
         runs: (this.session.executions?.list() ?? []).slice(-10),
+        native: nativeTraces.list().slice(-50),
+        host: this.lister.getHostProfile?.(),
+        taskJournal: {
+          durable: this.session.journal?.durable ?? false,
+          entries: this.session.journal?.list() ?? [],
+        },
       },
       null,
       2,

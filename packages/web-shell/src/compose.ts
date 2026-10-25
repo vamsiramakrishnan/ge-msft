@@ -1,6 +1,11 @@
 import type { ContextKind, ReleaseProfileName, UnitDescriptor } from '@ge/contracts';
 import { rulesFor, type PromptRule } from './brand.js';
-import { asSessionId, filterManifestForReleaseProfile, releaseProfile } from '@ge/contracts';
+import {
+  contentHash,
+  asSessionId,
+  filterManifestForReleaseProfile,
+  releaseProfile,
+} from '@ge/contracts';
 import type {
   AssistantPath,
   GeminiSkillMention,
@@ -23,7 +28,13 @@ import type {
   EnsureSkillInput,
   EnsureSkillResult,
 } from '@ge/gemini-client';
-import { AssistSession, EvidencePipeline } from '@ge/runtime';
+import {
+  AssistSession,
+  EvidencePipeline,
+  TaskJournal,
+  IndexedDbTaskJournalStore,
+  MemoryTaskJournalStore,
+} from '@ge/runtime';
 import type { AuthClient, DocBridge, RuntimeHooks } from '@ge/runtime';
 import { GraphClient, GraphSharedStore } from '@ge/graph-client';
 import type { TriggerRegistry } from '@ge/triggers';
@@ -219,7 +230,23 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     : undefined;
   const estateWritesEnabled = estateWritesEnabledFor(Boolean(sharedStore), config.releaseProfile);
 
+  let journalStore: MemoryTaskJournalStore | IndexedDbTaskJournalStore | undefined;
+  const taskJournalFactory = async (documentKey: string): Promise<TaskJournal> => {
+    const scope = await contentHash({
+      principal: identity.oid ?? identity.username,
+      document: documentKey,
+      surface: bridge.surface,
+    });
+    journalStore ??=
+      typeof indexedDB === 'undefined'
+        ? new MemoryTaskJournalStore()
+        : new IndexedDbTaskJournalStore();
+    const journal = new TaskJournal(journalStore, scope);
+    await journal.inspect();
+    return journal;
+  };
   const session = new AssistSession(bridge, client, {
+    taskJournalFactory,
     unit,
     ...(config.accentColor ? { tableHeaderFill: config.accentColor } : {}),
     recoveryOwner: identity.oid ?? identity.username,

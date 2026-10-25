@@ -1144,7 +1144,7 @@ function tokenizeArgs(rest: string): { positional: string[]; props: Record<strin
     'g',
   );
   const unescape = (s: string): string =>
-    s.replace(/\\(["\\n])/g, (_, c: string) => (c === 'n' ? '\n' : c));
+    s.replace(/\\(u[0-9a-fA-F]{4}|["\\ntrbf])/g, (escape) => JSON.parse(`"${escape}"`) as string);
   let m: RegExpExecArray | null;
   while ((m = re.exec(rest)) !== null) {
     if (m[1] !== undefined) props[m[1]] = unescape(m[2]!);
@@ -1545,6 +1545,11 @@ export function scanQuoted(s: string, start: number): { value: string; end: numb
     const ch = s[i]!;
     if (ch === '\\' && i + 1 < s.length) {
       const next = s[i + 1]!;
+      if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 2, i + 6))) {
+        value += String.fromCharCode(Number.parseInt(s.slice(i + 2, i + 6), 16));
+        i += 6;
+        continue;
+      }
       // `\n` / `\t` are line breaks and tabs: models write them in mail bodies and replies, and a
       // literal "\n\n" reached Outlook drafts (UAT 2026-10-15). Other escapes stay as written.
       value +=
@@ -1554,7 +1559,13 @@ export function scanQuoted(s: string, start: number): { value: string; end: numb
             ? '\n'
             : next === 't'
               ? '\t'
-              : `\\${next}`;
+              : next === 'r'
+                ? '\r'
+                : next === 'b'
+                  ? '\b'
+                  : next === 'f'
+                    ? '\f'
+                    : `\\${next}`;
       i += 2;
       continue;
     }

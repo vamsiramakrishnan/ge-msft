@@ -1,5 +1,7 @@
-import { powerpointGeometry, unknownActuationResult } from '@ge/contracts';
-import { createBridgeDispatch } from '@ge/runtime';
+import { officeHostProfile } from './office-host-profile.js';
+import { nativeRun } from './native-run.js';
+import { contentHash, powerpointGeometry, unknownActuationResult } from '@ge/contracts';
+import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
 import type {
   ActuationErrorReason,
   ActuationKind,
@@ -10,6 +12,7 @@ import type {
   DocStateSnapshot,
   PowerPointGeometry,
   ResolvedContext,
+  TextTargetCapture,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
@@ -84,15 +87,52 @@ export class PowerPointBridge implements DocBridge {
       'format-shape': (host, request) => host.applyFormatShape(request),
       'add-table-slide': (host, request) => host.applyAddTableSlide(request),
     },
-    { provenance: 'unsupported' },
+    {
+      provenance: 'unsupported',
+      capabilities: (host) => host.getCapabilities(),
+      documentKey: (host) => host.documentKey(),
+    },
   );
   static readonly handledActuations = PowerPointBridge.dispatcher.handledActuations;
 
   readonly surface = 'powerpoint' as const;
   readonly readDocumentPage = readPowerPointPage;
 
+  getHostProfile(): import('@ge/contracts').HostCapabilityProfile | undefined {
+    return officeHostProfile(this.surface);
+  }
+
   getCapabilities(): CapabilityManifest {
-    return POWERPOINT_CAPABILITIES;
+    return negotiateCapabilities(POWERPOINT_CAPABILITIES, this.getHostProfile());
+  }
+  async captureTextTarget(ref: ContextRef): Promise<TextTargetCapture> {
+    if (ref.hostRef?.type !== 'powerpoint.shape' || !this.documentKey())
+      throw new Error('Choose a shape in a saved presentation.');
+    const { slideId, shapeId } = ref.hostRef;
+    const key = this.documentKey()!;
+    const text = await nativeRun(async (ctx) => {
+      const shape = ctx.presentation.slides.getItem(slideId).shapes.getItem(shapeId);
+      const range = shape.textFrame.textRange;
+      range.load('text');
+      await ctx.sync();
+      if (new TextEncoder().encode(range.text).byteLength > 32 * 1024)
+        throw new Error('This text object exceeds the refresh budget.');
+      return range.text;
+    });
+    if (this.documentKey() !== key)
+      throw new Error('The presentation changed during target capture. Read it again.');
+    return {
+      text,
+      target: {
+        surface: this.surface,
+        documentId: await contentHash({ surface: this.surface, documentKey: key }),
+        objectId: shapeId,
+        parentObjectId: slideId,
+        locator: `pp:shape:${slideId}:${shapeId}`,
+        revision: await contentHash({ text }),
+        scope: 'powerpoint-shape-text',
+      },
+    };
   }
 
   async listContext(): Promise<ContextRef[]> {
@@ -100,7 +140,7 @@ export class PowerPointBridge implements DocBridge {
     if (!isSet('PowerPointApi', '1.5')) {
       return [{ id: 'pp:deck', kind: 'document', surface: 'powerpoint', title: 'Whole deck' }];
     }
-    return PowerPoint.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const selected = ctx.presentation.getSelectedSlides();
       selected.load('items/id');
       await ctx.sync();
@@ -126,13 +166,13 @@ export class PowerPointBridge implements DocBridge {
     if (ref.kind === 'shape') {
       const target = shapeRevealTarget(ref);
       if (!target) return [];
-      return PowerPoint.run(async (ctx) => readShapeContext(ctx, target));
+      return nativeRun(async (ctx) => readShapeContext(ctx, target));
     }
     if (ref.kind === 'slide') {
       const target = slideRevealTarget(ref);
       if (!target) return [];
       try {
-        return await PowerPoint.run(async (ctx) => {
+        return await nativeRun(async (ctx) => {
           const slide = ctx.presentation.slides.getItem(target.slideId);
           const element = await readSlide(ctx, slide);
           return selectedSlideToContext(element);
@@ -143,7 +183,7 @@ export class PowerPointBridge implements DocBridge {
     }
     if (ref.kind === 'selection') {
       if (!isSet('PowerPointApi', '1.5')) return [];
-      return PowerPoint.run(async (ctx) => {
+      return nativeRun(async (ctx) => {
         const selected = ctx.presentation.getSelectedSlides();
         selected.load('items/id');
         await ctx.sync();
@@ -179,7 +219,7 @@ export class PowerPointBridge implements DocBridge {
     const slides = captured.slides;
     if (slides.length === 0) return undefined;
     const selected = isSet('PowerPointApi', '1.5')
-      ? await PowerPoint.run(async (ctx) => {
+      ? await nativeRun(async (ctx) => {
           const selection = ctx.presentation.getSelectedSlides();
           selection.load('items/id');
           await ctx.sync();
@@ -226,7 +266,7 @@ export class PowerPointBridge implements DocBridge {
     slideIds: string[];
     truncated: boolean;
   }> {
-    return PowerPoint.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const collection = ctx.presentation.slides;
       collection.load('items/id');
       await ctx.sync();
@@ -297,7 +337,7 @@ export class PowerPointBridge implements DocBridge {
    */
   async readRange(selector: string): Promise<ResolvedContext[]> {
     if (!mayNameSlide(selector) || !isSet('PowerPointApi', '1.4')) return [];
-    return PowerPoint.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const slides = ctx.presentation.slides;
       slides.load('items/id');
       await ctx.sync();
@@ -338,7 +378,7 @@ export class PowerPointBridge implements DocBridge {
   async revealContext(ref: ContextRef): Promise<void> {
     const target = powerpointRevealTarget(ref);
     if (!target) return;
-    await PowerPoint.run(async (ctx) => {
+    await nativeRun(async (ctx) => {
       ctx.presentation.setSelectedSlides([target.slideId]);
       if (target.shapeId) {
         const slide = ctx.presentation.slides.getItem(target.slideId);
@@ -354,7 +394,7 @@ export class PowerPointBridge implements DocBridge {
    * so a huge deck can't blow the per-turn budget; read-only (loads shape text, writes nothing).
    */
   private async readAllSlides(): Promise<SlideElement[]> {
-    return PowerPoint.run(async (ctx) => {
+    return nativeRun(async (ctx) => {
       const slides = ctx.presentation.slides;
       slides.load('items/id');
       await ctx.sync();
@@ -405,7 +445,7 @@ export class PowerPointBridge implements DocBridge {
 
     let mutationQueued = false;
     try {
-      return await PowerPoint.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const target = await resolveShapeTarget(ctx, slideId, shapeId);
         if ('error' in target) return slideNotFound(req, target.error, target.reason);
         const slide = ctx.presentation.slides.getItem(target.slideId);
@@ -437,14 +477,46 @@ export class PowerPointBridge implements DocBridge {
         range.load('text');
         await ctx.sync();
         const priorText = range.text ?? '';
+        const beforeHash = await contentHash({ text: priorText });
+        if (
+          req.params.target?.expectedTextHash &&
+          req.params.target.expectedTextHash !== beforeHash
+        )
+          return {
+            ok: false,
+            changeId: req.changeId,
+            kind: req.kind,
+            error: {
+              code: 'target_conflict',
+              message:
+                'This shape changed since the refresh preview. Review the manual edit before updating it.',
+            },
+          };
         mutationQueued = true;
         writeParagraphs(range, text);
         await ctx.sync();
+        let verification: NonNullable<ActuationResult['verification']> = {
+          status: 'unknown',
+          beforeHash,
+        };
+        try {
+          range.load('text');
+          await ctx.sync();
+          verification = {
+            status: range.text === text ? 'verified' : 'mismatch',
+            beforeHash,
+            afterHash: await contentHash({ text: range.text ?? '' }),
+          };
+        } catch {
+          /* The write sync succeeded. Preserve the inverse and report failed readback separately. */
+        }
         return {
           ok: true,
           changeId: req.changeId,
           kind: req.kind,
           location: `shape:${target.slideId}:${target.shapeId}`,
+          completion: verification.status === 'verified' ? 'verified' : 'unknown',
+          verification,
           inverse: {
             op: 'restore-text',
             anchor: `pp:shape:${target.slideId}:${target.shapeId}`,
@@ -485,7 +557,7 @@ export class PowerPointBridge implements DocBridge {
     }
     if (plan.base64) {
       const base64 = plan.base64;
-      return PowerPoint.run(async (ctx) => {
+      return nativeRun(async (ctx) => {
         // Prebuilt deck path: the agent supplied a Base64 PPTX — let the host merge it (1.2).
         const options = await deckInsertOptions(ctx, plan);
         ctx.presentation.insertSlidesFromBase64(base64, options);
@@ -521,7 +593,7 @@ export class PowerPointBridge implements DocBridge {
     }
     let newIndex: number | undefined;
     let knownIds: NewSlideIds | undefined;
-    const result = await PowerPoint.run(async (ctx): Promise<ActuationResult> => {
+    const result = await nativeRun(async (ctx): Promise<ActuationResult> => {
       try {
         const added = await appendSlide(
           ctx,
@@ -601,7 +673,7 @@ export class PowerPointBridge implements DocBridge {
     }
     let mutationQueued = false;
     try {
-      return await PowerPoint.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const op = resolution.op;
         const target = await resolveSlideRef(ctx, op.slideId);
         if ('error' in target) return slideNotFound(req, target.error, target.reason);
@@ -722,7 +794,7 @@ export class PowerPointBridge implements DocBridge {
 
     let mutationQueued = false;
     try {
-      return await PowerPoint.run(async (ctx) => {
+      return await nativeRun(async (ctx) => {
         const target = await resolveShapeTarget(ctx, slideId, shapeId);
         if ('error' in target) return slideNotFound(req, target.error, target.reason);
         const slide = ctx.presentation.slides.getItem(target.slideId);
@@ -869,7 +941,7 @@ export class PowerPointBridge implements DocBridge {
     let newSlideIndex: number | undefined;
     let knownIds: NewSlideIds | undefined;
     try {
-      const result = await PowerPoint.run(async (ctx): Promise<ActuationResult> => {
+      const result = await nativeRun(async (ctx): Promise<ActuationResult> => {
         const offSlide = offSlideMessage(await knownSlideSize(ctx), grid);
         if (offSlide) return slideNotFound(req, offSlide);
         let shapes: PowerPoint.ShapeCollection;
@@ -2334,7 +2406,7 @@ function shapeSummary(slideKey: string, shapes: ShapeElement[]): string | undefi
 /** The id of the slide at `index`, read in a fresh request (undefined if it can't be read). */
 async function readNewSlideIdAt(index: number, ids: NewSlideIds): Promise<string | undefined> {
   try {
-    return await PowerPoint.run(async (ctx) => {
+    return await nativeRun(async (ctx) => {
       // Only the new slide's id: if the deck shifted since, keep the id the write verified.
       const check = queueNewSlideCheck(ctx, index, ids);
       await ctx.sync();

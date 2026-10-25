@@ -269,3 +269,28 @@ skips (247 files). Skill CI passed 74 corpus cases, six manifest tests, 40 tooli
 covered native-target freshness, selection authority, serialized context bounds and Python framing.
 The Excel simulator now consumes queued writes once and preserves formula identity, so a verified
 formula hash matches a fresh capture without relaxing the production freshness check.
+
+
+## User-directed verified Office foundation — October 25, 2026
+
+This implementation begins the 100x capability plan; the full roadmap is not complete.
+See `VERIFIED-OFFICE-WORKFLOWS.md` for exact implemented and remaining boundaries.
+
+- [x] Negotiate native host support and recheck effective capabilities before dispatch.
+- [x] Add initial strict capability modules and descriptive scaffolding.
+- [x] Authenticate indexed evidence pages and bound incremental navigation.
+- [x] Batch independent Excel reads, bound formula footprints and wait for calculation state.
+- [x] Capture Word/PPT native text targets and preserve manual edits during managed refresh.
+- [x] Add transactional durable effect claims without replaying approvals or uncertain writes.
+- [x] Add contract-review/response entry points through the existing executor.
+- [x] Extend deck compiler with editable charts, themes and explicit layout checks.
+- [x] Add native fixtures, exact-commit report checking and host doctor tooling.
+- [ ] Complete browser IndexedDB and 320/360/480 workflow panel screenshot acceptance.
+- [ ] Run final-commit native Office fixtures and tenant model scenarios.
+- [ ] Expand strict modules/verifiers across the remaining operation catalog.
+- [ ] Implement native dependency graphs, full task continuation and cross-application orchestration.
+- [ ] Add deeper Excel/Word/Outlook operations, template masters and chart refresh.
+
+Security review identified external workbook formula aliases, aggregate fallback limits and
+tracking-mode cleanup receipt loss; regression fixes are included. Native/browser acceptance
+is recorded separately and must not be inferred from the simulator suite.

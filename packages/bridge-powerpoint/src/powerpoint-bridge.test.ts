@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   asChangeId,
+  contentHash,
   DocStateSnapshotSchema,
   ResolvedContextSchema,
   type ActuationRequest,
@@ -2678,6 +2679,41 @@ describe('PowerPointBridge shape and slide references (tests 48–51)', () => {
 });
 
 describe('PowerPointBridge.actuate set-shape-text', () => {
+  it('preserves a coauthor edit when a managed refresh has a stale text hash', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const request = setShapeText('s2', 's2-shape-1', 'Generated update');
+    request.params.target!.expectedTextHash = await contentHash({ text: 'Earlier generated text' });
+    const result = await new PowerPointBridge().actuate(request);
+    expect(result.error?.code).toBe('target_conflict');
+    expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam');
+  });
+  it('retains a landed change and inverse when its verification read fails', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const original = FakeContext.prototype.sync;
+    let calls = 0;
+    const sync = vi.spyOn(FakeContext.prototype, 'sync').mockImplementation(function (
+      this: FakeContext,
+    ) {
+      if (++calls === 6) return Promise.reject(new Error('verification disconnected'));
+      return original.call(this);
+    });
+    try {
+      const result = await new PowerPointBridge().actuate(
+        setShapeText('s2', 's2-shape-1', 'New text'),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        completion: 'unknown',
+        verification: { status: 'unknown' },
+        inverse: { op: 'restore-text', priorText: 'Pat, Sam' },
+      });
+      expect(d.slides[1]?.shapes[1]?.text).toBe('New text');
+    } finally {
+      sync.mockRestore();
+    }
+  });
   it.each([
     ['s1', 'no-such-shape', 'shape_not_found'],
     ['no-such-slide', 's1-shape-0', 'slide_not_found'],
@@ -2755,8 +2791,14 @@ describe('PowerPointBridge.actuate set-shape-text', () => {
       setShapeText('s2', 's2-shape-1', 'Pat, Sam, and Lee'),
     );
 
-    expect(res).toEqual({
+    expect(res).toMatchObject({
       ok: true,
+      completion: 'verified',
+      verification: {
+        status: 'verified',
+        beforeHash: expect.stringMatching(/^sha256:/),
+        afterHash: expect.stringMatching(/^sha256:/),
+      },
       provenanceMissing: true,
       changeId: asChangeId('shape-1'),
       kind: 'set-shape-text',

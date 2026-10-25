@@ -1026,6 +1026,11 @@ class FakeWorkbook {
 
 /** The fake `Excel.RequestContext` — tracks ranges so queued writes commit on `sync()`. */
 class FakeRequestContext {
+  readonly application = {
+    calculationState: 'Done',
+    load: () => undefined,
+    calculate: () => undefined,
+  };
   readonly workbook: FakeWorkbook;
   /** Every proxy handed out this batch; their queued loads flush and writes commit on sync. */
   private readonly touched: Syncable[] = [];

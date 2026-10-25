@@ -158,7 +158,8 @@ describe('Word stale-anchor degrade (full-stack interplay)', () => {
     expect(snap.inserts.length).toBe(1);
     expect(ANCHOR).toContain(snap.inserts[0]!.anchor);
     expect(snap.bodyText).toContain(SUGGESTION);
-    expect(snap.changeTrackingMode).toBe('TrackAll');
+    expect(snap.inserts[0]?.tracked).toBe(true);
+    expect(snap.changeTrackingMode).toBe('');
     // The clean apply DID record durable provenance (the stale case above recorded none).
     expect(sim.office.customXmlParts.length).toBeGreaterThan(0);
 

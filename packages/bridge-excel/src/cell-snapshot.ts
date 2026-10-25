@@ -17,20 +17,63 @@ export async function snapshotRange(
   ctx: Excel.RequestContext,
   documentId: string,
 ): Promise<CellSnapshot> {
-  range.load('address,rowCount,columnCount,isNullObject');
+  return (await snapshotRanges([range], ctx, documentId))[0]!;
+}
+
+export async function snapshotRanges(
+  ranges: readonly Excel.Range[],
+  ctx: Excel.RequestContext,
+  documentId: string,
+): Promise<CellSnapshot[]> {
+  if (!ranges.length || ranges.length > 16)
+    throw new Error('Capture between one and sixteen explicit ranges.');
+  for (const range of ranges) {
+    range.load('address,rowCount,columnCount,isNullObject');
+    range.worksheet.load('id');
+  }
+  await ctx.sync();
+  for (const range of ranges) {
+    if (
+      range.isNullObject ||
+      range.rowCount < 1 ||
+      range.columnCount < 1 ||
+      range.rowCount * range.columnCount > MAX_SNAPSHOT_CELLS ||
+      range.columnCount > 256
+    )
+      throw new Error('Select a range of at most 100,000 cells and 256 columns.');
+  }
+  const output: CellSnapshot[] = [];
+  let bytes = 0;
+  for (let start = 0; start < ranges.length; ) {
+    let end = start;
+    let cells = 0;
+    while (end < ranges.length) {
+      const range = ranges[end]!;
+      const count = range.rowCount * range.columnCount;
+      if (end > start && cells + count > MAX_SNAPSHOT_CELLS) break;
+      cells += count;
+      range.load('values,formulas');
+      end++;
+    }
+    await ctx.sync();
+    for (const range of ranges.slice(start, end)) {
+      const snapshot = await snapshotLoadedRange(range, ctx, documentId);
+      bytes += new TextEncoder().encode(JSON.stringify(snapshot)).byteLength;
+      if (bytes > 32 * 1024 * 1024)
+        throw new Error('Aggregate source snapshots exceed the 32 MiB batch budget.');
+      output.push(snapshot);
+    }
+    start = end;
+  }
+  return output;
+}
+
+async function snapshotLoadedRange(
+  range: Excel.Range,
+  ctx: Excel.RequestContext,
+  documentId: string,
+): Promise<CellSnapshot> {
   const worksheet = range.worksheet;
-  worksheet.load('id');
-  await ctx.sync();
-  if (
-    range.isNullObject ||
-    range.rowCount < 1 ||
-    range.columnCount < 1 ||
-    range.rowCount * range.columnCount > MAX_SNAPSHOT_CELLS ||
-    range.columnCount > 256
-  )
-    throw new Error('Select a range of at most 100,000 cells and 256 columns.');
-  range.load('values,formulas');
-  await ctx.sync();
   const values = CellGridSchema.parse(range.values);
   if (new TextEncoder().encode(JSON.stringify(values)).byteLength > 16 * 1024 * 1024)
     throw new Error('Source range exceeds the 16 MiB snapshot budget.');

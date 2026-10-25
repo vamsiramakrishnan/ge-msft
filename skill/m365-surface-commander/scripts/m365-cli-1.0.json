@@ -193,12 +193,16 @@
         "reversible": true
       },
       "filter-range": {
-        "approvalClass": "in-document",
-        "reversible": true
+        "approvalClass": "irreversible",
+        "reversible": false
+      },
+      "set-data-validation": {
+        "approvalClass": "irreversible",
+        "reversible": false
       },
       "manage-worksheet": {
-        "approvalClass": "in-document",
-        "reversible": true
+        "approvalClass": "irreversible",
+        "reversible": false
       },
       "format-chart": {
         "approvalClass": "in-document",
@@ -245,8 +249,8 @@
         "reversible": true
       },
       "apply-slide-layout": {
-        "approvalClass": "in-document",
-        "reversible": true
+        "approvalClass": "irreversible",
+        "reversible": false
       },
       "append-page": {
         "approvalClass": "in-document",
@@ -749,6 +753,7 @@
     "save-draft",
     "send-activity-notification",
     "set-body",
+    "set-data-validation",
     "set-delay-delivery",
     "set-doc-properties",
     "set-entity-card",
@@ -769,6 +774,108 @@
     "write-cells"
   ],
   "commandHelp": {
+    "add-attachment": {
+      "command": "/add-attachment",
+      "useWhen": "Outlook draft attachment: attach a file to a draft being written, without sending mail (on a received message, reply with the file instead: mail \"reply text\" attach=\"name.docx\" text=\"file text\"). A file the user describes (\"a Word file titled X containing Y\") is name=\"X.docx\" text=\"Y\": the pane builds a real Word file (or a text file for .txt). Never write base64 yourself; base64= is only for a file the host returned",
+      "syntax": "/add-attachment name=\"file.docx\" text=\"file text\"",
+      "discovery": [
+        "attachments",
+        "properties <draft-ref>",
+        "context upload-preferred"
+      ],
+      "sequence": [
+        "Confirm the active item is a draft/compose surface.",
+        "Describe a new file with name= and text= (.docx or .txt); use base64= only for a host-returned file.",
+        "Emit one /add-attachment command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/add-attachment name=\"hello arjuna.docx\" text=\"test script 1\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "not in compose mode",
+        "file too large",
+        "unsafe URL"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: draft target, file name, size/hash, attachment type.",
+        "Provenance: record attachment name, size/hash, draft id when available, and changeId."
+      ]
+    },
+    "add-shape": {
+      "command": "/add-shape",
+      "useWhen": "PowerPoint shape/textbox insertion: add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command — never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, …); fill=#RRGGBB colours it",
+      "syntax": "/add-shape slide=<n> shapeType=textBox|geometric|line [geometryType=Rectangle|Ellipse|...] [text=\"...\"] [fill=#RRGGBB] [connectorType=straight|elbow|curve] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]",
+      "discovery": [
+        "slides",
+        "open <slide-ref>",
+        "properties <slide-ref>"
+      ],
+      "sequence": [
+        "Resolve the target slide.",
+        "Choose explicit left/top/width/height and shape type.",
+        "Emit one /add-shape command; never infer placement from prose alone.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/add-shape slide=2 shapeType=textBox text=\"Key risk\" left=72 top=300 width=400 height=50",
+        "/add-shape slide=2 shapeType=rectangle fill=#0F6CBD left=560 top=20 width=140 height=60"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "missing slide",
+        "invalid geometry",
+        "unsupported shape type"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target slide, shape type, geometry, text/style fields.",
+        "Provenance: record slide id, minted shape id, geometry, text hash, and changeId."
+      ]
+    },
+    "add-table-slide": {
+      "command": "/add-table-slide",
+      "useWhen": "PowerPoint native slide table: add a native table (rows and columns) to a new slide (slide=new title=\"…\", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A \"3x3\" (N×M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so (\"3 data rows\"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there",
+      "syntax": "/add-table-slide slide=<n|new> rows=\"h1\\th2\\nv1\\tv2\" [title=\"...\"] [at=<n>] [headerFill=#RRGGBB] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]",
+      "discovery": [
+        "slides",
+        "read <source>",
+        "context analytical inline-preferred"
+      ],
+      "sequence": [
+        "Resolve the target slide and table data.",
+        "Keep row/column count small enough for preview.",
+        "Emit one /add-table-slide with explicit geometry and TSV rows.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/add-table-slide slide=new title=\"Key metrics\" rows=\"Metric\\tValue\\nARR\\t$12M\" left=72 top=110 width=560 height=200",
+        "/add-table-slide slide=new at=2 title=\"Key metrics\" rows=\"Metric\\tValue\\nARR\\t$12M\"",
+        "/add-table-slide slide=4 rows=\"No\\tDimensi\\tDeskripsi\\n1\\tRegulasi\\tPatuh OJK\\n2\\tData\\tLokasi data\\n3\\tBiaya\\tTCO 3 tahun\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "PowerPointApi 1.8 unavailable",
+        "table too large",
+        "geometry collision"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target slide, row/column count, geometry, first rows.",
+        "Provenance: record slide id, table shape id, grid hash, geometry, and changeId."
+      ]
+    },
     "analyze": {
       "command": "analyze",
       "useWhen": "you need exact tabular calculations with source freshness and lineage",
@@ -807,6 +914,71 @@
       ],
       "safety": [
         "Queries have no external I/O. Writes require capability checks and human approval."
+      ]
+    },
+    "apply-slide-layout": {
+      "command": "/apply-slide-layout",
+      "useWhen": "PowerPoint slide layout application: apply an existing deck layout to a specific slide without recreating the slide",
+      "syntax": "/apply-slide-layout slideId=<native-slide-id> layoutId=<native-layout-id> [masterId=<native-master-id>] [layoutName=\"<name>\"] [expectedDocumentId=<captured-document-id>] [expectedLayoutHash=<captured-hash>]",
+      "discovery": [
+        "captureDeckTemplate",
+        "properties <slide-ref>"
+      ],
+      "sequence": [
+        "Capture complete native master/layout geometry and pin the document id.",
+        "Preview the prior and new layout.",
+        "Emit one /apply-slide-layout command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/apply-slide-layout slideId=s4 masterId=m1 layoutId=l1 expectedLayoutHash=sha256:<capture> expectedDocumentId=sha256:<capture>"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "PowerPointApi 1.8 unavailable",
+        "unknown layout",
+        "stale slide id"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target slide, prior layout, new layout.",
+        "Provenance: record slide id, prior/new layout id/name, and changeId."
+      ]
+    },
+    "apply-style": {
+      "command": "/apply-style",
+      "useWhen": "Word paragraph/style application: apply a built-in or known document style to an exact paragraph/range",
+      "syntax": "/apply-style style=\"Heading 1\" [match=\"exact paragraph text\"] [builtIn=true|false]",
+      "discovery": [
+        "list paragraph",
+        "inspect <paragraph-ref>",
+        "open <paragraph-ref>"
+      ],
+      "sequence": [
+        "Resolve the paragraph/range first.",
+        "Preview the style name and exact target.",
+        "Emit one /apply-style command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/apply-style match=\"Executive summary\" style=\"Heading 1\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "stale anchor",
+        "unknown style",
+        "style not supported on host"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target paragraph/range, prior style, new style.",
+        "Provenance: record range anchor, prior/new style, and changeId."
       ]
     },
     "attachments": {
@@ -1074,30 +1246,68 @@
     },
     "fill-content-control": {
       "command": "/fill-content-control",
-      "useWhen": "the target is a known Word content control id and the user wants its text populated",
-      "syntax": "/fill-content-control id=<contentControlId> text=\"...\"",
+      "useWhen": "Word content-control fill: populate a known content control by id, tag, or title",
+      "syntax": "/fill-content-control contentControlId=<id> text=\"...\"",
       "discovery": [
-        "list",
+        "list content-control",
         "properties <content-control-ref>",
-        "inspect <content-control-ref>"
+        "inspect <ref>"
       ],
       "sequence": [
-        "Find the content control id from host context or properties.",
-        "Emit one /fill-content-control command with id and text.",
-        "Wait for preview, approval, and result."
+        "Resolve the exact content control first.",
+        "Preview prior and new value.",
+        "Emit one /fill-content-control command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
       ],
       "examples": [
-        "/fill-content-control id=CustomerName text=\"VanArsdel, Ltd.\""
+        "/fill-content-control contentControlId=42 text=\"Acme Pty Ltd\""
       ],
       "doNot": [
-        "Do not infer a content-control id from visible text.",
-        "Do not fall back to selection."
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
       ],
       "failureModes": [
-        "A deleted or stale control returns content_control_gone and writes nothing."
+        "control not found",
+        "duplicate tag ambiguity",
+        "locked content control"
       ],
       "safety": [
-        "The bridge records the prior content-control value as a restore-content-control inverse."
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: content control id/tag/title, prior value summary, new value summary.",
+        "Provenance: record contentControlId/tag/title, prior/new value hashes, and changeId."
+      ]
+    },
+    "filter-range": {
+      "command": "/filter-range",
+      "useWhen": "Excel native filter: apply one exact-value native range AutoFilter without replacing existing filters",
+      "syntax": "/filter-range range=<Sheet!A1:D50> column=<exact header> criterion1=\"<exact value>\" [expectedSourceHash=<captured-hash>]",
+      "discovery": [
+        "tables",
+        "read <range>",
+        "properties <table-ref>"
+      ],
+      "sequence": [
+        "Read headers and identify the exact filter column and one literal value.",
+        "Preview the exact range/current source hash; an omitted hash is captured before approval. Existing filters remain untouched.",
+        "Emit one /filter-range command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/filter-range range=Sales!A1:G500 column=Region criterion1=East"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "unknown column",
+        "existing filter conflict",
+        "unsupported host"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: affected range/table, column, criteria.",
+        "Provenance: record filter criteria, column, source range hash, and changeId."
       ]
     },
     "find": {
@@ -1120,6 +1330,39 @@
       ],
       "safety": [
         "Read-only; never mutates."
+      ]
+    },
+    "find-replace": {
+      "command": "/find-replace",
+      "useWhen": "Word bounded find/replace: replace repeated exact text after previewing hit count and blast radius",
+      "syntax": "/find-replace find=\"...\" replace=\"...\" [matchCase=true|false] [matchWholeWord=true|false]",
+      "discovery": [
+        "search <find text>",
+        "inspect <hit-ref>",
+        "properties <hit-ref>"
+      ],
+      "sequence": [
+        "Search and preview all hits before writing.",
+        "Ask for clarification when the hit count is larger than the policy limit.",
+        "Emit one /find-replace command only for explicit bulk replacements.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/find-replace find=\"99.5%\" replace=\"99.9%\" matchCase=false"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "too many hits",
+        "anchor drift",
+        "protected/locked range"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: hit count, sample hits, replace text, excluded regions.",
+        "Provenance: record hit anchors, hashes, replace text hash, and changeId."
       ]
     },
     "format": {
@@ -1149,6 +1392,39 @@
       ],
       "safety": [
         "Every write is dry-run, previewed, approved, gated, actuated, and recorded."
+      ]
+    },
+    "format-shape": {
+      "command": "/format-shape",
+      "useWhen": "PowerPoint shape formatting: change the colour of one addressed shape (fill/background, text colour, outline) or its font or z-order, e.g. make a title blue with white text",
+      "syntax": "/format-shape slide=<n> shape=<name|id> [fill=#RRGGBB] [line=#RRGGBB] [fontColor=#RRGGBB] [fontName=<name>] [fontSize=<pt>] [bold=true|false] [italic=true|false] [underline=true|false] [zOrder=front|back|forward|backward]",
+      "discovery": [
+        "read slide:<n>",
+        "list shape",
+        "properties <shape-ref>",
+        "open <shape-ref>"
+      ],
+      "sequence": [
+        "For the slide title use shape=title directly; otherwise read slide:<n>, which lists each shape id and type.",
+        "Preview the exact formatting delta.",
+        "Emit one /format-shape command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/format-shape slide=1 shape=title fill=#0F6CBD fontColor=#FFFFFF"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "stale shape id",
+        "unsupported formatting property"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: shape id, prior formatting fields, new formatting fields.",
+        "Provenance: record slide id, shape id, formatting delta, and changeId."
       ]
     },
     "grep": {
@@ -1237,62 +1513,208 @@
         "Read-only/control; never mutates."
       ]
     },
-    "insert-ooxml": {
-      "command": "/insert-ooxml",
-      "useWhen": "the user needs Word-native rich content that plain text cannot represent",
-      "syntax": "/insert-ooxml ooxml=\"<w:p/>\" [match=\"exact anchor\"] [contextHint=\"...\"]",
+    "insert-content-control": {
+      "command": "/insert-content-control",
+      "useWhen": "Word content-control insertion: create a new plain, rich-text, or tagged content control at a resolved Word range",
+      "syntax": "/insert-content-control type=richText|plainText [tag=<tag>] [title=\"...\"] [match=\"exact anchor text\"]",
       "discovery": [
-        "search <exact anchor text>",
-        "help insert-text"
+        "search <anchor>",
+        "inspect <paragraph-ref>",
+        "properties <word:selection>"
       ],
       "sequence": [
-        "Use this only for small, well-formed OOXML fragments.",
-        "Anchor with match/contextHint when possible.",
-        "Emit one /insert-ooxml command and wait for preview, approval, and result."
+        "Resolve the insertion range or active selection.",
+        "Choose a content-control type, tag, and title from user intent.",
+        "Emit one /insert-content-control command and preview tag/title/type.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
       ],
       "examples": [
-        "/insert-ooxml ooxml=\"<w:p><w:r><w:t>Approved</w:t></w:r></w:p>\" match=\"Status:\""
+        "/insert-content-control match=\"Customer:\" type=richText tag=CustomerName title=\"Customer name\""
       ],
       "doNot": [
-        "Do not use OOXML for ordinary wording changes.",
-        "Do not emit arbitrary scripts, macros, external relationships, or unsafe active content."
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
       ],
       "failureModes": [
-        "Malformed OOXML is rejected by the host; stale anchors return anchor_drift."
+        "stale anchor",
+        "duplicate tag policy",
+        "unsupported control type"
       ],
       "safety": [
-        "OOXML is untrusted data and this direct insert is marked irreversible."
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: anchor, content-control type, tag/title, initial text if any.",
+        "Provenance: record anchor, contentControlId, tag/title/type, and changeId."
+      ]
+    },
+    "insert-hyperlink": {
+      "command": "/insert-hyperlink",
+      "useWhen": "Word screened hyperlink: add or update a hyperlink on exact Word text after URL safety screening",
+      "syntax": "/insert-hyperlink url=<https URL> [match=\"exact text to link\"] [displayText=\"...\"] [screenTip=\"...\"]",
+      "discovery": [
+        "search <display text>",
+        "inspect <paragraph-ref>",
+        "properties <word:selection>"
+      ],
+      "sequence": [
+        "Read the exact display text or selection.",
+        "Screen the URL scheme and host before preview.",
+        "Emit one /insert-hyperlink command for the resolved range.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/insert-hyperlink match=\"release notes\" url=https://contoso.example/release displayText=\"release notes\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "unsafe URL",
+        "stale anchor",
+        "hyperlink API unavailable"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target range, display text, screened URL.",
+        "Provenance: record anchor, URL hash, display text hash, and changeId."
+      ]
+    },
+    "insert-ooxml": {
+      "command": "/insert-ooxml",
+      "useWhen": "Word screened OOXML insertion: insert a screened rich Word fragment where plain text is insufficient",
+      "syntax": "/insert-ooxml ooxml=\"<w:p>...</w:p>\" [match=\"exact anchor text\"]",
+      "discovery": [
+        "outline",
+        "search <anchor>",
+        "inspect <paragraph-ref>"
+      ],
+      "sequence": [
+        "Resolve the insertion point from exact host content.",
+        "Use only sanitized OOXML produced by trusted code paths.",
+        "Emit one /insert-ooxml command with the screened fragment.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/insert-ooxml match=\"Appendix\" ooxml=\"<w:p>...</w:p>\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "malformed OOXML",
+        "sanitization rejection",
+        "stale anchor"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: anchor, OOXML size/hash, position.",
+        "Provenance: record anchor, OOXML hash, sanitizer result, and changeId."
+      ]
+    },
+    "insert-pivot": {
+      "command": "/insert-pivot",
+      "useWhen": "Excel native PivotTable: create one native grouped SUM pivot from one row field and up to four numeric measures on an empty reserved destination",
+      "syntax": "/insert-pivot sourceRange=<Sheet!A1:D50> destinationRange=<Report!A1:F60> rowFields=\"<one exact header>\" valueFields=\"<one to four numeric headers>\" [name=<name>] [expectedSourceHash=<captured-hash>] [expectedDestinationHash=<captured-hash>]",
+      "discovery": [
+        "tables",
+        "read <source-range>",
+        "properties <table-ref>"
+      ],
+      "sequence": [
+        "Read the exact source headers and numeric measure values.",
+        "Choose one row field and one to four SUM value fields from exact headers.",
+        "Reserve an empty destination rectangle on a different sheet: at least source row count + 3 rows and measure count + 2 columns, capped at 10,000 cells.",
+        "The preview captures current source/destination hashes when omitted; supplied expected hashes must still match. Approve that exact bounded footprint.",
+        "Emit one /insert-pivot; columnFields and filterFields are unsupported.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/insert-pivot sourceRange=Sales!A1:G500 destinationRange=Pivot!A3:C505 rowFields=\"Region\" valueFields=\"Revenue\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "missing header",
+        "unsupported requirement set",
+        "destination collision"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: source range, destination range, row/column/value/filter fields.",
+        "Provenance: record source range hash, destination, pivot name, field mapping, and changeId."
+      ]
+    },
+    "insert-table": {
+      "command": "/insert-table",
+      "useWhen": "Word native table insertion: insert a small grounded table into a Word document: \"at the cursor\" (pada lokasi kursor) = no match= (it goes after the cursor's paragraph); match=\"exact text\" only when the user names a place. Empty rows the user asks for are tab-only lines",
+      "syntax": "/insert-table rows=\"h1\\th2\\nv1\\tv2\" [headers=true|false] [match=\"exact anchor text\"] [replaceThrough=\"text in the last paragraph to turn into the table\"]",
+      "discovery": [
+        "search <anchor>",
+        "inspect <paragraph-ref>",
+        "open <paragraph-ref>"
+      ],
+      "sequence": [
+        "Read the anchor paragraph or current selection.",
+        "Keep the table small enough for preview.",
+        "Emit one /insert-table with a tableGrid payload or use OOXML when native table is unavailable.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/insert-table rows=\"#\\tAktivitas\\tDeliverable\\n\\t\\t\\n\\t\\t\"",
+        "/insert-table match=\"Appendix\" rows=\"Metric\\tValue\\nRevenue\\t100\"",
+        "/insert-table match=\"Budi - send\" replaceThrough=\"Rina - review\" rows=\"Owner\\tAction\\nBudi\\tSend results\\nRina\\tReview SLA\" headers=true"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "stale anchor",
+        "table too large",
+        "host lacks native table insert"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: anchor, row/column count, first rows.",
+        "Provenance: record anchor, table hash, row/column count, and changeId."
       ]
     },
     "insert-text": {
       "command": "/insert-text",
-      "useWhen": "the user asks to insert a small amount of text in Word without using tracked changes, at the cursor (\"pada lokasi kursor\") or after an anchor, optionally formatted (bold, font, size) in the same command",
-      "syntax": "/insert-text text=\"...\" [match=\"exact anchor\"] [contextHint=\"...\"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]",
+      "useWhen": "Word plain-text insertion: insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text",
+      "syntax": "/insert-text text=\"...\" [match=\"exact anchor text\"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]",
       "discovery": [
-        "search <exact anchor text>",
-        "inspect <word:paragraph:N>",
-        "open <word:paragraph:N>"
+        "outline",
+        "search <anchor>",
+        "inspect <paragraph-ref>",
+        "open <paragraph-ref>"
       ],
       "sequence": [
-        "Read or search the exact insertion anchor, unless the user explicitly wants the current selection.",
-        "Use match/contextHint when anchoring after existing text; omit them for \"at the cursor\" / current-selection insertion.",
-        "Put the requested formatting on the same command (bold=true font=Arial size=16); never a second style command for it.",
-        "Emit one /insert-text command and wait for preview, approval, and result."
+        "Resolve the insertion point from selection or exact anchor.",
+        "Preview the inserted text and position.",
+        "Emit one /insert-text command only when insertion, not tracked rewrite, is intended.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
       ],
       "examples": [
-        "/insert-text text=\" Effective July 1.\" match=\"This agreement begins\"",
+        "/insert-text match=\"Appendix\" position=after text=\"Reviewed by Legal.\"",
         "/insert-text text=\"AI COE\" bold=true font=Arial size=16"
       ],
       "doNot": [
-        "Do not use for rewrites; use suggest or /replace-selection.",
-        "Do not invent anchor text.",
-        "Do not claim the write is durably reversible."
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
       ],
       "failureModes": [
-        "A stale match returns anchor_drift and writes nothing."
+        "stale anchor",
+        "ambiguous insertion point",
+        "protected range"
       ],
       "safety": [
-        "Direct insert is marked irreversible until a durable inserted-range inverse exists."
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: anchor/selection, position, inserted text summary.",
+        "Provenance: record anchor, inserted text hash, position, and changeId."
       ]
     },
     "inspect": {
@@ -1386,6 +1808,40 @@
       ],
       "safety": [
         "Every write is dry-run, previewed, approved, gated, actuated, and recorded."
+      ]
+    },
+    "manage-worksheet": {
+      "command": "/manage-worksheet",
+      "useWhen": "Excel worksheet lifecycle: create, rename, activate or protect exact worksheets; destructive deletion and unprotect remain refused",
+      "syntax": "/manage-worksheet action=create|rename|activate|protect name=<name> [newName=<name>] [expectedId=<captured-worksheet-id>]",
+      "discovery": [
+        "outline",
+        "list sheet",
+        "properties <sheet-ref>"
+      ],
+      "sequence": [
+        "List sheets and confirm the exact target name and native identity.",
+        "For rename/activate/protect, the preview captures the native worksheet id when expectedId is omitted; a supplied id must match.",
+        "Deletion and unprotect are refused. Creation requires a new non-colliding name.",
+        "Emit one /manage-worksheet command only after the user intent is explicit.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/manage-worksheet action=create name=Analysis"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "name collision",
+        "protected workbook",
+        "irreversible delete policy"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: action, worksheet name, collision/delete/protection warning.",
+        "Provenance: record worksheet id/name before and after, action, and changeId."
       ]
     },
     "mv": {
@@ -1579,29 +2035,35 @@
     },
     "replace-selection": {
       "command": "/replace-selection",
-      "useWhen": "the user has selected exact Word text and wants it replaced directly",
+      "useWhen": "Word selection replacement: replace the current Word selection after previewing prior and new text",
       "syntax": "/replace-selection text=\"...\"",
       "discovery": [
-        "inspect word:selection",
-        "open word:selection"
+        "read",
+        "properties <word:selection>",
+        "inspect <word:selection>"
       ],
       "sequence": [
-        "Confirm there is an active selection.",
-        "Emit one /replace-selection command with the exact replacement text.",
-        "Wait for preview, approval, and result."
+        "Read the active selection before writing.",
+        "Preview prior selected text and replacement text.",
+        "Emit one /replace-selection command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
       ],
       "examples": [
-        "/replace-selection text=\"The service level is 99.9%.\""
+        "/replace-selection text=\"Updated clause text.\""
       ],
       "doNot": [
-        "Do not use when nothing is selected.",
-        "Do not retarget to similar text automatically."
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
       ],
       "failureModes": [
-        "No active selection returns no_selection and writes nothing."
+        "empty selection",
+        "selection drift",
+        "protected range"
       ],
       "safety": [
-        "The bridge records the prior selection text as a restore-text inverse."
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: selected text hash/summary, replacement text summary.",
+        "Provenance: record selection anchor, prior/new text hashes, and changeId."
       ]
     },
     "reply": {
@@ -1739,6 +2201,133 @@
         "Every write is dry-run, previewed, approved, gated, actuated, and recorded."
       ]
     },
+    "set-body": {
+      "command": "/set-body",
+      "useWhen": "Outlook draft body update: replace the body of an open draft while leaving send control with the user",
+      "syntax": "/set-body text=\"...\" (or html=\"<p>...</p>\")",
+      "discovery": [
+        "read",
+        "properties <mail-ref>"
+      ],
+      "sequence": [
+        "Confirm the item is a compose draft.",
+        "Preview the sanitized body delta.",
+        "Emit one /set-body command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/set-body html=\"<p>Thanks, Thursday works.</p>\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "not in compose mode",
+        "body too large",
+        "HTML sanitization rejection"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: draft target, body mode, redacted size/summary.",
+        "Provenance: record draft target, body hash, coercion type, and changeId."
+      ]
+    },
+    "set-data-validation": {
+      "command": "/set-data-validation",
+      "useWhen": "Excel literal-list validation: install a bounded literal dropdown list on an exact captured range without replacing an existing validation rule",
+      "syntax": "/set-data-validation range=<Sheet!A1:A20> values=\"Open,Closed\" [expectedSourceHash=<captured-hash>]",
+      "discovery": [
+        "read <range>"
+      ],
+      "sequence": [
+        "Choose an explicit sheet-qualified range of at most 10,000 cells; the preview captures its source hash when omitted.",
+        "Review one to 32 literal dropdown values, at most 255 characters together; formulas, separators and existing validation are refused.",
+        "Emit one /set-data-validation for the captured target.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/set-data-validation range=Sales!D2:D20 values=\"Open,Closed\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "stale source",
+        "existing validation",
+        "formula or separator in literal list",
+        "unsupported host"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: target rectangle, literal values, existing rules are preserved.",
+        "Provenance: record range identity, source hash, literal rule and changeId."
+      ]
+    },
+    "set-recipients": {
+      "command": "/set-recipients",
+      "useWhen": "Outlook draft recipients: set or add recipients on an open draft while preserving final send control",
+      "syntax": "/set-recipients to=\"a@x.com, b@y.com\" [cc=\"...\"] [bcc=\"...\"] [recipientMode=set|add]",
+      "discovery": [
+        "properties <draft-ref>",
+        "context reference-preferred"
+      ],
+      "sequence": [
+        "Confirm compose/draft mode.",
+        "Use only user-provided or explicitly grounded recipient addresses.",
+        "Emit one /set-recipients with recipientMode=set or add.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/set-recipients to=\"user@contoso.com\" cc=\"reviewer@contoso.com\" recipientMode=add"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "not in compose mode",
+        "invalid address",
+        "policy disallows recipient edits"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: draft target, to/cc/bcc delta, recipient mode.",
+        "Provenance: record draft id when available, recipient hashes, mode, and changeId."
+      ]
+    },
+    "set-subject": {
+      "command": "/set-subject",
+      "useWhen": "Outlook draft subject: replace the subject of an open draft without sending",
+      "syntax": "/set-subject subject=\"...\"",
+      "discovery": [
+        "properties <draft-ref>",
+        "read"
+      ],
+      "sequence": [
+        "Confirm compose/draft mode.",
+        "Preview the prior and new subject.",
+        "Emit one /set-subject command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/set-subject subject=\"Updated project plan\""
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "not in compose mode",
+        "subject API unavailable"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: draft target, prior subject, new subject.",
+        "Provenance: record draft id when available, prior/new subject hashes, and changeId."
+      ]
+    },
     "shape": {
       "command": "shape",
       "useWhen": "the user wants to change the text of one existing PowerPoint shape or text box, e.g. retitle a slide (pp:shape:<n>:title), not create a new slide; also to fill an existing slide whose layout title/body placeholders are empty (a blank \"Title and Content\" slide): write the title into pp:shape:<n>:title and the list into the body placeholder, one item per line",
@@ -1854,6 +2443,40 @@
       ],
       "safety": [
         "Read-only; never mutates."
+      ]
+    },
+    "sort-range": {
+      "command": "/sort-range",
+      "useWhen": "Excel native sort: sort a range or table in place using Excel sort semantics",
+      "syntax": "/sort-range range=<Sheet!A1:F21> key=<header name or column letter> [order=ascending|descending] [headers=true|false]",
+      "discovery": [
+        "tables",
+        "read <range>",
+        "properties <table-ref>"
+      ],
+      "sequence": [
+        "Read headers and verify the sort key exists.",
+        "Preview the sort key, direction, and affected rows.",
+        "Emit one /sort-range command.",
+        "Stop after one cmd block and wait for the host result/preview before continuing."
+      ],
+      "examples": [
+        "/sort-range range=Sales!A1:G500 key=Revenue order=descending",
+        "/sort-range range=Sales!A1:G500 key=C headers=true"
+      ],
+      "doNot": [
+        "Do not use this command unless the current turn grammar advertises it.",
+        "Do not infer unseen targets or unsupported fields."
+      ],
+      "failureModes": [
+        "unknown key",
+        "large inverse unavailable",
+        "protected sheet"
+      ],
+      "safety": [
+        "Registry status: implemented; registry metadata is not write authority.",
+        "Preview must show: affected range/table, sort key, direction, header handling.",
+        "Provenance: record source hash, sort key, order, and changeId."
       ]
     },
     "spill": {
@@ -2173,12 +2796,12 @@
     {
       "kind": "filter-range",
       "surface": "excel",
-      "status": "promotable",
+      "status": "implemented",
       "exposure": "specialized",
-      "priority": "p1",
+      "priority": "p0",
       "command": "/filter-range",
       "title": "Excel native filter",
-      "useWhen": "apply an AutoFilter/table filter without deleting or rewriting rows",
+      "useWhen": "apply one exact-value native range AutoFilter without replacing existing filters",
       "hostApis": [
         "Excel.AutoFilter.apply",
         "Excel.TableColumn.filter.apply"
@@ -2186,7 +2809,7 @@
       "requirementSets": [
         {
           "name": "ExcelApi",
-          "minVersion": "1.2"
+          "minVersion": "1.9"
         }
       ],
       "contextKinds": [
@@ -2199,8 +2822,8 @@
         "properties <table-ref>"
       ],
       "sequence": [
-        "Read headers and identify the exact filter column.",
-        "Preview criteria and affected table/range.",
+        "Read headers and identify the exact filter column and one literal value.",
+        "Preview the exact range/current source hash; an omitted hash is captured before approval. Existing filters remain untouched.",
         "Emit one /filter-range command."
       ],
       "examples": [
@@ -2211,7 +2834,7 @@
         "column",
         "criteria"
       ],
-      "inverse": "clear or restore previous filter state when host exposes it",
+      "inverse": "automatic restoration unavailable; refuses replacement of existing filters",
       "provenance": "record filter criteria, column, source range hash, and changeId",
       "failureModes": [
         "unknown column",
@@ -2451,12 +3074,12 @@
     {
       "kind": "insert-pivot",
       "surface": "excel",
-      "status": "promotable",
+      "status": "implemented",
       "exposure": "specialized",
       "priority": "p0",
       "command": "/insert-pivot",
       "title": "Excel native PivotTable",
-      "useWhen": "summarize a table/range by row, column, value, or filter fields without hand-building formulas",
+      "useWhen": "create one native grouped SUM pivot from one row field and up to four numeric measures on an empty reserved destination",
       "hostApis": [
         "Excel.Worksheet.pivotTables.add",
         "Excel.PivotTable"
@@ -2478,19 +3101,21 @@
         "properties <table-ref>"
       ],
       "sequence": [
-        "Read the source headers and sample rows.",
-        "Choose row/value fields from exact headers.",
-        "Emit one /insert-pivot with sourceRange, destinationRange, and field lists."
+        "Read the exact source headers and numeric measure values.",
+        "Choose one row field and one to four SUM value fields from exact headers.",
+        "Reserve an empty destination rectangle on a different sheet: at least source row count + 3 rows and measure count + 2 columns, capped at 10,000 cells.",
+        "The preview captures current source/destination hashes when omitted; supplied expected hashes must still match. Approve that exact bounded footprint.",
+        "Emit one /insert-pivot; columnFields and filterFields are unsupported."
       ],
       "examples": [
-        "/insert-pivot sourceRange=Sales!A1:G500 destinationRange=Pivot!A3 rowFields=\"Region\" valueFields=\"Revenue\""
+        "/insert-pivot sourceRange=Sales!A1:G500 destinationRange=Pivot!A3:C505 rowFields=\"Region\" valueFields=\"Revenue\""
       ],
       "preview": [
         "source range",
         "destination range",
         "row/column/value/filter fields"
       ],
-      "inverse": "delete the created PivotTable object and restore overwritten destination cells",
+      "inverse": "delete the minted PivotTable object; only empty reserved destinations are admitted",
       "provenance": "record source range hash, destination, pivot name, field mapping, and changeId",
       "failureModes": [
         "missing header",
@@ -2505,12 +3130,12 @@
     {
       "kind": "manage-worksheet",
       "surface": "excel",
-      "status": "catalog-only",
+      "status": "implemented",
       "exposure": "specialized",
-      "priority": "p2",
+      "priority": "p0",
       "command": "/manage-worksheet",
       "title": "Excel worksheet lifecycle",
-      "useWhen": "create, rename, activate, protect, unprotect, or delete worksheets",
+      "useWhen": "create, rename, activate or protect exact worksheets; destructive deletion and unprotect remain refused",
       "hostApis": [
         "Excel.WorksheetCollection.add",
         "Excel.Worksheet.name",
@@ -2519,7 +3144,7 @@
       "requirementSets": [
         {
           "name": "ExcelApi",
-          "minVersion": "1.1"
+          "minVersion": "1.2"
         }
       ],
       "contextKinds": [
@@ -2531,8 +3156,9 @@
         "properties <sheet-ref>"
       ],
       "sequence": [
-        "List sheets and confirm the target name.",
-        "For delete/rename/protect, preview the exact worksheet and risk.",
+        "List sheets and confirm the exact target name and native identity.",
+        "For rename/activate/protect, the preview captures the native worksheet id when expectedId is omitted; a supplied id must match.",
+        "Deletion and unprotect are refused. Creation requires a new non-colliding name.",
         "Emit one /manage-worksheet command only after the user intent is explicit."
       ],
       "examples": [
@@ -2543,12 +3169,61 @@
         "worksheet name",
         "collision/delete/protection warning"
       ],
-      "inverse": "create/rename can be reversed; delete requires snapshot and is often irreversible",
+      "inverse": "automatic lifecycle restoration unavailable; native identity is recorded",
       "provenance": "record worksheet id/name before and after, action, and changeId",
       "failureModes": [
         "name collision",
         "protected workbook",
         "irreversible delete policy"
+      ],
+      "skillRefs": [
+        "references/excel-semantics.md"
+      ]
+    },
+    {
+      "kind": "set-data-validation",
+      "surface": "excel",
+      "status": "implemented",
+      "exposure": "specialized",
+      "priority": "p0",
+      "command": "/set-data-validation",
+      "title": "Excel literal-list validation",
+      "useWhen": "install a bounded literal dropdown list on an exact captured range without replacing an existing validation rule",
+      "hostApis": [
+        "Excel.Range.dataValidation"
+      ],
+      "requirementSets": [
+        {
+          "name": "ExcelApi",
+          "minVersion": "1.8"
+        }
+      ],
+      "contextKinds": [
+        "range"
+      ],
+      "discovery": [
+        "read <range>"
+      ],
+      "sequence": [
+        "Choose an explicit sheet-qualified range of at most 10,000 cells; the preview captures its source hash when omitted.",
+        "Review one to 32 literal dropdown values, at most 255 characters together; formulas, separators and existing validation are refused.",
+        "Emit one /set-data-validation for the captured target."
+      ],
+      "examples": [
+        "/set-data-validation range=Sales!D2:D20 values=\"Open,Closed\""
+      ],
+      "preview": [
+        "target rectangle",
+        "literal values",
+        "existing rules are preserved"
+      ],
+      "inverse": "automatic validation restoration is unavailable; no existing rule is overwritten",
+      "provenance": "record range identity, source hash, literal rule and changeId",
+      "failureModes": [
+        "stale source",
+        "existing validation",
+        "formula or separator in literal list",
+        "unsupported host"
       ],
       "skillRefs": [
         "references/excel-semantics.md"
@@ -3480,9 +4155,9 @@
     {
       "kind": "apply-slide-layout",
       "surface": "powerpoint",
-      "status": "catalog-only",
+      "status": "implemented",
       "exposure": "specialized",
-      "priority": "p2",
+      "priority": "p0",
       "command": "/apply-slide-layout",
       "title": "PowerPoint slide layout application",
       "useWhen": "apply an existing deck layout to a specific slide without recreating the slide",
@@ -3499,23 +4174,23 @@
         "slide"
       ],
       "discovery": [
-        "slides",
+        "captureDeckTemplate",
         "properties <slide-ref>"
       ],
       "sequence": [
-        "Resolve the target slide and available layout name/id.",
+        "Capture complete native master/layout geometry and pin the document id.",
         "Preview the prior and new layout.",
         "Emit one /apply-slide-layout command."
       ],
       "examples": [
-        "/apply-slide-layout slide=s4 layoutName=\"Title and Content\""
+        "/apply-slide-layout slideId=s4 masterId=m1 layoutId=l1 expectedLayoutHash=sha256:<capture> expectedDocumentId=sha256:<capture>"
       ],
       "preview": [
         "target slide",
         "prior layout",
         "new layout"
       ],
-      "inverse": "restore the prior layout id when captured",
+      "inverse": "no automatic inverse; review native undo or manually reapply the prior layout",
       "provenance": "record slide id, prior/new layout id/name, and changeId",
       "failureModes": [
         "PowerPointApi 1.8 unavailable",
@@ -4687,6 +5362,7 @@
     "save-draft",
     "send-activity-notification",
     "set-body",
+    "set-data-validation",
     "set-delay-delivery",
     "set-doc-properties",
     "set-entity-card",

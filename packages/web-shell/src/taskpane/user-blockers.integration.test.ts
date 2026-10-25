@@ -68,19 +68,15 @@ describe('a task the user must unblock', () => {
     expect(sim.snapshot().sheets.find((s) => s.name === 'Summary')?.values[0]?.[0]).toBe('Region');
   });
 
-  it('a pivot table: says it is not supported yet and what it can do instead', async () => {
+  it('unavailable chart formatting: says what is unsupported and what it can do instead', async () => {
     sim = installFakeExcel();
-    const pivot =
-      '```cmd\n/insert-pivot sourceRange=Sales!A1:D7 destinationRange=Summary!E1 rowFields=region valueFields=revenue\n```';
-    const { reply } = await runTask('Make a pivot table of revenue by region', [
-      pivot,
-      pivot,
-      pivot,
-    ]);
+    const chart = '```cmd\n/format-chart chartName=Revenue title="Revenue by region"\n```';
+    const { reply } = await runTask('Restyle the Revenue chart', [chart, chart, chart]);
 
     expect(reply.error).toBeUndefined();
-    expect(reply.text).toContain(`${brand.name} can't do this yet: Pivot table.`);
-    expect(reply.text).toContain('I can help with: cells');
+    expect(reply.text).toContain(`${brand.name} can't do this yet: Chart format.`);
+    expect(reply.text).toContain('I can help with:');
+    expect(reply.text).toContain('cells');
     expect(ui!.container.querySelector('.error-card')).toBeNull();
     expect(ui!.controller.getState().steps.filter((s) => s.kind === 'turn-start')).toHaveLength(1);
   });
@@ -96,15 +92,15 @@ describe('a task the user must unblock', () => {
     expect(reply.text).toContain(
       `${brand.name} can't do this yet with the changes available here.`,
     );
-    expect(reply.text).toContain('I can help with: cells');
+    expect(reply.text).toContain('I can help with:');
+    expect(reply.text).toContain('cells');
     expect(ui!.container.querySelector('.error-card')).toBeNull();
   });
 
   it('answers in Bahasa when the user writes in Bahasa', async () => {
     sim = installFakeExcel();
-    const pivot =
-      '```cmd\n/insert-pivot sourceRange=Sales!A1:D7 destinationRange=Summary!E1 rowFields=region valueFields=revenue\n```';
-    const { reply } = await runTask('Tolong buatkan pivot table untuk data ini', [pivot]);
-    expect(reply.text).toContain(`${brand.name} belum bisa melakukan ini: Pivot table.`);
+    const chart = '```cmd\n/format-chart chartName=Revenue title="Revenue by region"\n```';
+    const { reply } = await runTask('Tolong ubah format grafik ini', [chart]);
+    expect(reply.text).toContain(`${brand.name} belum bisa melakukan ini: Format grafik.`);
   });
 });

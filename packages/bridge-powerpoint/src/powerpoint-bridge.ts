@@ -38,6 +38,7 @@ import {
 import { planInsertSlide } from './actuate-plan.js';
 import { documentChanged, selectionChanged } from './events.js';
 import { readPowerPointPage } from './document-reader.js';
+import { captureNativeDeckTemplate, readNativeLayout } from './deck-template.js';
 
 /**
  * Upper bound on slides materialized by a single read port (`searchDocument`/
@@ -86,6 +87,7 @@ export class PowerPointBridge implements DocBridge {
       'add-shape': (host, request) => host.applyAddShape(request),
       'format-shape': (host, request) => host.applyFormatShape(request),
       'add-table-slide': (host, request) => host.applyAddTableSlide(request),
+      'apply-slide-layout': (host, request) => host.applySlideLayout(request),
     },
     {
       provenance: 'unsupported',
@@ -105,6 +107,15 @@ export class PowerPointBridge implements DocBridge {
   getCapabilities(): CapabilityManifest {
     return negotiateCapabilities(POWERPOINT_CAPABILITIES, this.getHostProfile());
   }
+  async captureDeckTemplate(): Promise<import('@ge/contracts').DeckTemplateCapture> {
+    const key = this.documentKey();
+    if (!key) throw new Error('Save the presentation before capturing its template.');
+    const capture = await captureNativeDeckTemplate(key);
+    if (key !== this.documentKey())
+      throw new Error('The presentation changed during template capture.');
+    return capture;
+  }
+
   async captureTextTarget(ref: ContextRef): Promise<TextTargetCapture> {
     if (ref.hostRef?.type !== 'powerpoint.shape' || !this.documentKey())
       throw new Error('Choose a shape in a saved presentation.');
@@ -409,6 +420,98 @@ export class PowerPointBridge implements DocBridge {
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
     return PowerPointBridge.dispatcher.dispatch(this, req);
+  }
+
+  private async applySlideLayout(req: ActuationRequest): Promise<ActuationResult> {
+    const selected = req.params.layout;
+    const slideId = req.params.target?.slideId;
+    const documentKey = this.documentKey();
+    if (!isSet('PowerPointApi', '1.8'))
+      return {
+        ok: false,
+        kind: req.kind,
+        changeId: req.changeId,
+        error: { code: 'unsupported', message: 'PowerPointApi 1.8 is required to apply a layout.' },
+      };
+    if (
+      !slideId ||
+      !documentKey ||
+      !req.params.target?.expectedDocumentId ||
+      !selected?.layoutId ||
+      !selected.masterId ||
+      !selected.expectedLayoutHash
+    )
+      return {
+        ok: false,
+        kind: req.kind,
+        changeId: req.changeId,
+        error: {
+          code: 'no_target',
+          message:
+            'Capture the template, then specify its document, slideId, masterId, layoutId and expectedLayoutHash.',
+        },
+      };
+    let queued = false;
+    try {
+      return await nativeRun(async (ctx) => {
+        const slide = ctx.presentation.slides.getItem(slideId);
+        const layout = ctx.presentation.slideMasters
+          .getItem(selected.masterId!)
+          .layouts.getItem(selected.layoutId!);
+        const captured = await readNativeLayout(ctx, layout, 128);
+        if (captured.omitted || captured.layout.revision !== selected.expectedLayoutHash)
+          return {
+            ok: false,
+            kind: req.kind,
+            changeId: req.changeId,
+            error: {
+              code: 'target_conflict',
+              message:
+                'The layout changed or exceeds the complete layout budget. Capture it again.',
+            },
+          };
+        const before = await readLayoutSlideState(ctx, slide);
+        if (this.documentKey() !== documentKey)
+          throw new Error('The presentation changed before layout dispatch.');
+        queued = true;
+        slide.applyLayout(layout);
+        await ctx.sync();
+        let verified = false;
+        try {
+          slide.layout.load('id');
+          const after = await readLayoutSlideState(ctx, slide);
+          await ctx.sync();
+          verified =
+            slide.layout.id === selected.layoutId &&
+            JSON.stringify(before) === JSON.stringify(after);
+        } catch {
+          /* Preserve known dispatched outcome, not false completion. */
+        }
+        return {
+          ok: true,
+          kind: req.kind,
+          changeId: req.changeId,
+          location: `slide:${slideId}`,
+          completion: verified ? 'verified' : 'unknown',
+          verification: { status: verified ? 'verified' : 'unknown' },
+        };
+      });
+    } catch (error) {
+      if (queued)
+        return unknownActuationResult(
+          req,
+          `PowerPoint did not confirm the layout change${hostErrorSuffix(error)}. Inspect the slide before retrying.`,
+        );
+      return {
+        ok: false,
+        kind: req.kind,
+        changeId: req.changeId,
+        error: {
+          code: 'target_conflict',
+          message: 'The captured slide or template layout is no longer available.',
+        },
+      };
+    }
   }
 
   private async applySetShapeText(req: ActuationRequest): Promise<ActuationResult> {
@@ -1183,6 +1286,45 @@ export class PowerPointBridge implements DocBridge {
       }
     };
   }
+}
+
+/** Strict bounded readback for layout effects. Failed text reads cannot masquerade as empty text. */
+async function readLayoutSlideState(
+  ctx: PowerPoint.RequestContext,
+  slide: PowerPoint.Slide,
+): Promise<{ texts: string[]; objects: string[] }> {
+  const count = slide.shapes.getCount();
+  await ctx.sync();
+  if (count.value > 128) throw new Error('The slide exceeds the complete verification budget.');
+  const shapes = Array.from({ length: count.value }, (_, index) => {
+    const shape = slide.shapes.getItemAt(index);
+    shape.load('id,type');
+    return shape;
+  });
+  await ctx.sync();
+  for (const shape of shapes)
+    if (shape.type === 'Placeholder') shape.placeholderFormat.load('containedType');
+  await ctx.sync();
+  const readable = shapes.filter(
+    (shape) =>
+      TEXT_SHAPE_TYPES.has(shape.type) &&
+      (shape.type !== 'Placeholder' || placeholderHoldsText(shape.placeholderFormat.containedType)),
+  );
+  for (const shape of readable) shape.textFrame.textRange.load('text');
+  await ctx.sync();
+  const state = {
+    texts: readable
+      .map((shape) => shape.textFrame.textRange.text)
+      .filter(Boolean)
+      .sort(),
+    objects: shapes
+      .filter((shape) => !readable.includes(shape))
+      .map((shape) => `${shape.id}:${shape.type}`)
+      .sort(),
+  };
+  if (new TextEncoder().encode(JSON.stringify(state)).byteLength > 64 * 1024)
+    throw new Error('The slide text exceeds the complete verification budget.');
+  return state;
 }
 
 /** Contract connector names → the host's `ConnectorType` literals (`addLine`, PowerPointApi 1.4). */

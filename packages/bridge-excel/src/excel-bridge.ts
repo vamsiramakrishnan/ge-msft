@@ -62,6 +62,13 @@ import {
 } from './actuate-plan.js';
 import { provenanceRecord } from './provenance-record.js';
 import { readExcelPage } from './document-reader.js';
+import {
+  applyNativeValidation,
+  applyNativeFilter,
+  applyNativePivot,
+  applyNativeWorksheet,
+  nativeRange,
+} from './native-operations.js';
 
 /** Outside and inside edges, so `border=` draws a full grid over the range. */
 const BORDER_EDGES = [
@@ -87,6 +94,12 @@ export class ExcelBridge implements DocBridge {
       'write-cells': (host, request) => host.applyWriteCells(request),
       'format-cells': (host, request) => host.applyFormatCells(request),
       'sort-range': (host, request) => host.applySortRange(request),
+      'insert-pivot': (host, request) => host.applyNativeOperation(request, applyNativePivot),
+      'filter-range': (host, request) => host.applyNativeOperation(request, applyNativeFilter),
+      'set-data-validation': (host, request) =>
+        host.applyNativeOperation(request, applyNativeValidation),
+      'manage-worksheet': (host, request) =>
+        host.applyNativeOperation(request, applyNativeWorksheet),
       'create-table': (host, request) => host.applyCreateTable(request),
       'insert-chart': (host, request) => host.applyInsertChart(request),
       'format-conditional': (host, request) => host.applyConditional(request),
@@ -113,6 +126,17 @@ export class ExcelBridge implements DocBridge {
       return snapshotRange(range, ctx, documentId);
     });
   }
+  async captureWorksheetIdentity(name: string): Promise<{ id: string; name: string }> {
+    if (!name || name.length > 31) throw new Error('A bounded exact worksheet name is required.');
+    return nativeRun(async (ctx) => {
+      const sheet = ctx.workbook.worksheets.getItem(name);
+      sheet.load('id,name');
+      await ctx.sync();
+      if (!sheet.id || sheet.name !== name) throw new Error('The worksheet identity changed.');
+      return { id: sheet.id, name: sheet.name };
+    });
+  }
+
   async captureCellsBatch(selectors: readonly string[]): Promise<CellSnapshot[]> {
     if (
       !selectors.length ||
@@ -1052,6 +1076,17 @@ export class ExcelBridge implements DocBridge {
     return result;
   }
 
+  private async applyNativeOperation(
+    req: ActuationRequest,
+    apply: (request: ActuationRequest) => Promise<ActuationResult>,
+  ): Promise<ActuationResult> {
+    const result = await apply(req);
+    if (result.ok || result.recoveryPending) {
+      return { ...result, ...provFlags(req, await this.persistProvenance(req)) };
+    }
+    return result;
+  }
+
   /**
    * `create-table` (ADR-0007 `table` verb): promote `params.table.range` to a native Excel Table.
    * Fails closed when the range is absent. Gated on `ExcelApi 1.1` (`TableCollection.add` — typings
@@ -1070,6 +1105,20 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'no_anchor', message: 'create-table needs params.table.range' },
       };
     }
+    const finite = nativeRange(
+      plan.address.includes('!') ? plan.address : `Active!${plan.address}`,
+    );
+    if (!finite || !plan.hasHeaders)
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'invalid_footprint',
+          message:
+            'Table promotion needs a finite range of at most 10,000 cells with existing headers. Header insertion would change the approved footprint.',
+        },
+      };
     // `TableCollection.add` → ExcelApi 1.1; gate so an undetectably-old host degrades, not throws.
     if (!isSet('ExcelApi', '1.1')) {
       return {
@@ -1083,34 +1132,118 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await nativeRun(async (ctx) => {
+    const result: ActuationResult = await nativeRun(async (ctx) => {
       const { sheetName } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
           ? ctx.workbook.worksheets.getItem(sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
+      const source = sheet.getRange(parseAddress(plan.address as string).rangeAddress);
+      const refused = await protectedSheetRefusal(ctx, sheet, source, req, false);
+      if (refused) return refused;
+      source.load('address,rowCount,columnCount');
+      await ctx.sync();
+      const capturedSource = req.params.table?.expectedSourceHash
+        ? await snapshotRange(source, ctx, await excelDocumentId())
+        : undefined;
+      if (capturedSource && capturedSource.hash !== req.params.table!.expectedSourceHash)
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: {
+            code: 'source_conflict',
+            message: 'The reviewed table source or worksheet identity changed.',
+          },
+        };
+      const approvedAddress = source.address;
+      const approvedBounds = nativeRange(approvedAddress);
+      if (
+        !approvedBounds ||
+        approvedBounds.rows !== finite.rows ||
+        approvedBounds.columns !== finite.columns
+      )
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: {
+            code: 'target_conflict',
+            message: 'The native source no longer matches the reviewed table footprint.',
+          },
+        };
       // `tables.add(address, hasHeaders)` — pass the full (sheet-qualified) address so the table
       // lands on the intended sheet regardless of the active sheet.
       const table = sheet.tables.add(plan.address as string, plan.hasHeaders);
       const range = table.getRange();
       // Read back the MINTED name + landed address. The minted name is the inverse identity — we
       // never trust `params.table.name`. `getRange().address` gives the canonical location.
-      table.load('name');
-      range.load('address');
+      table.load('name,showHeaders');
+      range.load('address,rowCount,columnCount');
       await ctx.sync();
+      const inverse = {
+        op: 'delete-object' as const,
+        objectType: 'table' as const,
+        name: table.name,
+      };
+      let readback: CellSnapshot | undefined;
+      try {
+        readback = capturedSource
+          ? await snapshotRange(range, ctx, capturedSource.documentId)
+          : undefined;
+      } catch {
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          inverse,
+          recoveryPending: true,
+          error: {
+            code: 'verification_failed',
+            message: 'The created table could not be read back. Inspect it before another attempt.',
+          },
+        };
+      }
+      if (readback && readback.hash !== capturedSource!.hash)
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          inverse,
+          recoveryPending: true,
+          error: {
+            code: 'verification_failed',
+            message: 'The native table changed captured cell data. Inspect before another attempt.',
+          },
+        };
+      if (
+        range.address !== approvedAddress ||
+        range.rowCount !== source.rowCount ||
+        range.columnCount !== source.columnCount ||
+        table.showHeaders !== true
+      )
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          inverse,
+          recoveryPending: true,
+          error: {
+            code: 'verification_failed',
+            message:
+              'The created table did not match its reviewed range and header configuration. Inspect before retrying.',
+          },
+        };
       return {
-        ok: true as const,
+        ok: true,
         changeId: req.changeId,
         kind: req.kind,
         location: range.address,
-        inverse: {
-          op: 'delete-object' as const,
-          objectType: 'table' as const,
-          name: table.name, // the host-minted name, scoped to THIS change
-        },
+        inverse,
+        verification: { status: 'verified' as const },
       };
     });
-    if (result.ok) {
+    if (result.ok || result.recoveryPending) {
       const flags = provFlags(req, await this.persistProvenance(req));
       if (Object.keys(flags).length > 0) return { ...result, ...flags };
     }

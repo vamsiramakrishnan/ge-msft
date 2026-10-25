@@ -13,6 +13,34 @@ export const EXCEL_CAPABILITIES: CapabilityManifest = {
   reads: ['outline', 'read', 'search'],
   actuations: [
     {
+      kind: 'set-data-validation',
+      surface: 'excel',
+      title: 'Install literal list validation',
+      reversible: false,
+      appliesTo: ['range'],
+    },
+    {
+      kind: 'insert-pivot',
+      surface: 'excel',
+      title: 'Create bounded native grouped pivot',
+      reversible: true,
+      appliesTo: ['range', 'table'],
+    },
+    {
+      kind: 'filter-range',
+      surface: 'excel',
+      title: 'Filter exact range values',
+      reversible: false,
+      appliesTo: ['range'],
+    },
+    {
+      kind: 'manage-worksheet',
+      surface: 'excel',
+      title: 'Create, rename, activate or protect worksheet',
+      reversible: false,
+      appliesTo: ['sheet'],
+    },
+    {
       kind: 'write-cells',
       surface: 'excel',
       title: 'Write cells',

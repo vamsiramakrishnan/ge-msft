@@ -34,10 +34,14 @@ export interface DocBridge {
 
   /** Bounded, address-pinned values/formulas for analysis, verification and recovery. */
   captureCells?(selector: string): Promise<CellSnapshot>;
+  /** Native worksheet metadata only, used to pin lifecycle previews without reading sheet contents. */
+  captureWorksheetIdentity?(name: string): Promise<{ id: string; name: string }>;
   /** Independent read plans may share metadata/value syncs. Order and canonical source identity are preserved. */
   captureCellsBatch?(selectors: readonly string[]): Promise<CellSnapshot[]>;
   /** Bounded text plus document/object identity for a refresh preview; never a saved write grant. */
   captureTextTarget?(ref: ContextRef): Promise<TextTargetCapture>;
+  /** Bounded native master/layout metadata. Does not grant write authority. */
+  captureDeckTemplate?(): Promise<import('@ge/contracts').DeckTemplateCapture>;
   /** Host-document persistence. No credentials or model conversation is stored here. */
   recoveryStorage?: {
     load(owner: string): Promise<unknown>;

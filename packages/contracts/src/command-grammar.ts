@@ -2215,6 +2215,16 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
 export const SPECIALIZED_SYNTAX: Partial<Record<ActuationKind, string>> = {
   'insert-text':
     '/insert-text text="..." [match="exact anchor text"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]',
+  'insert-pivot':
+    '/insert-pivot sourceRange=<Sheet!A1:D50> destinationRange=<Report!A1:F60> rowFields="<one exact header>" valueFields="<one to four numeric headers>" [name=<name>] [expectedSourceHash=<captured-hash>] [expectedDestinationHash=<captured-hash>]',
+  'filter-range':
+    '/filter-range range=<Sheet!A1:D50> column=<exact header> criterion1="<exact value>" [expectedSourceHash=<captured-hash>]',
+  'set-data-validation':
+    '/set-data-validation range=<Sheet!A1:A20> values="Open,Closed" [expectedSourceHash=<captured-hash>]',
+  'manage-worksheet':
+    '/manage-worksheet action=create|rename|activate|protect name=<name> [newName=<name>] [expectedId=<captured-worksheet-id>]',
+  'apply-slide-layout':
+    '/apply-slide-layout slideId=<native-slide-id> layoutId=<native-layout-id> [masterId=<native-master-id>] [layoutName="<name>"] [expectedDocumentId=<captured-document-id>] [expectedLayoutHash=<captured-hash>]',
   'sort-range':
     '/sort-range range=<Sheet!A1:F21> key=<header name or column letter> [order=ascending|descending] [headers=true|false]',
   'replace-selection': '/replace-selection text="..."',

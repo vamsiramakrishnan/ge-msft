@@ -10,6 +10,8 @@ export const DocumentPageSchema = z.object({
         text: z.string(),
         parentId: z.string().min(1).max(1000).optional(),
         relatedIds: z.array(z.string().min(1).max(1000)).max(100).optional(),
+        /** Adapter-declared relation coverage only; absence is unknown, never write authority. */
+        relationsComplete: z.boolean().optional(),
       }),
     )
     .max(1000),

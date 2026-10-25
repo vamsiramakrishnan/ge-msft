@@ -120,9 +120,19 @@ describe('fake-excel object writes driven by the real ExcelBridge', () => {
     ]);
     // A second table gets the next minted name.
     const again = await new ExcelBridge().actuate(
-      request('create-table', { table: { range: 'Sales!G1:H3', hasHeaders: false } }, 'c-2'),
+      request('create-table', { table: { range: 'Sales!G1:H3', hasHeaders: true } }, 'c-2'),
     );
     expect(again.inverse).toMatchObject({ name: 'Table2' });
+  });
+
+  it('does not insert an extra header row outside the reviewed table footprint', async () => {
+    const s = install();
+    expect(
+      await new ExcelBridge().actuate(
+        request('create-table', { table: { range: 'Sales!G1:H3', hasHeaders: false } }),
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'invalid_footprint' } });
+    expect(s.snapshot().tables).toEqual([]);
   });
 
   it('insert-chart records type, source, title and the minted chart name', async () => {

@@ -53,6 +53,7 @@ These actuation kinds are reached as `/<kind> key=value ...` only when the live 
 - `/insert-link-at-cursor`, `/insert-note`, `/insert-ooxml`, `/insert-paragraph`, `/insert-pivot`, `/insert-table`
 - `/insert-text`, `/manage-worksheet`, `/move-message`, `/move-slide`, `/post-card`, `/post-channel-message`
 - `/post-chat-message`, `/prepend-body`, `/remove-attachment`, `/replace-selection`, `/reply-channel-message`, `/resolve-revisions`
-- `/save-draft`, `/send-activity-notification`, `/set-body`, `/set-delay-delivery`, `/set-doc-properties`, `/set-entity-card`
-- `/set-header-footer`, `/set-internet-headers`, `/set-page-layout`, `/set-page-title`, `/set-reaction`, `/set-recipients`
-- `/set-sensitivity`, `/set-sensitivity-label`, `/set-speaker-notes`, `/set-subject`, `/sort-range`, `/update-message`
+- `/save-draft`, `/send-activity-notification`, `/set-body`, `/set-data-validation`, `/set-delay-delivery`, `/set-doc-properties`
+- `/set-entity-card`, `/set-header-footer`, `/set-internet-headers`, `/set-page-layout`, `/set-page-title`, `/set-reaction`
+- `/set-recipients`, `/set-sensitivity`, `/set-sensitivity-label`, `/set-speaker-notes`, `/set-subject`, `/sort-range`
+- `/update-message`

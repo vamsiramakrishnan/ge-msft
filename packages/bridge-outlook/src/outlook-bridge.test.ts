@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   asChangeId,
   DocStateSnapshotSchema,
@@ -68,6 +68,10 @@ interface DraftSeed {
   recipientsFailsOn?: 'to' | 'cc' | 'bcc';
   subjectSetFails?: boolean;
   bodySetFails?: boolean;
+  bodyReadbackMismatch?: boolean;
+  subjectReadbackMismatch?: boolean;
+  bodyReadbackStalls?: boolean;
+  subjectReadbackStalls?: boolean;
   attachmentAddFails?: boolean;
   /** Strip every compose write API → the item looks like a READ-mode message. */
   readOnly?: boolean;
@@ -195,12 +199,16 @@ function installOutlook(
         ? {
             subject: {
               getAsync(cb: ResultCb<string>): void {
+                if (d.subjectReadbackStalls) return;
                 cb(ok(seed.subject ?? ''));
               },
               setAsync(value: string, cb: ResultCb<void>): void {
                 subjectSets.push({ subject: value });
                 if (d.subjectSetFails) cb(fail('subject write failed'));
-                else cb(ok(undefined));
+                else {
+                  if (!d.subjectReadbackMismatch) seed.subject = value;
+                  cb(ok(undefined));
+                }
               },
             },
           }
@@ -216,6 +224,7 @@ function installOutlook(
           _coercion: unknown,
           cb: (r: { status: string; value?: string; error?: { message?: string } }) => void,
         ): void {
+          if (d?.bodyReadbackStalls) return;
           if (seed.bodyFails) {
             cb({ status: 'failed', error: { message: 'body read failed' } });
           } else {
@@ -231,7 +240,10 @@ function installOutlook(
               ): void {
                 bodySets.push({ data, coercionType: options?.coercionType });
                 if (d.bodySetFails) cb(fail('body write failed'));
-                else cb(ok(undefined));
+                else {
+                  if (!d.bodyReadbackMismatch) seed.body = data;
+                  cb(ok(undefined));
+                }
               },
             }
           : {}),
@@ -249,11 +261,12 @@ function installOutlook(
     };
   };
 
+  let currentItem = buildItem(current);
   const mailbox = opts.noMailbox
     ? undefined
     : {
         get item(): unknown {
-          return buildItem(current);
+          return currentItem;
         },
         ...(opts.noNewMessageForm
           ? {}
@@ -306,6 +319,7 @@ function installOutlook(
     attachmentsAdded,
     setItem(seed) {
       current = seed;
+      currentItem = buildItem(current);
     },
     fireItemChanged() {
       for (const h of [...handlers]) h.handler();
@@ -415,6 +429,11 @@ describe('OutlookBridge.resolveContext (host read → pure mapping)', () => {
     expect(joined).toContain('pat@acme.com');
     expect(joined).toContain('raise the SLA');
     expect(joined).not.toContain('<strong>'); // tags stripped through the string path
+  });
+
+  it('refuses a stale saved-item reference instead of substituting another active message', async () => {
+    active = installOutlook({ ...readMail(), itemId: 'different-message' });
+    await expect(new OutlookBridge().resolveContext(ref)).rejects.toThrow('no longer active');
   });
 
   it('returns [] when there is no active item to resolve', async () => {
@@ -876,6 +895,7 @@ describe('OutlookBridge.actuate set-body (in-place draft edit)', () => {
       act('set-body', { mail: { body: '<p>Raised to 99.9%.</p>' } }),
     );
     expect(res).toMatchObject({ ok: true, kind: 'set-body', location: 'draft-body' });
+    expect(res.verification?.status).toBe('verified');
     expect(active.bodySets).toEqual([{ data: '<p>Raised to 99.9%.</p>', coercionType: 'html' }]);
   });
 
@@ -911,6 +931,21 @@ describe('OutlookBridge.actuate set-body (in-place draft edit)', () => {
       error: { code: 'outcome_unknown' },
     });
   });
+
+  it('reports a text mismatch after a success callback instead of claiming verified completion', async () => {
+    active = installOutlook(draftMail({ bodyReadbackMismatch: true }));
+    const res = await new OutlookBridge().actuate(act('set-body', { text: 'The expected body.' }));
+    expect(res).toMatchObject({ ok: true, verification: { status: 'mismatch' } });
+    expect(active.bodySets).toHaveLength(1);
+  });
+
+  it('keeps normalized HTML unverified when exact serialization differs', async () => {
+    active = installOutlook(draftMail({ bodyReadbackMismatch: true }));
+    const res = await new OutlookBridge().actuate(
+      act('set-body', { mail: { body: '<p>Expected</p>' } }),
+    );
+    expect(res).toMatchObject({ ok: true, verification: { status: 'unknown' } });
+  });
 });
 
 describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
@@ -923,6 +958,7 @@ describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
       ok: true,
       kind: 'set-subject',
       location: 'draft-subject',
+      verification: { status: 'verified' },
     });
     expect(active.subjectSets).toEqual([{ subject: 'Updated project plan' }]);
   });
@@ -937,6 +973,14 @@ describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
     expect(active.subjectSets).toHaveLength(0);
   });
 
+  it('reports a subject mismatch if a success callback did not produce the requested subject', async () => {
+    active = installOutlook(draftMail({ subjectReadbackMismatch: true }));
+    const res = await new OutlookBridge().actuate(
+      act('set-subject', { mail: { subject: 'New subject' } }),
+    );
+    expect(res).toMatchObject({ ok: true, verification: { status: 'mismatch' } });
+  });
+
   it('preserves uncertainty after a dispatched host write fails', async () => {
     active = installOutlook(draftMail({ subjectSetFails: true }));
     const res = await new OutlookBridge().actuate(act('set-subject', { mail: { subject: 'x' } }));
@@ -945,6 +989,60 @@ describe('OutlookBridge.actuate set-subject (in-place draft edit)', () => {
       recoveryPending: true,
       error: { code: 'outcome_unknown' },
     });
+  });
+});
+
+describe('Outlook saved compose context and lifecycle', () => {
+  it('reads the current async draft subject and classifies a saved draft as compose', async () => {
+    active = installOutlook({
+      ...draftMail(),
+      itemId: 'saved-draft-1',
+      subject: 'Current subject',
+    });
+    const bridge = new OutlookBridge();
+    expect((await bridge.listContext())[0]?.title).toBe('Email: Current subject');
+    const events: HostEvent[] = [];
+    const stop = bridge.watch((event) => events.push(event));
+    active.fireItemChanged();
+    expect(events).toEqual([{ type: 'mail-compose', id: 'saved-draft-1' }]);
+    stop();
+  });
+
+  it.each(['body', 'subject'] as const)(
+    'keeps the successful %s write receipt when the native getter never calls back',
+    async (field) => {
+      vi.useFakeTimers();
+      try {
+        active = installOutlook(
+          draftMail({
+            bodyReadbackStalls: field === 'body',
+            subjectReadbackStalls: field === 'subject',
+          }),
+        );
+        const pending = new OutlookBridge().actuate(
+          field === 'body'
+            ? act('set-body', { text: 'Landed body' })
+            : act('set-subject', { mail: { subject: 'Landed subject' } }),
+        );
+        await vi.advanceTimersByTimeAsync(2001);
+        expect(await pending).toMatchObject({ ok: true, verification: { status: 'unknown' } });
+        expect(field === 'body' ? active.bodySets : active.subjectSets).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('bounds compose subject capture when the native getter never completes', async () => {
+    vi.useFakeTimers();
+    try {
+      active = installOutlook(draftMail({ subjectReadbackStalls: true }));
+      const rejection = expect(new OutlookBridge().listContext()).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(2001);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

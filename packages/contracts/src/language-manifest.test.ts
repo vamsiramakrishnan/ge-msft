@@ -14,7 +14,7 @@ import {
   CONTROL_VERBS,
   WRITE_VERB_TO_KIND,
 } from './command-grammar.js';
-import { COMMAND_HELP } from './command-help.js';
+import { commandHelpEntries } from './command-help.js';
 import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
 import { ActuationKindSchema } from './capability.js';
 import {
@@ -43,7 +43,9 @@ describe('language manifest (ADR-0008 single source)', () => {
     expect(manifest.actuationKinds).toEqual([...ActuationKindSchema.options].sort());
     expect(manifest.valueTypes).toEqual([...VALUE_TYPES]);
     expect(manifest.commandHelp).toEqual(
-      Object.fromEntries(Object.entries(COMMAND_HELP).sort(([a], [b]) => a.localeCompare(b))),
+      Object.fromEntries(
+        Object.entries(commandHelpEntries()).sort(([a], [b]) => a.localeCompare(b)),
+      ),
     );
     expect(manifest.capabilityRegistry).toEqual(
       capabilityRegistryEntries().sort((a, b) =>
@@ -78,7 +80,7 @@ describe('language manifest (ADR-0008 single source)', () => {
           surface: 'excel',
           kind: 'insert-pivot',
           command: '/insert-pivot',
-          status: 'promotable',
+          status: 'implemented',
         }),
         expect.objectContaining({
           surface: 'powerpoint',
@@ -88,6 +90,24 @@ describe('language manifest (ADR-0008 single source)', () => {
         }),
       ]),
     );
+  });
+
+  it('emits exact native specialized help through the existing skill metadata', () => {
+    for (const kind of [
+      'insert-pivot',
+      'filter-range',
+      'set-data-validation',
+      'manage-worksheet',
+      'apply-slide-layout',
+    ]) {
+      const entry = manifest.commandHelp[kind]!;
+      expect(entry.syntax).toContain(`/${kind} `);
+      expect(entry.syntax).not.toContain('[key=value ...]');
+      expect(entry.safety.join(' ')).toContain('metadata is not write authority');
+    }
+    expect(manifest.commandHelp['insert-pivot']!.syntax).toContain('expectedDestinationHash');
+    expect(manifest.commandHelp['manage-worksheet']!.syntax).toContain('expectedId');
+    expect(manifest.commandHelp['apply-slide-layout']!.syntax).toContain('expectedLayoutHash');
   });
 
   it('every write verb compiles to a kind in the actuation catalogue', () => {

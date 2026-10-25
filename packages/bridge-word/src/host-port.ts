@@ -8,6 +8,7 @@ import {
 import { isSet } from './capabilities-runtime.js';
 import { chooseAnchorIndex, wordEdits } from './actuate-plan.js';
 import type { WordSearchHit } from './capture.js';
+import { readWordTableTile, type WordTableTile } from './table-reader.js';
 
 /**
  * The narrow **host port** the {@link WordBridge} drives. It captures ONLY the Word host
@@ -143,7 +144,7 @@ export type ApplyStyleOutcome =
  * until a durable table handle is captured. `drift` is the usual stale-anchor degrade.
  */
 export type InsertTableOutcome =
-  | { readonly status: 'applied'; readonly location: string }
+  | { readonly status: 'applied'; readonly location: string; readonly verification?: Verification }
   | { readonly status: 'drift' }
   /** The paragraphs to replace run past {@link MAX_TABLE_REPLACE_PARAGRAPHS}: nothing changed. */
   | { readonly status: 'too_long'; readonly paragraphs: number }
@@ -222,6 +223,11 @@ export interface WordHost {
   readParagraphs(): Promise<WordParagraph[]>;
   /** Host-side pagination; blanks retain their ordinal so cursors cannot skip content. */
   readParagraphPage?(offset: number, count: number): Promise<WordParagraph[]>;
+  readTableTile?(
+    tableIndex: number,
+    rowOffset: number,
+    columnOffset: number,
+  ): Promise<WordTableTile>;
 
   /**
    * Lazily read the body for `query` (ADR-0003 `search_document`): re-resolve the matches at
@@ -412,6 +418,13 @@ export interface WordHost {
  */
 export class OfficeWordHost implements WordHost {
   readonly supportsTextPreconditions = true;
+  readTableTile(
+    tableIndex: number,
+    rowOffset: number,
+    columnOffset: number,
+  ): Promise<WordTableTile> {
+    return readWordTableTile(tableIndex, rowOffset, columnOffset);
+  }
   /**
    * `trackEdits` (default on): every text edit is recorded as a Word tracked change, so a reviewer
    * accepts or rejects each one (product decision 2026-10-15). It is the one switch for all edits.
@@ -1048,7 +1061,12 @@ export class OfficeWordHost implements WordHost {
         if (block.contentControls.items.some((cc) => cc.cannotDelete))
           return { status: 'blocked', reason: 'a locked content control' };
         // One tracked edit: the table goes in before the run, then the run is deleted.
-        block.insertTable(rowCount, columnCount, Word.InsertLocation.before, values as string[][]);
+        const table = block.insertTable(
+          rowCount,
+          columnCount,
+          Word.InsertLocation.before,
+          values as string[][],
+        );
         block.delete();
         try {
           await ctx.sync();
@@ -1056,13 +1074,26 @@ export class OfficeWordHost implements WordHost {
           // Office does not roll back a queued insert when the delete fails: the outcome is unknown.
           return { status: 'unknown' };
         }
-        return { status: 'applied', location: 'insert-table' };
+        return {
+          status: 'applied',
+          location: 'insert-table',
+          verification: await verifyInsertedTable(ctx, table, values, block),
+        };
       }
       if (query === undefined) {
         const sel = ctx.document.getSelection();
-        sel.insertTable(rowCount, columnCount, Word.InsertLocation.after, values as string[][]);
+        const table = sel.insertTable(
+          rowCount,
+          columnCount,
+          Word.InsertLocation.after,
+          values as string[][],
+        );
         await ctx.sync();
-        return { status: 'applied', location: 'selection' };
+        return {
+          status: 'applied',
+          location: 'selection',
+          verification: await verifyInsertedTable(ctx, table, values),
+        };
       }
       const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
       results.load('items/text');
@@ -1072,9 +1103,18 @@ export class OfficeWordHost implements WordHost {
       const idx = choose(live.map((r) => r.text));
       const range = idx >= 0 ? live[idx] : undefined;
       if (!range) return { status: 'drift' };
-      range.insertTable(rowCount, columnCount, Word.InsertLocation.after, values as string[][]);
+      const table = range.insertTable(
+        rowCount,
+        columnCount,
+        Word.InsertLocation.after,
+        values as string[][],
+      );
       await ctx.sync();
-      return { status: 'applied', location: 'insert-table' };
+      return {
+        status: 'applied',
+        location: 'insert-table',
+        verification: await verifyInsertedTable(ctx, table, values),
+      };
     });
   }
 
@@ -1633,6 +1673,45 @@ async function verifyTrackedRange(
     return {
       status: 'unknown',
       message: 'The tracked edit was dispatched but current-revision readback failed.',
+    };
+  }
+}
+
+/** Read only the table minted by this insert, preserving the landed receipt if readback fails. */
+async function verifyInsertedTable(
+  ctx: Word.RequestContext,
+  table: Word.Table,
+  expected: readonly (readonly string[])[],
+  removed?: Word.Range,
+): Promise<Verification> {
+  try {
+    if (!table || typeof table.load !== 'function') return { status: 'unknown' };
+    table.load('values,rowCount');
+    const deleted =
+      removed && isSet('WordApi', '1.4') && typeof removed.getReviewedText === 'function'
+        ? removed.getReviewedText('Current')
+        : undefined;
+    await ctx.sync();
+    if (
+      table.rowCount !== expected.length ||
+      JSON.stringify(table.values) !== JSON.stringify(expected)
+    )
+      return { status: 'mismatch' };
+    if (removed && !deleted)
+      return {
+        status: 'unknown',
+        message: 'The table was read back; paragraph removal could not be verified.',
+      };
+    if (deleted && deleted.value.trim())
+      return {
+        status: 'mismatch',
+        message: 'The inserted table was read back but the replaced paragraphs remain.',
+      };
+    return { status: 'verified', afterHash: await contentHash({ values: table.values }) };
+  } catch {
+    return {
+      status: 'unknown',
+      message: 'The table insert returned but native readback was unavailable.',
     };
   }
 }

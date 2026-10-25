@@ -7,7 +7,11 @@ import { evidencePath } from './workspace.js';
 export type EvidenceQuery =
   | { kind: 'list'; parentId?: string }
   | { kind: 'grep'; literal: string; caseSensitive?: boolean; parentId?: string }
-  | { kind: 'expand'; id: string; direction: 'parent' | 'children' | 'related' | 'neighbors' };
+  | {
+      kind: 'expand';
+      id: string;
+      direction: 'parent' | 'children' | 'related' | 'dependents' | 'neighbors';
+    };
 export interface EvidenceNode {
   id: string;
   parentId?: string;
@@ -66,7 +70,9 @@ export async function navigateEvidence(
             ? unit.parentId === anchor!.id
             : query.direction === 'related'
               ? anchor!.relatedIds?.includes(unit.id)
-              : Math.abs(index - anchorIndex) === 1 && unit.parentId === anchor!.parentId;
+              : query.direction === 'dependents'
+                ? unit.relatedIds?.includes(anchor!.id)
+                : Math.abs(index - anchorIndex) === 1 && unit.parentId === anchor!.parentId;
       if (!selected) return [];
     } else {
       if (query.parentId !== undefined && unit.parentId !== query.parentId) return [];

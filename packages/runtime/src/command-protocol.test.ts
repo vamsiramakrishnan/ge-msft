@@ -1468,8 +1468,10 @@ describe('renderGrammarPrompt', () => {
         },
       ],
     });
-    expect(prompt).toContain('/insert-pivot [key=value ...]');
-    expect(prompt).toContain('summarize a table/range');
+    expect(prompt).toContain('/insert-pivot sourceRange=');
+    expect(prompt).toContain('expectedSourceHash=<captured-hash>');
+    expect(prompt).toContain('expectedDestinationHash=<captured-hash>');
+    expect(prompt).toContain('native grouped SUM pivot');
   });
 
   it('explicitly rejects non-cmd fences and thinking prose', () => {
@@ -1550,7 +1552,7 @@ describe('renderCommandHelp', () => {
     );
     expect(prompt).toContain('Command: /insert-pivot');
     expect(prompt).toContain('Excel native PivotTable');
-    expect(prompt).toContain('Registry status: promotable');
+    expect(prompt).toContain('Registry status: implemented');
     expect(prompt).toContain('Preview must show: source range');
   });
 });

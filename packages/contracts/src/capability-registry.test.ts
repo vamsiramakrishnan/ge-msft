@@ -49,7 +49,7 @@ describe('capability registry', () => {
       ]),
     );
     expect(registryEntryForKindAndSurface('insert-pivot', 'excel')).toMatchObject({
-      status: 'promotable',
+      status: 'implemented',
       command: '/insert-pivot',
       requirementSets: [{ name: 'ExcelApi', minVersion: '1.8' }],
     });

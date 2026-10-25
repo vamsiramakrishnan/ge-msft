@@ -69,6 +69,7 @@ export type DeckElement = z.infer<typeof DeckElementSchema>;
 
 export const DeckSlideSpecSchema = z.object({
   id: z.string().min(1).max(120).optional(),
+  master: z.string().min(1).max(120).optional(),
   title: z.string().max(500).optional(),
   subtitle: z.string().max(1000).optional(),
   notes: z.string().max(8000).optional(),
@@ -93,10 +94,39 @@ export const DeckSpecSchema = z
       })
       .strict()
       .optional(),
+    masters: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).max(120),
+            backgroundColor: HexColorSchema.optional(),
+            elements: z.array(DeckElementSchema).max(50).default([]),
+          })
+          .strict(),
+      )
+      .max(16)
+      .optional(),
     slides: z.array(DeckSlideSpecSchema).min(1).max(80),
   })
   .superRefine((spec, context) => {
-    let bytes = 0;
+    let bytes = JSON.stringify(spec.masters ?? []).length * 4;
+    const masters = new Set<string>();
+    for (const master of spec.masters ?? []) {
+      if (masters.has(master.name))
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Duplicate deck master name.' });
+      masters.add(master.name);
+      if (master.elements.some((element) => element.kind === 'chart' || element.kind === 'table'))
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Charts and tables belong on editable slides, not inherited masters.',
+        });
+    }
+    for (const slide of spec.slides)
+      if (slide.master && !masters.has(slide.master))
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Slide refers to an unknown deck master.',
+        });
     for (const [slideIndex, slide] of spec.slides.entries()) {
       bytes +=
         (slide.title?.length ?? 0) * 4 +

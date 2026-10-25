@@ -1672,6 +1672,10 @@ export class PanelController {
       case 'skill-expanded':
         this.addStep('command', `${ev.name} → ${ev.lines.length} line(s)`);
         return;
+      // Saved program coordination is an SDK route. Its native write receipts use the ordinary
+      // write-result branch; progress must not be turned into a second completion assertion.
+      case 'durable-progress':
+        return;
       case 'read-result':
         {
           const artifact = workspaceStepArtifact(ev.result);

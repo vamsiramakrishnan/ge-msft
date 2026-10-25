@@ -52,8 +52,41 @@ export async function compileDeckSpecToBase64(
   };
 
   const size = spec.layout === 'standard' ? STANDARD_SIZE : WIDE_SIZE;
+  for (const master of spec.masters ?? []) {
+    const objects: NonNullable<PptxGenJS.SlideMasterProps['objects']> = [];
+    for (const element of master.elements) {
+      const frame = clampFrame(element, size, warnings);
+      if (element.kind === 'text')
+        objects.push({
+          text: {
+            text: element.text,
+            options: { ...frame, ...textOptions(element.style, spec.theme), margin: 0.04 },
+          },
+        });
+      else if (element.kind === 'bullets')
+        objects.push({
+          text: {
+            text: element.items.map((text) => `• ${text}`).join('\n'),
+            options: { ...frame, ...textOptions(element.style, spec.theme) },
+          },
+        });
+      else if (element.kind === 'image')
+        objects.push({
+          image: {
+            ...frame,
+            data: `data:${element.mimeType};base64,${element.base64}`,
+            altText: element.altText,
+          },
+        });
+    }
+    pptx.defineSlideMaster({
+      title: master.name,
+      ...(master.backgroundColor ? { background: { color: master.backgroundColor } } : {}),
+      objects,
+    });
+  }
   for (const slideSpec of spec.slides) {
-    const slide = pptx.addSlide();
+    const slide = pptx.addSlide(slideSpec.master ? { masterName: slideSpec.master } : undefined);
     if (slideSpec.backgroundColor) slide.background = { color: slideSpec.backgroundColor };
     if (slideSpec.title) {
       slide.addText(slideSpec.title, {
@@ -118,7 +151,8 @@ export function inspectDeckLayout(input: unknown): string[] {
     if (slide.title) boxes.push({ name: 'title', x: 0.55, y: 0.35, w: size.width - 1.1, h: 0.52 });
     if (slide.subtitle)
       boxes.push({ name: 'subtitle', x: 0.58, y: 0.92, w: size.width - 1.16, h: 0.4 });
-    for (const [index, element] of slide.elements.entries()) {
+    const inherited = spec.masters?.find((master) => master.name === slide.master)?.elements ?? [];
+    for (const [index, element] of [...inherited, ...slide.elements].entries()) {
       const label = `Slide ${slideIndex + 1} element ${index + 1}`;
       if (
         element.w <= 0 ||
@@ -263,3 +297,12 @@ function fnv1a32(input: string): string {
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
+
+export {
+  bindBoardPackTemplate,
+  compileBoardPack,
+  BoardPackTemplateSchema,
+  type BoardPackTemplate,
+  type BoardPackLineage,
+  type BoundBoardPack,
+} from './board-pack.js';

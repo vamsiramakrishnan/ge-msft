@@ -75,6 +75,11 @@ item. Word has **no chart and no equation API** — both are OOXML-only (`insert
 
 ## Excel
 
+The October phase ships bounded native pivot/filter/list-validation and worksheet lifecycle
+variants; [current operating limits](OFFICE-PHASES.md) and the executable registry take precedence
+over older catalog-only strategies below. Reliable automatic filter/validation/lifecycle undo is
+unavailable and those effects use the irreversible approval class.
+
 Address-anchored (A1/named range), re-resolved at apply-time. The richest client-side write surface —
 no tracked-change model, so structural writes are pure wins.
 
@@ -86,6 +91,10 @@ no tracked-change model, so structural writes are pure wins.
 | Insert chart | `insert-chart` | A | `Worksheet.charts.add` (1.1) | delete-object(chart) | yes | `chart` | Phase B |
 | Conditional format | `format-conditional` | A | `Range.conditionalFormats.add` (1.6) | clear-conditional | yes | `cf` | Phase B |
 | Add comment / reply | `add-comment` / `comment-reply` | A | `comments.add`/`reply` (1.10/1.12) | delete-object | yes | `comment`/`reply` | ✅ shipped |
+| Grouped SUM pivot | `insert-pivot` | A | `PivotTableCollection.add` (1.3) | delete minted pivot | yes | `/insert-pivot` | bounded native variant |
+| Literal-value filter | `filter-range` | A | `AutoFilter.apply` (1.9) | not-reversible | **hard** | `/filter-range` | bounded native variant |
+| Literal-list validation | `set-data-validation` | A | `Range.dataValidation` (1.8) | not-reversible | **hard** | `/set-data-validation` | bounded native variant |
+| Worksheet lifecycle | `manage-worksheet` | A | worksheet add/name/activate/protection | not-reversible | **hard** | `/manage-worksheet` | create/rename/activate/protect |
 | Linked-entity card | `set-entity-card` | A | linked data types | restore-values | yes | — | limited |
 | Estate workbook edits | *(Graph workbook API)* | B | `/workbook/worksheets/{id}/range` | restore-values | yes | — | estate |
 
@@ -107,7 +116,7 @@ management, and shape formatting — all name/id-anchored and reversible.
 | Delete slide | `delete-slide` | A | `Slide.delete` (1.2) + `exportAsBase64` (1.8) snapshot | restore-slide | **hard** | `delete-slide` | now (undo 1.8) |
 | Reorder slide | `move-slide` | A | `Slide.moveTo` (1.8) | move-slide | yes | `move-slide` | now (1.8) |
 | Duplicate slide | `duplicate-slide` | A | `exportAsBase64` + `insertSlidesFromBase64` (1.2/1.8) | delete-object(slide) | yes | `duplicate-slide` | now (1.8) |
-| Apply layout | `apply-slide-layout` | A | `Slide.applyLayout` (1.8) | apply-layout | yes | `layout` | now (1.8) |
+| Apply layout | `apply-slide-layout` | A | `Slide.applyLayout` (1.8) | not-reversible | **hard** | `/apply-slide-layout` | native hash-pinned variant |
 | Hyperlink | `insert-hyperlink` | A | `TextRange.setHyperlink` (1.10) | delete-object(hyperlink) | yes | `link` | limited (1.10) |
 | Image on slide | `insert-image` | A | `setSelectedDataAsync` Image coercion (ImageCoercion 1.1) | *(no handle)* not-reversible | **hard** | `image` | limited (no clean undo) |
 | Speaker notes | `set-speaker-notes` | A | **none in typings** | — | — | — | **blocked** (unadvertised) |

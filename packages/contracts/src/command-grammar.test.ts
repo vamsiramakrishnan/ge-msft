@@ -1226,8 +1226,8 @@ describe('command-grammar — capability scoping', () => {
     };
     const pivot = grammarFor(withPivot).find((spec) => spec.verb === 'insert-pivot');
     expect(pivot).toMatchObject({
-      usage: '/insert-pivot [key=value ...]',
-      hint: expect.stringContaining('summarize a table/range'),
+      usage: expect.stringContaining('/insert-pivot sourceRange='),
+      hint: expect.stringContaining('native grouped SUM pivot'),
     });
   });
 

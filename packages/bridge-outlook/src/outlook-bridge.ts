@@ -9,6 +9,7 @@ import type {
   ContextRef,
   DocStateSnapshot,
   ResolvedContext,
+  Verification,
 } from '@ge/contracts';
 import type { DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
@@ -57,6 +58,7 @@ function plainAddress(from: string | undefined): string | undefined {
 }
 const DRAFT_NOTE =
   'a draft being written: set-subject, set-body, set-recipients and add-attachment edit it';
+const DRAFT_READ_TIMEOUT_MS = 2000;
 
 export class OutlookBridge implements DocBridge {
   private static readonly dispatcher = createBridgeDispatch<OutlookBridge>(
@@ -97,7 +99,9 @@ export class OutlookBridge implements DocBridge {
   async listContext(): Promise<ContextRef[]> {
     const item = Office.context.mailbox?.item;
     if (!item) return [];
-    const subject = readSubject(item);
+    const subject = await readCurrentSubject(item);
+    if (Office.context.mailbox?.item !== item)
+      throw new Error('The active mail item changed during capture.');
     return [
       {
         id: item.itemId ?? 'outlook:item',
@@ -110,8 +114,19 @@ export class OutlookBridge implements DocBridge {
     ];
   }
 
-  async resolveContext(_ref: ContextRef): Promise<ResolvedContext[]> {
+  async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.surface !== this.surface || ref.kind !== 'mail-item')
+      throw new Error('Only the active Outlook mail item can be captured.');
+    const current = Office.context.mailbox?.item;
+    if (current && ref.id !== 'outlook:item' && ref.id !== readItemId(current))
+      throw new Error(
+        'The requested mail item is no longer active. Attach the current item again.',
+      );
     const mail = await this.readMailItem();
+    if (mail && ref.id !== 'outlook:item' && ref.id !== mail.id)
+      throw new Error(
+        'The requested mail item is no longer active. Attach the current item again.',
+      );
     return mail ? mailItemToContext(mail) : [];
   }
 
@@ -193,10 +208,18 @@ export class OutlookBridge implements DocBridge {
   private async readMailItem(): Promise<MailItem | undefined> {
     const item = Office.context.mailbox?.item;
     if (!item) return undefined;
-    const body = await getAsync<string>((cb) => item.body.getAsync(Office.CoercionType.Html, cb));
+    const [body, subject] = await Promise.all([
+      getAsync<string>(
+        (cb) => item.body.getAsync(Office.CoercionType.Html, cb),
+        DRAFT_READ_TIMEOUT_MS,
+      ),
+      readCurrentSubject(item),
+    ]);
+    if (Office.context.mailbox?.item !== item)
+      throw new Error('The active mail item changed during capture.');
     return {
       ...(item.itemId ? { id: item.itemId } : {}),
-      ...(readSubject(item) ? { subject: readSubject(item) } : {}),
+      ...(subject ? { subject } : {}),
       ...(readFrom(item) ? { from: readFrom(item) } : {}),
       body,
       bodyType: 'html',
@@ -401,6 +424,8 @@ export class OutlookBridge implements DocBridge {
     }
     try {
       for (const { recipients, addresses } of targets) {
+        if (Office.context.mailbox?.item !== (resolved.draft as unknown as Office.Item))
+          throw new Error('The active draft changed during the recipient update.');
         await getAsync<void>((cb) =>
           plan.mode === 'add'
             ? recipients.addAsync(addresses, cb)
@@ -491,7 +516,31 @@ export class OutlookBridge implements DocBridge {
         `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'draft-body' };
+    const verification = await verifyDraftField(resolved.draft, async () => {
+      if (!resolved.draft.body.getAsync) return undefined;
+      const text = await getAsync<string>(
+        (cb) =>
+          resolved.draft.body.getAsync!(
+            plan.coercionType === 'text' ? Office.CoercionType.Text : Office.CoercionType.Html,
+            cb,
+          ),
+        DRAFT_READ_TIMEOUT_MS,
+      );
+      // HTML hosts may normalize wrappers/markup: an exact match proves the write; a differing
+      // serialized HTML form does not prove a substantive mismatch.
+      return text === plan.data
+        ? 'verified'
+        : plan.coercionType === 'text'
+          ? 'mismatch'
+          : 'unknown';
+    });
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: 'draft-body',
+      verification,
+    };
   }
 
   /**
@@ -513,19 +562,35 @@ export class OutlookBridge implements DocBridge {
         `Outlook did not confirm the dispatched change. Inspect the draft before trying again. ${err instanceof Error ? err.message : ''}`.trim(),
       );
     }
-    return { ok: true, changeId: req.changeId, kind: req.kind, location: 'draft-subject' };
+    const verification = await verifyDraftField(resolved.draft, async () => {
+      if (!resolved.draft.subject.getAsync) return undefined;
+      return (await getAsync<string>(
+        (cb) => resolved.draft.subject.getAsync!(cb),
+        DRAFT_READ_TIMEOUT_MS,
+      )) === subject
+        ? 'verified'
+        : 'mismatch';
+    });
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: 'draft-subject',
+      verification,
+    };
   }
 }
 
 /**
- * Classify the newly active mail item into a HostEvent. Read-mode items expose a stable
- * `itemId` → `mail-received`; compose-mode drafts have no saved id → `mail-compose`. Returns
+ * Classify the newly active mail item into a HostEvent. Compose APIs identify drafts even
+ * after saving mints an `itemId`; received items carry `mail-received`. Returns
  * undefined when no item is active (nothing to emit). Reads only the opaque `itemId`, never the
  * subject/body (untrusted content stays out of the event).
  */
 function activeItemEvent(item: Office.Item | undefined): HostEvent | undefined {
   if (!item) return undefined;
   const id = readItemId(item);
+  if (draftView(item)) return composeEvent(id);
   return id ? receivedEvent(id) : composeEvent();
 }
 
@@ -548,6 +613,30 @@ function readSubject(item: Office.Item): string | undefined {
   return typeof subject === 'string' && subject.length > 0 ? subject : undefined;
 }
 
+async function readCurrentSubject(item: Office.Item): Promise<string | undefined> {
+  const draft = draftView(item);
+  if (draft?.subject.getAsync)
+    return getAsync<string>((cb) => draft.subject.getAsync!(cb), DRAFT_READ_TIMEOUT_MS);
+  return readSubject(item);
+}
+
+async function verifyDraftField(
+  draft: DraftItem,
+  read: () => Promise<Verification['status'] | undefined>,
+): Promise<Verification> {
+  try {
+    const status = await read();
+    if (Office.context.mailbox?.item !== (draft as unknown as Office.Item))
+      return {
+        status: 'unknown',
+        message: 'The active item changed after dispatch. Inspect the draft.',
+      };
+    return { status: status ?? 'unknown' };
+  } catch {
+    return { status: 'unknown', message: 'The draft write returned but readback was unavailable.' };
+  }
+}
+
 /** Read the sender's SMTP address (read-mode `EmailAddressDetails`); undefined when unavailable. */
 function readFrom(item: Office.Item): string | undefined {
   const from: unknown = (item as { from?: unknown }).from;
@@ -566,15 +655,26 @@ function readFrom(item: Office.Item): string | undefined {
  */
 function getAsync<T>(
   call: (callback: (result: Office.AsyncResult<T>) => void) => void,
+  timeoutMs?: number,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    call((result) => {
-      if (result.status === Office.AsyncResultStatus.Succeeded) {
-        resolve(result.value);
-      } else {
-        reject(new Error(result.error?.message ?? 'Outlook getAsync failed'));
-      }
-    });
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => reject(new Error('Outlook readback timed out.')), timeoutMs);
+    try {
+      call((result) => {
+        if (timer !== undefined) clearTimeout(timer);
+        if (result.status === Office.AsyncResultStatus.Succeeded) {
+          resolve(result.value);
+        } else {
+          reject(new Error(result.error?.message ?? 'Outlook getAsync failed'));
+        }
+      });
+    } catch (error) {
+      if (timer !== undefined) clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 
@@ -593,6 +693,7 @@ interface DraftItem {
   cc?: DraftRecipients;
   bcc?: DraftRecipients;
   body: {
+    getAsync?(coercionType: unknown, callback: (result: Office.AsyncResult<string>) => void): void;
     setAsync(
       data: string,
       options: { coercionType: unknown },
@@ -600,6 +701,7 @@ interface DraftItem {
     ): void;
   };
   subject: {
+    getAsync?(callback: (result: Office.AsyncResult<string>) => void): void;
     setAsync(subject: string, callback: (result: Office.AsyncResult<void>) => void): void;
   };
   addFileAttachmentAsync?(

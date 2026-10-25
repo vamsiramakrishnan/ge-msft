@@ -5,7 +5,7 @@ import {
   CapabilityRegistryEntrySchema,
   assertCapabilityRegistryConsistent,
 } from './capability-registry.js';
-import { COMMAND_HELP, CommandHelpEntrySchema } from './command-help.js';
+import { commandHelpEntries, CommandHelpEntrySchema } from './command-help.js';
 import {
   READ_VERBS,
   WORKSPACE_VERBS,
@@ -127,7 +127,7 @@ export function buildLanguageManifest(): LanguageManifest {
     transforms: [...TRANSFORM_NAMES].sort(),
     effectVerbs: [...EFFECT_VERBS].sort(),
     actuationKinds: [...ActuationKindSchema.options].sort(),
-    commandHelp: sortedRecord(COMMAND_HELP),
+    commandHelp: sortedRecord(commandHelpEntries()),
     capabilityRegistry: assertCapabilityRegistryConsistent().sort((a, b) =>
       `${a.surface}:${a.kind}`.localeCompare(`${b.surface}:${b.kind}`),
     ),

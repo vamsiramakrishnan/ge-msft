@@ -8,6 +8,7 @@ import {
 } from '../packages/contracts/src/index.js';
 import { capabilitySupport } from '../packages/runtime/src/host-profile.js';
 import { NativeCertificationReportSchema } from '../packages/runtime/src/native-certification.js';
+import { assessOfficeReadiness } from '../packages/runtime/src/office-readiness.js';
 
 const [command = 'list', ...args] = process.argv.slice(2);
 async function main(): Promise<void> {
@@ -23,6 +24,16 @@ async function main(): Promise<void> {
     if (!args[0]) throw new Error('Usage: bun scripts/office-lab.ts doctor host-profile.json');
     const profile = HostCapabilityProfileSchema.parse(JSON.parse(await readFile(args[0], 'utf8')));
     console.log(JSON.stringify({ host: profile, capabilities: CAPABILITY_REGISTRY.filter((entry) => entry.surface === profile.surface && entry.status === 'implemented').map((entry) => ({ kind: entry.kind, ...capabilitySupport(profile.surface, entry.kind, profile) })) }, null, 2));
+    return;
+  }
+  if (command === 'readiness') {
+    if (!args[0]) throw new Error('Usage: bun scripts/office-lab.ts readiness evidence.json [commit]');
+    const commit = args[1] ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const body = await readFile(args[0], 'utf8');
+    if (new TextEncoder().encode(body).byteLength > 8 * 1024 * 1024) throw new Error('Release evidence exceeds eight MiB.');
+    const report = assessOfficeReadiness(JSON.parse(body), commit);
+    console.log(JSON.stringify(report, null, 2));
+    process.exitCode = report.status === 'PASSED' ? 0 : report.status === 'FAIL' ? 1 : 2;
     return;
   }
   if (command === 'scaffold') {
@@ -58,6 +69,6 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ commit, certifiedSurfaces: required, reports: reports.length }, null, 2));
     return;
   }
-  throw new Error('Commands: list [surface], doctor profile.json, scaffold surface kind fields, check-native reports.json [commit] [surfaces]');
+  throw new Error('Commands: list [surface], doctor profile.json, scaffold surface kind fields, check-native reports.json [commit] [surfaces], readiness evidence.json [commit]');
 }
 await main().catch((error: unknown) => { console.error(error instanceof Error ? error.message : 'Office lab failed.'); process.exitCode = 1; });

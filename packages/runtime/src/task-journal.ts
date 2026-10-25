@@ -193,6 +193,10 @@ export class TaskJournal {
     if (!/^sha256:[a-f0-9]{64}$/.test(scope))
       throw new Error('Journal scope must hash principal and document identity.');
   }
+  /** Hashed principal/document scope; contains no bearer or raw document identity. */
+  get scopeKey(): string {
+    return this.scope;
+  }
   get durable(): boolean {
     return this.store.durable;
   }

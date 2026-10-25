@@ -354,6 +354,9 @@ class FakeRange {
 
 /** Models the slice of `Excel.Table` the bridge loads: a host-MINTED `name` + `getRange`. */
 class FakeTable {
+  get showHeaders(): boolean {
+    return this.target.hasHeaders;
+  }
   constructor(
     private readonly seed: ExcelSeed,
     private readonly target: TableSeed,
@@ -839,6 +842,20 @@ class FakeContext {
 }
 
 describe('Excel bounded native read plans', () => {
+  it('captures a lifecycle identity without materializing any grid', async () => {
+    active = installExcel(salesSeed());
+    const values = vi.spyOn(FakeRange.prototype, 'values', 'get');
+    try {
+      expect(await new ExcelBridge().captureWorksheetIdentity('Sales')).toEqual({
+        id: 'sheet:Sales',
+        name: 'Sales',
+      });
+      expect(values).not.toHaveBeenCalled();
+    } finally {
+      values.mockRestore();
+    }
+  });
+
   it('captures independent ranges with two shared synchronization stages', async () => {
     active = installExcel(salesSeed());
     const sync = vi.spyOn(FakeContext.prototype, 'sync');
@@ -847,6 +864,17 @@ describe('Excel bounded native read plans', () => {
       expect(result.map((snapshot) => snapshot.locator)).toEqual(['Sales!A1:B2', 'Sales!A3:B4']);
       expect(result.map((snapshot) => snapshot.values.length)).toEqual([2, 2]);
       expect(sync).toHaveBeenCalledTimes(2);
+      sync.mockClear();
+      const bridge = new ExcelBridge();
+      const serial = [
+        await bridge.captureCells('Sales!A1:B2'),
+        await bridge.captureCells('Sales!A3:B4'),
+      ];
+      expect(sync).toHaveBeenCalledTimes(4);
+      const content = (snapshots: typeof result) =>
+        snapshots.map(({ capturedAt: _capturedAt, ...snapshot }) => snapshot);
+      expect(content(result)).toEqual(content(serial));
+      expect(result.every((snapshot) => snapshot.objectId === 'sheet:Sales')).toBe(true);
     } finally {
       sync.mockRestore();
     }
@@ -2050,6 +2078,112 @@ describe('ExcelBridge.actuate format-cells', () => {
 });
 
 describe('ExcelBridge.actuate create-table (ADR-0007 table verb)', () => {
+  it('preserves the minted table inverse when cell readback throws after creation', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const source = await bridge.captureCells('Sales!A1:C4');
+    const original = Object.getOwnPropertyDescriptor(FakeRange.prototype, 'values')!.get!;
+    const values = vi.spyOn(FakeRange.prototype, 'values', 'get').mockImplementation(function (
+      this: FakeRange,
+    ) {
+      if (active!.seed.tables.length) throw new Error('simulated readback loss');
+      return original.call(this) as string[][];
+    });
+    try {
+      expect(
+        await bridge.actuate(
+          createTable({
+            table: { range: 'Sales!A1:C4', hasHeaders: true, expectedSourceHash: source.hash },
+          }),
+        ),
+      ).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        inverse: { op: 'delete-object', name: 'Table1' },
+      });
+      expect(active.seed.tables).toHaveLength(1);
+    } finally {
+      values.mockRestore();
+    }
+  });
+
+  it('refuses a captured source changed during approval before creating any table', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const source = await bridge.captureCells('Sales!A1:C4');
+    active.seed.sheets[0]!.values[1]![1] = 'coauthor edit';
+    expect(
+      await bridge.actuate(
+        createTable({
+          table: { range: 'Sales!A1:C4', hasHeaders: true, expectedSourceHash: source.hash },
+        }),
+      ),
+    ).toMatchObject({ ok: false, error: { code: 'source_conflict' } });
+    expect(active.seed.tables).toHaveLength(0);
+  });
+
+  it('readbacks source cells as well as range metadata for a pinned table promotion', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const source = await bridge.captureCells('Sales!A1:C4');
+    expect(
+      await bridge.actuate(
+        createTable({
+          table: { range: 'Sales!A1:C4', hasHeaders: true, expectedSourceHash: source.hash },
+        }),
+      ),
+    ).toMatchObject({ ok: true, verification: { status: 'verified' } });
+    expect((await bridge.captureCells('Sales!A1:C4')).hash).toBe(source.hash);
+  });
+
+  it('preserves the minted inverse when table header readback cannot be confirmed', async () => {
+    active = installExcel(salesSeed());
+    const readback = vi.spyOn(FakeTable.prototype, 'showHeaders', 'get').mockReturnValue(false);
+    try {
+      expect(
+        await new ExcelBridge().actuate(
+          createTable({ table: { range: 'Sales!A1:C4', hasHeaders: true } }),
+        ),
+      ).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        inverse: { op: 'delete-object', name: 'Table1' },
+      });
+      expect(active.seed.tables).toHaveLength(1);
+    } finally {
+      readback.mockRestore();
+    }
+  });
+
+  it('refuses whole-column, oversized and inserted-header footprints before creating a table', async () => {
+    active = installExcel(salesSeed());
+    for (const table of [
+      { range: 'Sales!A:A', hasHeaders: true },
+      { range: 'Sales!A1:Z1000', hasHeaders: true },
+      { range: 'Sales!A1:C4', hasHeaders: false },
+    ])
+      expect(await new ExcelBridge().actuate(createTable({ table }))).toMatchObject({
+        ok: false,
+        error: { code: 'invalid_footprint' },
+      });
+    expect(active.seed.tables).toHaveLength(0);
+  });
+
+  it('refuses protected table targets without attempting native creation', async () => {
+    active = installExcel(salesSeed());
+    protectedSheets.add('Sales');
+    try {
+      expect(
+        await new ExcelBridge().actuate(
+          createTable({ table: { range: 'Sales!A1:C4', hasHeaders: true } }),
+        ),
+      ).toMatchObject({ ok: false, error: { reason: 'protected' } });
+      expect(active.seed.tables).toHaveLength(0);
+    } finally {
+      protectedSheets.delete('Sales');
+    }
+  });
+
   it('promotes the range to a native table and records the MINTED name as the inverse identity', async () => {
     active = installExcel(salesSeed());
     const res = await new ExcelBridge().actuate(

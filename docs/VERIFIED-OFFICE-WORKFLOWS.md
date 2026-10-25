@@ -77,7 +77,7 @@ bun install --frozen-lockfile
 bun run typecheck
 bun run office:lab list excel
 bun run office:doctor host-profile.json
-bun run office:lab scaffold word insert-html html,target
+bun run office:lab scaffold word add-comment text,target
 ```
 
 Copy the `host` object from task-pane diagnostics into `host-profile.json`. Doctor distinguishes

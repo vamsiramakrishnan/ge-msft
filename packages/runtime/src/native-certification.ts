@@ -144,7 +144,13 @@ export async function certifyNativeFixture(
     report.checks.execution =
       !executionError &&
       receipts.length > 0 &&
-      receipts.every((receipt) => receipt.ok && !receipt.recoveryPending && !receipt.error);
+      receipts.every(
+        (receipt) =>
+          receipt.ok &&
+          !receipt.recoveryPending &&
+          !receipt.trackingModeRestoreFailed &&
+          !receipt.error,
+      );
     report.checks.expectedEffect = Boolean(effect?.ok);
     if (fixture.surface === 'word' || fixture.surface === 'excel')
       report.checks.postcondition = effect?.verification?.status === 'verified';

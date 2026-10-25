@@ -1,5 +1,12 @@
 # Status — what's built (and what's next)
 
+The remaining-phase implementation adds strict installed-handler coverage, native Excel
+pivots/filters/list validation and worksheet operations, incremental dependency impact, native
+PowerPoint template/layout capture, artifact-bound board packs, resumable command stages,
+authenticated cross-application SDK handoffs and deterministic Outlook send checks.
+[Phase usage and exact boundaries](OFFICE-PHASES.md). Native/tenant and performance acceptance
+remain open; the full twelve-week rollout is not certified complete.
+
 The October 25 increment adds host-aware discovery/dispatch, strict initial capability modules,
 indexed evidence navigation, batched Excel freshness reads, conservative formula output bounds,
 current-revision/native text verification, durable effect checkpoints, managed Word/PPT text

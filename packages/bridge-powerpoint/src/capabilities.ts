@@ -54,6 +54,15 @@ export const POWERPOINT_CAPABILITIES: CapabilityManifest = {
       reversible: true,
       appliesTo: ['slide', 'table'],
     },
+    {
+      kind: 'apply-slide-layout',
+      surface: 'powerpoint',
+      title: 'Apply captured slide layout',
+      description:
+        'Apply an existing captured native master layout to an explicitly addressed slide.',
+      reversible: false,
+      appliesTo: ['slide'],
+    },
     // NOTE: `set-speaker-notes` was advertised but its `actuate()` case ALWAYS degrades — this
     // Office.js typings version has no `Slide.notes`/notesSlide write path. Un-advertised (ADR-0006
     // phantom: advertised-but-never-actuates). Re-add once the host typings expose a notes writer.

@@ -123,13 +123,15 @@ they are separate from native Office acceptance and from real-model simulator sc
 
 ## Next implementation gates
 
-The remaining plan includes native pivots/filters/validation/worksheet lifecycle with precise
-footprints and inverses, richer Word structure, complete native dependency indexing,
-template/master-aware board packs and chart refresh, durable whole-program continuation,
-cross-application artifact coordination, and supported Outlook compose/send-event checks.
-They remain explicit backlog work. Promote each through the same contract, approval and
-native-certification boundary; do not advertise a catalog-only API or substitute a static grid
-for a requested native object.
+The supported remaining-phase code has since been added; see [Office phases](OFFICE-PHASES.md)
+for native Excel operations, bounded dependency indexing, managed board packs, durable stages,
+authenticated SDK handoffs, Word/Outlook checks and exact-head release readiness. The table above
+records the original foundation increment. Native/tenant/performance acceptance remains open.
+
+Continue promotion through the same contract, approval and native-certification boundary. Do not
+advertise a catalog-only API or substitute a static grid for a requested native object. Unsupported
+native chart editing, arbitrary dependency evaluation and broader host coverage remain explicit
+limits rather than implicit fallback implementations.
 
 
 ## Validation of this increment

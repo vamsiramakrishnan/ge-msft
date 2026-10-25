@@ -73,8 +73,10 @@ export async function navigateEvidencePages(
               ? unit.parentId === anchor!.unit.id
               : query.direction === 'related'
                 ? Boolean(anchor!.unit.relatedIds?.includes(unit.id))
-                : Math.abs(index - anchor!.ordinal) === 1 &&
-                  unit.parentId === anchor!.unit.parentId;
+                : query.direction === 'dependents'
+                  ? Boolean(unit.relatedIds?.includes(anchor!.unit.id))
+                  : Math.abs(index - anchor!.ordinal) === 1 &&
+                    unit.parentId === anchor!.unit.parentId;
       } else {
         selected = query.parentId === undefined || query.parentId === unit.parentId;
         if (selected && literal) {

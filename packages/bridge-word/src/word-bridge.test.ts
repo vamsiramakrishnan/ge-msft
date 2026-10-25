@@ -1601,7 +1601,7 @@ describe('WordBridge orchestration (against a fake host)', () => {
     it('fails closed without params.hyperlink before touching the host', async () => {
       const host = new FakeWordHost();
       const res = await new WordBridge(host).actuate(insertHyperlinkReq({ text: 'x' }));
-      expect(res).toMatchObject({ ok: false, error: { code: 'no_hyperlink' } });
+      expect(res).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
       expect(host.insertedHyperlinks).toHaveLength(0);
     });
 
@@ -1697,7 +1697,7 @@ describe('WordBridge orchestration (against a fake host)', () => {
       const host = new FakeWordHost();
       const spy = vi.spyOn(host, 'findReplace');
       const res = await new WordBridge(host).actuate(findReplaceReq({ text: 'x' }));
-      expect(res).toMatchObject({ ok: false, error: { code: 'no_find_replace' } });
+      expect(res).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
       expect(spy).not.toHaveBeenCalled();
     });
 

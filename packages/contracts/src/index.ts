@@ -48,3 +48,10 @@ export * from './capability-module.js';
 export * from './formula-footprint.js';
 
 export * from './formula-policy.js';
+
+export * from './deck-template.js';
+
+export * from './durable-program.js';
+export * from './office-handoff.js';
+
+export * from './excel-native-target.js';

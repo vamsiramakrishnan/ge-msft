@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { FORMAT_KEYS_USAGE } from './command-grammar.js';
+import { FORMAT_KEYS_USAGE, SPECIALIZED_SYNTAX } from './command-grammar.js';
+import { capabilityRegistryEntries } from './capability-registry.js';
 
 export const CommandHelpEntrySchema = z.object({
   command: z.string(),
@@ -620,4 +621,37 @@ function genericWrite(command: string, syntax: string, useWhen: string): Command
     ],
     safety: ['Every write is dry-run, previewed, approved, gated, actuated, and recorded.'],
   };
+}
+
+/** Exact specialized cards are generated from the same registry and syntax as runtime help.
+ * Standalone skills consume these ordinary commandHelp entries; no second grammar is introduced.
+ */
+export function commandHelpEntries(): Record<string, CommandHelpEntry> {
+  const entries: Record<string, CommandHelpEntry> = { ...COMMAND_HELP };
+  for (const entry of capabilityRegistryEntries()) {
+    const syntax = SPECIALIZED_SYNTAX[entry.kind];
+    if (entry.exposure !== 'specialized' || entry.status !== 'implemented' || !syntax) continue;
+    entries[entry.kind] = {
+      command: entry.command,
+      useWhen: `${entry.title}: ${entry.useWhen}`,
+      syntax,
+      discovery: [...entry.discovery],
+      sequence: [
+        ...entry.sequence,
+        'Stop after one cmd block and wait for the host result/preview before continuing.',
+      ],
+      examples: [...entry.examples],
+      doNot: [
+        'Do not use this command unless the current turn grammar advertises it.',
+        'Do not infer unseen targets or unsupported fields.',
+      ],
+      failureModes: [...entry.failureModes],
+      safety: [
+        `Registry status: ${entry.status}; registry metadata is not write authority.`,
+        `Preview must show: ${entry.preview.join(', ')}.`,
+        `Provenance: ${entry.provenance}.`,
+      ],
+    };
+  }
+  return entries;
 }

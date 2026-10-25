@@ -18,6 +18,14 @@ export {
 export { planReply, type ReplyPlan } from './actuate-plan.js';
 export { composeEvent, receivedEvent, sendEvent, decideSend, type SendDecision } from './events.js';
 export {
+  captureComposeFacts,
+  checkComposeFacts,
+  composeFactsFingerprint,
+  COMPOSE_FACT_LIMITS,
+  type ComposeFacts,
+  type ComposeSendPolicy,
+} from './compose-checks.js';
+export {
   createMessageSendHandler,
   activeItemIdResolver,
   type MessageSendHandler,

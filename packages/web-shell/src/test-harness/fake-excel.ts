@@ -610,6 +610,10 @@ class FakeAddedTable implements Syncable {
     this.gate.require('name');
     return this.record!.name;
   }
+  get showHeaders(): boolean {
+    this.gate.require('showHeaders');
+    return this.record!.hasHeaders === true;
+  }
   load(props?: string): this {
     this.gate.load(props);
     return this;

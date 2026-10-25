@@ -87,7 +87,7 @@
     "office:lab": "bun scripts/office-lab.ts",
     "office:doctor": "bun scripts/office-lab.ts doctor",
     "test:native:check": "bun scripts/office-lab.ts check-native",
-    "test:browser-contracts": "GE_BROWSER_CONTRACTS=1 vitest run packages/runtime/src/task-journal.browser.test.ts --testTimeout=30000"
+    "test:browser-contracts": "GE_BROWSER_CONTRACTS=1 vitest run packages/runtime/src/task-journal.browser.test.ts packages/runtime/src/durable-program.browser.test.ts --testTimeout=30000"
   },
   "devDependencies": {
     "@inquirer/prompts": "^8.5.2",

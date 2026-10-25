@@ -53,6 +53,11 @@ See [command performance and session modes](COMMAND-PERFORMANCE.md).
 
 ## One host effect boundary
 
+`durable-program.ts` owns bounded persisted stage programs; `office-handoff.ts` owns cross-host
+binding and metric handoff plan schemas. Runtime sequencing uses the existing host effect boundary.
+Neither a saved program, a dependency link nor an imported handoff carries approval authority.
+See [Office phases](OFFICE-PHASES.md) for principal pins, storage bounds and native acceptance.
+
 All runtime host effects, including explicit proposals and typed SDK programs, follow the same
 admission and receipt rules:
 

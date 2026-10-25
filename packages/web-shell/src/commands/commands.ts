@@ -41,6 +41,7 @@ interface OfficeActionsLike {
 const { triggers: sendRegistry } = createApplicationRuntime();
 const handleMessageSend = createMessageSendHandler(sendRegistry, {
   resolveItemId: activeItemIdResolver,
+  composePolicy: { requireSubject: true, requireRecipient: true },
 });
 
 /** Ribbon action: open the task pane. The host's `openPage` action does the actual reveal; this

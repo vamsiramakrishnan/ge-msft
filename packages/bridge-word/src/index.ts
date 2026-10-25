@@ -30,6 +30,7 @@ export {
   commentAddedEvent,
 } from './events.js';
 export { OfficeWordHost, MAX_READ_COMMENTS } from './host-port.js';
+export { readWordTableTile, WORD_TABLE_LIMITS, type WordTableTile } from './table-reader.js';
 export type {
   WordHost,
   WordHandlers,

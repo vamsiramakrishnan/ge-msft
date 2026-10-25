@@ -287,9 +287,16 @@ See `VERIFIED-OFFICE-WORKFLOWS.md` for exact implemented and remaining boundarie
 - [x] Add native fixtures, exact-commit report checking and host doctor tooling.
 - [x] Complete browser IndexedDB and 320/360/480 workflow panel screenshot acceptance.
 - [ ] Run final-commit native Office fixtures and tenant model scenarios.
-- [ ] Expand strict modules/verifiers across the remaining operation catalog.
-- [ ] Implement native dependency graphs, full task continuation and cross-application orchestration.
-- [ ] Add deeper Excel/Word/Outlook operations, template masters and chart refresh.
+- [x] Expand strict modules across every installed Word/Excel/PowerPoint/Outlook handler; retain truthful native verification limits.
+- [x] Add bounded captured formula/name/table dependencies, reverse impact and unchanged-page reuse.
+- [x] Add durable deterministic stages, explicit inspected recovery and authenticated cross-application SDK coordination.
+- [x] Add bounded native Excel operations, richer Word reads, Outlook send checks, template/layout capture and managed artifact/chart refresh.
+- [ ] Certify supported operations and flagship workflows on the advertised native host/build matrix; record exact-head tenant outcomes and benchmark targets.
+
+See `OFFICE-PHASES.md` for the supported code paths, usage and explicit refusals. In-place native
+PowerPoint chart-series editing, full template asset cloning, dynamic/external Excel dependencies
+and arbitrary process-to-process Office transport are not advertised. Broader OneNote/Teams and
+estate operations remain outside the first four-surface certified core.
 
 Security review identified external workbook formula aliases, aggregate fallback limits and
 tracking-mode cleanup receipt loss; regression fixes are included. Native/browser acceptance

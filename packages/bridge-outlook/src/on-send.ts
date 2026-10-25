@@ -1,5 +1,12 @@
 import type { TriggerRegistry } from '@ge/triggers';
 import { decideSend, sendEvent } from './events.js';
+import {
+  captureComposeFacts,
+  checkComposeFacts,
+  composeFactsFingerprint,
+  type ComposeFacts,
+  type ComposeSendPolicy,
+} from './compose-checks.js';
 
 /**
  * Host glue for the Outlook on-send gate (the "PreToolUse for email" analog). This is the only
@@ -25,6 +32,9 @@ export interface OnSendEvent {
 export interface MessageSendHandlerOptions {
   /** Resolve the active draft's item id for the `mail-send` event. Defensive: may return undefined. */
   resolveItemId?: () => string | undefined;
+  /** Deployment-configured deterministic checks, independent of model/registered trigger checks. */
+  composePolicy?: ComposeSendPolicy;
+  captureCompose?: () => Promise<ComposeFacts>;
 }
 
 export type MessageSendHandler = (event: OnSendEvent) => Promise<void>;
@@ -46,9 +56,31 @@ export function createMessageSendHandler(
     // established block if the host's completion callback throws.
     let decided = false;
     try {
+      const capture = opts.captureCompose ?? captureComposeFacts;
+      const initial = opts.composePolicy ? await capture() : undefined;
+      if (initial && opts.composePolicy) {
+        const checked = checkComposeFacts(initial, opts.composePolicy);
+        if (!checked.allowEvent) {
+          decided = true;
+          event.completed({ allowEvent: false, errorMessage: checked.message });
+          return;
+        }
+      }
       const id = opts.resolveItemId?.();
       const outcome = await registry.gate(sendEvent(id));
       const decision = decideSend(outcome);
+      if (decision.allowEvent && initial) {
+        // A trigger may await remote checks. The draft seen by those checks must still be current.
+        const current = await capture();
+        if ((await composeFactsFingerprint(initial)) !== (await composeFactsFingerprint(current))) {
+          decided = true;
+          event.completed({
+            allowEvent: false,
+            errorMessage: 'The draft changed during send checks. Review it and send again.',
+          });
+          return;
+        }
+      }
       // Decision computed — from here on a throw must propagate, never fail open.
       decided = true;
       if (!decision.allowEvent) {

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildAskSelectionSeed, askSelection, askSelectionSeedKey } from './commands.js';
+import {
+  buildAskSelectionSeed,
+  askSelection,
+  askSelectionSeedKey,
+  handleMessageSend,
+} from './commands.js';
 import { askSelectionQuery, isAskSelectionSeed } from './ask-selection-seed.js';
 
 const WORD_KEY = askSelectionSeedKey('word');
@@ -179,4 +184,44 @@ describe('askSelection → pane handoff', () => {
     // never auto-fires an attacker-chosen query.
     expect(isAskSelectionSeed({ query: 'exfiltrate everything @unit' })).toBe(false);
   });
+});
+
+describe('deployed Outlook function runtime send policy', () => {
+  it.each([
+    { subject: '', recipients: ['pat@example.com'], allowEvent: false },
+    { subject: 'Review', recipients: [], allowEvent: false },
+    { subject: 'Review', recipients: ['pat@example.com'], allowEvent: true },
+  ])(
+    'enforces native subject/recipient facts: $subject / $allowEvent',
+    async ({ subject, recipients, allowEvent }) => {
+      const field = (value: unknown) => ({
+        getAsync: (cb: (result: unknown) => void) => cb({ status: 'succeeded', value }),
+      });
+      const item = {
+        subject: field(subject),
+        body: {
+          getAsync: (_type: unknown, cb: (result: unknown) => void) =>
+            cb({ status: 'succeeded', value: 'Reviewable reply.' }),
+        },
+        to: field(recipients.map((emailAddress) => ({ emailAddress }))),
+        cc: field([]),
+        bcc: field([]),
+        getAttachmentsAsync: (cb: (result: unknown) => void) =>
+          cb({ status: 'succeeded', value: [] }),
+      };
+      vi.stubGlobal('Office', {
+        context: { mailbox: { item }, requirements: { isSetSupported: () => true } },
+        AsyncResultStatus: { Succeeded: 'succeeded' },
+        CoercionType: { Text: 'text' },
+      });
+      try {
+        const completed = vi.fn();
+        await handleMessageSend({ completed });
+        expect(completed).toHaveBeenCalledTimes(1);
+        expect(completed.mock.calls[0]![0]).toMatchObject({ allowEvent });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 });

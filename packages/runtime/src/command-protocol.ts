@@ -335,6 +335,9 @@ export function compileCommand(
       return compileWrite(WRITE_VERB_TO_KIND.table, ctx, {
         table: {
           range: cmd.range,
+          ...(cmd.props.expectedSourceHash
+            ? { expectedSourceHash: cmd.props.expectedSourceHash }
+            : {}),
           hasHeaders: cmd.props.headers !== 'false',
           ...(cmd.props.name ? { name: cmd.props.name } : {}),
         },
@@ -485,6 +488,10 @@ function paramsFromInvoke(
         destinationRange:
           props.destinationRange ?? props.destination ?? props.dest ?? args[1] ?? '',
         ...(props.name ? { name: props.name } : {}),
+        ...(props.expectedSourceHash ? { expectedSourceHash: props.expectedSourceHash } : {}),
+        ...(props.expectedDestinationHash
+          ? { expectedDestinationHash: props.expectedDestinationHash }
+          : {}),
         rowFields: csvList(props.rowFields ?? props.rows),
         columnFields: csvList(props.columnFields ?? props.columns),
         valueFields: csvList(props.valueFields ?? props.values),
@@ -506,9 +513,17 @@ function paramsFromInvoke(
       p.filterRange = {
         range: props.range ?? args[0] ?? '',
         column: props.column ?? props.key ?? args[1] ?? '',
+        ...(props.expectedSourceHash ? { expectedSourceHash: props.expectedSourceHash } : {}),
         criterion1: props.criterion1 ?? props.value ?? args[2] ?? '',
         ...(props.operator ? { operator: props.operator } : {}),
         ...(props.criterion2 ? { criterion2: props.criterion2 } : {}),
+      };
+      break;
+    case 'set-data-validation':
+      p.validation = {
+        range: props.range ?? args[0] ?? '',
+        ...(props.expectedSourceHash ? { expectedSourceHash: props.expectedSourceHash } : {}),
+        values: csvList(props.values),
       };
       break;
     case 'manage-worksheet':
@@ -517,6 +532,7 @@ function paramsFromInvoke(
           ActuationRequest['params']['worksheet']
         >['action'],
         name: props.name ?? args[1] ?? '',
+        ...(props.expectedId ? { expectedId: props.expectedId } : {}),
         ...(props.newName ? { newName: props.newName } : {}),
         ...(props.position === 'before' || props.position === 'after' || props.position === 'end'
           ? { position: props.position }
@@ -672,6 +688,8 @@ function paramsFromInvoke(
       p.layout = {
         ...(props.layoutId ? { layoutId: props.layoutId } : {}),
         ...(props.layoutName ? { layoutName: props.layoutName } : {}),
+        ...(props.masterId ? { masterId: props.masterId } : {}),
+        ...(props.expectedLayoutHash ? { expectedLayoutHash: props.expectedLayoutHash } : {}),
       };
       break;
     case 'set-shape-text': {
@@ -1351,6 +1369,13 @@ export function renderCommandBootstrap(manifest: CapabilityManifest, task?: stri
     const next = `${prompt}\n\nRelevant command:\n${renderCommandCard(card)}`;
     // Drop whole optional cards, never signatures or protocol/safety instructions.
     if (new TextEncoder().encode(next).byteLength <= COMMAND_BOOTSTRAP_MAX_BYTES) prompt = next;
+    else {
+      // Native capabilities may consume the optional-card budget. Keep one complete concrete
+      // example when its full card cannot fit; all exact signatures and safety rules stay above.
+      const example = `${prompt}\nRelevant example: ${card.example}`;
+      if (new TextEncoder().encode(example).byteLength <= COMMAND_BOOTSTRAP_MAX_BYTES)
+        prompt = example;
+    }
   }
   return prompt;
 }

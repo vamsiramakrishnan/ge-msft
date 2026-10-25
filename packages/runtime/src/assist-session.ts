@@ -1,7 +1,22 @@
+import {
+  DurableProgramRunner,
+  type DurableProgramEvent,
+  type DurableProgramStore,
+  type DurableStageCheckpoint,
+  type DurableProgramRecord,
+  type DurableReconciliationDecision,
+} from './durable-program.js';
 import { prepareOfficeWorkflow, type OfficeWorkflow } from './office-workflows.js';
 import { TaskJournal } from './task-journal.js';
+import { prepareNativeOperationPreconditions } from './native-operation-preflight.js';
 import { EvidenceWorkspace, EvidenceBinding, type EvidenceSource } from './evidence/index.js';
-import type { ContextProjectionRequest, ContextProjection, SourceLimits } from '@ge/contracts';
+import type {
+  ContextProjectionRequest,
+  ContextProjection,
+  SourceLimits,
+  DurableCommandProgram,
+  DurableProgramStage,
+} from '@ge/contracts';
 import type { EvidencePipeline } from './evidence.js';
 import type { ComputeEngine } from '@ge/compute';
 import {
@@ -13,6 +28,7 @@ import { RecoveryCoordinator } from './recovery.js';
 import { admitActuationRequest } from './actuation-admission.js';
 import {
   assessActuationResult,
+  contentHash,
   HostRefusalReasonSchema,
   unknownActuationResult,
   type HostRefusalReason,
@@ -63,6 +79,8 @@ import type {
   TaskBlocker,
   UnitDescriptor,
   CommandPlan,
+  TableArtifact,
+  TextTargetCapture,
 } from '@ge/contracts';
 import {
   asChangeId,
@@ -318,6 +336,7 @@ const SHARE_PROVENANCE_SUFFIX = '.provenance.json';
  * `CommandLoopEvent`s narrate the loop's own read-many/write-one mechanics.
  */
 export type CommandLoopEvent =
+  | DurableProgramEvent
   | { type: 'turn-start'; turn: number }
   /** A parsed command and how it compiled (read intent / write request / control / error). */
   | { type: 'command'; turn: number; command: ParsedCommand; compiled: CompiledCommand }
@@ -462,6 +481,8 @@ const MAX_SKILL_DEPTH = 8;
 
 /** Options for {@link AssistSession.runCommands}. */
 export interface RunCommandsOptions {
+  /** Trusted SDK source/identity guard, rechecked after durable claims immediately before host dispatch. */
+  beforeDispatch?: () => Promise<void>;
   /** Session-owned evidence dependency; does not replace approval or capability admission. */
   evidenceBinding?: string;
   /** Bound on model turns (default {@link DEFAULT_MAX_TURNS}). */
@@ -541,6 +562,8 @@ export const READ_REF_PREFIX = 'ctx:read:';
  * Built once; every bridge plugs in unchanged.
  */
 export interface AssistSessionOptions {
+  /** Authenticated composition-time identity pin; mismatch requires a new session and stores. */
+  validatePrincipal?: () => Promise<void>;
   unit: UnitDescriptor;
   /** Compact generated command discovery is the default; full retains the legacy grammar prompt. */
   commandDisclosure?: 'compact' | 'full';
@@ -555,6 +578,8 @@ export interface AssistSessionOptions {
   compute?: () => Promise<ComputeEngine>;
   recoveryOwner?: string;
   taskJournal?: TaskJournal;
+  /** Principal/document-scoped deterministic DAG checkpoints; programs contain user content, never approval state. */
+  durablePrograms?: DurableProgramStore;
   taskJournalFactory?: (documentKey: string) => Promise<TaskJournal>;
   evidence?: EvidencePipeline;
   /** Caller-owned, principal-scoped source storage and retrieval policies. */
@@ -716,6 +741,7 @@ export class AssistSession {
     }
   }
   private async bindTaskJournal(): Promise<void> {
+    await this.options.validatePrincipal?.();
     const key = this.bridge.documentKey?.();
     if (key === this.journalDocumentKey && this.journal) return;
     if (!this.options.taskJournalFactory) {
@@ -768,6 +794,7 @@ export class AssistSession {
     let consumed = false;
     let completion: T | undefined;
     try {
+      await this.options.validatePrincipal?.();
       if (this.options.taskJournal || this.options.taskJournalFactory) {
         try {
           await this.bindTaskJournal();
@@ -2053,6 +2080,199 @@ export class AssistSession {
     );
   }
 
+  /** Saved native document binding for authenticated cross-application composition. */
+  async applicationContext(): Promise<{ surface: Surface; documentId: string }> {
+    if (this.disposed) throw new Error('This session is closed.');
+    await this.options.validatePrincipal?.();
+    const key = this.bridge.documentKey?.();
+    if (!key) throw new Error('Save the Office document before creating a handoff.');
+    const documentId = await contentHash({ surface: this.bridge.surface, documentKey: key });
+    if (this.bridge.documentKey?.() !== key) throw new Error('The active Office document changed.');
+    return { surface: this.bridge.surface, documentId };
+  }
+
+  /** A fresh detached artifact from this session, never a caller-invented artifact handle. */
+  async exportAnalysisArtifact(id: string): Promise<TableArtifact> {
+    if (this.disposed || this.task || this.preparingEvidence)
+      throw new Error('Wait for the source session to be idle before exporting evidence.');
+    await this.options.validatePrincipal?.();
+    const key = this.bridge.documentKey?.();
+    if (!key) throw new Error('Save the source workbook before creating a handoff.');
+    const artifact = this.requireAnalysis().artifacts.get(id);
+    await this.requireAnalysis().fresh([artifact]);
+    await this.options.validatePrincipal?.();
+    if (this.bridge.documentKey?.() !== key)
+      throw new Error('The source workbook changed during export.');
+    return artifact;
+  }
+
+  /** Capture through the current native adapter; this read does not grant edit authority. */
+  async captureNativeTextTarget(ref: ContextRef): Promise<TextTargetCapture> {
+    if (this.disposed || !this.bridge.captureTextTarget)
+      throw new Error('Native managed-text capture is unavailable.');
+    await this.options.validatePrincipal?.();
+    const key = this.bridge.documentKey?.();
+    const capture = await this.bridge.captureTextTarget(ref);
+    await this.options.validatePrincipal?.();
+    if (!key || this.bridge.documentKey?.() !== key)
+      throw new Error('The active Office document changed during capture.');
+    return capture;
+  }
+
+  /**
+   * Persist and resume an ordered dependency graph. Each self-contained stage has exactly one
+   * host effect. Completed stages are never dispatched again; resumed source/output validation
+   * and every remaining approval are supplied afresh by trusted UI/SDK code.
+   */
+  async *runDurableProgram(
+    program: DurableCommandProgram,
+    opts: RunCommandsOptions & {
+      revalidate?: (
+        program: DurableCommandProgram,
+        checkpoints: DurableStageCheckpoint[],
+      ) => Promise<boolean>;
+    } = {},
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    if (program.surface !== this.bridge.surface)
+      throw new Error('Open the durable program in its target Office application.');
+    yield* this.withTask(
+      'program',
+      `durable:${program.id}`,
+      opts.signal,
+      () => this.runDurableProgramCore(program, opts),
+      undefined,
+      opts.evidenceBinding,
+    );
+  }
+
+  async inspectDurableProgram(id: string) {
+    if (this.task) throw new Error('Wait for the active task before inspecting a saved program.');
+    await this.bindTaskJournal();
+    if (!this.journal || !this.bridge.documentKey?.() || !this.options.durablePrograms)
+      throw new Error(
+        'Durable programs require saved document identity, a scoped journal and program storage.',
+      );
+    const record = await new DurableProgramRunner(
+      this.options.durablePrograms,
+      this.journal.scopeKey,
+    ).inspect(id);
+    await this.options.validatePrincipal?.();
+    return record;
+  }
+
+  /** Explicit inspected decision; pending work still requires new approval on its next run. */
+  async reconcileDurableStage(
+    id: string,
+    stageId: string,
+    inspectCurrent: (
+      record: DurableProgramRecord,
+      stage: DurableStageCheckpoint,
+    ) => Promise<DurableReconciliationDecision>,
+    options: { confirmStopped: true },
+  ): Promise<void> {
+    if (this.task || this.preparingEvidence)
+      throw new Error('Stop the active task before inspecting a saved program.');
+    this.preparingEvidence = true;
+    try {
+      await this.bindTaskJournal();
+      const key = this.bridge.documentKey?.();
+      if (!this.journal || !key || !this.options.durablePrograms)
+        throw new Error(
+          'Durable reconciliation requires saved document identity and scoped storage.',
+        );
+      const journal = this.journal;
+      const runner = new DurableProgramRunner(this.options.durablePrograms, journal.scopeKey);
+      const prior = await runner.inspect(id);
+      const effectId = prior?.stages.find((stage) => stage.id === stageId)?.effect?.changeId;
+      let decisionKind: DurableReconciliationDecision['decision'] = 'unresolved';
+      await runner.reconcile(
+        id,
+        stageId,
+        async (record, stage) => {
+          const decision = await inspectCurrent(record, stage);
+          await this.options.validatePrincipal?.();
+          if (this.bridge.documentKey?.() !== key)
+            throw new Error('The active document changed during inspection.');
+          decisionKind = decision.decision;
+          return decision;
+        },
+        options,
+      );
+      // A failed acknowledgement leaves the effect journal's independent block in place.
+      if (effectId && decisionKind !== 'unresolved') await journal.acknowledge(effectId);
+    } finally {
+      this.preparingEvidence = false;
+    }
+  }
+
+  private async *runDurableProgramCore(
+    program: DurableCommandProgram,
+    opts: RunCommandsOptions & {
+      revalidate?: (
+        program: DurableCommandProgram,
+        checkpoints: DurableStageCheckpoint[],
+      ) => Promise<boolean>;
+    },
+  ): AsyncGenerator<SseEvent | CommandLoopEvent> {
+    await this.bindTaskJournal();
+    if (!this.journal || !this.bridge.documentKey?.() || !this.options.durablePrograms)
+      throw new Error(
+        'Durable programs require saved document identity, a scoped journal and program storage.',
+      );
+    const runner = new DurableProgramRunner(this.options.durablePrograms, this.journal.scopeKey);
+    yield* runner.run(
+      program,
+      (stage, checkpointEffect, assertOwned) =>
+        this.runDurableStage(stage, checkpointEffect, assertOwned, opts),
+      opts,
+    );
+    const record = await runner.inspect(program.id);
+    if (record?.stages.every((stage) => stage.state === 'verified'))
+      yield { type: 'done', turn: 1, answer: 'All durable program stages are verified.' };
+    else if (this.task) this.task.status = 'incomplete';
+  }
+
+  private async *runDurableStage(
+    stage: DurableProgramStage,
+    checkpointEffect: (request: ActuationRequest) => Promise<void>,
+    assertOwned: () => Promise<void>,
+    opts: RunCommandsOptions,
+  ): AsyncGenerator<SseEvent | CommandLoopEvent, ActuationResult[]> {
+    const start = this.task!.effects.length;
+    let invalid = false;
+    const stageOptions: RunCommandsOptions = {
+      ...opts,
+      maxWritesPerTurn: 1,
+      beforeDispatch: async () => {
+        await assertOwned();
+        await opts.beforeDispatch?.();
+        await assertOwned();
+      },
+      approveShare: () => false,
+      approvePlan: async (effects) => {
+        if (invalid || effects.length !== 1) return false;
+        await checkpointEffect(effects[0]!.request);
+        if (opts.approvePlan) return this.callApprovePlan(opts.approvePlan, effects);
+        return opts.approveWrite ? opts.approveWrite(effects[0]!.request) : false;
+      },
+    };
+    for await (const event of this.runCommandProgramCore(stage.program, stageOptions)) {
+      if (
+        event.type === 'capped' ||
+        event.type === 'error' ||
+        event.type === 'needs-user' ||
+        (event.type === 'command' && isCompileError(event.compiled)) ||
+        (event.type === 'read-result' &&
+          event.result !== null &&
+          typeof event.result === 'object' &&
+          'error' in event.result)
+      )
+        invalid = true;
+      if (event.type !== 'done') yield event;
+    }
+    return this.task!.effects.slice(start);
+  }
+
   /** Versioned workflow entry point. All writes still use the existing gated command executor. */
   async *runOfficeWorkflow(
     workflow: OfficeWorkflow,
@@ -2296,14 +2516,12 @@ export class AssistSession {
     const seenUnsupported = this.task
       ? (this.unsupportedSeen.get(this.task) ?? new Set<string>())
       : undefined;
-    // A known feature this product has not shipped (registry status other than implemented: pivot,
-    // sort, image…) stops at once — there is nothing to correct. An unknown command (`/save-draft`)
-    // may be a slip on a doable request: one correction first. No hand-kept list: the registry
-    // status decides, so a feature that ships stops being refused.
+    // A registered operation absent from this session cannot be repaired by repeating it. Shipping
+    // an operation for another host/profile does not grant this session that capability.
     const knownMissing =
       plan.unsupported !== undefined &&
-      (registryEntryForKindAndSurface(plan.unsupported as ActuationKind, this.bridge.surface)
-        ?.status ?? 'implemented') !== 'implemented';
+      registryEntryForKindAndSurface(plan.unsupported as ActuationKind, this.bridge.surface) !==
+        undefined;
     const repeatedUnsupported =
       plan.unsupported !== undefined &&
       (knownMissing || seenUnsupported?.has(plan.unsupported) === true);
@@ -3174,6 +3392,8 @@ export class AssistSession {
       if (compiled.kind !== 'write')
         return { error: `"${command.verb}" did not compile to a write` };
 
+      compiled.request = await prepareNativeOperationPreconditions(compiled.request, this.bridge);
+
       const effect: PlanEffect = {
         request: compiled.request,
         command: renderCommandLine(command),
@@ -3368,10 +3588,20 @@ export class AssistSession {
         };
       } else if (planApproved === true) {
         // Plan-approved: run the existing gate + provenance, pre-approved (no per-write re-prompt).
-        result = await this.applyRequest(effect.request, turnProvenance, () => true);
+        result = await this.applyRequest(
+          effect.request,
+          turnProvenance,
+          () => true,
+          opts.beforeDispatch,
+        );
       } else {
         // Per-write fallback (ADR-0004 Track A): approveWrite present, no approvePlan.
-        result = await this.applyRequest(effect.request, turnProvenance, opts.approveWrite);
+        result = await this.applyRequest(
+          effect.request,
+          turnProvenance,
+          opts.approveWrite,
+          opts.beforeDispatch,
+        );
       }
       // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
       if (!this.task?.effects.some((r) => r.changeId === result.changeId))
@@ -3579,6 +3809,7 @@ export class AssistSession {
     const route = options.skillRoute ?? 'default';
     const isSessionLess = options.isSessionLess === true;
     await this.hooks.run('model:request', { query: request.query ?? '', route }, context);
+    await this.options.validatePrincipal?.();
     if (this.task) this.task.modelTurns++;
     if (this.task?.metrics) this.task.metrics.queryBytes += byteLength(request.query ?? '');
     let text = '';
@@ -4376,8 +4607,9 @@ export class AssistSession {
     request: ActuationRequest,
     provenance: ProvenancePayload | undefined,
     approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<ActuationResult> {
-    const result = await this.applyRequestCore(request, provenance, approveWrite);
+    const result = await this.applyRequestCore(request, provenance, approveWrite, beforeDispatch);
     if (!this.task?.effects.some((r) => r.changeId === result.changeId))
       await this.recordEffect(request, result);
     return result;
@@ -4387,6 +4619,7 @@ export class AssistSession {
     request: ActuationRequest,
     provenance: ProvenancePayload | undefined,
     approveWrite?: (request: ActuationRequest) => boolean | Promise<boolean>,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<ActuationResult> {
     // Finding #4: provenance is bound to the turn that emitted this command and passed in
     // EXPLICITLY — never read from an ambient instance field a later turn could have overwritten.
@@ -4466,6 +4699,20 @@ export class AssistSession {
             error: { code: 'cancelled', message: 'Cancelled before host dispatch.' },
           };
         const dispatch = async (): Promise<ActuationResult> => {
+          try {
+            await this.options.validatePrincipal?.();
+          } catch {
+            return {
+              ok: false,
+              changeId: stamped.changeId,
+              kind: stamped.kind,
+              error: {
+                code: 'identity_changed',
+                message:
+                  'The authenticated account changed. Rebuild this Office session before writing.',
+              },
+            };
+          }
           if (this.task?.signal?.aborted)
             return {
               ok: false,
@@ -4489,6 +4736,41 @@ export class AssistSession {
             await this.effectiveCapabilities(),
           );
           if (latest.rejection) return latest.rejection;
+          if (beforeDispatch) {
+            try {
+              await beforeDispatch();
+            } catch {
+              return {
+                ok: false,
+                changeId: stamped.changeId,
+                kind: stamped.kind,
+                error: {
+                  code: 'stale_source',
+                  message: 'The handoff source or identity changed. Refresh and review it again.',
+                },
+              };
+            }
+            if (
+              this.task?.signal?.aborted ||
+              (documentKey !== undefined && this.bridge.documentKey?.() !== documentKey)
+            )
+              return {
+                ok: false,
+                changeId: stamped.changeId,
+                kind: stamped.kind,
+                error: {
+                  code: 'target_conflict',
+                  message:
+                    'The target changed or execution was cancelled during source validation.',
+                },
+              };
+            const afterGuard = admitActuationRequest(
+              stamped,
+              this.bridge.surface,
+              await this.effectiveCapabilities(),
+            );
+            if (afterGuard.rejection) return afterGuard.rejection;
+          }
           if (this.activeEvidence) {
             try {
               await this.toolOperation('evidence:before-effect', { kind: stamped.kind }, () =>
@@ -4507,6 +4789,33 @@ export class AssistSession {
             }
             this.activeEvidence.dispatched();
           }
+          try {
+            await this.options.validatePrincipal?.();
+          } catch {
+            return {
+              ok: false,
+              changeId: stamped.changeId,
+              kind: stamped.kind,
+              error: {
+                code: 'identity_changed',
+                message:
+                  'The authenticated account changed during source validation. Rebuild this Office session.',
+              },
+            };
+          }
+          if (
+            this.task?.signal?.aborted ||
+            (documentKey !== undefined && this.bridge.documentKey?.() !== documentKey)
+          )
+            return {
+              ok: false,
+              changeId: stamped.changeId,
+              kind: stamped.kind,
+              error: {
+                code: 'target_conflict',
+                message: 'The target changed or execution was cancelled before dispatch.',
+              },
+            };
           dispatched = true;
           return this.bridge.actuate(stamped);
         };

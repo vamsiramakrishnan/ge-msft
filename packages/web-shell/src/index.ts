@@ -42,6 +42,7 @@ export { createApplicationRuntime, APPLICATION_EXTENSIONS } from './runtime-exte
 export { connectPanelRuntime } from './panel-runtime.js';
 export {
   buildPowerPointDeckImportRequest,
+  buildPowerPointLayoutRequest,
   type BuildPowerPointDeckImportOptions,
   type PowerPointDeckImportPlan,
 } from './powerpoint-deck-import.js';

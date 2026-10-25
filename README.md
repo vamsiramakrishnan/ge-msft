@@ -26,6 +26,10 @@ Whole-document summaries now traverse Office content in bounded pages and summar
 independent model requests, with coverage and extraction limits. See
 [document context and operating limits](docs/DOCUMENT-CONTEXT.md).
 
+The Office phase implementation adds native Excel operations, dependency impact, managed board
+packs, resumable tasks, authenticated cross-app SDK handoffs and Outlook send checks. See
+[usage and release acceptance](docs/OFFICE-PHASES.md). Native and tenant certification remain open.
+
 ## Choose the environment you want to test
 
 | Goal | Start here | Successful result |

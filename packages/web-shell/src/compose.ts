@@ -34,8 +34,11 @@ import {
   TaskJournal,
   IndexedDbTaskJournalStore,
   MemoryTaskJournalStore,
+  IndexedDbDurableProgramStore,
+  MemoryDurableProgramStore,
+  createOfficeApplicationPort,
 } from '@ge/runtime';
-import type { AuthClient, DocBridge, RuntimeHooks } from '@ge/runtime';
+import type { AuthClient, DocBridge, RuntimeHooks, OfficeApplicationPort } from '@ge/runtime';
 import { GraphClient, GraphSharedStore } from '@ge/graph-client';
 import type { TriggerRegistry } from '@ge/triggers';
 
@@ -117,6 +120,8 @@ export interface ComposeOptions {
 
 export interface ComposedSession {
   session: AssistSession;
+  /** Authenticated SDK port; hosts must be explicitly registered before a cross-app handoff. */
+  application: OfficeApplicationPort;
   tokens: WifTokenClient;
   client: StreamAssistClient;
   /** Result of boot-time skill provisioning, one entry per `warmUpSkills` input (empty if none). */
@@ -231,7 +236,17 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
   const estateWritesEnabled = estateWritesEnabledFor(Boolean(sharedStore), config.releaseProfile);
 
   let journalStore: MemoryTaskJournalStore | IndexedDbTaskJournalStore | undefined;
+  const validatePrincipal = async (): Promise<void> => {
+    const current = await auth.getIdentity();
+    if (
+      identity.oid
+        ? current.oid !== identity.oid
+        : current.oid !== undefined || current.username !== identity.username
+    )
+      throw new Error('The authenticated account changed. Reopen the add-in before continuing.');
+  };
   const taskJournalFactory = async (documentKey: string): Promise<TaskJournal> => {
+    await validatePrincipal();
     const scope = await contentHash({
       principal: identity.oid ?? identity.username,
       document: documentKey,
@@ -246,7 +261,12 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
     return journal;
   };
   const session = new AssistSession(bridge, client, {
+    validatePrincipal,
     taskJournalFactory,
+    durablePrograms:
+      typeof indexedDB === 'undefined'
+        ? new MemoryDurableProgramStore()
+        : new IndexedDbDurableProgramStore(),
     unit,
     ...(config.accentColor ? { tableHeaderFill: config.accentColor } : {}),
     recoveryOwner: identity.oid ?? identity.username,
@@ -294,7 +314,12 @@ export async function composeSession(opts: ComposeOptions): Promise<ComposedSess
       : {}),
   });
 
-  return { session, tokens, client, warmUp, availableAgents, availableDataStores };
+  const application = createOfficeApplicationPort(
+    session,
+    identity.oid,
+    async () => (await auth.getIdentity()).oid,
+  );
+  return { session, application, tokens, client, warmUp, availableAgents, availableDataStores };
 }
 
 /**

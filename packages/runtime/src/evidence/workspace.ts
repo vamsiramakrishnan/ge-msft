@@ -15,6 +15,7 @@ import { navigateEvidencePages } from './paged-navigation.js';
 import { byteLength } from '../docfs/bytes.js';
 import { SourceTraversal, verifySource, type EvidenceSource } from './source.js';
 import { MemoryEvidenceStore, type EvidenceStore } from './store.js';
+import { EvidenceDependencyIndex } from './dependencies.js';
 
 export function evidencePath(snapshot: string, index: number): string {
   return `/evidence/${snapshot}/units/${Math.floor(index / 100)}/${index}.json`;
@@ -43,6 +44,7 @@ export const lexicalEvidenceSelector: EvidenceSelector = async (query, units) =>
 
 /** Source-neutral evidence, independent of Office, model prompts, task verbs and write authority. */
 export class EvidenceWorkspace {
+  private readonly dependencyIndex = new EvidenceDependencyIndex();
   constructor(
     private readonly store: EvidenceStore = new MemoryEvidenceStore(),
     private readonly selector: EvidenceSelector = lexicalEvidenceSelector,
@@ -65,7 +67,28 @@ export class EvidenceWorkspace {
     return this.store.list();
   }
   async release(id: string): Promise<void> {
+    await this.dependencyIndex.release(id);
     await this.store.delete(id);
+  }
+  /** Release only the optional accelerator; immutable source evidence and its references remain. */
+  async releaseDependencyIndex(id: string): Promise<void> {
+    await this.dependencyIndex.release(id);
+  }
+  /** Incremental relation indexing: at most eight authenticated pages, no hidden full scan. */
+  async indexDependencies(id: string, options: { maxPages?: number; signal?: AbortSignal } = {}) {
+    return this.dependencyIndex.advance(
+      await this.receipt(id),
+      (index) => this.page(id, index),
+      options,
+    );
+  }
+  /** Captured-link impact only. Actual execution still performs independent source freshness checks. */
+  dependencyImpact(
+    previousId: string,
+    id: string,
+    options: { maxNodes?: number; maxDepth?: number } = {},
+  ) {
+    return this.dependencyIndex.impact(previousId, id, options);
   }
   async load(id: string): Promise<EvidenceSnapshot> {
     const raw = await this.store.get(id);

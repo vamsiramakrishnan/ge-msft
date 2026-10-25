@@ -94,6 +94,49 @@ export class WordBridge implements DocBridge {
 
   readonly surface = 'word' as const;
 
+  /** Explicit read selectors, never object locators or authority for table mutation. */
+  async readRange(selector: string): Promise<ResolvedContext[]> {
+    // `inspect <phrase>` probes native addresses before literal search. An unrelated selector
+    // must remain a miss so adding table reads cannot suppress the existing search fallback.
+    if (!selector.trim().startsWith('table:')) return [];
+    const match = /^table:([1-9]\d*)(?::(\d+):(\d+))?$/.exec(selector.trim());
+    if (!match || !this.host.readTableTile)
+      throw new Error(
+        'Word structural reads use table:<1-based index>[:<row offset>:<column offset>].',
+      );
+    const key = this.documentKey();
+    const tile = await this.host.readTableTile(
+      Number(match[1]),
+      Number(match[2] ?? 0),
+      Number(match[3] ?? 0),
+    );
+    if (this.documentKey() !== key) throw new Error('The document changed during table capture.');
+    const text = JSON.stringify({
+      ...tile,
+      limitations: [
+        'Live main-body table window; nested-table contents, cell formatting and merge topology are not extracted.',
+        'Table ordinals can change after editing. A read selector does not authorize a write.',
+        ...(tile.omittedTextBytes
+          ? [`Cell text omitted: ${tile.omittedTextBytes} UTF-8 bytes.`]
+          : []),
+      ],
+    });
+    if (new TextEncoder().encode(text).byteLength > 40 * 1024)
+      throw new Error('Word table context exceeded its serialized budget.');
+    return [
+      {
+        ref: {
+          id: selector.trim(),
+          kind: 'table',
+          surface: this.surface,
+          title: `Word table ${tile.tableIndex}`,
+          live: true,
+        },
+        value: { as: 'text', text, mimeType: 'application/json' },
+      },
+    ];
+  }
+
   async readDocumentPage(options: DocumentReadOptions = {}): Promise<DocumentPage> {
     options.signal?.throwIfAborted();
     if (!this.host.readParagraphPage)
@@ -890,6 +933,7 @@ export class WordBridge implements DocBridge {
         reason:
           'Word insert-table currently records provenance but has no durable inserted-table handle.',
       },
+      ...(outcome.verification ? { verification: outcome.verification } : {}),
       ...provFlags(req, dropped),
     };
   }

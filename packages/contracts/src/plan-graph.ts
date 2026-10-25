@@ -74,6 +74,10 @@ export const IRREVERSIBLE_KINDS: ReadonlySet<ActuationKind> = new Set([
   'send-activity-notification',
   'delete-message',
   'create-mail-rule',
+  'filter-range',
+  'set-data-validation',
+  'manage-worksheet',
+  'apply-slide-layout',
 ]);
 
 /** Kinds that send to an external recipient / leave the open document (vs an in-document change). */

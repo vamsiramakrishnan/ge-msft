@@ -97,6 +97,7 @@ export const ActuationKindSchema = z.enum([
   'insert-pivot', // Excel: add a native PivotTable over a source range
   'sort-range', // Excel: apply native range/table sort
   'filter-range', // Excel: apply native AutoFilter/table filter criteria
+  'set-data-validation', // Excel: install bounded literal-list validation on a captured range
   'manage-worksheet', // Excel: create/rename/delete/activate/protect a worksheet
   'format-chart', // Excel: update chart title/legend/axes/style without recreating it
   'set-entity-card', // Excel: attach a linked-entity card to a cell (typings-limited)
@@ -263,6 +264,10 @@ export const ActuationParamsSchema = z.object({
   table: z
     .object({
       range: z.string(),
+      expectedSourceHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
       hasHeaders: z.boolean().default(true),
       name: z.string().optional(), // table name; the bridge mints one if absent
     })
@@ -314,6 +319,14 @@ export const ActuationParamsSchema = z.object({
     .object({
       sourceRange: z.string(),
       destinationRange: z.string(),
+      expectedSourceHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
+      expectedDestinationHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
       name: z.string().optional(),
       rowFields: z.array(z.string()).default([]),
       columnFields: z.array(z.string()).default([]),
@@ -335,9 +348,24 @@ export const ActuationParamsSchema = z.object({
     .object({
       range: z.string(),
       column: z.string(),
+      expectedSourceHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
       criterion1: z.string(),
       operator: z.string().optional(),
       criterion2: z.string().optional(),
+    })
+    .optional(),
+  /** set-data-validation: literal lists only; formula and external range sources are not admitted. */
+  validation: z
+    .object({
+      range: z.string(),
+      expectedSourceHash: z
+        .string()
+        .regex(/^sha256:[a-f0-9]{64}$/)
+        .optional(),
+      values: z.array(z.string().min(1).max(64)).min(1).max(32),
     })
     .optional(),
   /** manage-worksheet (Excel): worksheet lifecycle and protection operations. */
@@ -345,6 +373,7 @@ export const ActuationParamsSchema = z.object({
     .object({
       action: z.enum(['create', 'rename', 'delete', 'activate', 'protect', 'unprotect']),
       name: z.string(),
+      expectedId: z.string().min(1).max(256).optional(),
       newName: z.string().optional(),
       position: z.enum(['before', 'after', 'end']).optional(),
     })
@@ -560,7 +589,13 @@ export const ActuationParamsSchema = z.object({
     .optional(),
   /** apply-slide-layout (PowerPoint). */
   layout: z
-    .object({ layoutId: z.string().optional(), layoutName: z.string().optional() })
+    .object({
+      layoutId: z.string().max(256).optional(),
+      layoutName: z.string().max(256).optional(),
+      masterId: z.string().max(256).optional(),
+      expectedLayoutHash: z.string().max(256).optional(),
+    })
+    .strict()
     .optional(),
   /** add-note-tag (OneNote): the native action-item primitive. */
   noteTag: z.object({ type: z.string(), status: z.string().default('unknown') }).optional(),

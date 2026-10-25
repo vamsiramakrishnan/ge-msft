@@ -1,5 +1,10 @@
 # Status — what's built (and what's next)
 
+Workflow operation and acceptance now add a saved-task pane, source-aware native resume checks,
+11 canonical native cases, bounded tenant/deterministic flagship runs, measured comparison
+reports and a per-profile campaign gate. [Usage and evidence boundaries](OFFICE-ACCEPTANCE.md).
+Native Office/tenant certification and measured release targets remain open.
+
 The remaining-phase implementation adds strict installed-handler coverage, native Excel
 pivots/filters/list validation and worksheet operations, incremental dependency impact, native
 PowerPoint template/layout capture, artifact-bound board packs, resumable command stages,

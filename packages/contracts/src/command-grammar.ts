@@ -2214,7 +2214,7 @@ function writeVerbSpec(verb: WriteVerb, isExcelLike: boolean): VerbSpec {
  */
 export const SPECIALIZED_SYNTAX: Partial<Record<ActuationKind, string>> = {
   'insert-text':
-    '/insert-text text="..." [match="exact anchor text"] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]',
+    '/insert-text text="..." [match="exact anchor text"] [position=start|end|before|after|replace] [bold=true] [italic=true] [underline=true] [font=<name>] [size=<pt>] [color=#RRGGBB]',
   'insert-pivot':
     '/insert-pivot sourceRange=<Sheet!A1:D50> destinationRange=<Report!A1:F60> rowFields="<one exact header>" valueFields="<one to four numeric headers>" [name=<name>] [expectedSourceHash=<captured-hash>] [expectedDestinationHash=<captured-hash>]',
   'filter-range':

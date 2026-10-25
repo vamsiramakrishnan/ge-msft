@@ -52,6 +52,9 @@ export * from './formula-policy.js';
 export * from './deck-template.js';
 
 export * from './durable-program.js';
+export * from './durable-inspection.js';
 export * from './office-handoff.js';
 
 export * from './excel-native-target.js';
+export * from './tenant-workflow-report.js';
+export * from './office-benchmark.js';

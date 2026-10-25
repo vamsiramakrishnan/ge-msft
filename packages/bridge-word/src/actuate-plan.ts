@@ -90,7 +90,8 @@ export function chooseAnchorIndex(hitTexts: string[], contextHint?: string): num
  * Pure plan for an `insert-text` actuation (ADR-0007 host-native write). Inserts plain `text` either
  * at a content anchor (`target.matchText` + `contextHint`, re-resolved via `body.search` at
  * apply-time — same discipline as a tracked change) or, when no anchor is given, at the current
- * selection. `anchored` distinguishes the two so the bridge can fail-closed on a missing anchor only
+ * selection. Explicit start/end without an anchor target the document body boundary. `anchored`
+ * distinguishes the paths so the bridge can fail-closed on a missing anchor only
  * when one was *intended* but malformed, and otherwise fall through to the selection path. `hasText`
  * lets the bridge reject an empty insert before touching the host.
  */
@@ -101,6 +102,7 @@ export interface InsertTextPlan {
   text: string;
   hasText: boolean;
   font?: NonNullable<ActuationRequest['params']['textFont']>;
+  position?: ActuationRequest['params']['position'];
 }
 
 export function planInsertText(req: ActuationRequest): InsertTextPlan {
@@ -108,6 +110,7 @@ export function planInsertText(req: ActuationRequest): InsertTextPlan {
   const text = p.text ?? '';
   return {
     ...(p.textFont ? { font: p.textFont } : {}),
+    ...(p.position ? { position: p.position } : {}),
     ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
     ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
     anchored: Boolean(p.target?.matchText),

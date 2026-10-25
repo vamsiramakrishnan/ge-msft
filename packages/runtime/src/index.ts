@@ -105,8 +105,12 @@ export * from './office-workflows.js';
 export * from './native-certification.js';
 
 export * from './durable-program.js';
+export * from './durable-inspection.js';
+export * from './saved-task-assessment.js';
 
 export * from './office-readiness.js';
 export * from './office-handoff.js';
 
 export { prepareNativeOperationPreconditions } from './native-operation-preflight.js';
+export * from './office-benchmark.js';
+export * from './office-acceptance.js';

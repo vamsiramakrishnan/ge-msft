@@ -46,6 +46,68 @@ afterEach(() => {
 });
 
 describe('PlanApprovalCard', () => {
+  it.each([
+    {
+      kind: 'insert-text' as const,
+      surface: 'word' as const,
+      params: { position: 'end' as const, text: 'Body append' },
+      label: 'End of document body',
+      tokens: ['position=end', 'text="Body append"'],
+    },
+    {
+      kind: 'insert-text' as const,
+      surface: 'word' as const,
+      params: {
+        position: 'start' as const,
+        text: 'Anchored insert',
+        target: { matchText: 'governing clause', contextHint: 'Section 7' },
+      },
+      label: 'Start of matched text "governing clause"',
+      tokens: ['position=start', 'match="governing clause"', 'contextHint="Section 7"'],
+    },
+    {
+      kind: 'fill-content-control' as const,
+      surface: 'word' as const,
+      params: { text: 'Memo', target: { contentControlId: '17' } },
+      label: 'Word content control "17"',
+      tokens: ['contentControlId="17"', 'text="Memo"'],
+    },
+    {
+      kind: 'set-shape-text' as const,
+      surface: 'powerpoint' as const,
+      params: { text: 'Metrics', target: { slideId: 'slide-1', shapeId: 'shape-2' } },
+      label: 'PowerPoint slide "slide-1" / shape "shape-2"',
+      tokens: ['slideId="slide-1"', 'shapeId="shape-2"', 'text="Metrics"'],
+    },
+  ])(
+    'discloses $kind target while collapsed and its exact native arguments while expanded',
+    (input) => {
+      const current: PlanEffect = {
+        command: 'benign obsolete label',
+        approvalClass: approvalClassOf(input.kind),
+        reversible: isReversibleKind(input.kind),
+        request: {
+          changeId: asChangeId('native-target'),
+          kind: input.kind,
+          surface: input.surface,
+          params: input.params,
+        },
+        dryRun: { target: 'a misleading display-only target', after: 'a misleading old value' },
+      };
+      render({ effects: [current], summary: '1 change' });
+      const head = container.querySelector<HTMLButtonElement>('.plan-effect-head')!;
+      expect(head.textContent).toContain(input.label);
+      expect(head.textContent).not.toContain('misleading');
+      expect(head.querySelector('.effect-change')?.textContent).toContain(input.params.text);
+      if (input.params.target?.matchText) expect(head.textContent).not.toContain('document body');
+      act(() => head.click());
+      const command = container.querySelector('.plan-effect-detail .cmd')!.textContent!;
+      input.tokens.forEach((token) => expect(command).toContain(token));
+      expect(container.querySelector('.plan-effect-row')?.textContent).toContain(input.label);
+      if (current.request.params.position === 'end' && !current.request.params.target?.matchText)
+        expect(container.querySelector('.host-target-link')).toBeNull();
+    },
+  );
   it('hides the exact command until the user opens the effect', () => {
     render({ effects: [effect], summary: '1 write' });
     const head = container.querySelector<HTMLButtonElement>('.plan-effect-head');

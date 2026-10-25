@@ -864,6 +864,24 @@ describe('compileCommand', () => {
     });
     if ('request' in c) expect(() => ActuationRequestSchema.parse(c.request)).not.toThrow();
   });
+  it('preserves canonical contentControlId and refuses conflicting aliases', () => {
+    const command = {
+      verb: 'invoke' as const,
+      kind: 'fill-content-control',
+      props: { contentControlId: 'native-control', text: 'new' },
+      args: [],
+    };
+    expect(compileCommand(command, { surface: 'word', mintChangeId: mint })).toMatchObject({
+      kind: 'write',
+      request: { params: { target: { contentControlId: 'native-control' } } },
+    });
+    expect(
+      compileCommand(
+        { ...command, props: { ...command.props, id: 'different-control' } },
+        { surface: 'word', mintChangeId: mint },
+      ),
+    ).toMatchObject({ error: expect.stringContaining('different objects') });
+  });
 
   it('compiles `page` → append-page with target.matchText (title) + text (body)', () => {
     const c = compileCommand(
@@ -2595,5 +2613,32 @@ describe('AssistSession.runCommands — the bounded command loop', () => {
     const out: SseEvent[] = [];
     for await (const e of session.ask('hi')) out.push(e as SseEvent);
     expect(out.map((e) => e.type)).toContain('token');
+  });
+});
+
+describe('explicit native Word insertion positions', () => {
+  it('preserves each supported position in the typed request', () => {
+    for (const position of ['start', 'end', 'before', 'after', 'replace']) {
+      const parsed = parseCommandLine(`/insert-text position=${position} text="inserted"`);
+      if ('error' in parsed) throw new Error(parsed.error);
+      const result = compileCommand(parsed, {
+        surface: 'word',
+        mintChangeId: () => 'position-fixture' as ActuationRequest['changeId'],
+      });
+      expect(result).toMatchObject({
+        kind: 'write',
+        request: { params: { position, text: 'inserted' } },
+      });
+    }
+  });
+  it('rejects a position outside the canonical enum instead of silently using selection', () => {
+    const parsed = parseCommandLine('/insert-text position=last text="inserted"');
+    if ('error' in parsed) throw new Error(parsed.error);
+    expect(
+      compileCommand(parsed, {
+        surface: 'word',
+        mintChangeId: () => 'position-fixture' as ActuationRequest['changeId'],
+      }),
+    ).toHaveProperty('error');
   });
 });

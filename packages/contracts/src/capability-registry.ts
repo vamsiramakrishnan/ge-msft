@@ -440,13 +440,14 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     command: '/insert-text',
     title: 'Word plain-text insertion',
     useWhen:
-      'insert grounded text at the current selection (the cursor: no match=; the snapshot names the cursor paragraph) or after an exact anchor; bold=true italic=true underline=true font=<name> size=<pt> color=#RRGGBB format the inserted text',
-    hostApis: ['Word.Range.insertText', 'Word.Selection.insertText'],
+      'insert grounded text at the current selection or an exact anchor. Explicit position=start|end without match= targets the document body boundary; with match= it stays within that anchor. Omit position to preserve selection replacement or anchored after-insertion. Font options format only inserted text',
+    hostApis: ['Word.Range.insertText', 'Word.Body.insertText', 'Word.Selection.insertText'],
     requirementSets: [{ name: 'WordApi', minVersion: '1.1' }],
     contextKinds: ['selection', 'paragraph', 'document'],
     discovery: ['outline', 'search <anchor>', 'inspect <paragraph-ref>', 'open <paragraph-ref>'],
     sequence: [
       'Resolve the insertion point from selection or exact anchor.',
+      'Use an unanchored body start/end only when that document-wide destination is intended; retain the selected edit scope otherwise.',
       'Preview the inserted text and position.',
       'Emit one /insert-text command only when insertion, not tracked rewrite, is intended.',
     ],

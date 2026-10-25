@@ -282,7 +282,8 @@ export interface WordHost {
    * given, re-resolve it via `body.search` and let `choose` pick the read-back hit, inserting after
    * the chosen range (degrading to `drift` when there's no live hit) — the same content-anchoring
    * discipline as {@link applyTrackedChange}. When `query` is `undefined`, insert at the current
-   * selection. Returns the prior-state (`insertedText`) the bridge records for the inverse.
+   * selection. Explicit start/end without an anchor target the body boundary; an anchor keeps
+   * every position scoped to its freshly resolved range. Returns the inserted text for auditing.
    */
   insertText(
     query: string | undefined,
@@ -290,6 +291,7 @@ export interface WordHost {
     text: string,
     choose: ChooseHit,
     font?: TextFont,
+    position?: ActuationRequest['params']['position'],
   ): Promise<InsertOutcome>;
 
   /**
@@ -861,12 +863,34 @@ export class OfficeWordHost implements WordHost {
     text: string,
     choose: ChooseHit,
     font?: TextFont,
+    position?: ActuationRequest['params']['position'],
   ): Promise<InsertOutcome> {
     return this.edit(async (ctx) => {
       if (query === undefined) {
-        // No anchor → insert at the current selection (replace its content with the new text).
+        if (position === 'start' || position === 'end') {
+          applyFont(
+            ctx.document.body.insertText(
+              text,
+              position === 'start' ? Word.InsertLocation.start : Word.InsertLocation.end,
+            ),
+            font,
+          );
+          await ctx.sync();
+          return { status: 'applied', location: `body:${position}`, insertedText: text };
+        }
+        // No body boundary or anchor: preserve the legacy selection replacement default.
         const sel = ctx.document.getSelection();
-        applyFont(sel.insertText(text, Word.InsertLocation.replace), font);
+        applyFont(
+          sel.insertText(
+            text,
+            position === 'before'
+              ? Word.InsertLocation.before
+              : position === 'after'
+                ? Word.InsertLocation.after
+                : Word.InsertLocation.replace,
+          ),
+          font,
+        );
         await ctx.sync();
         return { status: 'applied', location: 'selection', insertedText: text };
       }
@@ -880,7 +904,17 @@ export class OfficeWordHost implements WordHost {
       const range = idx >= 0 ? live[idx] : undefined;
       if (!range) return { status: 'drift' };
       // Insert AFTER the anchored range (a direct edit appends to the matched content).
-      applyFont(range.insertText(text, Word.InsertLocation.after), font);
+      const location =
+        position === 'before'
+          ? Word.InsertLocation.before
+          : position === 'start'
+            ? Word.InsertLocation.start
+            : position === 'end'
+              ? Word.InsertLocation.end
+              : position === 'replace'
+                ? Word.InsertLocation.replace
+                : Word.InsertLocation.after;
+      applyFont(range.insertText(text, location), font);
       await ctx.sync();
       return { status: 'applied', location: 'insert-text', insertedText: text };
     });

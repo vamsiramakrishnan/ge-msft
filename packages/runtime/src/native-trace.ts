@@ -14,6 +14,7 @@ export interface NativeTrace {
 /** Fixed metadata only: never record arguments, document identity, errors, body or query text. */
 export class NativeTraceStore {
   private readonly entries: NativeTrace[] = [];
+  private readonly listeners = new Set<(trace: NativeTrace) => void>();
   record(trace: NativeTrace): void {
     this.entries.push({
       id: trace.id,
@@ -27,12 +28,24 @@ export class NativeTraceStore {
       outcome: trace.outcome,
     });
     if (this.entries.length > 200) this.entries.shift();
+    const observed = this.entries[this.entries.length - 1]!;
+    for (const listener of this.listeners) {
+      try {
+        listener({ ...observed });
+      } catch {
+        /* observation cannot change native execution */
+      }
+    }
   }
   list(): NativeTrace[] {
     return structuredClone(this.entries);
   }
   clear(): void {
     this.entries.length = 0;
+  }
+  subscribe(listener: (trace: NativeTrace) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 }
 export const nativeTraces = new NativeTraceStore();

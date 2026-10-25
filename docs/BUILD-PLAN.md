@@ -307,3 +307,24 @@ transaction rollback). Inspected 21 screenshots at 320/360/480: filled contract 
 managed text refresh, response package, native fixture controls, unavailable report and
 interrupted changes before/after inspection acknowledgement. New controls do not overflow;
 pre-existing Settings rail text clipping remains outside this increment. CI retains screenshots.
+
+## User-directed workflow acceptance and operation — October 25, 2026
+
+The next phase turns merged #16 into inspectable operations and reproducible acceptance.
+See `OFFICE-ACCEPTANCE.md` for supported routes and explicit release boundaries.
+
+- [x] Expose source-aware saved-task creation, native inspection, reviewed resume and hide-completed controls.
+- [x] Expand canonical native cases with exact approvals, effects, native identity and bounded readback.
+- [x] Add a bounded four-workflow tenant/deterministic runner with explicit execution origins.
+- [x] Add real workflow comparison metrics and a per-profile/commit campaign gate.
+- [x] Preserve target-faithful approval and cancellation receipts; complete independent security and repository gates.
+- [ ] Collect final-commit native Office, tenant/WIF, on-send and advertised-client performance acceptance.
+
+Validation: 3,995 aggregate tests and three actual Chromium storage contracts pass; 26 optional
+default skips distinguish existing live cases, the tenant matrix and browser contracts. TypeScript,
+lint/design, production builds, generated resources, exact-source skill archives and secret scan
+pass. Python passes 76 parity cases, six manifest tests, 40 tooling tests and 14 deterministic
+evals. Inspected 48 screenshots at 320/360/480 across saved-task and native-target approval states.
+Independent security review has no unresolved high/medium findings. Native Office and configured
+tenant access are unavailable here; the explicit tenant smoke reports two deterministic passes,
+two unavailable model cases and zero model calls. Those external release gates remain open.

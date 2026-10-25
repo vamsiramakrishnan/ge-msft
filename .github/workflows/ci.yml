@@ -96,6 +96,17 @@ jobs:
           node scripts/pane-shots.mjs --surface powerpoint --panel actions --demo 0 --query 'office-workflows=1&office-lab=1' --scroll interrupted --out /tmp/office-workflow-shots
           node scripts/pane-shots.mjs --surface excel --panel actions --demo 0 --query 'office-workflows=1&office-lab=1&office-report=1' --expand 'Native Office certification' --scroll report --out /tmp/office-workflow-shots
           node scripts/pane-shots.mjs --surface powerpoint --panel actions --demo 0 --query 'office-workflows=1&office-lab=1' --scroll interrupted --check 1 --out /tmp/office-workflow-shots-checked
+          for state in ready blocked complete empty error loading; do
+            node scripts/pane-shots.mjs --surface word --panel actions --demo 0 --query "office-workflows=1&saved-tasks=$state" --expand 'Saved tasks' --tag "saved-$state" --out /tmp/office-acceptance-shots
+          done
+          node scripts/pane-shots.mjs --surface word --panel actions --demo 0 --query 'office-workflows=1&saved-tasks=ready' --expand 'Saved tasks' --commands 1 --tag saved-commands --out /tmp/office-acceptance-shots
+          node scripts/pane-shots.mjs --surface word --panel actions --demo 0 --query 'office-workflows=1&saved-tasks=empty' --expand 'Saved tasks' --create 1 --attest 1 --tag saved-create --out /tmp/office-acceptance-shots
+          for state in body-end anchor-start control shape; do
+            host=word
+            if [ "$state" = shape ]; then host=powerpoint; fi
+            node scripts/pane-shots.mjs --surface "$host" --demo 0 --query "position-approval=$state" --tag "$state" --out /tmp/office-acceptance-shots
+            node scripts/pane-shots.mjs --surface "$host" --demo 0 --query "position-approval=$state" --approval 1 --tag "$state-expanded" --out /tmp/office-acceptance-shots
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -103,3 +114,4 @@ jobs:
           path: |
             /tmp/office-workflow-shots
             /tmp/office-workflow-shots-checked
+            /tmp/office-acceptance-shots

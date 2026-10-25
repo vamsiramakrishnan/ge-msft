@@ -3668,3 +3668,76 @@ button.cite:hover {
   align-items: start;
   gap: var(--s2);
 }
+
+.saved-office-task-list,
+.saved-office-task-stages {
+  display: grid;
+  gap: var(--s4);
+  margin: 0;
+  padding-left: var(--s5);
+}
+.saved-office-task-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+.saved-office-task-list > li > div,
+.saved-office-task-inspection,
+.saved-office-task-create form {
+  display: grid;
+  min-width: 0;
+  gap: var(--s3);
+}
+.saved-office-task-list span,
+.saved-office-task-stages span {
+  display: block;
+  color: var(--ink-2);
+  font-size: var(--fz-sm);
+}
+.saved-office-task-inspection h3 {
+  margin: 0;
+  font-size: var(--fz-lg);
+}
+.saved-office-tasks strong,
+.saved-office-tasks span,
+.saved-office-tasks p,
+.saved-office-tasks pre {
+  overflow-wrap: anywhere;
+}
+.saved-office-tasks pre {
+  max-height: 16em;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: var(--fz-sm);
+  padding: var(--s3);
+  background: var(--hover);
+}
+.saved-office-task-warning {
+  padding: var(--s3);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--r);
+  background: var(--warn-tint);
+}
+.saved-office-task-warning ul {
+  margin-bottom: 0;
+  padding-left: var(--s5);
+}
+.saved-office-task-error {
+  color: var(--red);
+}
+.saved-office-task-actions,
+.saved-office-task-attestation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--s2);
+}
+.saved-office-task-attestation {
+  flex-wrap: nowrap;
+}
+.saved-office-task-create form {
+  padding-top: var(--s3);
+}

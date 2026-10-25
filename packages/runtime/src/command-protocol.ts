@@ -385,6 +385,17 @@ export function compileCommand(
       // ADR-0008 §two-tier — the `/<kind>` specialized surface. The kind was validated against the
       // catalogue at parse; per-surface availability is enforced by the plan type-check (its kind must
       // be in manifest.actuations). Map the typed args into the kind's `ActuationParams`.
+      if (
+        cmd.kind === 'fill-content-control' &&
+        new Set(
+          [cmd.props.contentControlId, cmd.props.id, cmd.props.cc].filter(
+            (value) => value !== undefined,
+          ),
+        ).size > 1
+      )
+        return {
+          error: 'Content-control aliases name different objects. Provide one exact native ID.',
+        };
       if (cmd.kind === 'add-shape') {
         // An unknown shape type is refused here, before an approval card.
         const shape = addShapeKind(cmd.props);
@@ -455,6 +466,7 @@ function paramsFromInvoke(
       // UAT 2026-10-16: "AI COE" in bold Arial 16 came out as Aptos 12.
       const font = wordFontFromProps(props);
       if (font) p.textFont = font;
+      if (props.position !== undefined) p.position = props.position;
       break;
     }
     case 'insert-table':
@@ -551,7 +563,10 @@ function paramsFromInvoke(
       };
       break;
     case 'fill-content-control':
-      p.target = { ...(genericTarget ?? {}), contentControlId: props.id ?? props.cc ?? '' };
+      p.target = {
+        ...(genericTarget ?? {}),
+        contentControlId: props.contentControlId ?? props.id ?? props.cc ?? '',
+      };
       break;
     case 'insert-content-control':
       p.contentControl = {

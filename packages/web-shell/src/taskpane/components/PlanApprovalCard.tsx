@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import type { PendingPlan, PlanEffect } from '../../controller.js';
-import { renderCommandLine } from '../../render-command.js';
+import {
+  renderCommandLine,
+  textActuationTargetLabel,
+  textActuationLocation,
+  textActuationChangeLabel,
+} from '../../render-command.js';
 import { kindLabel, uiStrings, type UiLanguage } from '../../ui-language.js';
 
 export interface PlanApprovalCardProps {
@@ -14,6 +19,8 @@ export interface PlanApprovalCardProps {
 
 /** The target label for an effect — the dry-run's resolved target, else the request's target. */
 function effectTarget(effect: PlanEffect): string | undefined {
+  const nativeTextTarget = textActuationTargetLabel(effect.request);
+  if (nativeTextTarget !== undefined) return nativeTextTarget;
   if (effect.dryRun?.target) return effect.dryRun.target;
   const t = effect.request.params.target;
   return t?.range ?? t?.matchText ?? t?.commentId ?? undefined;
@@ -65,6 +72,8 @@ export function effectChange(effect: PlanEffect): string | undefined {
     if (p.mail.body) parts.push(`body: ${p.mail.body}`);
     if (parts.length) return parts.join(' · ');
   }
+  const nativeTextChange = textActuationChangeLabel(effect.request);
+  if (nativeTextChange !== undefined) return nativeTextChange;
   if (after !== undefined && after !== '') return `→ ${after}`;
   if (p.hyperlink?.url) return `link: ${p.hyperlink.url}`;
   if (p.attachment) return `attach: ${p.attachment.name ?? p.attachment.uri ?? 'a file'}`;
@@ -106,6 +115,10 @@ function EffectRow({
   const [open, setOpen] = useState(false);
   const command = renderCommandLine(effect.request);
   const target = effectTarget(effect);
+  const revealTarget =
+    textActuationTargetLabel(effect.request) === undefined
+      ? target
+      : textActuationLocation(effect.request);
   const dry = effect.dryRun;
   const change = effectChange(effect);
   const description = target ?? '';
@@ -138,11 +151,11 @@ function EffectRow({
           {target && (
             <div className="plan-effect-row">
               <span className="k">{t.where}</span>
-              {onRevealTarget ? (
+              {onRevealTarget && revealTarget ? (
                 <button
                   type="button"
                   className="v mono host-target-link"
-                  onClick={() => onRevealTarget(target)}
+                  onClick={() => onRevealTarget(revealTarget)}
                   title="Open this target in the host"
                 >
                   {target}

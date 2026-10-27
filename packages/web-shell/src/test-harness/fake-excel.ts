@@ -141,6 +141,13 @@ export interface ExcelSeed {
    * the top-priority rule — `add()` inserts there).
    */
   conditionalFormats: Map<string, ConditionalFormatSeed[]>;
+  /**
+   * `Worksheet.evaluate(formula)` answers (ExcelApiDesktop 1.1), keyed by the exact formula text;
+   * a formula absent here evaluates to `#NAME?` like an unknown function would.
+   */
+  evaluations?: Record<string, string | number | boolean>;
+  /** Direct precedents/dependents per sheet-qualified address (ExcelApi 1.15). */
+  dependencies?: Record<string, { precedents?: string[]; dependents?: string[] }>;
 }
 
 /** The format facets a `format-cells` effect can set on a range. */
@@ -277,6 +284,27 @@ class FakeRange {
 
   get worksheet(): FakeWorksheet {
     return new FakeWorksheet(this.seed, this.sheetName);
+  }
+  /** ExcelApi 1.15: direct precedents of this range as a WorkbookRangeAreas-like proxy. */
+  getDirectPrecedents(): FakeRangeAreas {
+    return this.dependencyAreas('precedents');
+  }
+  /** ExcelApi 1.15: direct dependents of this range as a WorkbookRangeAreas-like proxy. */
+  getDirectDependents(): FakeRangeAreas {
+    return this.dependencyAreas('dependents');
+  }
+  private dependencyAreas(side: 'precedents' | 'dependents'): FakeRangeAreas {
+    const entry = this.seed.dependencies?.[this.qualifiedAddress()];
+    const addresses = entry?.[side] ?? [];
+    // Office.js raises ItemNotFound for a range with none on this side.
+    if (addresses.length === 0) {
+      const error = new Error(`fake-excel: no ${side} for ${this.qualifiedAddress()}`) as Error & {
+        code: string;
+      };
+      error.code = 'ItemNotFound';
+      throw error;
+    }
+    return { areas: { items: addresses.map((address) => ({ address })), load() {} }, load() {} };
   }
   /** ExcelApi 1.7: the contiguous data around this range — the sheet's used range here. */
   getSurroundingRegion(): FakeRange {
@@ -577,7 +605,11 @@ class FakeTable {
     private readonly seed: ExcelSeed,
     readonly name: string,
     readonly range: string,
+    readonly isNullObject = false,
   ) {}
+  load(_props?: string): this {
+    return this;
+  }
   getRange(): FakeRange {
     const bang = this.range.lastIndexOf('!');
     const sheetName = bang >= 0 ? unquote(this.range.slice(0, bang)) : this.seed.activeSheet;
@@ -588,10 +620,49 @@ class FakeTable {
 
 class FakeTableCollection {
   items: FakeTable[] = [];
+  /** Set by `trackRanges`; lets a looked-up table's `delete()` commit at the batch's sync. */
+  tracker: Tracker | undefined;
   constructor(private readonly seed: ExcelSeed) {}
   load(_props?: string): this {
     this.items = this.seed.tables.map((t) => new FakeTable(this.seed, t.name, t.range));
     return this;
+  }
+  /** `getItemOrNullObject(name)` — the table by its host-minted name, or a null object. */
+  getItemOrNullObject(name: string): FakeLookedUpTable {
+    const found = this.seed.tables.find((t) => t.name === name);
+    const table = new FakeLookedUpTable(this.seed, found);
+    return this.tracker ? this.tracker.object(table) : table;
+  }
+}
+
+/** A table found by name: `delete()` queues its removal, committed at the next `sync()`. */
+class FakeLookedUpTable implements Syncable {
+  private readonly gate = new LoadGate('Table');
+  private deleted = false;
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly record: TableSeed | undefined,
+  ) {}
+  get isNullObject(): boolean {
+    this.gate.require('isNullObject');
+    return this.record === undefined;
+  }
+  load(props?: string): this {
+    this.gate.load(props);
+    return this;
+  }
+  delete(): void {
+    if (!this.record) throw new Error('fake-excel: delete on a null-object table');
+    this.deleted = true;
+  }
+  flushLoads(): void {
+    this.gate.flush();
+  }
+  commit(): void {
+    if (!this.deleted || !this.record) return;
+    this.deleted = false; // one removal per queued delete, however many syncs follow
+    const i = this.seed.tables.indexOf(this.record);
+    if (i >= 0) this.seed.tables.splice(i, 1);
   }
 }
 
@@ -684,19 +755,26 @@ class FakeChartSeriesCollection {
 /** A chart created by `sheet.charts.add` — committed into `seed.charts` at the next `sync()`. */
 class FakeChart implements Syncable {
   private readonly gate = new LoadGate('Chart');
-  private committed = false;
+  private committed: boolean;
   private deleted = false;
   readonly title = { text: undefined as string | undefined };
   readonly series: FakeChartSeriesCollection;
   constructor(
     private readonly seed: ExcelSeed,
     private readonly record: ChartSeed,
+    /** True for a chart looked up by name (already in the seed): commit never re-adds it. */
+    existing = false,
   ) {
     this.series = new FakeChartSeriesCollection(record.series);
+    this.committed = existing;
   }
   get name(): string {
     this.gate.require('name');
     return this.record.name;
+  }
+  get isNullObject(): boolean {
+    this.gate.require('isNullObject');
+    return false;
   }
   load(props?: string): this {
     this.gate.load(props);
@@ -724,12 +802,42 @@ class FakeChart implements Syncable {
   }
 }
 
+/** The null object `charts.getItemOrNullObject` yields for a name no chart on the sheet carries. */
+class FakeNullChart implements Syncable {
+  private readonly gate = new LoadGate('Chart');
+  get isNullObject(): boolean {
+    this.gate.require('isNullObject');
+    return true;
+  }
+  load(props?: string): this {
+    this.gate.load(props);
+    return this;
+  }
+  delete(): void {
+    throw new Error('fake-excel: delete on a null-object chart');
+  }
+  flushLoads(): void {
+    this.gate.flush();
+  }
+  commit(): void {}
+}
+
 class FakeChartCollection {
   constructor(
     private readonly seed: ExcelSeed,
     private readonly sheetName: string,
     private readonly tracker: Tracker | undefined,
   ) {}
+  /** `getItemOrNullObject(name)` — a chart on this sheet by its host-minted name, or a null object. */
+  getItemOrNullObject(name: string): FakeChart | FakeNullChart {
+    const found = this.seed.charts.find((c) => c.name === name && c.sheet === this.sheetName);
+    if (!found) {
+      const missing = new FakeNullChart();
+      return this.tracker ? this.tracker.object(missing) : missing;
+    }
+    const chart = new FakeChart(this.seed, found, true);
+    return this.tracker ? this.tracker.object(chart) : chart;
+  }
   add(type: string, sourceData: FakeRange, seriesBy?: string): FakeChart {
     const source = sourceData.qualifiedAddress();
     const record: ChartSeed = {
@@ -832,6 +940,37 @@ class FakeConditionalFormatCollection {
     const cf = new FakeConditionalFormat(this.seed, this.address, type);
     return this.tracker ? this.tracker.object(cf) : cf;
   }
+  /** `getItemAt(index)` — the rule at that ordinal; its `delete()` commits at the next `sync()`. */
+  getItemAt(index: number): FakeConditionalFormatItem {
+    const item = new FakeConditionalFormatItem(this.seed, this.address, index);
+    return this.tracker ? this.tracker.object(item) : item;
+  }
+}
+
+/** An existing conditional-format rule addressed by ordinal; only `delete()` is modelled. */
+class FakeConditionalFormatItem implements Syncable {
+  private deleted = false;
+  constructor(
+    private readonly seed: ExcelSeed,
+    private readonly address: string,
+    private readonly index: number,
+  ) {}
+  delete(): void {
+    this.deleted = true;
+  }
+  flushLoads(): void {}
+  private committed = false;
+  commit(): void {
+    if (!this.deleted || this.committed) return;
+    this.committed = true;
+    const list = this.seed.conditionalFormats.get(this.address) ?? [];
+    if (this.index < 0 || this.index >= list.length)
+      throw Object.assign(new Error('fake-excel: ItemNotFound — no conditional format at index'), {
+        code: 'ItemNotFound',
+      });
+    list.splice(this.index, 1);
+    this.seed.conditionalFormats.set(this.address, list);
+  }
 }
 
 class FakeWorksheet {
@@ -879,6 +1018,22 @@ class FakeWorksheet {
     if (this.isNullObject) return new FakeRange(this.seed, this.seed.activeSheet, 'A1', true);
     return new FakeRange(this.seed, this.name, a1.replace(/\$/g, ''));
   }
+  /**
+   * ExcelApiDesktop 1.1 `evaluate(formula)`: a ClientResult readable after the next sync. Answers
+   * come from the seed's `evaluations`; an unknown formula evaluates to `#NAME?`.
+   */
+  evaluate(formula: string): FakeClientResult<string | number | boolean> {
+    const result = new FakeClientResult<string | number | boolean>(
+      () => this.seed.evaluations?.[formula] ?? '#NAME?',
+    );
+    return this.tracker ? this.tracker.object(result) : result;
+  }
+}
+
+/** The `WorkbookRangeAreas`-like shape `getDirectPrecedents`/`getDirectDependents` return. */
+export interface FakeRangeAreas {
+  areas: { items: Array<{ address: string }>; load(props?: string): void };
+  load(props?: string): void;
 }
 
 /** A registered Office.js event handler with a `.remove()` (the `EventHandlerResult` shape). */
@@ -1032,6 +1187,16 @@ class FakeWorkbook {
   readonly tables: FakeTableCollection;
   readonly names: FakeNamedItemCollection;
   readonly comments: FakeCommentCollection;
+  /** Pivots are not modelled by this simulator; every lookup is a null object (ExcelApi 1.3). */
+  readonly pivotTables = {
+    getItemOrNullObject: (_name: string) => ({
+      isNullObject: true,
+      load(_props?: string): void {},
+      delete(): void {
+        throw new Error('fake-excel: delete on a null-object pivot');
+      },
+    }),
+  };
   constructor(private readonly seed: ExcelSeed) {
     this.worksheets = new FakeWorksheetCollection(seed);
     this.tables = new FakeTableCollection(seed);
@@ -1086,6 +1251,7 @@ function trackRanges(workbook: FakeWorkbook, touched: Syncable[]): FakeWorkbook 
     if (value instanceof FakeRange) touched.push(value);
     return value;
   };
+  workbook.tables.tracker = tracker;
   // Patch the range-producing seams: getSelectedRange, worksheet.getRange/getUsedRange*, getCell.
   const origSelected = workbook.getSelectedRange.bind(workbook);
   workbook.getSelectedRange = () => register(origSelected());
@@ -1312,6 +1478,8 @@ export function excelSeed(init: {
   tables?: TableSeed[];
   namedRanges?: NamedRangeSeed[];
   comments?: CommentSeed[];
+  evaluations?: Record<string, string | number | boolean>;
+  dependencies?: Record<string, { precedents?: string[]; dependents?: string[] }>;
 }): ExcelSeed {
   const first = init.sheets[0];
   if (!first) throw new Error('excelSeed: at least one sheet is required');
@@ -1326,6 +1494,8 @@ export function excelSeed(init: {
     formats: new Map<string, RangeFormatSeed>(),
     charts: [],
     conditionalFormats: new Map<string, ConditionalFormatSeed[]>(),
+    ...(init.evaluations ? { evaluations: init.evaluations } : {}),
+    ...(init.dependencies ? { dependencies: init.dependencies } : {}),
   };
 }
 

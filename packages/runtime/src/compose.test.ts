@@ -345,3 +345,280 @@ describe('evalExpr — end to end', () => {
     expect(out).toMatchObject({ error: expect.stringContaining("can't be composed") });
   });
 });
+
+/* ───────────────────────────── C1 richer algebra ───────────────────────────── */
+
+describe('C1 — filter boolean predicates', () => {
+  const rows = (v: Value | { error: string }) =>
+    'error' in v ? v : v.kind === 'table' ? v.rows.map((r) => r[2]) : v;
+
+  it('keeps single-predicate syntax unchanged', () => {
+    expect(rows(TRANSFORMS.filter!(SALES, 'region=East'))).toEqual(['Ann', 'Cy']);
+  });
+
+  it('and / or / not with precedence (not > and > or)', () => {
+    expect(rows(TRANSFORMS.filter!(SALES, 'region=East and amount>=100'))).toEqual(['Ann']);
+    expect(rows(TRANSFORMS.filter!(SALES, 'region=West or region=North'))).toEqual(['Bob', 'Dee']);
+    expect(rows(TRANSFORMS.filter!(SALES, 'not region=East'))).toEqual(['Bob', 'Dee']);
+    // `a or b and c` = `a or (b and c)`
+    expect(rows(TRANSFORMS.filter!(SALES, 'region=West or region=East and amount<100'))).toEqual([
+      'Bob',
+      'Cy',
+    ]);
+  });
+
+  it('parentheses override precedence', () => {
+    expect(rows(TRANSFORMS.filter!(SALES, '(region=West or region=East) and amount<100'))).toEqual([
+      'Cy',
+    ]);
+    expect(rows(TRANSFORMS.filter!(SALES, 'not (region=East or region=West)'))).toEqual(['Dee']);
+  });
+
+  it('quoted values keep keywords and spaces as data', () => {
+    const t = table(['title'], [['rock and roll'], ['jazz']]);
+    expect(TRANSFORMS.filter!(t, 'title contains "and roll"')).toMatchObject({
+      rows: [['rock and roll']],
+    });
+    expect(TRANSFORMS.filter!(t, 'title = "rock and roll"')).toMatchObject({
+      rows: [['rock and roll']],
+    });
+  });
+
+  it('malformed predicates are corrective', () => {
+    expect(TRANSFORMS.filter!(SALES, 'region=East and')).toMatchObject({
+      error: expect.stringContaining('ends early'),
+    });
+    expect(TRANSFORMS.filter!(SALES, '(region=East')).toMatchObject({
+      error: expect.stringContaining('missing )'),
+    });
+    expect(TRANSFORMS.filter!(SALES, 'region=East)')).toMatchObject({
+      error: expect.stringContaining('unexpected ")"'),
+    });
+    expect(TRANSFORMS.filter!(SALES, 'nope=1 or region=East')).toMatchObject({
+      error: expect.stringContaining('unknown column "nope"'),
+    });
+  });
+});
+
+describe('C1 — join / group / distinct / rename', () => {
+  const REPS = table(
+    ['rep', 'team', 'amount'],
+    [
+      ['Ann', 'A', '1'],
+      ['Bob', 'B', '2'],
+      ['Bob', 'B2', '3'],
+    ],
+  );
+  const ctx = { env: new Map<string, Value>([['reps', REPS]]) };
+
+  it('join is inner by default, one row per match, right key dropped, collisions suffixed', () => {
+    const out = TRANSFORMS.join!(SALES, '$reps on rep', ctx);
+    expect(out).toEqual(
+      table(
+        ['region', 'amount', 'rep', 'team', 'amount_2'],
+        [
+          ['East', '100', 'Ann', 'A', '1'],
+          ['West', '250', 'Bob', 'B', '2'],
+          ['West', '250', 'Bob', 'B2', '3'],
+        ],
+      ),
+    );
+  });
+
+  it('join left keeps unmatched rows with blanks; `on a=b` maps differing key names', () => {
+    const other = table(['name', 'team'], [['Ann', 'A']]);
+    const out = TRANSFORMS.join!(SALES, '$o on rep=name left', { env: new Map([['o', other]]) });
+    expect(out).toMatchObject({
+      columns: ['region', 'amount', 'rep', 'team'],
+      rows: [
+        ['East', '100', 'Ann', 'A'],
+        ['West', '250', 'Bob', ''],
+        ['East', '50', 'Cy', ''],
+        ['North', '300', 'Dee', ''],
+      ],
+    });
+  });
+
+  it('join errors: unbound, non-table, unknown columns, malformed', () => {
+    expect(TRANSFORMS.join!(SALES, '$nope on rep', ctx)).toMatchObject({
+      error: expect.stringContaining('unbound'),
+    });
+    expect(
+      TRANSFORMS.join!(SALES, '$n on rep', { env: new Map([['n', { kind: 'number', value: 1 }]]) }),
+    ).toMatchObject({
+      error: expect.stringContaining('not a table'),
+    });
+    expect(TRANSFORMS.join!(SALES, '$reps on zzz', ctx)).toMatchObject({
+      error: expect.stringContaining('unknown column "zzz"'),
+    });
+    expect(TRANSFORMS.join!(SALES, '$reps on rep=zzz', ctx)).toMatchObject({
+      error: expect.stringContaining('"zzz" in $reps'),
+    });
+    expect(TRANSFORMS.join!(SALES, 'reps on rep', ctx)).toMatchObject({
+      error: expect.stringContaining('join usage'),
+    });
+  });
+
+  it('group aggregates per key in first-appearance order', () => {
+    const out = TRANSFORMS.group!(
+      SALES,
+      'region agg sum(amount) as total, count(*) as n, avg(amount) as mean',
+    );
+    expect(out).toEqual(
+      table(
+        ['region', 'total', 'n', 'mean'],
+        [
+          ['East', '150', '2', '75'],
+          ['West', '250', '1', '250'],
+          ['North', '300', '1', '300'],
+        ],
+      ),
+    );
+  });
+
+  it('group errors: unknown column, bad aggregate, duplicate output, no numeric values', () => {
+    expect(TRANSFORMS.group!(SALES, 'zzz agg sum(amount) as t')).toMatchObject({
+      error: expect.stringContaining('unknown column "zzz"'),
+    });
+    expect(TRANSFORMS.group!(SALES, 'region agg median(amount) as t')).toMatchObject({
+      error: expect.stringContaining('malformed aggregate'),
+    });
+    expect(TRANSFORMS.group!(SALES, 'region agg sum(amount) as region')).toMatchObject({
+      error: expect.stringContaining('duplicate output'),
+    });
+    expect(TRANSFORMS.group!(SALES, 'region agg sum(rep) as t')).toMatchObject({
+      error: expect.stringContaining('no numeric values'),
+    });
+    expect(TRANSFORMS.group!(SALES, 'region')).toMatchObject({
+      error: expect.stringContaining('group usage'),
+    });
+  });
+
+  it('distinct over whole rows and over a projection', () => {
+    expect(TRANSFORMS.distinct!(SALES, 'region')).toEqual(
+      table(['region'], [['East'], ['West'], ['North']]),
+    );
+    const dup = table(['a'], [['1'], ['1'], ['2']]);
+    expect(TRANSFORMS.distinct!(dup, '')).toEqual(table(['a'], [['1'], ['2']]));
+    expect(TRANSFORMS.distinct!(SALES, 'zzz')).toMatchObject({
+      error: expect.stringContaining('distinct: unknown column'),
+    });
+  });
+
+  it('rename columns; refuses unknown sources and existing targets', () => {
+    expect(TRANSFORMS.rename!(SALES, 'region=Region, amount=Total')).toMatchObject({
+      columns: ['Region', 'Total', 'rep'],
+    });
+    expect(TRANSFORMS.rename!(SALES, 'zzz=a')).toMatchObject({
+      error: expect.stringContaining('unknown column'),
+    });
+    expect(TRANSFORMS.rename!(SALES, 'region=rep')).toMatchObject({
+      error: expect.stringContaining('already exists'),
+    });
+    expect(TRANSFORMS.rename!(SALES, 'region')).toMatchObject({
+      error: expect.stringContaining('malformed pair'),
+    });
+  });
+});
+
+describe('C1 — derive functions', () => {
+  const T = table(
+    ['name', 'amount', 'start', 'end'],
+    [
+      [' ann ', '1.2345', '2026-01-01', '2026-01-31'],
+      ['Bob', '2', '2026-03-15', '2026-03-15'],
+    ],
+  );
+  const col = (v: Value | { error: string }) =>
+    'error' in v ? v : v.kind === 'table' ? v.rows.map((r) => r.at(-1)) : v;
+
+  it('text functions', () => {
+    expect(col(TRANSFORMS.derive!(T, 'u = upper(name)'))).toEqual([' ANN ', 'BOB']);
+    expect(col(TRANSFORMS.derive!(T, 'l = lower(name)'))).toEqual([' ann ', 'bob']);
+    expect(col(TRANSFORMS.derive!(T, 't = trim(name)'))).toEqual(['ann', 'Bob']);
+    expect(col(TRANSFORMS.derive!(T, 'n = len(name)'))).toEqual(['5', '3']);
+    expect(col(TRANSFORMS.derive!(T, 'c = concat(name, " - ", amount)'))).toEqual([
+      ' ann  - 1.2345',
+      'Bob - 2',
+    ]);
+  });
+
+  it('round and the date functions', () => {
+    expect(col(TRANSFORMS.derive!(T, 'r = round(amount, 2)'))).toEqual(['1.23', '2']);
+    expect(col(TRANSFORMS.derive!(T, 'r = round(amount)'))).toEqual(['1', '2']);
+    expect(col(TRANSFORMS.derive!(T, 'y = year(start)'))).toEqual(['2026', '2026']);
+    expect(col(TRANSFORMS.derive!(T, 'm = month(start)'))).toEqual(['1', '3']);
+    expect(col(TRANSFORMS.derive!(T, 'd = day(end)'))).toEqual(['31', '15']);
+    expect(col(TRANSFORMS.derive!(T, 'days = datediff(end, start)'))).toEqual(['30', '0']);
+  });
+
+  it('the arithmetic form is unchanged', () => {
+    expect(col(TRANSFORMS.derive!(T, 'double = amount * 2'))).toEqual(['2.469', '4']);
+  });
+
+  it('errors: unknown function, arity, non-numeric, non-date, unknown arg', () => {
+    expect(TRANSFORMS.derive!(T, 'x = median(amount)')).toMatchObject({
+      error: expect.stringContaining('unknown function'),
+    });
+    expect(TRANSFORMS.derive!(T, 'x = datediff(start)')).toMatchObject({
+      error: expect.stringContaining('takes 2'),
+    });
+    expect(TRANSFORMS.derive!(T, 'x = round(name)')).toMatchObject({
+      error: expect.stringContaining('non-numeric'),
+    });
+    expect(TRANSFORMS.derive!(T, 'x = year(name)')).toMatchObject({
+      error: expect.stringContaining('not a date'),
+    });
+    expect(TRANSFORMS.derive!(T, 'x = upper(zzz)')).toMatchObject({
+      error: expect.stringContaining('unknown column or literal'),
+    });
+  });
+});
+
+describe('C1 — literal sources evaluate without a host read', () => {
+  it('number / text / table literals and a $var join', async () => {
+    const env = new Map<string, Value>();
+    const run = fakeRunRead({});
+    expect(await evalExpr(parseExpressionLine('let $n = 5') as never, env, run)).toEqual({
+      kind: 'number',
+      value: 5,
+    });
+    expect(await evalExpr(parseExpressionLine('let $s = "hi"') as never, env, run)).toEqual({
+      kind: 'text',
+      value: 'hi',
+    });
+    expect(
+      await evalExpr(
+        parseExpressionLine('let $t = table [["a","b"],["1","x"],["2","y"]]') as never,
+        env,
+        run,
+      ),
+    ).toEqual(
+      table(
+        ['a', 'b'],
+        [
+          ['1', 'x'],
+          ['2', 'y'],
+        ],
+      ),
+    );
+    expect(
+      await evalExpr(parseExpressionLine('$t | filter a>1 | count') as never, env, run),
+    ).toEqual({
+      kind: 'number',
+      value: 1,
+    });
+    await evalExpr(parseExpressionLine('let $o = table [["a","c"],["1","Z"]]') as never, env, run);
+    expect(
+      await evalExpr(parseExpressionLine('$t | join $o on a left') as never, env, run),
+    ).toEqual(
+      table(
+        ['a', 'b', 'c'],
+        [
+          ['1', 'x', 'Z'],
+          ['2', 'y', ''],
+        ],
+      ),
+    );
+  });
+});

@@ -21,6 +21,12 @@
  *   - `shape.textFrame.textRange` → `.text` (read AND write), `.font.bold/italic/underline/color/
  *     size/name` (read AND write), `.getSubstring(start, length).font` (the whole range's font).
  *   - `ctx.presentation.insertSlidesFromBase64(b64)` (prebuilt-deck WRITE).
+ *   - `ctx.presentation.bindings.add(shape, 'Shape', id)` / `.getItemOrNullObject(id)` →
+ *     `binding.getShape()` (PowerPointApi 1.8, WRITE); `shape.getParentSlide()` (1.5).
+ *   - `shape.tags` / `slide.tags` → `.add(key, value)` (upper-cased keys, 1.3, WRITE),
+ *     `.getItemOrNullObject(key)`, `.delete(key)`.
+ *   - `slide.getImageAsBase64({ width })` (1.8) / `shape.getImageAsBase64({ width })` (1.10): a
+ *     fixed 1×1 PNG ({@link FAKE_PNG_BASE64}).
  *   - `Office.context.document.addHandlerAsync(...)` for selection/view events (shared Office fake).
  *
  * Fidelity notes / boundary:
@@ -90,12 +96,23 @@ export interface ShapeSeed {
   table?: string[][];
   /** Header-row fill from `TableAddOptions.specificCellProperties` (row 0), as the host was given. */
   tableHeaderFill?: string;
+  /** `Shape.tags` (PowerPointApi 1.3), keys upper-cased like the host. */
+  tags?: Record<string, string>;
 }
 
 /** A slide: a stable id + its shapes (title shape first, by layout convention). */
 export interface SlideSeed {
   id: string;
   shapes: ShapeSeed[];
+  /** `Slide.tags` (PowerPointApi 1.3), keys upper-cased like the host. */
+  tags?: Record<string, string>;
+}
+
+/** One `Presentation.bindings` entry: the id → the shape it was added for. */
+export interface BindingSeed {
+  id: string;
+  slideId: string;
+  shapeId: string;
 }
 
 /** The deck seed: ordered slides + the indices currently selected. */
@@ -105,7 +122,13 @@ export interface PowerPointSeed {
   selectedIndices: number[];
   /** Recorded base64 decks merged via `insertSlidesFromBase64`. */
   insertedDecks: string[];
+  /** `Presentation.bindings` (PowerPointApi 1.8), in the order they were added. */
+  bindings?: BindingSeed[];
 }
+
+/** A 1×1 PNG: what every fake `getImageAsBase64` renders. */
+export const FAKE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
 /* ─────────────────────────── fake object model ─────────────────────────── */
 
@@ -121,6 +144,39 @@ const TEXT_FRAME_TYPES: ReadonlySet<string> = new Set([
 /** An Office.js-style host error (`OfficeExtension.Error` carries a string `code`). */
 function hostError(code: string, message: string): Error {
   return Object.assign(new Error(`fake-powerpoint: ${message}`), { code });
+}
+
+/** Like the host: an API from a newer requirement set than the host's is refused (`ApiNotFound`). */
+function requireApi(version: string, what: string): void {
+  const office = (
+    globalThis as {
+      Office?: { context?: { requirements?: { isSetSupported(n: string, v?: string): boolean } } };
+    }
+  ).Office;
+  if (!office?.context?.requirements?.isSetSupported('PowerPointApi', version))
+    throw hostError('ApiNotFound', `${what} requires PowerPointApi ${version}`);
+}
+
+/** `TagCollection` (PowerPointApi 1.3) over a shape's or slide's `tags` seed. */
+class FakeTagCollection {
+  constructor(private readonly owner: { tags?: Record<string, string> }) {}
+  load(_props?: string): this {
+    return this;
+  }
+  get items(): Array<{ key: string; value: string }> {
+    return Object.entries(this.owner.tags ?? {}).map(([key, value]) => ({ key, value }));
+  }
+  add(key: string, value: string): void {
+    requireApi('1.3', 'Tag');
+    (this.owner.tags ??= {})[key.toUpperCase()] = value;
+  }
+  getItemOrNullObject(key: string): { key: string; value: string; isNullObject: boolean } {
+    const value = this.owner.tags?.[key.toUpperCase()];
+    return { key: key.toUpperCase(), value: value ?? '', isNullObject: value === undefined };
+  }
+  delete(key: string): void {
+    delete this.owner.tags?.[key.toUpperCase()];
+  }
 }
 
 function shapeIdTaken(slide: SlideSeed, id: string): boolean {
@@ -279,12 +335,34 @@ class FakeShape {
   constructor(
     private readonly slide: SlideSeed,
     readonly shape: ShapeSeed,
+    /** The deck, for `getParentSlide()`; absent for a shape reached without one. */
+    private readonly seed?: PowerPointSeed,
   ) {}
   load(_props?: string): this {
     return this;
   }
   get id(): string {
     return this.shape.id ?? '';
+  }
+  /** The owning slide's id (so a binding can record where the shape lives). */
+  get slideId(): string {
+    return this.slide.id;
+  }
+  /** `Shape.tags` (PowerPointApi 1.3). */
+  get tags(): FakeTagCollection {
+    return new FakeTagCollection(this.shape);
+  }
+  /** `Shape.getImageAsBase64` (PowerPointApi 1.10): a fixed 1×1 PNG. */
+  getImageAsBase64(_options?: { width?: number }): { value: string } {
+    requireApi('1.10', 'Shape.getImageAsBase64');
+    return { value: FAKE_PNG_BASE64 };
+  }
+  /** `Shape.getParentSlide()` (PowerPointApi 1.5). */
+  getParentSlide(): FakeSlide {
+    const index = this.seed?.slides.indexOf(this.slide) ?? -1;
+    if (!this.seed || index < 0)
+      throw hostError('ItemNotFound', `shape ${this.id} has no parent slide`);
+    return new FakeSlide(this.seed, this.slide, index);
   }
   get type(): string {
     return this.shape.type ?? 'TextBox';
@@ -354,6 +432,12 @@ class FakeShape {
     }
     return new FakeTable(this.shape.table);
   }
+  /** `Shape.delete()` (PowerPointApi 1.3): removes the shape from its slide. */
+  delete(): void {
+    const at = this.slide.shapes.indexOf(this.shape);
+    if (at < 0) throw hostError('ItemNotFound', `shape ${this.shape.id ?? ''} is gone`);
+    this.slide.shapes.splice(at, 1);
+  }
   /** Reorder within the slide's shape list (list order is z-order, back to front). */
   setZOrder(position: string): void {
     const shapes = this.slide.shapes;
@@ -393,9 +477,12 @@ interface FakeAddOptions {
 
 class FakeShapeCollection {
   items: FakeShape[];
-  constructor(private readonly slide: SlideSeed) {
+  constructor(
+    private readonly slide: SlideSeed,
+    private readonly seed?: PowerPointSeed,
+  ) {
     ensureShapeIds(slide);
-    this.items = slide.shapes.map((s) => new FakeShape(slide, s));
+    this.items = slide.shapes.map((s) => new FakeShape(slide, s, seed));
   }
   load(_props?: string): this {
     return this;
@@ -406,16 +493,16 @@ class FakeShapeCollection {
   getItemAt(index: number): FakeShape {
     const shape = this.slide.shapes[index];
     if (!shape) throw hostError('ItemNotFound', `no shape at index ${index}`);
-    return new FakeShape(this.slide, shape);
+    return new FakeShape(this.slide, shape, this.seed);
   }
   getItem(id: string): FakeShape {
     const shape = this.slide.shapes.find((s) => s.id === id);
     if (!shape) throw hostError('ItemNotFound', `no shape ${id}`);
-    return new FakeShape(this.slide, shape);
+    return new FakeShape(this.slide, shape, this.seed);
   }
   getItemOrNullObject(id: string): FakeShape | FakeNullShape {
     const shape = this.slide.shapes.find((s) => s.id === id);
-    return shape ? new FakeShape(this.slide, shape) : new FakeNullShape();
+    return shape ? new FakeShape(this.slide, shape, this.seed) : new FakeNullShape();
   }
   addTextBox(text: string, options?: FakeAddOptions): FakeShape {
     return this.append({ text, type: 'TextBox', ...geometry(options) });
@@ -450,7 +537,7 @@ class FakeShapeCollection {
   private append(shape: ShapeSeed): FakeShape {
     shape.id = mintShapeId(this.slide);
     this.slide.shapes.push(shape);
-    const added = new FakeShape(this.slide, shape);
+    const added = new FakeShape(this.slide, shape, this.seed);
     this.items = [...this.items, added];
     return added;
   }
@@ -479,7 +566,22 @@ class FakeSlide {
     return this;
   }
   get shapes(): FakeShapeCollection {
-    return new FakeShapeCollection(this.slide);
+    return new FakeShapeCollection(this.slide, this.seed);
+  }
+  /** `Slide.tags` (PowerPointApi 1.3). */
+  get tags(): FakeTagCollection {
+    return new FakeTagCollection(this.slide);
+  }
+  /** `Slide.getImageAsBase64` (PowerPointApi 1.8): a fixed 1×1 PNG. */
+  getImageAsBase64(_options?: { width?: number }): { value: string } {
+    requireApi('1.8', 'Slide.getImageAsBase64');
+    return { value: FAKE_PNG_BASE64 };
+  }
+  /** `Slide.delete()` (PowerPointApi 1.2): removes the slide from the deck. */
+  delete(): void {
+    const at = this.seed.slides.indexOf(this.slide);
+    if (at < 0) throw hostError('ItemNotFound', `slide ${this.slide.id} is gone`);
+    this.seed.slides.splice(at, 1);
   }
   /** Move this slide to zero-based `index` (clamped to the deck). */
   moveTo(index: number): void {
@@ -526,10 +628,65 @@ class FakeSlideCollection {
   }
 }
 
+/** `Binding` (PowerPointApi 1.8): resolves back to the shape it was added for. */
+class FakeBinding {
+  readonly id: string;
+  readonly isNullObject: boolean;
+  constructor(
+    private readonly seed: PowerPointSeed,
+    private readonly entry: BindingSeed | undefined,
+    id: string,
+  ) {
+    this.id = entry?.id ?? id;
+    this.isNullObject = entry === undefined;
+  }
+  load(_props?: string): this {
+    return this;
+  }
+  getShape(): FakeShape {
+    const slide = this.seed.slides.find((candidate) => candidate.id === this.entry?.slideId);
+    const shape = slide?.shapes.find((candidate) => candidate.id === this.entry?.shapeId);
+    if (!slide || !shape) throw hostError('ItemNotFound', `binding ${this.id} has no shape`);
+    return new FakeShape(slide, shape, this.seed);
+  }
+}
+
+/** `BindingCollection` (PowerPointApi 1.8) over {@link PowerPointSeed.bindings}. */
+class FakeBindingCollection {
+  constructor(private readonly seed: PowerPointSeed) {}
+  load(_props?: string): this {
+    return this;
+  }
+  get items(): FakeBinding[] {
+    return (this.seed.bindings ?? []).map((entry) => new FakeBinding(this.seed, entry, entry.id));
+  }
+  add(shape: FakeShape, _bindingType: string, id: string): FakeBinding {
+    requireApi('1.8', 'Binding');
+    const bindings = (this.seed.bindings ??= []);
+    if (bindings.some((entry) => entry.id === id))
+      throw hostError('InvalidArgument', `binding ${id} already exists`);
+    const entry = { id, slideId: shape.slideId, shapeId: shape.id };
+    bindings.push(entry);
+    return new FakeBinding(this.seed, entry, id);
+  }
+  getItemOrNullObject(id: string): FakeBinding {
+    requireApi('1.8', 'Binding');
+    return new FakeBinding(
+      this.seed,
+      this.seed.bindings?.find((entry) => entry.id === id),
+      id,
+    );
+  }
+}
+
 class FakePresentation {
   constructor(private readonly seed: PowerPointSeed) {}
   get slides(): FakeSlideCollection {
     return new FakeSlideCollection(this.seed);
+  }
+  /** `Presentation.bindings` (PowerPointApi 1.8). */
+  get bindings(): FakeBindingCollection {
+    return new FakeBindingCollection(this.seed);
   }
   getSelectedSlides(): FakeSlideCollection {
     const all = new FakeSlideCollection(this.seed);

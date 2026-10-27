@@ -50,6 +50,33 @@ describe('TriggerRegistry.dispatch', () => {
     expect(handle).toHaveBeenCalledOnce();
   });
 
+  it('matches Word annotation events by type and reads the popup action (C2)', async () => {
+    const reg = new TriggerRegistry();
+    const handle = vi.fn((e: HostEvent) =>
+      e.type === 'annotation-action'
+        ? ({ kind: 'suggest', title: `${e.action} ${e.annotationId}` } as const)
+        : ({ kind: 'continue' } as const),
+    );
+    reg.register({ id: 'critique-action', on: 'annotation-action', handle });
+    const out = await reg.dispatch({
+      type: 'annotation-action',
+      surface: 'word',
+      origin: 'local',
+      annotationId: 'a1',
+      action: 'Accept',
+      suggestion: '99.9%',
+    });
+    expect(out).toEqual([{ kind: 'suggest', title: 'Accept a1' }]);
+    // A click is a different event type: the action trigger stays quiet.
+    await reg.dispatch({
+      type: 'annotation-clicked',
+      surface: 'word',
+      origin: 'local',
+      annotationId: 'a1',
+    });
+    expect(handle).toHaveBeenCalledOnce();
+  });
+
   it('honors ignoreRemote:false and a match predicate', async () => {
     const reg = new TriggerRegistry();
     const handle = vi.fn(() => ({ kind: 'automate', query: 'x' }) as const);

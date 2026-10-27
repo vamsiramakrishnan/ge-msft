@@ -72,6 +72,9 @@ jobs:
       - name: deterministic eval gate (recall / false-positives)
         working-directory: skill
         run: python3 eval/eval_harness.py
+      - name: evaluation matrix (base · commander · commander+cli)
+        working-directory: skill
+        run: python3 eval/matrix_harness.py
 
   browser-contracts:
     name: IndexedDB cross-pane contracts

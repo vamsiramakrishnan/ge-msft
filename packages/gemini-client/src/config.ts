@@ -46,6 +46,14 @@ export interface GeminiClientConfig {
   /** Signed-in user identity (e.g. "v.k@acme") for provenance stamping. */
   identity?: string;
   /**
+   * Transport resilience for `streamAssist`. The circuit breaker opens after `threshold` POST
+   * failures within `windowMs` and fails turns fast with `circuit_open` for `cooldownMs`, then lets
+   * one probe through. Default on (5 failures / 60 s, 30 s cooldown); `false` disables it.
+   */
+  resilience?: {
+    circuitBreaker?: false | { threshold?: number; cooldownMs?: number; windowMs?: number };
+  };
+  /**
    * Branded assistant name (e.g. "ContosoAI"). When set, every turn tells the model to call itself
    * this, never the engine's default "Gemini Enterprise". Unset → the engine's default persona.
    */

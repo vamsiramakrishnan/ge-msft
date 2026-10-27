@@ -2568,6 +2568,12 @@ button.cite:hover {
   font-weight: 600;
   color: var(--ink);
 }
+/* B1 — which approval phase of a mixed-authority plan this card decides. */
+.plan-approval-phase {
+  margin-top: var(--sp-1);
+  font-size: var(--fz-xs);
+  color: var(--ink-2);
+}
 .plan-effect-kind {
   justify-self: start;
   font-size: var(--fz-xs);
@@ -2618,6 +2624,10 @@ button.cite:hover {
   font-size: var(--fz-md);
   color: var(--ink);
   overflow-wrap: anywhere;
+}
+/* One evaluated formula per line: `Sales!D2 = 620`, stacked under "Evaluates to". */
+.plan-effect-eval {
+  display: block;
 }
 .host-target-link {
   width: fit-content;

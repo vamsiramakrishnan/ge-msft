@@ -96,7 +96,21 @@ no tracked-change model, so structural writes are pure wins.
 | Literal-list validation | `set-data-validation` | A | `Range.dataValidation` (1.8) | not-reversible | **hard** | `/set-data-validation` | bounded native variant |
 | Worksheet lifecycle | `manage-worksheet` | A | worksheet add/name/activate/protection | not-reversible | **hard** | `/manage-worksheet` | create/rename/activate/protect |
 | Linked-entity card | `set-entity-card` | A | linked data types | restore-values | yes | — | limited |
+| Evaluate before write | *(preview of `write-cells`)* | A | `Worksheet.evaluate` (ExcelApiDesktop 1.1) | none (no write) | — | approval card "Evaluates to" | ✅ shipped (desktop only; ≤20 formulas; never blocks the write) |
+| Precedents / dependents | *(read: `properties <range>`)* | A | `Range.getDirectPrecedents` / `getDirectDependents` (1.15) | none (read) | — | `properties` → `dependencyImpact` | ✅ shipped (≤200 addresses per side, `truncated` flag) |
 | Estate workbook edits | *(Graph workbook API)* | B | `/workbook/worksheets/{id}/range` | restore-values | yes | — | estate |
+
+**Undo via recorded inverses (ADR-0007 / B3).** Every landed Excel receipt above records the inverse
+the bridge can apply: `restore-cells` (the prior values and formulas of the written range),
+`delete-object` (the host-minted table/chart/pivot name) and `clear-conditional` (the range and
+the rule's ordinal). `ExcelBridge.applyInverse` applies that descriptor and nothing else — the
+original `params` are never re-applied — and conflict-checks the recorded identity against the
+live workbook first (a null-object lookup by minted name, a dimension check on the recorded grid,
+a rule count above the ordinal), refusing with `target_conflict` when it no longer matches so an
+undo can never remove something it did not add. The receipt names the reversed change (`undoOf`)
+and verifies by readback; a restore whose readback fails reports `unknown`, never `verified`. The
+pane offers Undo only where the runtime's `canUndo` says the receipt and the bridge support it,
+and the undo still goes through the approval card like any other write.
 
 ---
 
@@ -121,6 +135,30 @@ management, and shape formatting — all name/id-anchored and reversible.
 | Image on slide | `insert-image` | A | `setSelectedDataAsync` Image coercion (ImageCoercion 1.1) | *(no handle)* not-reversible | **hard** | `image` | limited (no clean undo) |
 | Speaker notes | `set-speaker-notes` | A | **none in typings** | — | — | — | **blocked** (unadvertised) |
 | Estate file replace | *(Graph drive item)* | B | `PUT /drive/items/{id}/content` | restore-values (version) | yes | — | estate |
+
+**Receipts (every PowerPoint write, `packages/bridge-powerpoint/src/receipts.ts`).** After the
+write's own sync, each handler adds — best effort, in separate syncs, never failing the landed
+write — three things: a **binding** on the written shape (`Presentation.bindings.add(shape, 'Shape',
+'ge-<changeId>')`, 1.8; the receipt's `bindingId`, which a later command may target as
+`shape=binding:<id>` / `pp:shape:<slide>:binding:<id>` — the binding, not the slide ref, decides
+the slide), **tags** on the shape or slide (`GE_CHANGE` = changeId, `GE_PROV` = the serialized
+`provenanceRecord`, 1.3; the dispatcher runs in `provenance: 'reported'` mode, so a refused or
+oversized record reads `provenanceDropped`, a host without tags `provenanceUnsupported`, and a
+merged base64 deck — no slide handle — `provenanceUnsupported`), and a **preview** PNG at 320 px
+(`Shape.getImageAsBase64` on 1.10, else `Slide.getImageAsBase64` on 1.8; over 200 KB it is
+dropped). Slides have no bindings; a natively composed slide is tagged and rendered by position
+before its id settles.
+
+**Undo via recorded inverses (`PowerPointBridge.applyInverse`, ADR-0007 / B3).** A landed receipt's
+`inverse` is applied back by the bridge, never re-derived from the live deck: `delete-object`
+(the shape an `add-shape` minted, or the slide an `add-table-slide slide=new` created),
+`restore-text` (`set-shape-text`), `restore-shape-format` (only the facets the change recorded),
+`move-slide`, and `restore-slide` (`insertSlidesFromBase64`); `apply-layout` is refused as
+unsupported. Every op anchors by the id captured at apply-time — a shape through the binding the
+original receipt minted (`ge-<changeId>`, 1.8) or the exact slide id the command named, never a
+position — and a missing, moved or re-bound object is a `target_conflict` that touches nothing.
+The undo receipt carries `undoOf`, verifies by readback where there is one (`unknown` otherwise),
+mints no binding and persists no provenance tag (`provenanceUnsupported`).
 
 ---
 

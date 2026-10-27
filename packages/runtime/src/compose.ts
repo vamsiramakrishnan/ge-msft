@@ -1,6 +1,8 @@
 import {
   EFFECT_COMPOSE_ERROR,
   EFFECT_VERBS,
+  scanQuoted,
+  type HostPipeSource,
   type ParsedExpr,
   type PipeSource,
 } from '@ge/contracts';
@@ -112,8 +114,20 @@ export function renderValue(v: Value): string {
 
 /* ───────────────────────────── transform registry ───────────────────────── */
 
-/** A pure transform: an input `Value` + the verbatim arg string → a `Value` or a corrective error. */
-export type Transform = (input: Value, rawArgs: string) => Value | EvalError;
+/**
+ * What a transform may see besides its input: the binding env (read-only), so a relational
+ * transform (`join $other …`) can reach a second bound table. Never the host.
+ */
+export interface TransformContext {
+  env: ReadonlyMap<string, Value>;
+}
+
+/** A pure transform: an input `Value` + the verbatim arg string (+ context) → a `Value` or a corrective error. */
+export type Transform = (
+  input: Value,
+  rawArgs: string,
+  ctx?: TransformContext,
+) => Value | EvalError;
 
 /** Comparison/filter operators, longest-first so `>=`/`<=`/`!=` win over `>`/`<`/`=`. */
 const FILTER_OPS = ['>=', '<=', '!=', 'contains', '=', '>', '<'] as const;
@@ -132,11 +146,16 @@ export const TRANSFORMS: Record<string, Transform> = {
   tail: takeRows('tail'),
   sed,
   derive,
+  join,
+  group,
+  distinct,
+  rename,
 };
 
 /** One-line usage per transform, for the COMPOSITION advertisement in the prompt. */
 export const TRANSFORM_USAGE: Record<string, string> = {
-  filter: 'filter <col><op><val>  (ops: = != > < >= <= contains) — keep matching rows',
+  filter:
+    'filter <pred>  — pred: <col><op><val> (ops: = != > < >= <= contains), combined with and / or / not and ( ) — keep matching rows',
   select: 'select <col,col,…> — project columns',
   sum: 'sum <col> — total a numeric column → number',
   avg: 'avg <col> — average a numeric column → number',
@@ -147,7 +166,13 @@ export const TRANSFORM_USAGE: Record<string, string> = {
   head: 'head <n> — first n rows',
   tail: 'tail <n> — last n rows',
   sed: 'sed s/pattern/replacement/[g] — text/cell substitution',
-  derive: 'derive <newCol> = <col|num> <+|-|*|/> <col|num> — append a computed column',
+  derive:
+    'derive <newCol> = <col|num> <+|-|*|/> <col|num>  or  derive <newCol> = <fn>(<args>) — fn: upper lower trim len concat round year month day datediff — append a computed column',
+  join: 'join $other on <col>[=<otherCol>] [left|inner] — combine rows with a bound table (inner by default)',
+  group:
+    'group <col,…> agg <fn>(<col>) as <name>[, …] — fn: sum avg min max count — one row per group',
+  distinct: 'distinct [<col,…>] — unique rows (or unique values of the listed columns)',
+  rename: 'rename <old>=<new>[, …] — rename columns',
 };
 
 /* ───────────────────────────── transform impls ───────────────────────────── */
@@ -166,21 +191,192 @@ function colIndex(columns: string[], name: string): number {
   return columns.findIndex((c) => c === name);
 }
 
-/** `filter <col><op><val>` — keep rows where the predicate holds (numeric compare when both sides parse as numbers). */
+/**
+ * `filter <pred>` — keep rows where the predicate holds (numeric compare when both sides parse as
+ * numbers). A predicate is one `<col><op><val>` comparison, or several combined with `and` / `or`
+ * / `not` and parentheses (`not` binds tightest, then `and`, then `or`). A value containing one of
+ * those words must be quoted (`filter title contains "rock and roll"`).
+ */
 function filter(input: Value, rawArgs: string): Value | EvalError {
   const got = requireTable(input, 'filter');
   if ('error' in got) return got;
   const { table } = got;
 
-  const parsed = parseFilter(rawArgs);
-  if ('error' in parsed) return parsed;
-  const { col, op, val } = parsed;
+  const pred = parsePredicate(rawArgs);
+  if ('error' in pred) return pred;
+  const bound = bindPredicate(pred, table.columns);
+  if ('error' in bound) return bound;
 
-  const idx = colIndex(table.columns, col);
-  if (idx === -1) return { error: `filter: unknown column "${col}"` };
-
-  const rows = table.rows.filter((r) => matches(r[idx] ?? '', op, val));
+  const rows = table.rows.filter((r) => evalPredicate(bound, r));
   return { kind: 'table', columns: table.columns, rows };
+}
+
+/* ───────────────────────── boolean predicates (C1) ───────────────────────── */
+
+type Predicate =
+  | { kind: 'cmp'; col: string; op: FilterOp; val: string }
+  | { kind: 'and' | 'or'; left: Predicate; right: Predicate }
+  | { kind: 'not'; inner: Predicate };
+
+type BoundPredicate =
+  | { kind: 'cmp'; idx: number; op: FilterOp; val: string }
+  | { kind: 'and' | 'or'; left: BoundPredicate; right: BoundPredicate }
+  | { kind: 'not'; inner: BoundPredicate };
+
+type PredToken =
+  | { t: 'lp' }
+  | { t: 'rp' }
+  | { t: 'and' }
+  | { t: 'or' }
+  | { t: 'not' }
+  | { t: 'atom'; text: string };
+
+/** Tokenize a predicate: parens, the keywords and/or/not, and atoms (quoted spans kept whole). */
+function tokenizePredicate(raw: string): PredToken[] | EvalError {
+  const out: PredToken[] = [];
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      out.push({ t: 'lp' });
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      out.push({ t: 'rp' });
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      const q = scanQuoted(raw, i);
+      if (!q) return { error: 'filter: unterminated quote in predicate' };
+      out.push({ t: 'atom', text: raw.slice(i, q.end) });
+      i = q.end;
+      continue;
+    }
+    let j = i;
+    while (j < raw.length && !/[\s()"]/.test(raw[j]!)) j++;
+    const word = raw.slice(i, j);
+    const lower = word.toLowerCase();
+    if (lower === 'and' || lower === 'or' || lower === 'not') out.push({ t: lower });
+    else out.push({ t: 'atom', text: word });
+    i = j;
+  }
+  return out;
+}
+
+/** Recursive descent: expr := term (or term)* ; term := factor (and factor)* ; factor := not factor | ( expr ) | atoms. */
+function parsePredicate(raw: string): Predicate | EvalError {
+  const usage =
+    'filter needs <col><op><val> — e.g. filter region=East, filter amount>=100 and region!=West, filter not (region=East or region=West)';
+  const tokens = tokenizePredicate(raw);
+  if ('error' in tokens) return tokens;
+  if (tokens.length === 0) return { error: usage };
+  let pos = 0;
+  const peek = (): PredToken | undefined => tokens[pos];
+
+  const parseExpr = (): Predicate | EvalError => {
+    let left = parseTerm();
+    if ('error' in left) return left;
+    while (peek()?.t === 'or') {
+      pos++;
+      const right = parseTerm();
+      if ('error' in right) return right;
+      left = { kind: 'or', left, right };
+    }
+    return left;
+  };
+  const parseTerm = (): Predicate | EvalError => {
+    let left = parseFactor();
+    if ('error' in left) return left;
+    while (peek()?.t === 'and') {
+      pos++;
+      const right = parseFactor();
+      if ('error' in right) return right;
+      left = { kind: 'and', left, right };
+    }
+    return left;
+  };
+  const parseFactor = (): Predicate | EvalError => {
+    const tok = peek();
+    if (!tok) return { error: `filter: predicate ends early — ${usage}` };
+    if (tok.t === 'not') {
+      pos++;
+      const inner = parseFactor();
+      if ('error' in inner) return inner;
+      return { kind: 'not', inner };
+    }
+    if (tok.t === 'lp') {
+      pos++;
+      const inner = parseExpr();
+      if ('error' in inner) return inner;
+      if (peek()?.t !== 'rp') return { error: 'filter: missing ) in predicate' };
+      pos++;
+      return inner;
+    }
+    if (tok.t !== 'atom')
+      return {
+        error: `filter: unexpected "${tok.t === 'rp' ? ')' : tok.t}" in predicate — ${usage}`,
+      };
+    const atoms: string[] = [];
+    while (peek()?.t === 'atom') {
+      atoms.push((peek() as { t: 'atom'; text: string }).text);
+      pos++;
+    }
+    const simple = parseFilter(atoms.join(' '));
+    if ('error' in simple) return simple;
+    return { kind: 'cmp', ...simple };
+  };
+
+  const pred = parseExpr();
+  if ('error' in pred) return pred;
+  if (pos < tokens.length) {
+    const extra = tokens[pos]!;
+    return {
+      error: `filter: unexpected "${extra.t === 'atom' ? extra.text : extra.t === 'rp' ? ')' : extra.t}" after predicate — ${usage}`,
+    };
+  }
+  return pred;
+}
+
+/** Resolve every column name in a predicate to an index (unknown column → corrective error). */
+function bindPredicate(pred: Predicate, columns: string[]): BoundPredicate | EvalError {
+  switch (pred.kind) {
+    case 'cmp': {
+      const idx = colIndex(columns, pred.col);
+      if (idx === -1) return { error: `filter: unknown column "${pred.col}"` };
+      return { kind: 'cmp', idx, op: pred.op, val: pred.val };
+    }
+    case 'not': {
+      const inner = bindPredicate(pred.inner, columns);
+      if ('error' in inner) return inner;
+      return { kind: 'not', inner };
+    }
+    default: {
+      const left = bindPredicate(pred.left, columns);
+      if ('error' in left) return left;
+      const right = bindPredicate(pred.right, columns);
+      if ('error' in right) return right;
+      return { kind: pred.kind, left, right };
+    }
+  }
+}
+
+function evalPredicate(pred: BoundPredicate, row: string[]): boolean {
+  switch (pred.kind) {
+    case 'cmp':
+      return matches(row[pred.idx] ?? '', pred.op, pred.val);
+    case 'not':
+      return !evalPredicate(pred.inner, row);
+    case 'and':
+      return evalPredicate(pred.left, row) && evalPredicate(pred.right, row);
+    case 'or':
+      return evalPredicate(pred.left, row) || evalPredicate(pred.right, row);
+  }
 }
 
 function parseFilter(rawArgs: string): { col: string; op: FilterOp; val: string } | EvalError {
@@ -400,8 +596,11 @@ function derive(input: Value, rawArgs: string): Value | EvalError {
   if ('error' in got) return got;
   const { table } = got;
 
+  const fn = DERIVE_FN_RE.exec(rawArgs.trim());
+  if (fn) return deriveFunction(table, fn[1]!, fn[2]!.toLowerCase(), fn[3]!);
+
   const m = DERIVE_RE.exec(rawArgs.trim());
-  if (!m) return { error: 'derive usage: derive <newCol> = <col|num> <+|-|*|/> <col|num>' };
+  if (!m) return { error: DERIVE_USAGE };
   const [, newCol, lhsRaw, op, rhsRaw] = m;
   const { columns, rows } = table;
 
@@ -440,6 +639,393 @@ function derive(input: Value, rawArgs: string): Value | EvalError {
   return { kind: 'table', columns: [...columns, newCol!], rows: outRows };
 }
 
+/* ───────────────────────── derive functions (C1) ───────────────────────── */
+
+const DERIVE_USAGE =
+  'derive usage: derive <newCol> = <col|num> <+|-|*|/> <col|num>  or  derive <newCol> = <fn>(<args>) with fn ∈ upper lower trim len concat round year month day datediff';
+
+/** `<newCol> = <fn>(<args>)` — one function call over columns and literals. */
+const DERIVE_FN_RE = /^(\S+)\s*=\s*([A-Za-z]+)\((.*)\)$/;
+
+const DERIVE_FUNCTIONS = new Set([
+  'upper',
+  'lower',
+  'trim',
+  'len',
+  'concat',
+  'round',
+  'year',
+  'month',
+  'day',
+  'datediff',
+]);
+
+/** A function argument: a column (resolved per row), a quoted text literal, or a number literal. */
+type DeriveArg = { kind: 'col'; idx: number; name: string } | { kind: 'lit'; text: string };
+
+/** Split `a, "x, y", 2` on commas outside quotes. */
+function splitArgs(raw: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (ch === '"') {
+      const q = scanQuoted(raw, i);
+      if (q) {
+        buf += raw.slice(i, q.end);
+        i = q.end;
+        continue;
+      }
+    }
+    if (ch === ',') {
+      out.push(buf.trim());
+      buf = '';
+    } else buf += ch;
+    i++;
+  }
+  if (buf.trim() !== '' || out.length > 0) out.push(buf.trim());
+  return out.filter((a) => a !== '');
+}
+
+function parseDeriveArgs(raw: string, columns: string[]): DeriveArg[] | EvalError {
+  const args: DeriveArg[] = [];
+  for (const a of splitArgs(raw)) {
+    if (a.startsWith('"')) {
+      const q = scanQuoted(a, 0);
+      if (!q || q.end !== a.length) return { error: `derive: malformed text literal ${a}` };
+      args.push({ kind: 'lit', text: q.value });
+      continue;
+    }
+    const idx = colIndex(columns, a);
+    if (idx !== -1) {
+      args.push({ kind: 'col', idx, name: a });
+      continue;
+    }
+    if (/^-?\d+(?:\.\d+)?$/.test(a)) {
+      args.push({ kind: 'lit', text: a });
+      continue;
+    }
+    return { error: `derive: unknown column or literal "${a}" (quote text literals)` };
+  }
+  return args;
+}
+
+/** Parse a cell as a date; an ISO date-only cell is read as local midnight so day math is stable. */
+function parseCellDate(cell: string): Date | undefined {
+  const t = cell.trim();
+  if (t === '') return undefined;
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(t) ? new Date(`${t}T00:00:00`) : new Date(t);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+function deriveFunction(
+  table: Extract<Value, { kind: 'table' }>,
+  newCol: string,
+  fn: string,
+  rawArgs: string,
+): Value | EvalError {
+  if (!DERIVE_FUNCTIONS.has(fn))
+    return { error: `derive: unknown function "${fn}" — ${DERIVE_USAGE}` };
+  const args = parseDeriveArgs(rawArgs, table.columns);
+  if ('error' in args) return args;
+
+  const arity: Record<string, [number, number]> = {
+    upper: [1, 1],
+    lower: [1, 1],
+    trim: [1, 1],
+    len: [1, 1],
+    concat: [1, Infinity],
+    round: [1, 2],
+    year: [1, 1],
+    month: [1, 1],
+    day: [1, 1],
+    datediff: [2, 2],
+  };
+  const [lo, hi] = arity[fn]!;
+  if (args.length < lo || args.length > hi) {
+    return {
+      error: `derive: ${fn} takes ${lo === hi ? lo : `${lo}–${hi === Infinity ? 'n' : hi}`} argument(s)`,
+    };
+  }
+
+  const outRows: string[][] = [];
+  for (let i = 0; i < table.rows.length; i++) {
+    const row = table.rows[i]!;
+    const text = (a: DeriveArg): string => (a.kind === 'lit' ? a.text : (row[a.idx] ?? ''));
+    const num = (a: DeriveArg): number | EvalError => {
+      const t = text(a).trim();
+      const n = Number(t);
+      if (t === '' || Number.isNaN(n)) {
+        return {
+          error: `derive: non-numeric value for ${fn} in column "${a.kind === 'col' ? a.name : a.text}" (row ${i + 1})`,
+        };
+      }
+      return n;
+    };
+    const date = (a: DeriveArg): Date | EvalError => {
+      const d = parseCellDate(text(a));
+      if (!d) return { error: `derive: "${text(a)}" is not a date for ${fn} (row ${i + 1})` };
+      return d;
+    };
+    let value: string;
+    switch (fn) {
+      case 'upper':
+        value = text(args[0]!).toUpperCase();
+        break;
+      case 'lower':
+        value = text(args[0]!).toLowerCase();
+        break;
+      case 'trim':
+        value = text(args[0]!).trim();
+        break;
+      case 'len':
+        value = String(text(args[0]!).length);
+        break;
+      case 'concat':
+        value = args.map(text).join('');
+        break;
+      case 'round': {
+        const n = num(args[0]!);
+        if (typeof n !== 'number') return n;
+        const digits = args[1] ? num(args[1]) : 0;
+        if (typeof digits !== 'number') return digits;
+        if (!Number.isInteger(digits) || digits < 0 || digits > 15)
+          return { error: 'derive: round digits must be an integer 0–15' };
+        const scale = 10 ** digits;
+        value = String(Math.round(n * scale) / scale);
+        break;
+      }
+      case 'year':
+      case 'month':
+      case 'day': {
+        const d = date(args[0]!);
+        if (!(d instanceof Date)) return d;
+        value = String(
+          fn === 'year' ? d.getFullYear() : fn === 'month' ? d.getMonth() + 1 : d.getDate(),
+        );
+        break;
+      }
+      case 'datediff': {
+        const a = date(args[0]!);
+        if (!(a instanceof Date)) return a;
+        const b = date(args[1]!);
+        if (!(b instanceof Date)) return b;
+        value = String(Math.round((a.getTime() - b.getTime()) / 86_400_000));
+        break;
+      }
+      default:
+        return { error: `derive: unknown function "${fn}"` };
+    }
+    outRows.push([...row, value]);
+  }
+  return { kind: 'table', columns: [...table.columns, newCol], rows: outRows };
+}
+
+/* ───────────────────────── relational transforms (C1) ───────────────────────── */
+
+const JOIN_RE = /^\$([A-Za-z_][A-Za-z0-9_]*)\s+on\s+([^\s=]+)(?:=([^\s=]+))?(?:\s+(left|inner))?$/i;
+
+/** Numeric-aware key equality, matching `filter`'s `=` convention. */
+function keysEqual(a: string, b: string): boolean {
+  const x = a.trim();
+  const y = b.trim();
+  const xn = Number(x);
+  const yn = Number(y);
+  if (x !== '' && y !== '' && !Number.isNaN(xn) && !Number.isNaN(yn)) return xn === yn;
+  return x === y;
+}
+
+/**
+ * `join $other on <col>[=<otherCol>] [left|inner]` — combine each input row with the rows of a
+ * BOUND table whose key matches. Inner (default) drops unmatched input rows; `left` keeps them with
+ * blank right-hand cells. Output columns: the input's, then the other table's minus its key; a
+ * right-hand name that collides with an input column gets a `_2` suffix.
+ */
+function join(input: Value, rawArgs: string, ctx?: TransformContext): Value | EvalError {
+  const got = requireTable(input, 'join');
+  if ('error' in got) return got;
+  const { table } = got;
+  const m = JOIN_RE.exec(rawArgs.trim());
+  if (!m) return { error: 'join usage: join $other on <col>[=<otherCol>] [left|inner]' };
+  const [, otherName, col, otherColRaw, modeRaw] = m;
+  const other = ctx?.env.get(otherName!);
+  if (!other) return { error: `join: unbound variable "$${otherName}"` };
+  if (other.kind !== 'table')
+    return { error: `join: $${otherName} is a ${other.kind}, not a table` };
+  const otherCol = otherColRaw ?? col!;
+  const left = (modeRaw ?? 'inner').toLowerCase() === 'left';
+
+  const li = colIndex(table.columns, col!);
+  if (li === -1) return { error: `join: unknown column "${col}" in the input table` };
+  const ri = colIndex(other.columns, otherCol);
+  if (ri === -1) return { error: `join: unknown column "${otherCol}" in $${otherName}` };
+
+  const rightCols = other.columns.filter((_, i) => i !== ri);
+  const columns = [
+    ...table.columns,
+    ...rightCols.map((c) => (table.columns.includes(c) ? `${c}_2` : c)),
+  ];
+  const blank = rightCols.map(() => '');
+  const rows: string[][] = [];
+  for (const row of table.rows) {
+    const key = row[li] ?? '';
+    let matched = false;
+    for (const orow of other.rows) {
+      if (!keysEqual(key, orow[ri] ?? '')) continue;
+      matched = true;
+      rows.push([...row, ...orow.filter((_, i) => i !== ri)]);
+    }
+    if (!matched && left) rows.push([...row, ...blank]);
+  }
+  return { kind: 'table', columns, rows };
+}
+
+const GROUP_AGG_RE = /^(sum|avg|min|max|count)\(\s*([^)]*?)\s*\)\s+as\s+(\S+)$/i;
+
+/**
+ * `group <col,…> agg <fn>(<col>) as <name>[, …]` — one output row per distinct combination of the
+ * group columns (first-appearance order), followed by each aggregate. `count(*)` counts rows;
+ * `count(col)` counts non-empty cells; `sum/avg/min/max` skip non-numeric cells and fail when a
+ * group has none.
+ */
+function group(input: Value, rawArgs: string): Value | EvalError {
+  const got = requireTable(input, 'group');
+  if ('error' in got) return got;
+  const { table } = got;
+  const usage =
+    'group usage: group <col,…> agg <fn>(<col>) as <name>[, …] — fn: sum avg min max count';
+  const split = /^(.*?)\s+agg\s+(.+)$/i.exec(rawArgs.trim());
+  if (!split) return { error: usage };
+  const byNames = split[1]!
+    .split(',')
+    .map((c) => c.trim())
+    .filter((c) => c !== '');
+  if (byNames.length === 0) return { error: usage };
+  const byIdx: number[] = [];
+  for (const name of byNames) {
+    const idx = colIndex(table.columns, name);
+    if (idx === -1) return { error: `group: unknown column "${name}"` };
+    byIdx.push(idx);
+  }
+  const aggs: Array<{ fn: string; idx: number; name: string }> = [];
+  for (const spec of split[2]!
+    .split(',')
+    .map((a) => a.trim())
+    .filter((a) => a !== '')) {
+    const m = GROUP_AGG_RE.exec(spec);
+    if (!m) return { error: `group: malformed aggregate "${spec}" — ${usage}` };
+    const fn = m[1]!.toLowerCase();
+    const col = m[2]!;
+    let idx = -1;
+    if (col === '*') {
+      if (fn !== 'count') return { error: `group: ${fn}(*) is not allowed — name a column` };
+    } else {
+      idx = colIndex(table.columns, col);
+      if (idx === -1) return { error: `group: unknown column "${col}"` };
+    }
+    const name = m[3]!;
+    if (byNames.includes(name) || aggs.some((a) => a.name === name)) {
+      return { error: `group: duplicate output column "${name}"` };
+    }
+    aggs.push({ fn, idx, name });
+  }
+  if (aggs.length === 0) return { error: usage };
+
+  const buckets = new Map<string, { key: string[]; rows: string[][] }>();
+  for (const row of table.rows) {
+    const key = byIdx.map((i) => row[i] ?? '');
+    const k = key.join('\u0000');
+    const bucket = buckets.get(k);
+    if (bucket) bucket.rows.push(row);
+    else buckets.set(k, { key, rows: [row] });
+  }
+
+  const rows: string[][] = [];
+  for (const { key, rows: members } of buckets.values()) {
+    const out = [...key];
+    for (const agg of aggs) {
+      if (agg.fn === 'count') {
+        out.push(
+          String(
+            agg.idx === -1
+              ? members.length
+              : members.filter((r) => (r[agg.idx] ?? '').trim() !== '').length,
+          ),
+        );
+        continue;
+      }
+      const nums = members
+        .map((r) => (r[agg.idx] ?? '').trim())
+        .filter((c) => c !== '' && !Number.isNaN(Number(c)))
+        .map(Number);
+      if (nums.length === 0) {
+        return {
+          error: `group: ${agg.fn}(${table.columns[agg.idx]}) has no numeric values in group ${key.join('/')}`,
+        };
+      }
+      const total = nums.reduce((a, b) => a + b, 0);
+      const v =
+        agg.fn === 'sum'
+          ? total
+          : agg.fn === 'avg'
+            ? total / nums.length
+            : agg.fn === 'min'
+              ? Math.min(...nums)
+              : Math.max(...nums);
+      out.push(String(v));
+    }
+    rows.push(out);
+  }
+  return { kind: 'table', columns: [...byNames, ...aggs.map((a) => a.name)], rows };
+}
+
+/** `distinct [<col,…>]` — unique rows; with columns, the unique values of that projection. */
+function distinct(input: Value, rawArgs: string): Value | EvalError {
+  const got = requireTable(input, 'distinct');
+  if ('error' in got) return got;
+  let { table } = got;
+  if (rawArgs.trim() !== '') {
+    const projected = select(table, rawArgs);
+    if ('error' in projected) return { error: projected.error.replace(/^select/, 'distinct') };
+    table = projected as Extract<Value, { kind: 'table' }>;
+  }
+  const seen = new Set<string>();
+  const rows: string[][] = [];
+  for (const row of table.rows) {
+    const k = row.join('\u0000');
+    if (seen.has(k)) continue;
+    seen.add(k);
+    rows.push(row);
+  }
+  return { kind: 'table', columns: table.columns, rows };
+}
+
+/** `rename <old>=<new>[, …]` — rename columns (unknown source / duplicate target are errors). */
+function rename(input: Value, rawArgs: string): Value | EvalError {
+  const got = requireTable(input, 'rename');
+  if ('error' in got) return got;
+  const { table } = got;
+  const pairs = rawArgs
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p !== '');
+  if (pairs.length === 0) return { error: 'rename usage: rename <old>=<new>[, <old>=<new>]' };
+  const columns = [...table.columns];
+  for (const pair of pairs) {
+    const eq = pair.indexOf('=');
+    const from = eq === -1 ? '' : pair.slice(0, eq).trim();
+    const to = eq === -1 ? '' : pair.slice(eq + 1).trim();
+    if (from === '' || to === '')
+      return { error: `rename: malformed pair "${pair}" — use <old>=<new>` };
+    const idx = colIndex(columns, from);
+    if (idx === -1) return { error: `rename: unknown column "${from}"` };
+    if (columns.includes(to)) return { error: `rename: column "${to}" already exists` };
+    columns[idx] = to;
+  }
+  return { kind: 'table', columns, rows: table.rows };
+}
+
 function unquote(s: string): string {
   if (s.length >= 2) {
     const a = s[0]!;
@@ -457,7 +1043,7 @@ function unquote(s: string): string {
  * read's TEXT (Excel reads are GFM tables; Word reads are free text). Pure transforms then
  * compose the parsed value. Injecting this makes `evalExpr` fully testable with a fake.
  */
-export type RunRead = (source: Exclude<PipeSource, { src: 'var' }>) => Promise<string>;
+export type RunRead = (source: HostPipeSource) => Promise<string>;
 
 /**
  * Evaluate a `ParsedExpr` to a `Value` (or a corrective `{ error }`), given the binding `env` and
@@ -502,7 +1088,7 @@ async function evalPipeline(
         error: `unknown transform "${stage.name}" — available: ${Object.keys(TRANSFORMS).join(', ')}`,
       };
     }
-    const next = transform(current, stage.args);
+    const next = transform(current, stage.args, { env });
     if (isEvalError(next)) return next;
     current = next;
   }
@@ -519,6 +1105,10 @@ async function evalSource(
     if (!bound) return { error: `unbound variable "$${source.name}"` };
     return bound;
   }
+  // C1 literals — values the program itself carries; never a host read.
+  if (source.src === 'number') return { kind: 'number', value: source.value };
+  if (source.src === 'text') return { kind: 'text', value: source.value };
+  if (source.src === 'table') return { kind: 'table', columns: source.columns, rows: source.rows };
   const text = await runRead(source);
   return parseTable(text) ?? { kind: 'text', value: text };
 }

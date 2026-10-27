@@ -264,6 +264,46 @@ plans; the composition evaluator + plan dry-run/execute; the orchestrator + gate
 chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration tests
 (`web-shell/src/taskpane/*-integration.test.ts`) that drive the panel against the fakes.
 
+## Leverage tranches B and C (October 2026)
+
+The [leverage review](research/2026-10-26-leverage-review.md) ranked ten moves; Tranche A (grammar
+gate, positioned errors, stream terminal check, Excel undo groups, bridge hygiene, manifest) merged
+in #18 together with mail and Teams attachments as context. Tranches B and C followed in one change:
+
+- **Scheduler and phased approval (B1).** `planning.ts` partitions the inferred DAG into dependency
+  levels and severity-ordered approval phases; `approvePlan(effects, phase)` is called once per
+  phase (a declined phase blocks the later ones), the preview carries `levels`/`phases`, dispatch
+  follows phase-then-level order and an independent effect proceeds past a failed sibling;
+  `onEffectFailure: 'stop-plan'` is the strict alternative. The approval card names the phase.
+- **Static type pass (B2).** `static-types.ts` types every binding and pipeline before dry-run and
+  refuses unknown transforms (did-you-mean), wrong-kind inputs (`sum | head`), unbound `$names`
+  (inside effects and `each` headers too) and column-law violations on program-known tables; one
+  `type-error` event per entry, then the bounded repair turn. Python preflight laws unchanged.
+- **Undo via recorded inverses (B3).** `ActuationRequest.undo`, `ActuationResult.undoOf`,
+  `DocBridge.applyInverse`; the session keeps a receipt ledger and `canUndo`; the pane's Undo mints
+  an undo request that passes the approval card and gate; Excel (restore-cells, delete-object,
+  clear-conditional), PowerPoint (shape/slide delete, restore-text, shape format, move, restore
+  slide) and Word (annotation and object deletes, content-control and text restores) apply the
+  recorded inverse with conflict checks. Word advertisements now match what the receipts deliver.
+- **Stable idempotency keys (B4).** `effectIdempotencyKey` (intent hash) on plan nodes and journal
+  entries, `TaskJournal.priorOutcome`, and verified-outcome replay (`replayOf`) only for a
+  durable-stage resume.
+- **Client resilience (B5).** One announced turn-level retry before any content, `Retry-After` as a
+  backoff floor, a wired circuit breaker (`circuit_open`), and a per-turn deadline.
+- **Durable recipes (B6).** `recipe-store.ts` persists `def … end` recipes in the document through
+  `recoveryStorage` and reloads them per task (`recipes-loaded`), re-parsed through the grammar.
+- **Richer algebra (C1).** Literal sources, boolean `filter` predicates, `join`/`group`/`distinct`/
+  `rename`, more `derive` functions, and the `each $row in $table: … end` loop expanded before
+  dry-run under the write cap — mirrored in the Python preflight and the golden corpus (102 cases).
+- **Word critiques and highlight (C2).** `/insert-annotation` (WordApi 1.7/1.8 critiques with a
+  comment fallback), temporary `Range.highlight` on reveal with `clearPreview`.
+- **PowerPoint receipts (C3).** Bindings (`binding:<id>` addressing), provenance tags, bounded PNG
+  previews on receipts.
+- **Excel evaluate and precedents (C4).** Formula previews on the approval card ("Evaluates to")
+  via `Worksheet.evaluate`, and `properties` on a range reports direct precedents/dependents.
+- **Evaluation matrix (C5).** `skill/eval/matrix_harness.py` replays recorded or synthetic turns
+  under base · commander · commander+cli and gates the ship bar in `test_tooling.py` and CI.
+
 ## What's next (pending)
 
 1. **Real-host validation** — the bridges pass against fakes; sideloading the manifest in a live
@@ -275,8 +315,8 @@ chunking, JSON-stream parsing, and Word actuate plans; and task-pane integration
    the cross-session trail is partial.
 3. **Broader CLI verb parity** — `slide`/`page`/`mail`/`post` verbs and other surface read ports are
    tracked **gaps** on the closure allow-list (handled by the bridge, not yet reachable by a verb).
-4. **ADR-0005 Phase 4** — `for`/`each` iteration, durable skill persistence, cross-surface plans
-   (read Excel → write PowerPoint).
+4. **ADR-0005 Phase 4** — cross-surface plans (read Excel → write PowerPoint); `each` iteration
+   and durable recipe persistence landed with the leverage tranches.
 5. **Estate writes** — Graph/SharePoint reads are live; most writes (send mail, create event, upload
    / checkout) remain modeled but not wired. The first estate write, `share`/`/shared` (a
    cross-surface Graph app-folder handoff store — `packages/graph-client`'s `GraphSharedStore`,

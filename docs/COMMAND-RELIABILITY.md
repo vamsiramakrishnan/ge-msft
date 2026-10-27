@@ -327,6 +327,21 @@ first command turn shows the exact `mail`, `compose` and `/set-subject` syntax, 
 reply verb followed by `done` is repaired into exactly one reply form, and that an incomplete
 `compose` is repaired into exactly one new draft. The two repair tests fail with fix D disabled.
 
+### Client resilience — a dropped connection is retried once, a failing engine is not hammered
+
+`gemini-client` now owns three transport behaviours that used to be left to the user. A turn whose
+connection drops before any of the answer arrived (`network` or `incomplete_response` with no
+content event yet) is retried once after a short jittered pause, announced as an `activity` event;
+once a token has reached the pane the failure is final, so the user never sees a silently
+re-answered question. A `Retry-After` header on a 429/503 becomes a floor on the backoff wait,
+capped at 30 seconds. A circuit breaker (five exhausted POSTs within 60 seconds opens it for 30
+seconds, then one probe) turns a run of transport failures into an immediate `circuit_open` error
+instead of another backoff cycle; one turn's own retries cannot trip it, and it can be tuned or
+disabled through `resilience.circuitBreaker`. Separately, each turn has a hard deadline (180
+seconds by default, `deadlineMs`) that ends a stream which keeps sending without finishing, reported
+as a `timeout` error distinct from the idle watchdog. `stream-resilience.test.ts` covers each branch
+with injected fetch, sleep and clock.
+
 ## Verification
 
 **Replay tests (no model).** The recorded prompt and model programs are replayed through the real

@@ -226,3 +226,130 @@ describe('fake-excel object writes driven by the real ExcelBridge', () => {
     expect(s.snapshot().comments[0]?.replies).toEqual(['seasonal']);
   });
 });
+
+describe('fake-excel evaluate and dependency areas driven by the real ExcelBridge', () => {
+  it('previews formulas from the seed evaluations when ExcelApiDesktop 1.1 is on', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [
+          {
+            name: 'Sales',
+            origin: 'A1',
+            values: [
+              ['Q1', 'Q2'],
+              ['10', '20'],
+            ],
+          },
+        ],
+        evaluations: { '=SUM(A2:B2)': 30 },
+      }),
+      { ExcelApi: 15, ExcelApiDesktop: 1 },
+    );
+    const bridge = new ExcelBridge();
+    const preview = await bridge.previewFormulas(
+      request('write-cells', {
+        target: { range: 'Sales!C2' },
+        cellValues: [[null]],
+        cellFormulas: [['=SUM(A2:B2)']],
+      }),
+    );
+    expect(preview).toEqual([{ cell: 'Sales!C2', formula: '=SUM(A2:B2)', value: '30' }]);
+    // The preview wrote nothing.
+    const captured = await bridge.captureCells('Sales!C2');
+    expect(captured.values).toEqual([['']]);
+  });
+
+  it('is empty on Excel on the web (no ExcelApiDesktop set)', async () => {
+    sim = installFakeExcel(
+      excelSeed({ sheets: [{ name: 'Sales', origin: 'A1', values: [['1']] }] }),
+      { ExcelApi: 15 },
+    );
+    await expect(
+      new ExcelBridge().previewFormulas(
+        request('write-cells', {
+          target: { range: 'Sales!B1' },
+          cellValues: [[null]],
+          cellFormulas: [['=A1*2']],
+        }),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it('reports precedents and dependents from the seed on ExcelApi 1.15', async () => {
+    sim = installFakeExcel(
+      excelSeed({
+        sheets: [{ name: 'Sales', origin: 'A1', values: [['1', '2', '=A1+B1']] }],
+        dependencies: { 'Sales!C1': { precedents: ['Sales!A1', 'Sales!B1'] } },
+      }),
+      { ExcelApi: 15 },
+    );
+    await expect(new ExcelBridge().dependencyImpact('Sales!C1')).resolves.toEqual({
+      precedents: ['Sales!A1', 'Sales!B1'],
+      dependents: [],
+      truncated: false,
+    });
+  });
+});
+
+describe('undo via recorded inverses through the real ExcelBridge (ADR-0007 / B3)', () => {
+  it('restores the prior cells of a landed write-cells and reads them back', async () => {
+    const s = install();
+    const bridge = new ExcelBridge();
+    const original = request(
+      'write-cells',
+      { target: { range: 'Sales!B2:C2' }, cellValues: [[999, 'typed']] },
+      'c-write',
+    );
+    const landed = await bridge.actuate(original);
+    expect(landed).toMatchObject({
+      ok: true,
+      inverse: { op: 'restore-cells', range: 'Sales!B2:C2' },
+    });
+    expect(s.snapshot().sheets[0]?.values[1]?.slice(1, 3)).toEqual(['999', 'typed']);
+    const undone = await bridge.applyInverse({
+      ...original,
+      changeId: original.changeId.replace('c-write', 'u-write') as typeof original.changeId,
+      undo: { of: landed.changeId, inverse: landed.inverse! },
+    });
+    expect(undone).toMatchObject({
+      ok: true,
+      undoOf: 'c-write',
+      completion: 'verified',
+      verification: { status: 'verified' },
+    });
+    expect(s.snapshot().sheets[0]?.values[1]?.slice(1, 3)).toEqual(['10', '20']);
+    const captured = await bridge.captureCells('Sales!B2:C2');
+    expect(captured.hash).toBe(undone.verification?.afterHash);
+  });
+
+  it('deletes the minted table of a landed create-table and clears a landed conditional rule', async () => {
+    const s = install();
+    const bridge = new ExcelBridge();
+    const table = request('create-table', { table: { range: 'Sales!A1:E11', hasHeaders: true } });
+    const landedTable = await bridge.actuate(table);
+    expect(s.snapshot().tables).toHaveLength(1);
+    const tableUndone = await bridge.applyInverse({
+      ...table,
+      changeId: 'u-table' as typeof table.changeId,
+      undo: { of: landedTable.changeId, inverse: landedTable.inverse! },
+    });
+    expect(tableUndone).toMatchObject({ ok: true, verification: { status: 'verified' } });
+    expect(s.snapshot().tables).toHaveLength(0);
+
+    const cf = request('format-conditional', {
+      conditional: {
+        range: 'Sales!D2:D11',
+        rule: { kind: 'cellValue', operator: 'gt', value: '100000', fill: '#C6EFCE' },
+      },
+    });
+    const landedCf = await bridge.actuate(cf);
+    expect(s.snapshot().conditionalFormats.get('Sales!D2:D11')).toHaveLength(1);
+    const cfUndone = await bridge.applyInverse({
+      ...cf,
+      changeId: 'u-cf' as typeof cf.changeId,
+      undo: { of: landedCf.changeId, inverse: landedCf.inverse! },
+    });
+    expect(cfUndone).toMatchObject({ ok: true, verification: { status: 'verified' } });
+    expect(s.snapshot().conditionalFormats.get('Sales!D2:D11')).toEqual([]);
+  });
+});

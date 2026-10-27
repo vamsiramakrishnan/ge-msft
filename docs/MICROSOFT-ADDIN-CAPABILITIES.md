@@ -56,14 +56,24 @@ Each host exposes a `Host.run(ctx => …)` batch model (Outlook is the exception
   `comment-added` HostEvents.
 
 ### Excel — `bridge-excel`
-- **Read:** selected range, used range (values + formulas + address) → native table `Block`.
-- **Write:** `write-cells` into an address-targeted range; comment replies.
+- **Read:** selected range, used range (values + formulas + address) → native table `Block`;
+  `properties <range>` adds direct precedents/dependents (`Range.getDirectPrecedents` /
+  `getDirectDependents`, ExcelApi 1.15; ≤200 addresses per side) so a change's blast radius is
+  visible before it lands.
+- **Write:** `write-cells` into an address-targeted range; comment replies. On Excel desktop
+  (ExcelApiDesktop 1.1) a `write-cells` with formulas is first evaluated without writing
+  (`Worksheet.evaluate`, ≤20 formulas) and the approval card shows what each formula produces;
+  a host that cannot evaluate simply shows no preview — the preview never blocks the write.
 - **Events:** `worksheets.onSelectionChanged` (address), `worksheets.onChanged` (coauthor
   `EventSource` → origin), `comments.onAdded`.
 
-### PowerPoint — `bridge-powerpoint` *(planned)*
-- **Read:** slides, shapes, text, speaker notes. **Write:** `insertSlidesFromBase64`, shape text,
-  speaker notes. **Events:** selection changed.
+### PowerPoint — `bridge-powerpoint`
+- **Read:** slides, shapes, text, tables, layouts. **Write:** `insertSlidesFromBase64`, native
+  compose (`slides.add` + placeholders), shape text, shapes/lines/tables, shape formatting, layouts.
+  **Receipts:** `Presentation.bindings` (1.8) anchor every written shape (`bindingId`, later
+  addressable as `binding:<id>`); `Shape.tags` / `Slide.tags` (1.3) carry the change id and the
+  provenance record; `Slide.getImageAsBase64` (1.8) / `Shape.getImageAsBase64` (1.10) give a
+  bounded PNG preview. **Events:** Office-level selection / active-view changed.
 
 ### OneNote — `bridge-onenote` *(planned, web-only)*
 - **Read:** page content/outline. **Write:** append page / outline. Ships under the **legacy XML

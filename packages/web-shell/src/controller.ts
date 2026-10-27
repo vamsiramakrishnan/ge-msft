@@ -56,6 +56,7 @@ import type {
 import {
   type CommandLoopEvent,
   type PlanEffect as RuntimePlanEffect,
+  type PlanApprovalPhase,
   type RunCommandsOptions,
   type WorkspaceArtifactSummary,
   type WorkspaceResult,
@@ -145,6 +146,8 @@ export interface AssistLike {
   getAnalysisCapabilities?(): Promise<{ preview: boolean; write: boolean }>;
   readonly analysis?: { state(): AnalysisState };
   readonly recovery?: { durable: boolean; list(): RecoverySummary[] };
+  /** B3 — whether a landed change can be undone (recovery journal or a recorded inverse). */
+  canUndo?(changeId: string): boolean;
   readonly evidence?: { state(): EvidenceState };
   /** The content-free run ledger (see execution-ledger.ts), for "Copy diagnostics". */
   readonly executions?: { list(): RunRecord[] };
@@ -428,6 +431,11 @@ export interface PendingPlan {
   effects: PlanEffect[];
   /** One-line count summary of the effect-set, e.g. "3 writes + 2 comments". */
   summary: string;
+  /**
+   * B1 — which approval phase this decision covers when the plan mixes authorities (ADR-0008
+   * §break-boundaries): the class, and the phase's position. Absent for a single-phase plan.
+   */
+  phase?: PlanApprovalPhase;
 }
 
 /**
@@ -846,9 +854,9 @@ export class PanelController {
       controller.signal.throwIfAborted();
       for await (const event of this.session.runAnalysis(action, {
         signal: controller.signal,
-        approvePlan: async (effects) => {
+        approvePlan: async (effects, phase) => {
           reviewedChangeId = effects[0]?.request.changeId;
-          approved = await this.reviewPlan(effects, controller.signal);
+          approved = await this.reviewPlan(effects, controller.signal, phase);
           return approved;
         },
       })) {
@@ -1946,6 +1954,26 @@ export class PanelController {
       case 'skill-expanded':
         this.addStep('command', `${ev.name} → ${ev.lines.length} line(s)`);
         return;
+      case 'recipes-loaded':
+        // B6 — the document's stored recipes are available to this task; name what was skipped.
+        this.addStep(
+          'command',
+          [
+            ev.loaded.length ? `recipes from this document: ${ev.loaded.join(', ')}` : undefined,
+            ...ev.rejected.map((r) => `recipe "${r.name}" skipped: ${r.reason}`),
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        );
+        return;
+      case 'each-expanded':
+        this.addStep(
+          'command',
+          ev.lines.length === 0
+            ? `each $${ev.rowVar} in $${ev.tableVar} refused`
+            : `each $${ev.rowVar} in $${ev.tableVar} → ${ev.rows} row(s), ${ev.lines.length} line(s)`,
+        );
+        return;
       case 'durable-progress':
         this.addStep(
           'activity',
@@ -1994,6 +2022,10 @@ export class PanelController {
         return;
       case 'capped':
         this.addStep('capped', ev.reason);
+        return;
+      case 'type-error':
+        // B2 — a static type error: content-free (binding names, transform names, column names).
+        this.addStep('command', `type error (line ${ev.index + 1}): ${ev.message}`);
         return;
       case 'repair': {
         const failed = ev.errors === 1 ? '1 command' : `${ev.errors} commands`;
@@ -2394,7 +2426,9 @@ export class PanelController {
     const listed = (message?.changes ?? []).filter((c) => c.undoable && !c.undone);
     if (this.switchBlocked() || listed.length === 0) return;
     // A receipt freed to make room for later writes can no longer restore its cells.
-    const kept = new Set((this.session.recovery?.list() ?? []).map((r) => r.id));
+    const kept = new Set(
+      listed.filter((c) => this.canUndoChange(c.changeId)).map((c) => c.changeId),
+    );
     const undoable = listed.filter((c) => kept.has(c.changeId));
     if (undoable.length < listed.length) {
       this.patchMessage(messageId, (m) => ({
@@ -2410,12 +2444,24 @@ export class PanelController {
       await this.runAnalysis({ kind: 'undo', id: change.changeId });
       if (this.state.pendingPlan || this.state.busy) break;
     }
-    const undone = new Set(
-      (this.session.recovery?.list() ?? []).filter((r) => r.state === 'undone').map((r) => r.id),
-    );
+    // The journal reports Excel cell restores as `undone`; an inverse-applied change is one the
+    // session no longer offers to undo.
+    const undone = new Set([
+      ...(this.session.recovery?.list() ?? []).filter((r) => r.state === 'undone').map((r) => r.id),
+      ...undoable.filter((c) => !this.canUndoChange(c.changeId)).map((c) => c.changeId),
+    ]);
     this.patchMessage(messageId, (m) => ({
       changes: m.changes?.map((c) => (undone.has(c.changeId) ? { ...c, undone: true } : c)),
     }));
+  }
+
+  /**
+   * Whether a landed change can be undone: the runtime answers when it can (B3 — recorded inverses
+   * as well as the cell-recovery journal); an older session exposes only the journal.
+   */
+  private canUndoChange(changeId: string): boolean {
+    if (this.session.canUndo) return this.session.canUndo(changeId);
+    return (this.session.recovery?.list() ?? []).some((r) => r.id === changeId && r.canUndo);
   }
 
   /** Use a resume store and offer any task the pane was closed during. */
@@ -2610,7 +2656,7 @@ export class PanelController {
       );
       return approved && !signal.aborted;
     };
-    const approvePlan: ApprovePlan = (effects) => this.reviewPlan(effects, signal);
+    const approvePlan: ApprovePlan = (effects, phase) => this.reviewPlan(effects, signal, phase);
     const approveShare: ApproveShare = async ({ name, text, bytes, truncated, sourceLabel }) => {
       if (signal.aborted) return false;
       const approved = await this.approvals.awaitShare({
@@ -2625,11 +2671,17 @@ export class PanelController {
     return { approveWrite, approvePlan, approveShare };
   }
 
-  private async reviewPlan(effects: RuntimePlanEffect[], signal: AbortSignal): Promise<boolean> {
+  private async reviewPlan(
+    effects: RuntimePlanEffect[],
+    signal: AbortSignal,
+    phase?: PlanApprovalPhase,
+  ): Promise<boolean> {
     if (signal.aborted) return false;
     const approved = await this.approvals.awaitPlan({
       effects,
       summary: summarizeEffects(effects),
+      // A single-phase plan carries no phase: the card reads as before.
+      ...(phase && phase.count > 1 ? { phase } : {}),
     });
     return approved && !signal.aborted;
   }
@@ -2670,9 +2722,9 @@ export class PanelController {
             requests.get(event.changeId),
             this.state.language ?? 'en',
           );
-          // Undo only where the recovery journal holds the prior cells (Excel cell writes, sorts).
-          if (this.session.recovery?.list().some((r) => r.id === event.changeId && r.canUndo))
-            change.undoable = true;
+          // Undo where the recovery journal holds the prior cells (Excel cell writes, sorts) or,
+          // B3, where the receipt recorded a usable inverse the bridge can apply.
+          if (this.canUndoChange(event.changeId)) change.undoable = true;
           changes.push(change);
           if (tracked) this.resumeStore?.landed(change.label);
         }

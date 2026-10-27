@@ -28,6 +28,30 @@ export interface RetryOptions {
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_MS = 200;
 const DEFAULT_CAP_MS = 5000;
+/** The longest a `Retry-After` header may hold a retry; longer values are treated as this. */
+export const MAX_RETRY_AFTER_MS = 30_000;
+
+/**
+ * Parse a `Retry-After` header (delay-seconds or an HTTP date) into milliseconds from `now`,
+ * capped at {@link MAX_RETRY_AFTER_MS}. Undefined when absent or unparseable.
+ */
+export function parseRetryAfter(
+  header: string | null | undefined,
+  now: () => number = Date.now,
+): number | undefined {
+  if (!header) return undefined;
+  const text = header.trim();
+  if (text === '') return undefined;
+  let ms: number;
+  if (/^\d+$/.test(text)) ms = Number(text) * 1000;
+  else {
+    const at = Date.parse(text);
+    if (Number.isNaN(at)) return undefined;
+    ms = at - now();
+  }
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  return Math.min(ms, MAX_RETRY_AFTER_MS);
+}
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,7 +99,10 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       breaker?.recordFailure();
       const hasMoreAttempts = attempt < maxAttempts - 1;
       if (!hasMoreAttempts || !isRetriable(err)) throw err;
-      await sleep(backoffDelay(attempt, baseMs, capMs, random));
+      // A server-stated `Retry-After` is a floor on the wait (never shorter than it asks, never
+      // longer than the cap); the jittered backoff still applies when it says nothing.
+      const stated = err instanceof HttpError ? err.retryAfterMs : undefined;
+      await sleep(Math.max(backoffDelay(attempt, baseMs, capMs, random), stated ?? 0));
     }
   }
   // Unreachable: the loop either returns or throws. Present for exhaustiveness.
@@ -91,9 +118,19 @@ export class HttpError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Server-stated minimum wait before retrying, already capped (see {@link parseRetryAfter}). */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'HttpError';
+  }
+}
+
+/** Thrown by {@link CircuitBreaker.assertClosed} while the circuit is open. */
+export class CircuitOpenError extends Error {
+  constructor(readonly retryAtMs: number) {
+    super('circuit open: upstream temporarily unavailable');
+    this.name = 'CircuitOpenError';
   }
 }
 
@@ -107,8 +144,9 @@ export function defaultIsRetriable(err: unknown): boolean {
     return err.status === 429 || (err.status >= 500 && err.status <= 599);
   }
   // A cancel (the user's, or the idle watchdog's) is final: retrying an aborted request only waits
-  // out the backoff before failing again.
-  if (err instanceof Error && err.name === 'AbortError') return false;
+  // out the backoff before failing again. An open circuit is a decision already made.
+  if (err instanceof Error && (err.name === 'AbortError' || err instanceof CircuitOpenError))
+    return false;
   // A non-HttpError throw from fetch is a network/transport failure → transient.
   return true;
 }
@@ -116,12 +154,13 @@ export function defaultIsRetriable(err: unknown): boolean {
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 /**
- * Minimal circuit breaker: opens after `threshold` consecutive failures and rejects
- * fast until `cooldownMs` elapses, then allows a single half-open trial. A success
- * closes it; a failure re-opens it. Time is injectable for deterministic tests.
+ * Minimal circuit breaker: opens after `threshold` failures within `windowMs` and rejects fast
+ * until `cooldownMs` elapses, then allows a single half-open trial. A success closes it; a
+ * failure re-opens it. Time is injectable for deterministic tests. Failures older than the
+ * window no longer count, so a slow trickle of unrelated errors never trips it.
  */
 export class CircuitBreaker {
-  private failures = 0;
+  private failures: number[] = [];
   private openedAt = 0;
   private state: CircuitState = 'closed';
 
@@ -129,6 +168,7 @@ export class CircuitBreaker {
     private readonly threshold = 5,
     private readonly cooldownMs = 30_000,
     private readonly now: () => number = Date.now,
+    private readonly windowMs = 60_000,
   ) {}
 
   get current(): CircuitState {
@@ -136,24 +176,27 @@ export class CircuitBreaker {
     return this.state;
   }
 
-  /** Throw if the breaker is open and still cooling down. */
+  /** Throw {@link CircuitOpenError} if the breaker is open and still cooling down. */
   assertClosed(): void {
     this.refresh();
     if (this.state === 'open') {
-      throw new Error('circuit open: upstream temporarily unavailable');
+      throw new CircuitOpenError(this.openedAt + this.cooldownMs);
     }
   }
 
   recordSuccess(): void {
-    this.failures = 0;
+    this.failures = [];
     this.state = 'closed';
   }
 
   recordFailure(): void {
-    this.failures += 1;
-    if (this.failures >= this.threshold) {
+    const at = this.now();
+    this.failures = [...this.failures.filter((t) => at - t < this.windowMs), at];
+    // A half-open probe that fails re-opens at once; otherwise the window decides.
+    if (this.state === 'half-open' || this.failures.length >= this.threshold) {
       this.state = 'open';
-      this.openedAt = this.now();
+      this.openedAt = at;
+      this.failures = [];
     }
   }
 

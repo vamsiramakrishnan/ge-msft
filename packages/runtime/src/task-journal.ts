@@ -2,8 +2,11 @@ import { z } from 'zod';
 import {
   ActuationRequestSchema,
   ActuationResultSchema,
+  asChangeId,
   assessActuationResult,
   contentHash,
+  effectIdempotencyKey,
+  IDEMPOTENCY_KEY_RE,
   unknownActuationResult,
   validateActuationResult,
   type ActuationRequest,
@@ -16,6 +19,8 @@ const EntrySchema = z
     id: z.string().min(1).max(256),
     taskId: z.string().min(1).max(256),
     fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    /** B4 — the stable intent hash (absent on entries written before it existed). */
+    idempotencyKey: z.string().regex(IDEMPOTENCY_KEY_RE).optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     state: z.enum(['dispatching', 'applied', 'not-applied', 'uncertain', 'acknowledged']),
@@ -112,6 +117,18 @@ export interface TaskJournalSummary {
   kind: ActuationRequest['kind'];
   state: TaskJournalEntry['state'];
   updatedAt: string;
+  /** B4 — present when this receipt was replayed from an earlier applied change of the same intent. */
+  replayOf?: string;
+}
+/** B4 — how `execute` treats a request whose intent the journal already holds. */
+export interface TaskJournalExecuteOptions {
+  /**
+   * Replay the prior APPLIED + VERIFIED outcome of the same intent (same stable idempotency key,
+   * same task) instead of dispatching again. Only a durable-program resume opts in: there the
+   * stage's effect is known to be a re-attempt of one intent. The plain command loop never replays —
+   * a model re-emitting the same write is a new request that goes through approval and dispatch.
+   */
+  replayIntent?: boolean;
 }
 function mergeBaseKey(entry: TaskJournalEntry): string | undefined {
   const target = entry.request.params.target;
@@ -211,7 +228,21 @@ export class TaskJournal {
       kind: entry.request.kind,
       state: entry.state,
       updatedAt: entry.updatedAt,
+      ...(entry.receipt?.replayOf ? { replayOf: entry.receipt.replayOf } : {}),
     }));
+  }
+  /**
+   * B4 — the latest journaled outcome of the same INTENT as `request` (stable idempotency key),
+   * whatever its changeId. A lookup handle for retry and resume logic: `applied` + verified means the
+   * effect already landed; `uncertain`/`dispatching` means inspect before anything else; absent
+   * means the intent was never dispatched through this journal.
+   */
+  priorOutcome(
+    request: Pick<ActuationRequest, 'surface' | 'kind' | 'params' | 'preconditions'>,
+  ): TaskJournalSummary | undefined {
+    const key = effectIdempotencyKey(request);
+    const entry = [...this.entries].reverse().find((item) => item.idempotencyKey === key);
+    return entry && this.list().find((summary) => summary.id === entry.id);
   }
   /** A previously verified output is a merge base, never evidence of the current host contents. */
   lastGeneratedText(
@@ -240,6 +271,7 @@ export class TaskJournal {
     taskId: string,
     input: ActuationRequest,
     dispatch: () => Promise<ActuationResult>,
+    options: TaskJournalExecuteOptions = {},
   ): Promise<ActuationResult> {
     const request = ActuationRequestSchema.parse(input);
     const fingerprint = await contentHash({
@@ -248,6 +280,7 @@ export class TaskJournal {
       params: request.params,
       preconditions: request.preconditions,
     });
+    const idempotencyKey = effectIdempotencyKey(request);
     const now = new Date().toISOString();
     const entry: TaskJournalEntry = {
       version: 1,
@@ -256,12 +289,46 @@ export class TaskJournal {
       request: journalIntent(request),
       payloadOmitted: true,
       fingerprint,
+      idempotencyKey,
       createdAt: now,
       updatedAt: now,
       state: 'dispatching',
     };
+    // B4 — a resume may REPLAY the verified outcome of the same intent instead of landing it twice.
+    // Only an `applied` entry whose receipt the host verified qualifies; anything weaker (unverified,
+    // uncertain, a different task) goes through the ordinary claim below, where an unresolved prior
+    // still blocks. The replayed receipt names the original change so nothing reads as a fresh write.
+    let replayed: ActuationResult | undefined;
     await this.store.update(this.scope, (raw) => {
       const history = validateHistory(raw);
+      if (options.replayIntent) {
+        const prior = [...history]
+          .reverse()
+          .find((item) => item.idempotencyKey === idempotencyKey && item.taskId === taskId);
+        if (
+          prior?.state === 'applied' &&
+          prior.receipt?.ok &&
+          prior.receipt.verification?.status === 'verified' &&
+          !prior.receipt.recoveryPending &&
+          prior.id !== request.changeId
+        ) {
+          replayed = {
+            ...prior.receipt,
+            changeId: request.changeId,
+            kind: request.kind,
+            replayOf: asChangeId(prior.id),
+          };
+          if (history.some((item) => item.id === request.changeId))
+            throw new Error(
+              'This change ID is already journaled. Inspect its receipt before retrying.',
+            );
+          return appendBounded(history, {
+            ...entry,
+            state: 'applied',
+            receipt: journalReceipt(replayed!),
+          });
+        }
+      }
       if (history.some((prior) => ['dispatching', 'uncertain'].includes(prior.state)))
         throw new Error(
           'An earlier Office change has an unresolved outcome. Inspect and reconcile it before another write.',
@@ -274,6 +341,7 @@ export class TaskJournal {
       return appendBounded(history, entry);
     });
     this.entries = validateHistory(await this.store.read(this.scope));
+    if (replayed) return replayed;
     let receipt: ActuationResult;
     try {
       receipt = validateActuationResult(request, await dispatch());

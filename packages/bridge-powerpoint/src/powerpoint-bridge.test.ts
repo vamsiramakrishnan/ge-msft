@@ -5,6 +5,7 @@ import {
   DocStateSnapshotSchema,
   ResolvedContextSchema,
   type ActuationRequest,
+  type ActuationResult,
   type ContextRef,
 } from '@ge/contracts';
 import type { HostEvent } from '@ge/triggers';
@@ -63,10 +64,14 @@ interface ShapeSeed {
   bulletsVisible?: boolean;
   /** Font size of the text's first character (`textRange.getSubstring(i, 1).font.size`). */
   firstCharSize?: number;
+  /** `Shape.tags` (PowerPointApi 1.3), keys upper-cased like the host. */
+  tags?: Record<string, string>;
 }
 interface SlideSeed {
   id: string;
   shapes: ShapeSeed[];
+  /** `Slide.tags` (PowerPointApi 1.3), keys upper-cased like the host. */
+  tags?: Record<string, string>;
   /**
    * Set on a just-added slide: its `id` is PROVISIONAL until the current `PowerPoint.run` ends, when
    * it becomes this settled id. Like PowerPoint for the web, writes addressed through the
@@ -122,6 +127,67 @@ interface DeckSeed {
     detail: string;
     options: PowerPoint.ShapeAddOptions | PowerPoint.TableAddOptions | undefined;
   }>;
+  /** `Presentation.bindings` (PowerPointApi 1.8): each id → the shape it was added for. */
+  bindings?: Array<{ id: string; slideId: string; shapeId: string }>;
+  /** Make every `tags.add` fail its sync (a host that refuses tags). */
+  failTags?: boolean;
+  /** Make every `getImageAsBase64` fail its sync (a host that cannot render). */
+  failImages?: boolean;
+  /** What `getImageAsBase64` renders instead of the 1×1 PNG (e.g. an oversized image). */
+  imageBase64?: string;
+}
+
+/** A 1×1 PNG: what every simulated `getImageAsBase64` renders. */
+const FAKE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+/** The receipt preview the bridge builds from that render at its fixed width. */
+const FAKE_PREVIEW = { mimeType: 'image/png', base64: FAKE_PNG_BASE64, width: 320 };
+
+/** The simulated render: the seed's image, or a failing sync when the host cannot render. */
+function renderImage(deck: DeckSeed | undefined): { value: string } {
+  if (deck?.failImages) {
+    pendingHostError = 'GeneralException: render failed';
+    return { value: '' };
+  }
+  return { value: deck?.imageBase64 ?? FAKE_PNG_BASE64 };
+}
+
+/** Like the host: an API from a newer requirement set than the host's fails the next sync. */
+function requireApi(version: string, what: string): void {
+  if (!Office.context.requirements.isSetSupported('PowerPointApi', version))
+    pendingHostError = `ApiNotFound: ${what} requires PowerPointApi ${version}`;
+}
+
+/** `TagCollection` (PowerPointApi 1.3) over a shape's or slide's `tags` seed. */
+class FakeTagCollection {
+  constructor(
+    private readonly owner: { tags?: Record<string, string> },
+    private readonly guard: () => void = NO_GUARD,
+    private readonly deck?: DeckSeed,
+  ) {}
+  load(_p?: string): this {
+    return this;
+  }
+  get items(): Array<{ key: string; value: string }> {
+    return Object.entries(this.owner.tags ?? {}).map(([key, value]) => ({ key, value }));
+  }
+  add(key: string, value: string): void {
+    requireApi('1.3', 'Tag');
+    this.guard();
+    if (this.deck?.failTags) {
+      pendingHostError = 'GeneralException: tags refused';
+      return;
+    }
+    (this.owner.tags ??= {})[key.toUpperCase()] = value;
+  }
+  getItemOrNullObject(key: string): { key: string; value: string; isNullObject: boolean } {
+    const value = this.owner.tags?.[key.toUpperCase()];
+    return { key: key.toUpperCase(), value: value ?? '', isNullObject: value === undefined };
+  }
+  delete(key: string): void {
+    this.guard();
+    delete this.owner.tags?.[key.toUpperCase()];
+  }
 }
 
 /** A cell whose text reads/writes one slot of the backing {@link ShapeSeed.tableGrid}. */
@@ -299,11 +365,33 @@ class FakeShape {
     readonly shape: ShapeSeed,
     readonly id: string,
     readonly isNullObject = false,
-    guard: () => void = NO_GUARD,
+    private readonly guard: () => void = NO_GUARD,
+    /** The owning slide + deck, for `getParentSlide()` and bindings. */
+    readonly slideId?: string,
+    private readonly deck?: DeckSeed,
   ) {
     this.frame = { textRange: new FakeTextRange(shape, guard) };
     this.fill = new FakeShapeFill(shape);
     this.lineFormat = new FakeShapeLineFormat(shape);
+  }
+  /** `Shape.tags` (PowerPointApi 1.3). */
+  get tags(): FakeTagCollection {
+    return new FakeTagCollection(this.shape, this.guard, this.deck);
+  }
+  /** `Shape.getImageAsBase64` (PowerPointApi 1.10): a fixed 1×1 PNG. */
+  getImageAsBase64(_options?: { width?: number }): { value: string } {
+    requireApi('1.10', 'Shape.getImageAsBase64');
+    return renderImage(this.deck);
+  }
+  /** `Shape.getParentSlide()` (PowerPointApi 1.5). */
+  getParentSlide(): FakeSlide {
+    const index = this.deck?.slides.findIndex((slide) => slide.id === this.slideId) ?? -1;
+    const slide = this.deck?.slides[index];
+    if (!slide || !this.deck) {
+      pendingHostError = `ItemNotFound: shape ${this.id} has no parent slide`;
+      return new FakeSlide({ id: this.slideId ?? '', shapes: [] }, 0, this.deck ?? emptyDeck());
+    }
+    return new FakeSlide(slide, index, this.deck);
   }
   get type(): string {
     return this.shape.type ?? 'TextBox';
@@ -363,6 +451,14 @@ class FakeShape {
     if (this.type !== 'Table') pendingHostError = `InvalidArgument: ${this.id} is not a table`;
     return new FakeTable(this.shape);
   }
+  /** `Shape.delete()` (PowerPointApi 1.3): removes the shape from its slide. */
+  delete(): void {
+    this.guard();
+    const slide = this.deck?.slides.find((item) => item.id === this.slideId);
+    const at = slide?.shapes.indexOf(this.shape) ?? -1;
+    if (slide && at >= 0) slide.shapes.splice(at, 1);
+    else pendingHostError = `ItemNotFound: shape ${this.id} is gone`;
+  }
 }
 
 class FakeShapeCollection {
@@ -378,7 +474,15 @@ class FakeShapeCollection {
   get items(): FakeShape[] {
     if (this.built.length !== this.slide.shapes.length) {
       this.built = this.slide.shapes.map(
-        (s, i) => new FakeShape(s, `${this.slide.id}-shape-${i}`, false, this.guard),
+        (s, i) =>
+          new FakeShape(
+            s,
+            `${this.slide.id}-shape-${i}`,
+            false,
+            this.guard,
+            this.slide.id,
+            this.deck,
+          ),
       );
     }
     return this.page
@@ -414,7 +518,7 @@ class FakeShapeCollection {
     const id = `${this.slideId}-shape-${items.length}`;
     this.slide.shapes.push(seed);
     this.guard();
-    const shape = new FakeShape(seed, id, false, this.guard);
+    const shape = new FakeShape(seed, id, false, this.guard, this.slide.id, this.deck);
     items.push(shape);
     return shape;
   }
@@ -494,6 +598,16 @@ class FakeSlide {
   }
   get shapes(): FakeShapeCollection {
     return new FakeShapeCollection(this.slide, this.seed, this.slide.id, this.guard);
+  }
+  /** `Slide.tags` (PowerPointApi 1.3). */
+  get tags(): FakeTagCollection {
+    return new FakeTagCollection(this.slide, this.guard, this.seed);
+  }
+  /** `Slide.getImageAsBase64` (PowerPointApi 1.8): a fixed 1×1 PNG. */
+  getImageAsBase64(_options?: { width?: number }): { value: string } {
+    requireApi('1.8', 'Slide.getImageAsBase64');
+    this.guard();
+    return renderImage(this.seed);
   }
   /** `Slide.slideMaster` (PowerPointApi 1.3): every fake slide shares the one master. */
   get slideMaster(): FakeSlideMaster {
@@ -637,6 +751,10 @@ class FakePresentation {
   get slides(): FakeSlideCollection {
     return new FakeSlideCollection(this.seed);
   }
+  /** `Presentation.bindings` (PowerPointApi 1.8). */
+  get bindings(): FakeBindingCollection {
+    return new FakeBindingCollection(this.seed);
+  }
   get slideMasters(): { getItemAt(index: number): FakeSlideMaster } {
     return { getItemAt: () => new FakeSlideMaster(this.seed) };
   }
@@ -658,6 +776,84 @@ class FakePresentation {
     this.seed.insertedDecks.push(b64);
     this.seed.insertedDeckOptions.push(options ?? {});
     this.seed.slides.push({ id: `sim-inserted-${this.seed.insertedDecks.length}`, shapes: [] });
+  }
+}
+
+/** An empty deck, for a detached parent-slide lookup that the next sync fails anyway. */
+function emptyDeck(): DeckSeed {
+  return {
+    slides: [],
+    selectedIndices: [],
+    selectedShapeIds: [],
+    insertedDecks: [],
+    insertedDeckOptions: [],
+    addedShapes: [],
+  };
+}
+
+/** `Binding` (PowerPointApi 1.8): resolves back to the shape it was added for. */
+class FakeBinding {
+  readonly id: string;
+  readonly isNullObject: boolean;
+  constructor(
+    private readonly seed: DeckSeed,
+    private readonly entry: { id: string; slideId: string; shapeId: string } | undefined,
+    id: string,
+  ) {
+    this.id = entry?.id ?? id;
+    this.isNullObject = entry === undefined;
+  }
+  load(_p?: string): this {
+    return this;
+  }
+  getShape(): FakeShape {
+    const slide = this.entry
+      ? this.seed.slides.find((candidate) => candidate.id === this.entry?.slideId)
+      : undefined;
+    const shape = slide
+      ? new FakeShapeCollection(slide, this.seed, slide.id).getItemOrNullObject(
+          this.entry?.shapeId ?? '',
+        )
+      : undefined;
+    if (!shape || shape.isNullObject) {
+      pendingHostError = `ItemNotFound: binding ${this.id} has no shape`;
+      return new FakeShape({ text: '' }, this.entry?.shapeId ?? '', true);
+    }
+    return shape;
+  }
+}
+
+/** `BindingCollection` (PowerPointApi 1.8) over {@link DeckSeed.bindings}. */
+class FakeBindingCollection {
+  constructor(private readonly seed: DeckSeed) {}
+  load(_p?: string): this {
+    return this;
+  }
+  get items(): FakeBinding[] {
+    return (this.seed.bindings ?? []).map((entry) => new FakeBinding(this.seed, entry, entry.id));
+  }
+  add(shape: FakeShape, _bindingType: string, id: string): FakeBinding {
+    requireApi('1.8', 'Binding');
+    const bindings = (this.seed.bindings ??= []);
+    if (bindings.some((entry) => entry.id === id)) {
+      pendingHostError = `InvalidArgument: binding ${id} already exists`;
+      return new FakeBinding(this.seed, undefined, id);
+    }
+    if (!shape.slideId || shape.isNullObject) {
+      pendingHostError = `InvalidArgument: binding ${id} needs a shape on a slide`;
+      return new FakeBinding(this.seed, undefined, id);
+    }
+    const entry = { id, slideId: shape.slideId, shapeId: shape.id };
+    bindings.push(entry);
+    return new FakeBinding(this.seed, entry, id);
+  }
+  getItemOrNullObject(id: string): FakeBinding {
+    requireApi('1.8', 'Binding');
+    return new FakeBinding(
+      this.seed,
+      this.seed.bindings?.find((entry) => entry.id === id),
+      id,
+    );
   }
 }
 
@@ -2982,6 +3178,8 @@ describe('PowerPointBridge.actuate add-shape', () => {
       kind: 'add-shape',
       location: 'shape:s2:s2-shape-2',
       inverse: { op: 'delete-object', objectType: 'shape', name: 's2-shape-2' },
+      bindingId: 'ge-chg-add-textbox',
+      preview: FAKE_PREVIEW,
     });
     // The text box landed on slide s2 with its text and explicit geometry.
     expect(d.addedShapes).toEqual([
@@ -3256,6 +3454,8 @@ describe('PowerPointBridge.actuate format-shape', () => {
       changeId: asChangeId('chg-format'),
       kind: 'format-shape',
       location: 'shape:s2:s2-shape-1',
+      bindingId: 'ge-chg-format',
+      preview: FAKE_PREVIEW,
       inverse: {
         op: 'restore-shape-format',
         shapeId: 's2-shape-1',
@@ -3437,6 +3637,8 @@ describe('PowerPointBridge.actuate add-table-slide', () => {
       kind: 'add-table-slide',
       location: 'shape:s3:s3-shape-2',
       inverse: { op: 'delete-object', objectType: 'shape', name: 's3-shape-2' },
+      bindingId: 'ge-chg-table',
+      preview: FAKE_PREVIEW,
     });
     expect(d.addedShapes).toEqual([
       {
@@ -3578,5 +3780,429 @@ describe('PowerPointBridge.watch', () => {
     installed = install(deck(SAMPLE_SLIDES, [0]), { officeThrowsOnRemove: true });
     const unsub = new PowerPointBridge().watch(() => {});
     expect(() => unsub()).not.toThrow();
+  });
+});
+
+describe('PowerPointBridge receipts: bindings, tags and previews', () => {
+  const PROVENANCE = {
+    agentId: 'review-agent@v2',
+    identity: 'pat@acme',
+    timestamp: '2026-10-27T10:00:00Z',
+    sources: [],
+    contentHash: 'sha256:abc',
+  };
+  const textBox = (id: string, text = 'Key risk'): ActuationRequest =>
+    addShape(
+      {
+        target: { slideId: 's2' },
+        shape: { shapeType: 'textBox', text, left: 72, top: 96, width: 280, height: 80 },
+      },
+      id,
+    );
+
+  it('binds the added shape to a deterministic id and tags it with the change', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate({
+      ...textBox('chg-1'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.bindingId).toBe('ge-chg-1');
+    expect(d.bindings).toEqual([{ id: 'ge-chg-1', slideId: 's2', shapeId: 's2-shape-2' }]);
+    const tags = d.slides[1]?.shapes[2]?.tags ?? {};
+    expect(tags['GE_CHANGE']).toBe('chg-1');
+    expect(JSON.parse(tags['GE_PROV'] ?? '{}')).toMatchObject({ changeId: 'chg-1', ...PROVENANCE });
+    // A persisted record: none of the provenance flags, and the receipt shows the slide.
+    expect(res.provenanceMissing).toBeUndefined();
+    expect(res.provenanceDropped).toBeUndefined();
+    expect(res.provenanceUnsupported).toBeUndefined();
+    expect(res.preview).toEqual(FAKE_PREVIEW);
+  });
+
+  it('folds unsafe changeId characters into the binding id', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const res = await new PowerPointBridge().actuate(textBox('turn 7/effect:2'));
+    expect(res.bindingId).toBe('ge-turn-7-effect-2');
+  });
+
+  it('resolves shape=binding:<id> to the bound shape for a later write', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const added = await bridge.actuate(textBox('chg-bind'));
+    expect(added.bindingId).toBe('ge-chg-bind');
+    // The slide ref is ignored: the binding knows its slide even after a reorder.
+    const res = await bridge.actuate(
+      setShapeText('s1', `binding:${added.bindingId}`, 'Mitigated', 'chg-edit'),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.location).toBe('shape:s2:s2-shape-2');
+    expect(d.slides[1]?.shapes[2]?.text).toBe('Mitigated');
+    // The edit stamps the same shape again: the change tag now names the edit.
+    expect(d.slides[1]?.shapes[2]?.tags?.['GE_CHANGE']).toBe('chg-edit');
+  });
+
+  it('accepts the full pp:shape:<slide>:binding:<id> selector form too', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    await bridge.actuate(textBox('chg-bind2'));
+    const res = await bridge.actuate(
+      formatShape(
+        {
+          target: { slideId: 's2', shapeId: 'pp:shape:s2:binding:ge-chg-bind2' },
+          shapeFormat: { fill: '#112233' },
+        },
+        'chg-fmt',
+      ),
+    );
+    expect(res.ok).toBe(true);
+    expect(d.slides[1]?.shapes[2]?.fillColor).toBe('#112233');
+  });
+
+  it('refuses a binding the deck no longer has, naming the recovery', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const res = await new PowerPointBridge().actuate(
+      setShapeText('s2', 'binding:ge-gone', 'x', 'chg-x'),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe('target_conflict');
+    expect(res.error?.reason).toBe('shape_gone');
+    expect(res.error?.message).toContain('ge-gone');
+  });
+
+  it('refuses a binding whose shape was deleted', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    await bridge.actuate(textBox('chg-del'));
+    d.slides[1]?.shapes.splice(2, 1);
+    const res = await bridge.actuate(setShapeText('s2', 'binding:ge-chg-del', 'x', 'chg-y'));
+    expect(res.ok).toBe(false);
+    expect(res.error?.reason).toBe('shape_gone');
+  });
+
+  it('refuses binding refs below PowerPointApi 1.8 without touching the host', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]), { requirements: { PowerPointApi: 1.5 } });
+    const res = await new PowerPointBridge().actuate(
+      setShapeText('s2', 'binding:ge-chg-1', 'x', 'chg-z'),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error?.reason).toBe('shape_not_found');
+    expect(res.error?.message).toContain('PowerPointApi 1.8');
+  });
+
+  it('skips the binding and preview below 1.8 but still tags provenance (1.3)', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d, { requirements: { PowerPointApi: 1.5 } });
+    const res = await new PowerPointBridge().actuate({
+      ...textBox('chg-old'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.bindingId).toBeUndefined();
+    expect(res.preview).toBeUndefined();
+    expect(d.bindings).toBeUndefined();
+    expect(d.slides[1]?.shapes[2]?.tags?.['GE_CHANGE']).toBe('chg-old');
+    expect(res.provenanceUnsupported).toBeUndefined();
+    expect(res.provenanceDropped).toBeUndefined();
+  });
+
+  it('reports provenance as unsupported on a host without tags (< 1.3)', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d, { requirements: { PowerPointApi: 1.4 } });
+    // Tags (1.3) predate every write path (1.4+), so no real host reaches this: pin the tag gate
+    // alone to prove the flag is honest if one ever does.
+    const office = (
+      globalThis as {
+        Office: { context: { requirements: { isSetSupported(n: string, v?: string): boolean } } };
+      }
+    ).Office;
+    const original = office.context.requirements.isSetSupported;
+    office.context.requirements.isSetSupported = (name, version) =>
+      version === '1.3' ? false : original(name, version);
+    const res = await new PowerPointBridge().actuate({
+      ...setShapeText('s2', 's2-shape-1', 'Pat, Sam, and Lee', 'chg-notags'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.provenanceUnsupported).toBe(true);
+    expect(res.provenanceDropped).toBeUndefined();
+    expect(d.slides[1]?.shapes[1]?.tags).toBeUndefined();
+  });
+
+  it('reports provenance dropped when the host refuses the tags, keeping the landed write', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    d.failTags = true;
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate({
+      ...textBox('chg-refused'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.provenanceDropped).toBe(true);
+    expect(res.bindingId).toBe('ge-chg-refused');
+    expect(res.preview).toEqual(FAKE_PREVIEW);
+    expect(d.slides[1]?.shapes[2]?.text).toBe('Key risk');
+  });
+
+  it('reports provenance dropped when the record does not fit a tag value', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const sources = Array.from({ length: 200 }, (_, i) => ({
+      uri: `https://contoso.sharepoint.com/sites/ops/doc-${i}.docx`,
+      title: `Operations doc ${i} — ${'x'.repeat(40)}`,
+    }));
+    const res = await new PowerPointBridge().actuate({
+      ...textBox('chg-big'),
+      provenance: { ...PROVENANCE, sources },
+    });
+    expect(res.ok).toBe(true);
+    expect(res.provenanceDropped).toBe(true);
+    // The change marker still lands; only the record is too large.
+    expect(d.slides[1]?.shapes[2]?.tags).toEqual({ GE_CHANGE: 'chg-big' });
+  });
+
+  it('never fails a landed write because the preview render failed', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    d.failImages = true;
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(textBox('chg-noimg'));
+    expect(res.ok).toBe(true);
+    expect(res.preview).toBeUndefined();
+    expect(res.bindingId).toBe('ge-chg-noimg');
+    expect(d.slides[1]?.shapes[2]?.tags?.['GE_CHANGE']).toBe('chg-noimg');
+  });
+
+  it('drops a preview over 200 KB instead of carrying it through the receipt', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    d.imageBase64 = 'A'.repeat(Math.ceil((201 * 1024 * 4) / 3));
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate(textBox('chg-huge'));
+    expect(res.ok).toBe(true);
+    expect(res.preview).toBeUndefined();
+  });
+
+  it('renders the shape itself on PowerPointApi 1.10', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    // In this simulator `>= 2` means every 1.x set, 1.10 included.
+    installed = install(d, { requirements: { PowerPointApi: 2 } });
+    const res = await new PowerPointBridge().actuate(textBox('chg-110'));
+    expect(res.ok).toBe(true);
+    expect(res.preview).toEqual(FAKE_PREVIEW);
+  });
+
+  it('does not mint a second binding for a retried changeId, and keeps the write', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const first = await bridge.actuate(textBox('chg-twice'));
+    const second = await bridge.actuate(textBox('chg-twice', 'Second box'));
+    expect(first.bindingId).toBe('ge-chg-twice');
+    expect(second.ok).toBe(true);
+    expect(second.bindingId).toBeUndefined();
+    expect(d.bindings).toHaveLength(1);
+    expect(d.slides[1]?.shapes).toHaveLength(4);
+  });
+
+  it('tags and previews a natively composed slide by position, before its id settles', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const res = await new PowerPointBridge().actuate({
+      ...insertSlide({ slide: { title: 'Next steps', bullets: ['Ship'] } }, 'chg-slide'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.location).toBe('slide:sim-slide-4');
+    expect(res.preview).toEqual(FAKE_PREVIEW);
+    expect(res.bindingId).toBeUndefined();
+    expect(d.slides[3]?.tags?.['GE_CHANGE']).toBe('chg-slide');
+    expect(res.provenanceMissing).toBeUndefined();
+  });
+
+  it('marks a merged base64 deck as provenance-unsupported (no slide handle to tag)', async () => {
+    installed = install(deck(SAMPLE_SLIDES, [0]));
+    const res = await new PowerPointBridge().actuate({
+      ...insertSlide({ ooxml: 'UEsDBBQ=' }, 'chg-deck'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.provenanceUnsupported).toBe(true);
+    expect(res.preview).toBeUndefined();
+  });
+});
+
+/* ─────────────────── applyInverse (ADR-0007 / B3 undo via recorded inverses) ─────────────────── */
+
+function undoOf(
+  original: ActuationRequest,
+  receipt: ActuationResult,
+  id = 'undo-1',
+): ActuationRequest {
+  return {
+    changeId: asChangeId(id),
+    kind: original.kind,
+    surface: 'powerpoint',
+    params: structuredClone(original.params),
+    undo: { of: receipt.changeId, inverse: structuredClone(receipt.inverse!) },
+  };
+}
+
+describe('PowerPointBridge.applyInverse', () => {
+  it('deletes the shape an add-shape minted, found through its binding, and reads it back gone', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const added = await bridge.actuate(
+      addShape({
+        target: { slideId: '1' },
+        shape: { shapeType: 'textBox', text: 'Draft', left: 1, top: 1, width: 10, height: 10 },
+      }),
+    );
+    expect(added).toMatchObject({
+      ok: true,
+      inverse: { op: 'delete-object', objectType: 'shape' },
+    });
+    expect(d.slides[0]?.shapes).toHaveLength(3);
+    // The slide is named by POSITION in the original command; the binding resolves it exactly.
+    const result = await bridge.applyInverse(
+      undoOf(addShape({ target: { slideId: '1' }, shape: { shapeType: 'textBox' } }), added),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      changeId: 'undo-1',
+      kind: 'add-shape',
+      undoOf: 'add-shape-1',
+      completion: 'verified',
+      verification: { status: 'verified' },
+    });
+    expect(d.slides[0]?.shapes.map((s) => s.text)).toEqual(['Roster', 'Pat, Sam']);
+  });
+
+  it('refuses when the added shape is already gone and touches nothing else', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const added = await bridge.actuate(
+      addShape({
+        target: { slideId: 's2' },
+        shape: { shapeType: 'textBox', text: 'Draft', left: 1, top: 1, width: 10, height: 10 },
+      }),
+    );
+    d.slides[0]!.shapes.pop(); // the user deleted it by hand
+    d.bindings = [];
+    const result = await bridge.applyInverse(
+      undoOf(addShape({ target: { slideId: 's2' }, shape: { shapeType: 'textBox' } }), added),
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: 'target_conflict' } });
+    expect(d.slides[0]?.shapes).toHaveLength(2);
+  });
+
+  it('refuses when the binding now points at another shape than the recorded one', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const added = await bridge.actuate(
+      addShape({
+        target: { slideId: 's2' },
+        shape: { shapeType: 'textBox', text: 'Draft', left: 1, top: 1, width: 10, height: 10 },
+      }),
+    );
+    d.bindings = d.bindings!.map((b) => ({ ...b, shapeId: 's2-shape-0' }));
+    const result = await bridge.applyInverse(
+      undoOf(addShape({ target: { slideId: 's2' }, shape: { shapeType: 'textBox' } }), added),
+    );
+    expect(result).toMatchObject({ ok: false, error: { code: 'target_conflict' } });
+    expect(d.slides[0]?.shapes).toHaveLength(3);
+  });
+
+  it('restores the prior text of a set-shape-text and verifies by readback', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const original = setShapeText('s2', 's2-shape-1', 'New text');
+    const written = await bridge.actuate(original);
+    expect(written).toMatchObject({ ok: true, inverse: { op: 'restore-text' } });
+    expect(d.slides[1]?.shapes[1]?.text).toBe('New text');
+    const result = await bridge.applyInverse(undoOf(original, written));
+    expect(result).toMatchObject({
+      ok: true,
+      undoOf: original.changeId,
+      completion: 'verified',
+      verification: { status: 'verified' },
+    });
+    expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam');
+  });
+
+  it('restores only the facets a format-shape recorded', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const original = formatShape({
+      target: { slideId: 's2', shapeId: 's2-shape-1' },
+      shapeFormat: { fill: '#123456', font: { bold: true, size: 30 } },
+    });
+    const written = await bridge.actuate(original);
+    expect(written).toMatchObject({ ok: true, inverse: { op: 'restore-shape-format' } });
+    d.slides[0]!.shapes[1]!.lineColor = '#ABCDEF'; // a later hand edit the undo must keep
+    const result = await bridge.applyInverse(undoOf(original, written));
+    expect(result).toMatchObject({ ok: true, undoOf: original.changeId, completion: 'unknown' });
+    expect(d.slides[0]?.shapes[1]).toMatchObject({
+      fillColor: '#FFFFFF',
+      lineColor: '#ABCDEF',
+      font: { bold: false, size: 18 },
+    });
+  });
+
+  it('refuses an inverse op it cannot apply, and a request without undo', async () => {
+    installed = install(styledDeck());
+    const bridge = new PowerPointBridge();
+    const original = formatShape({
+      target: { slideId: 's2', shapeId: 's2-shape-1' },
+      shapeFormat: { fill: '#123456' },
+    });
+    const result = await bridge.applyInverse({
+      ...original,
+      undo: { of: asChangeId('x'), inverse: { op: 'restore-doc-properties', prior: {} } },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(await bridge.applyInverse(original)).toMatchObject({
+      ok: false,
+      error: { code: 'no_inverse' },
+    });
+  });
+
+  it('reports an uncertain outcome when the host drops after the delete was queued', async () => {
+    const d = styledDeck();
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const added = await bridge.actuate(
+      addShape({
+        target: { slideId: 's2' },
+        shape: { shapeType: 'textBox', text: 'Draft', left: 1, top: 1, width: 10, height: 10 },
+      }),
+    );
+    const original = FakeContext.prototype.sync;
+    let calls = 0;
+    const sync = vi.spyOn(FakeContext.prototype, 'sync').mockImplementation(function (
+      this: FakeContext,
+    ) {
+      // binding lookup, binding shape/slide load, shape exists?, then the delete sync.
+      if (++calls === 4) return Promise.reject(new Error('Office disconnected'));
+      return original.call(this);
+    });
+    try {
+      const result = await bridge.applyInverse(
+        undoOf(addShape({ target: { slideId: 's2' }, shape: { shapeType: 'textBox' } }), added),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown' },
+      });
+    } finally {
+      sync.mockRestore();
+    }
   });
 });

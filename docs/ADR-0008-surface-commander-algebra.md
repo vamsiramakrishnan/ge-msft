@@ -166,6 +166,15 @@ deterministic machinery runs where models make *structural* errors.)
   correction rate, program length, helper latency, and the share of helper invocations that find a
   *real* defect — across three conditions: base model · Surface Commander only · Surface Commander +
   `surface-cli`. The helper ships only if it improves execution quality net of its latency.
+- **Evaluation matrix (deterministic form).** `skill/eval/matrix_harness.py` replays recorded or
+  representative model turns per task × condition (`skill/eval/matrix/*.jsonl`) through the same
+  `parse_commands` + `surface_cli` machinery the runtime and the skill use, and reports first-pass
+  parse success, capability-violation, unsupported-verb and budget-rejection rates, repair turns,
+  program length and the helper's real-defect share per condition, under the generated manifest's
+  `limits`. Each row carries an `expect` block the gate enforces, and the ship bar fails the run
+  when `commander+cli` scores worse than `commander`. It runs in `test_tooling.py` and CI; the
+  live metrics (latency, approval-preview corrections) still need the model-in-the-loop protocol
+  in [skill/eval/README.md](../skill/eval/README.md).
 - **Budget is defense-in-depth.** `surface-cli budget` advises; the runtime gate re-checks. The skill
   is never the only thing between "algebraically valid" and "500 comments."
 - **Corrects ADR-0007 §3.** The effect-result spill illustration there is non-normative; this ADR's

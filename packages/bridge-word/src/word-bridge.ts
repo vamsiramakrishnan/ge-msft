@@ -31,6 +31,7 @@ import {
   formatSources,
   planAddComment,
   planApplyStyle,
+  planInsertAnnotation,
   planFillContentControl,
   planFindReplace,
   planInsertContentControl,
@@ -43,6 +44,7 @@ import {
 } from './actuate-plan.js';
 import { provenanceRecord } from './provenance-record.js';
 import {
+  annotationEvent,
   commentAddedEvent,
   documentChangedEvent,
   originFromWordSource,
@@ -77,6 +79,7 @@ export class WordBridge implements DocBridge {
       'tracked-change': (host, request) => host.applyTrackedChange(request),
       'fill-content-control': (host, request) => host.applyFillContentControl(request),
       'add-comment': (host, request) => host.applyAddComment(request),
+      'insert-annotation': (host, request) => host.applyInsertAnnotation(request),
       'comment-reply': (host, request) => host.applyCommentReply(request),
       'apply-style': (host, request) => host.applyApplyStyle(request),
       'insert-table': (host, request) => host.applyInsertTable(request),
@@ -353,9 +356,23 @@ export class WordBridge implements DocBridge {
     return canRevealWordContext(ref);
   }
 
+  /**
+   * Bring the ref into view; on a WordApi 1.8 host a content-anchored ref is also highlighted
+   * temporarily (`Range.highlight`) so the finding stands out while the panel item is open. The
+   * highlight never touches content — `clearPreview()` removes it.
+   */
   async revealContext(ref: ContextRef): Promise<void> {
     if (!this.canRevealContext(ref)) return;
     await this.host.revealContext(ref);
+    const matchText = ref.anchor?.matchText.trim();
+    if (!matchText || !this.host.highlightAnchor || !isSet('WordApi', '1.8')) return;
+    await this.host.clearHighlight?.();
+    await this.host.highlightAnchor(matchText, ref.anchor?.contextHint);
+  }
+
+  /** Remove the temporary highlight the last `revealContext` applied (no-op when none). */
+  async clearPreview(): Promise<void> {
+    await this.host.clearHighlight?.();
   }
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
@@ -478,6 +495,77 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       location: 'comment',
+      ...provFlags(req, dropped),
+    };
+  }
+
+  /**
+   * C2 `insert-annotation`: a finding as a NATIVE critique (coloured underline + popup) on the
+   * matched text — WordApi 1.7 `Paragraph.insertAnnotations`. Content-anchored and re-resolved at
+   * apply-time like a comment; the inverse deletes the host-MINTED annotation id, and the readback
+   * (`getAnnotationById`) is what upgrades the receipt to `verified`. Below 1.7 (or on a host port
+   * without the API) the same finding lands as an anchored comment, so a thin host still gets the
+   * review item — reported as `location: 'comment'`, never as a critique.
+   */
+  private async applyInsertAnnotation(req: ActuationRequest): Promise<ActuationResult> {
+    const plan = planInsertAnnotation(req);
+    if (!plan.matchText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_anchor', message: 'insert-annotation needs target.matchText' },
+      };
+    }
+    if (!plan.hasText) {
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_text', message: 'insert-annotation needs params.text' },
+      };
+    }
+    const drift: ActuationResult = {
+      ok: false,
+      changeId: req.changeId,
+      kind: req.kind,
+      degraded: true,
+      error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+    };
+    if (!this.host.insertAnnotation || !isSet('WordApi', '1.7')) {
+      const fallback = await this.host.addComment(plan.matchText, false, plan.commentText);
+      if (!fallback.ok) return drift;
+      const dropped = await this.persistProvenance(req);
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: 'comment',
+        completion: 'applied',
+        degraded: true, // the finding landed, but as a comment, not the critique that was asked for
+        ...provFlags(req, dropped),
+      };
+    }
+    const outcome = await this.host.insertAnnotation(
+      plan.matchText,
+      { matchCase: false },
+      {
+        colorScheme: plan.colorScheme,
+        suggestions: plan.suggestion ? [plan.suggestion] : [plan.text],
+      },
+      (hitTexts) => chooseAnchorIndex([...hitTexts], plan.contextHint),
+    );
+    if (outcome.status === 'drift') return drift;
+    // Readback: the minted id must resolve on the host before the receipt says `verified`.
+    const readback = await this.host.readAnnotation?.(outcome.annotationId);
+    const dropped = await this.persistProvenance(req);
+    return {
+      ok: true,
+      changeId: req.changeId,
+      kind: req.kind,
+      location: outcome.location,
+      completion: readback === undefined ? 'applied' : readback.exists ? 'verified' : 'unknown',
+      inverse: { op: 'delete-object', objectType: 'annotation', name: outcome.annotationId },
       ...provFlags(req, dropped),
     };
   }
@@ -1172,8 +1260,35 @@ export class WordBridge implements DocBridge {
         const commentId = args.commentId ?? args.id ?? args.ids?.[0];
         if (commentId) emit(commentAddedEvent(originFromWordSource(args.source), commentId));
       },
+      // Annotation events (WordApi 1.7/1.8): one HostEvent per id; an event without an id is dropped.
+      onAnnotationClicked: (args) => {
+        for (const id of annotationIds(args)) emit(annotationEvent('annotation-clicked', id));
+      },
+      onAnnotationInserted: (args) => {
+        for (const id of annotationIds(args)) emit(annotationEvent('annotation-inserted', id));
+      },
+      onAnnotationRemoved: (args) => {
+        for (const id of annotationIds(args)) emit(annotationEvent('annotation-removed', id));
+      },
+      onAnnotationPopupAction: (args) => {
+        for (const id of annotationIds(args))
+          emit(
+            annotationEvent('annotation-action', id, {
+              action: args.action ?? '',
+              ...(args.critiqueSuggestion !== undefined
+                ? { suggestion: args.critiqueSuggestion }
+                : {}),
+            }),
+          );
+      },
     });
   }
+}
+
+/** The annotation ids an event names (`id` or `ids`), blank ones dropped. */
+function annotationIds(args: { readonly id?: string; readonly ids?: readonly string[] }): string[] {
+  const ids = args.id !== undefined ? [args.id] : [...(args.ids ?? [])];
+  return ids.map((id) => String(id).trim()).filter((id) => id.length > 0);
 }
 
 function findParagraphForRef(

@@ -352,7 +352,7 @@ async function runLeg(
       ...(input.options.approvePlan
         ? {
             approvePlan: async (
-              effects: Parameters<NonNullable<RunCommandsOptions['approvePlan']>>[0],
+              ...[effects, phase]: Parameters<NonNullable<RunCommandsOptions['approvePlan']>>
             ) => {
               const expected = input.expectedEffects.slice(
                 approvedEffects,
@@ -363,7 +363,7 @@ async function runLeg(
                 effects.some((effect, index) => effect.request.kind !== expected[index]?.kind)
               )
                 return false;
-              const approved = await input.options.approvePlan!(effects);
+              const approved = await input.options.approvePlan!(effects, phase);
               if (approved) approvedEffects += effects.length;
               return approved;
             },

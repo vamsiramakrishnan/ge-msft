@@ -20,7 +20,7 @@ teaches the _types and laws_, the signature is _authoritative_.
 | ------------- | ----------------------------------------------------------- | --------------------------------------------- |
 | `Table`       | rows × named columns                                        | `read` of a range; any pure transform         |
 | `Number`      | one scalar number                                           | `sum`/`avg`/`min`/`max`/`count` of a column   |
-| `Text`        | one string                                                  | a cell/selection read; a literal              |
+| `Text`        | one string                                                  | a cell/selection read; a `"literal"`          |
 | `Boolean`     | true/false                                                  | a predicate                                   |
 | `Selector`    | an address that names where to read (`Sales!A1:G9`)         | you write it; never invent one                |
 | `RangeRef`    | a concrete written range (`Report!A1:B11`)                  | computed from a `spill`'s origin × table size |
@@ -29,19 +29,30 @@ teaches the _types and laws_, the signature is _authoritative_.
 You **cannot see content until you read it.** A `Selector` is a promise of where data is; a `Table`
 is the data once read. Never fabricate a value, a selector, an object id, or a comment id.
 
+A **literal** is a value the program itself carries — `let $n = 5`, `let $s = "text"`,
+`let $t = table [["col"],["v"]]` (JSON rows, header first). Literals are yours (lookup tables,
+thresholds, labels); they are never a substitute for reading the document.
+
 ## Operators
 
 ### Pure — compose freely, never terminate
 
 ```
-read    : Selector            -> Table        # the only way to obtain content
-filter  : Table × Predicate   -> Table        # rows where the predicate holds
-select  : Table × ColumnList  -> Table        # keep these columns
-sort    : Table × Column × Dir -> Table       # order by a column (asc|desc)
-head    : Table × Number      -> Table        # first N rows
-tail    : Table × Number      -> Table        # last N rows
-sum     : Table × Column      -> Number        # also avg / min / max
-count   : Table               -> Number        # row count
+read     : Selector            -> Table        # the only way to obtain content
+literal  : Number | Text | Table               # a value written in the program (table [[…]])
+filter   : Table × Predicate   -> Table        # rows where the predicate holds
+           Predicate = Cmp | Predicate and Predicate | Predicate or Predicate | not Predicate | ( Predicate )
+select   : Table × ColumnList  -> Table        # keep these columns
+rename   : Table × (Col→Col)*  -> Table        # rename columns
+distinct : Table × ColumnList? -> Table        # unique rows (or unique values of the listed columns)
+sort     : Table × Column × Dir -> Table       # order by a column (asc|desc)
+head     : Table × Number      -> Table        # first N rows
+tail     : Table × Number      -> Table        # last N rows
+derive   : Table × Expr        -> Table        # append a column: a + b, or fn(args) — upper lower trim len concat round year month day datediff
+join     : Table × $Table × Key × Mode -> Table # inner (default) or left join on a key column
+group    : Table × ColumnList × Agg* -> Table  # one row per group; agg ∈ sum avg min max count
+sum      : Table × Column      -> Number        # also avg / min / max
+count    : Table               -> Number        # row count
 ```
 
 A pipeline is left-to-right composition of these: `read … | filter … | sort … | head N`. The output
@@ -63,6 +74,11 @@ reply   : CommentRef × Text -> Effect        # reply to a comment
 slide / page / mail / post / compose -> Effect
 ```
 
+**Loops:** `each $row in $table: … end` is sugar over effects, not an operator — each body line
+is instantiated per row (`$row.<column>` → the cell) into concrete effects before approval. It is
+bounded (≤ 50 rows, within the write cap) and refused as a whole otherwise. Shape the table with
+pure operators first (`filter`, `head`), then loop.
+
 **The critical distinction:** a pure operator returns a value you can keep composing. An **effect
 terminates computation** — you cannot pipe out of it, and its result is _not_ a value you can read
 back in the same program. (Effects that mint a host id you must then target — e.g. a posted message
@@ -76,7 +92,13 @@ signature, effects are terminal.)
 - `head(n, sort(k, T)) ≠ sort(k, head(n, T))` — **sort before you take.** Taking the first N then
   sorting gives you the wrong N rows. This is the single most common composition bug.
 - `sum(k, T) : Number` and `select(C, T) : Table` — an aggregation collapses a Table to a scalar;
-  a projection keeps it a Table. A `set` wants a scalar; a `spill` wants a Table.
+  a projection keeps it a Table. A `set` wants a scalar; a `spill` wants a Table. `group` is the
+  Table-preserving aggregation: `group region agg sum(amount) as total` keeps one row per region.
+- `join($o, k, T)` needs `$o` **bound** (`let $o = read …` or a `table` literal) and `k` present on
+  both sides (`on a=b` when the names differ). Left-join blanks are empty cells, not zeros — `sum`
+  skips them.
+- `not` binds tightest, then `and`, then `or`: `a or b and c` = `a or (b and c)`. Parenthesize when
+  in doubt; quote a value that contains `and`/`or`/`not`.
 - `set(range, value) : Effect`, `grid(range, cells) : Effect`, and `spill(range, table) : Effect`
   all terminate. You bind the _value_ before the effect (`let $x = …`), never the _effect_.
 - Use `grid` for a literal rectangular payload. Use `spill` for a `Table` value produced by a

@@ -236,12 +236,13 @@ function Preview(): JSX.Element {
   // A fresh mock per (surface, toggles) so `getState` reflects the toolbar. `App` re-renders on its
   // own prop change; the mock's `subscribe` is a no-op because the harness is the source of truth.
   const resume = params.get('resume') === '1';
+  const phases = params.get('phases') === '1';
   const controller = useMemo(
     () =>
       interactive
-        ? makeDemoController(surface, { resume })
+        ? makeDemoController(surface, { resume, phases })
         : makeMockController(buildState(toggles)),
-    [toggles, surface, interactive, resume],
+    [toggles, surface, interactive, resume, phases],
   );
   useEffect(() => () => controller.cancel(), [controller]);
 

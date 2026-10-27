@@ -1,5 +1,11 @@
 import type { TokenSource } from './stream-assist.js';
-import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
+import {
+  withRetry,
+  defaultIsRetriable,
+  HttpError,
+  parseRetryAfter,
+  type RetryOptions,
+} from './retry.js';
 
 export type FetchLike = typeof fetch;
 
@@ -48,7 +54,11 @@ export async function postJson(
     const res = await send();
     lastRes = res;
     if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
-      throw new HttpError(res.status, `request failed (${res.status})`);
+      throw new HttpError(
+        res.status,
+        `request failed (${res.status})`,
+        parseRetryAfter(res.headers.get('retry-after')),
+      );
     }
     return res;
   };
@@ -106,7 +116,11 @@ export async function postJsonWithHeaders(
     const res = await send();
     lastRes = res;
     if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
-      throw new HttpError(res.status, `request failed (${res.status})`);
+      throw new HttpError(
+        res.status,
+        `request failed (${res.status})`,
+        parseRetryAfter(res.headers.get('retry-after')),
+      );
     }
     return res;
   };
@@ -158,7 +172,11 @@ export async function getJson(
     const res = await send();
     lastRes = res;
     if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
-      throw new HttpError(res.status, `request failed (${res.status})`);
+      throw new HttpError(
+        res.status,
+        `request failed (${res.status})`,
+        parseRetryAfter(res.headers.get('retry-after')),
+      );
     }
     return res;
   };

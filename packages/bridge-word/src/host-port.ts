@@ -184,6 +184,34 @@ export type FindReplaceOutcome =
   | { readonly status: 'applied'; readonly replacedCount: number }
   | { readonly status: 'none' }; // search found nothing — nothing was written
 
+/**
+ * The outcome of an `insert-annotation` (C2). On success it carries the host-MINTED annotation id
+ * (`insertAnnotations` returns the ids post-sync) so the inverse deletes exactly THIS critique.
+ */
+export type InsertAnnotationOutcome =
+  | { readonly status: 'applied'; readonly location: string; readonly annotationId: string }
+  | { readonly status: 'drift' };
+
+/** What `readAnnotation` observes for a minted id: present (with Word's state) or gone. */
+export type AnnotationReadback =
+  | { readonly exists: true; readonly state: string }
+  | { readonly exists: false };
+
+/** The critique a host draws on the matched text (`Word.Critique` minus the offsets). */
+export interface WordCritique {
+  readonly colorScheme: 'Red' | 'Green' | 'Blue' | 'Lavender' | 'Berry';
+  /** Popup suggestions (WordApi 1.8); ignored by a 1.7 host. */
+  readonly suggestions: readonly string[];
+}
+
+/** Raw annotation handler args at the host boundary (ids / popup action are untrusted strings). */
+export interface WordAnnotationArgs {
+  readonly id?: string;
+  readonly ids?: readonly string[];
+  readonly action?: string;
+  readonly critiqueSuggestion?: string;
+}
+
 /** Raw paragraph-edit handler args at the host boundary (coauthor source is untrusted). */
 export interface WordEditArgs {
   readonly source: unknown;
@@ -202,6 +230,12 @@ export interface WordHandlers {
   readonly onSelectionChanged: () => void;
   readonly onDocumentChanged: (args: WordEditArgs) => void;
   readonly onCommentAdded: (args: WordCommentArgs) => void;
+  /** WordApi 1.7 annotation lifecycle; a host without the events never calls these. */
+  readonly onAnnotationClicked?: (args: WordAnnotationArgs) => void;
+  readonly onAnnotationInserted?: (args: WordAnnotationArgs) => void;
+  readonly onAnnotationRemoved?: (args: WordAnnotationArgs) => void;
+  /** WordApi 1.8: a critique popup button was pressed. */
+  readonly onAnnotationPopupAction?: (args: WordAnnotationArgs) => void;
 }
 
 /**
@@ -366,6 +400,28 @@ export interface WordHost {
   ): Promise<InsertContentControlOutcome>;
 
   /**
+   * C2: draw a native critique on the chosen hit of `query` (WordApi 1.7 `Paragraph.insertAnnotations`).
+   * Returns the host-minted annotation id; `drift` when there is no live hit. Optional: a host
+   * without the annotation API leaves it undefined and the bridge falls back to a comment.
+   */
+  insertAnnotation?(
+    query: string,
+    opts: { readonly matchCase: boolean },
+    critique: WordCritique,
+    choose: ChooseHit,
+  ): Promise<InsertAnnotationOutcome>;
+  /** Read back a minted annotation (`Document.getAnnotationById`); never throws. */
+  readAnnotation?(annotationId: string): Promise<AnnotationReadback>;
+  /** Delete a minted annotation (the `insert-annotation` inverse). */
+  deleteAnnotation?(annotationId: string): Promise<{ ok: boolean }>;
+  /**
+   * C2 preview: temporarily highlight the chosen hit of `matchText` (WordApi 1.8 `Range.highlight`)
+   * without changing document content. `clearHighlight` removes the last one.
+   */
+  highlightAnchor?(matchText: string, contextHint: string | undefined): Promise<{ ok: boolean }>;
+  clearHighlight?(): Promise<void>;
+
+  /**
    * ADR-0007 `insert-hyperlink`: set the hyperlink on the selection or anchored range, CAPTURING the
    * prior address first so it is reversible. The URL is untrusted — the bridge screens it; this port
    * passes it to `range.hyperlink` as data.
@@ -431,7 +487,23 @@ export class OfficeWordHost implements WordHost {
    * `trackEdits` (default on): every text edit is recorded as a Word tracked change, so a reviewer
    * accepts or rejects each one (product decision 2026-10-15). It is the one switch for all edits.
    */
-  constructor(private readonly options: { readonly trackEdits?: boolean } = {}) {}
+  constructor(
+    private readonly options: {
+      readonly trackEdits?: boolean;
+      /**
+       * WordApi 1.8 critique popups name their title/subtitle/branding by MANIFEST resource id
+       * (`CritiquePopupOptions`), not free text. Left unset, a critique lands without a popup and
+       * the suggestion is not shown — set these to the ids declared in the add-in manifest.
+       */
+      readonly annotationPopup?: {
+        readonly titleResourceId: string;
+        readonly subtitleResourceId: string;
+        readonly brandingTextResourceId: string;
+      };
+    } = {},
+  ) {}
+  /** The anchor of the last `highlightAnchor`, re-resolved by `clearHighlight`. */
+  private lastHighlight?: { readonly matchText: string; readonly contextHint?: string };
   async listContentControls(): Promise<{
     items: Array<{ id: string; title: string; tag: string }>;
     complete: boolean;
@@ -1202,6 +1274,136 @@ export class OfficeWordHost implements WordHost {
     });
   }
 
+  async insertAnnotation(
+    query: string,
+    opts: { readonly matchCase: boolean },
+    critique: WordCritique,
+    choose: ChooseHit,
+  ): Promise<InsertAnnotationOutcome> {
+    // `Paragraph.insertAnnotations` / `Critique` → WordApi 1.7; `popupOptions` → WordApi 1.8. The
+    // bridge gates on 1.7 before calling; this re-check keeps the port safe on its own.
+    if (!isSet('WordApi', '1.7')) return { status: 'drift' };
+    return nativeRun(async (ctx) => {
+      const results = ctx.document.body.search(query, { matchCase: opts.matchCase });
+      results.load('items/text');
+      await ctx.sync();
+      // A tracked deletion still matches the search: never critique struck-out text.
+      const live = await withoutTrackedDeletions(ctx, results.items);
+      const idx = choose(live.map((r) => r.text));
+      const range = idx >= 0 ? live[idx] : undefined;
+      if (!range) return { status: 'drift' };
+      // A critique is addressed by (start, length) INSIDE its paragraph: read the containing
+      // paragraph's text and locate the hit in it. Office returns the hit with the document's own
+      // casing, so an exact index finds it; a hit that straddles paragraphs is critiqued from its
+      // first paragraph for the length that paragraph holds.
+      const paragraph = range.paragraphs.getFirst();
+      paragraph.load('text');
+      await ctx.sync();
+      const hitText = range.text;
+      const start = Math.max(0, paragraph.text.indexOf(hitText));
+      const length = Math.max(1, Math.min(hitText.length, paragraph.text.length - start));
+      const popup = this.options.annotationPopup;
+      const popupOptions =
+        popup && isSet('WordApi', '1.8')
+          ? {
+              popupOptions: {
+                titleResourceId: popup.titleResourceId,
+                subtitleResourceId: popup.subtitleResourceId,
+                brandingTextResourceId: popup.brandingTextResourceId,
+                suggestions: [...critique.suggestions],
+              },
+            }
+          : {};
+      const ids = paragraph.insertAnnotations({
+        critiques: [{ colorScheme: critique.colorScheme, start, length, ...popupOptions }],
+      });
+      await ctx.sync();
+      // Read back the MINTED id post-sync: the inverse deletes exactly THIS annotation.
+      const annotationId = ids.value[0];
+      if (annotationId === undefined || annotationId === '') return { status: 'drift' };
+      return { status: 'applied', location: `annotation:${annotationId}`, annotationId };
+    });
+  }
+
+  async readAnnotation(annotationId: string): Promise<AnnotationReadback> {
+    if (!isSet('WordApi', '1.7')) return { exists: false };
+    try {
+      return await nativeRun(async (ctx) => {
+        const annotation = ctx.document.getAnnotationById(annotationId);
+        annotation.load('id,state');
+        await ctx.sync();
+        return { exists: true, state: String(annotation.state) };
+      });
+    } catch {
+      // ItemNotFound (deleted / rejected) or an API quirk: the readback reads as "gone".
+      return { exists: false };
+    }
+  }
+
+  async deleteAnnotation(annotationId: string): Promise<{ ok: boolean }> {
+    if (!isSet('WordApi', '1.7')) return { ok: false };
+    try {
+      return await nativeRun(async (ctx) => {
+        ctx.document.getAnnotationById(annotationId).delete();
+        await ctx.sync();
+        return { ok: true };
+      });
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  async highlightAnchor(
+    matchText: string,
+    contextHint: string | undefined,
+  ): Promise<{ ok: boolean }> {
+    // `Range.highlight` / `removeHighlight` → WordApi 1.8. A temporary highlight only — the
+    // document content and its formatting are untouched, so there is nothing to make reversible.
+    if (!isSet('WordApi', '1.8')) return { ok: false };
+    try {
+      return await nativeRun(async (ctx) => {
+        const results = ctx.document.body.search(matchText, { matchCase: false });
+        results.load('items/text');
+        await ctx.sync();
+        const idx = chooseAnchorIndex(
+          results.items.map((r) => r.text),
+          contextHint,
+        );
+        const range = idx >= 0 ? results.items[idx] : undefined;
+        if (!range) return { ok: false };
+        range.highlight();
+        await ctx.sync();
+        this.lastHighlight = { matchText, ...(contextHint !== undefined ? { contextHint } : {}) };
+        return { ok: true };
+      });
+    } catch {
+      return { ok: false };
+    }
+  }
+
+  async clearHighlight(): Promise<void> {
+    const last = this.lastHighlight;
+    this.lastHighlight = undefined;
+    if (!last || !isSet('WordApi', '1.8')) return;
+    try {
+      await nativeRun(async (ctx) => {
+        const results = ctx.document.body.search(last.matchText, { matchCase: false });
+        results.load('items/text');
+        await ctx.sync();
+        const idx = chooseAnchorIndex(
+          results.items.map((r) => r.text),
+          last.contextHint,
+        );
+        const range = idx >= 0 ? results.items[idx] : undefined;
+        if (!range) return;
+        range.removeHighlight();
+        await ctx.sync();
+      });
+    } catch {
+      // The anchor drifted or the host refused: a temporary highlight is never an error.
+    }
+  }
+
   async insertHyperlink(
     query: string | undefined,
     opts: { readonly matchCase: boolean },
@@ -1322,6 +1524,49 @@ export class OfficeWordHost implements WordHost {
             removers.push(evtHandlers.add(onDocChange));
           } catch {
             // This paragraph event isn't in the active requirement set — skip it.
+          }
+        }
+      }
+
+      // Annotations (WordApi 1.7) + the critique popup action (WordApi 1.8). Requirement-set gated
+      // like the paragraph events; the handler's try/catch covers a host that lies about its set.
+      const annotationHandler =
+        (deliver: ((args: WordAnnotationArgs) => void) | undefined) =>
+        (args: {
+          id?: string;
+          ids?: string[];
+          action?: string;
+          critiqueSuggestion?: string;
+        }): Promise<void> => {
+          deliver?.({
+            ...(args.id !== undefined ? { id: args.id } : {}),
+            ...(args.ids !== undefined ? { ids: args.ids } : {}),
+            ...(args.action !== undefined ? { action: args.action } : {}),
+            ...(args.critiqueSuggestion !== undefined
+              ? { critiqueSuggestion: args.critiqueSuggestion }
+              : {}),
+          });
+          return Promise.resolve();
+        };
+      if (isSet('WordApi', '1.7')) {
+        const docEvents = doc as unknown as Record<string, unknown>;
+        type AnnotationDeliver = ((args: WordAnnotationArgs) => void) | undefined;
+        const annotationEvents: Array<[unknown, AnnotationDeliver]> = [
+          [docEvents.onAnnotationClicked, handlers.onAnnotationClicked],
+          [docEvents.onAnnotationInserted, handlers.onAnnotationInserted],
+          [docEvents.onAnnotationRemoved, handlers.onAnnotationRemoved],
+        ];
+        if (isSet('WordApi', '1.8'))
+          annotationEvents.push([
+            docEvents.onAnnotationPopupAction,
+            handlers.onAnnotationPopupAction,
+          ]);
+        for (const [evtHandlers, deliver] of annotationEvents) {
+          if (!deliver || !isCommentHandlers(evtHandlers)) continue;
+          try {
+            removers.push(evtHandlers.add(annotationHandler(deliver)));
+          } catch {
+            // This annotation event isn't in the active requirement set — skip it.
           }
         }
       }

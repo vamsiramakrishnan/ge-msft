@@ -37,6 +37,19 @@ export type HostEvent =
       commentId: string;
       text?: string;
     }
+  // Word critique annotations (WordApi 1.7/1.8). `annotation-action` is the 1.8 popup button:
+  // `action` is the host's action name and `suggestion` the critique suggestion it carried.
+  | { type: 'annotation-clicked'; surface: Surface; origin: EventOrigin; annotationId: string }
+  | { type: 'annotation-inserted'; surface: Surface; origin: EventOrigin; annotationId: string }
+  | { type: 'annotation-removed'; surface: Surface; origin: EventOrigin; annotationId: string }
+  | {
+      type: 'annotation-action';
+      surface: Surface;
+      origin: EventOrigin;
+      annotationId: string;
+      action: string;
+      suggestion?: string;
+    }
   | { type: 'mail-received'; id: string }
   | { type: 'mail-compose'; id?: string }
   | { type: 'mail-send'; id?: string } // gate candidate (Outlook on-send)

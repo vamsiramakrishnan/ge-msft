@@ -6,6 +6,9 @@ import {
   propagateFailure,
   effectResources,
   changesCoveredBy,
+  scheduleEffectLevels,
+  approvalPhases,
+  executionOrder,
 } from './planning.js';
 
 const cid = (s: string) => s as ChangeId;
@@ -169,11 +172,20 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
     expect(approvalClassOf('insert-ooxml')).toBe('irreversible');
   });
 
-  it('carries the changeId as the idempotency key', () => {
-    const [node] = analyseEffectDependencies([
+  it('carries a STABLE intent hash as the idempotency key, independent of the changeId (B4)', () => {
+    const [a] = analyseEffectDependencies([
       req('write-cells', { target: { range: 'A1' }, cells: [['x']] }, 'idem-1'),
     ]);
-    expect(node!.idempotencyKey).toBe('idem-1');
+    const [b] = analyseEffectDependencies([
+      req('write-cells', { target: { range: 'A1' }, cells: [['x']] }, 'idem-2'),
+    ]);
+    const [c] = analyseEffectDependencies([
+      req('write-cells', { target: { range: 'A1' }, cells: [['y']] }, 'idem-1'),
+    ]);
+    expect(a!.idempotencyKey).toMatch(/^intent:[a-f0-9]{16}$/);
+    expect(a!.idempotencyKey).toBe(b!.idempotencyKey); // same intent, new changeId
+    expect(a!.idempotencyKey).not.toBe(c!.idempotencyKey); // different value
+    expect(a!.idempotencyKey).not.toBe('idem-1');
   });
 
   it('extracts the spilled region as the write resource (origin expanded by the grid)', () => {
@@ -242,5 +254,70 @@ describe('changesCoveredBy — cells an earlier effect of the batch produced', (
       false,
     );
     expect(changesCoveredBy(before, before, [at('S!B1', [[1]])])).toBe(false);
+  });
+});
+
+describe('planning — scheduling levels + approval phases (B1)', () => {
+  const spill = req('write-cells', { target: { range: 'S!A1' }, cells: [['a', 'b']] }, 'e1');
+  const table = req(
+    'create-table',
+    { table: { range: 'S!A1:B1', name: 'T', hasHeaders: true } },
+    'e2',
+  );
+  const chart = req(
+    'insert-chart',
+    { chart: { chartType: 'bar', sourceRange: 'S!A1:B1', seriesBy: 'auto' } },
+    'e3',
+  );
+  const other = req(
+    'format-cells',
+    { target: { range: 'Other!Z9' }, format: { bold: true } },
+    'e4',
+  );
+
+  it('puts independent effects in one level and dependents in the next', () => {
+    const dag = analyseEffectDependencies([spill, table, chart, other]);
+    expect(scheduleEffectLevels(dag)).toEqual([
+      { level: 0, ids: ['e1', 'e4'] },
+      { level: 1, ids: ['e2', 'e3'] },
+    ]);
+  });
+
+  it('a single-class plan is one phase holding every effect', () => {
+    const dag = analyseEffectDependencies([spill, table]);
+    expect(approvalPhases(dag)).toEqual([{ approvalClass: 'in-document', ids: ['e1', 'e2'] }]);
+  });
+
+  it('splits a mixed-authority plan into severity-ordered phases', () => {
+    const post: ActuationRequest = {
+      changeId: cid('p1'),
+      kind: 'post-message',
+      surface: 'teams',
+      params: { text: 'hi' },
+    };
+    const dag = analyseEffectDependencies([post, spill, other]);
+    expect(approvalPhases(dag)).toEqual([
+      { approvalClass: 'in-document', ids: ['e2', 'e3'] },
+      { approvalClass: 'external', ids: ['e1'] },
+    ]);
+    // Cheaper phase first, then the external send: nothing external lands before the edits did.
+    expect(executionOrder(dag)).toEqual(['e2', 'e3', 'e1']);
+  });
+
+  it('collapses to ONE mixed phase when an effect depends on a later-phase effect', () => {
+    // An irreversible write lands first; an in-document format depends on it (same range).
+    const irreversible = req('filter-range', { target: { range: 'S!A1:B9' } }, 'f1');
+    const dependent = req(
+      'format-cells',
+      { target: { range: 'S!A1:B9' }, format: { bold: true } },
+      'f2',
+    );
+    const dag = analyseEffectDependencies([irreversible, dependent]);
+    expect(dag[1]!.dependsOn).toEqual(['e1']);
+    const phases = approvalPhases(dag);
+    expect(phases).toHaveLength(1);
+    expect(phases[0]!.approvalClass).toBe('irreversible');
+    expect(phases[0]!.ids).toEqual(['e1', 'e2']);
+    expect(executionOrder(dag)).toEqual(['e1', 'e2']);
   });
 });

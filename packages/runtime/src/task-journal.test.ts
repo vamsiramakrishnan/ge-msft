@@ -111,3 +111,53 @@ describe('durable task checkpoints', () => {
     );
   });
 });
+
+describe('stable idempotency keys (B4)', () => {
+  const verified = (id: string) => ({
+    ok: true,
+    changeId: asChangeId(id),
+    kind: 'tracked-change' as const,
+    verification: { status: 'verified' as const },
+  });
+  it('finds the prior outcome of the same intent under a new changeId', async () => {
+    const journal = new TaskJournal(new MemoryTaskJournalStore(), scope);
+    await journal.execute('task', request('first'), async () => verified('first'));
+    const prior = journal.priorOutcome(request('second'));
+    expect(prior).toMatchObject({ id: 'first', state: 'applied' });
+    expect(journal.priorOutcome({ ...request('x'), params: { text: 'other' } })).toBeUndefined();
+  });
+  it('replays a verified prior outcome only when asked, naming the original change', async () => {
+    const journal = new TaskJournal(new MemoryTaskJournalStore(), scope);
+    await journal.execute('task', request('first'), async () => verified('first'));
+    const dispatch = vi.fn(async () => verified('second'));
+    // The plain path dispatches again: a re-emitted write is a new request.
+    const plain = await journal.execute('task', request('second'), dispatch);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(plain.replayOf).toBeUndefined();
+    // A resume opts in and gets the prior receipt back without a dispatch.
+    const again = vi.fn(async () => verified('third'));
+    const replayed = await journal.execute('task', request('third'), again, {
+      replayIntent: true,
+    });
+    expect(again).not.toHaveBeenCalled();
+    expect(replayed).toMatchObject({ ok: true, changeId: 'third', replayOf: 'second' });
+    expect(journal.list().find((entry) => entry.id === 'third')).toMatchObject({
+      state: 'applied',
+      replayOf: 'second',
+    });
+  });
+  it('never replays an unverified, uncertain or other-task outcome', async () => {
+    const journal = new TaskJournal(new MemoryTaskJournalStore(), scope);
+    await journal.execute('task', request('plain'), async () => ({
+      ok: true,
+      changeId: asChangeId('plain'),
+      kind: 'tracked-change' as const,
+    }));
+    const dispatch = vi.fn(async () => verified('retry'));
+    await journal.execute('task', request('retry'), dispatch, { replayIntent: true });
+    expect(dispatch).toHaveBeenCalledOnce(); // prior was applied but not verified
+    const other = vi.fn(async () => verified('other-task'));
+    await journal.execute('task-2', request('other-task'), other, { replayIntent: true });
+    expect(other).toHaveBeenCalledOnce(); // verified prior belongs to another task
+  });
+});

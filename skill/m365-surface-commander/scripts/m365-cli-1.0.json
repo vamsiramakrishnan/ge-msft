@@ -650,10 +650,14 @@
     "avg",
     "count",
     "derive",
+    "distinct",
     "filter",
+    "group",
     "head",
+    "join",
     "max",
     "min",
+    "rename",
     "sed",
     "select",
     "sort",
@@ -809,7 +813,7 @@
     },
     "add-shape": {
       "command": "/add-shape",
-      "useWhen": "PowerPoint shape/textbox insertion: add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command — never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, …); fill=#RRGGBB colours it",
+      "useWhen": "PowerPoint shape/textbox insertion: add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command \u2014 never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, \u2026); fill=#RRGGBB colours it",
       "syntax": "/add-shape slide=<n> shapeType=textBox|geometric|line [geometryType=Rectangle|Ellipse|...] [text=\"...\"] [fill=#RRGGBB] [connectorType=straight|elbow|curve] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]",
       "discovery": [
         "slides",
@@ -843,7 +847,7 @@
     },
     "add-table-slide": {
       "command": "/add-table-slide",
-      "useWhen": "PowerPoint native slide table: add a native table (rows and columns) to a new slide (slide=new title=\"…\", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A \"3x3\" (N×M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so (\"3 data rows\"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there",
+      "useWhen": "PowerPoint native slide table: add a native table (rows and columns) to a new slide (slide=new title=\"\u2026\", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A \"3x3\" (N\u00d7M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so (\"3 data rows\"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there",
       "syntax": "/add-table-slide slide=<n|new> rows=\"h1\\th2\\nv1\\tv2\" [title=\"...\"] [at=<n>] [headerFill=#RRGGBB] [left=<pt>] [top=<pt>] [width=<pt>] [height=<pt>]",
       "discovery": [
         "slides",
@@ -1368,7 +1372,7 @@
     "format": {
       "command": "format",
       "useWhen": "you need to format an Excel range: font color/size, fill, alignment, borders, wrap, column widths, number formats",
-      "syntax": "format <range> key=value ... (not JSON) — keys: bold=true|false italic=true|false fill=#RRGGBB fontColor=#RRGGBB fontSize=6-96 align=left|center|right|justify valign=top|center|bottom wrap=true|false border=thin|medium|thick|none borderOutside=thin|medium|thick|none borderInside=thin|medium|thick|none borderColor=#RRGGBB autofit=true numberFormat=\"<Excel code>\" (quote any value with spaces)",
+      "syntax": "format <range> key=value ... (not JSON) \u2014 keys: bold=true|false italic=true|false fill=#RRGGBB fontColor=#RRGGBB fontSize=6-96 align=left|center|right|justify valign=top|center|bottom wrap=true|false border=thin|medium|thick|none borderOutside=thin|medium|thick|none borderInside=thin|medium|thick|none borderColor=#RRGGBB autofit=true numberFormat=\"<Excel code>\" (quote any value with spaces)",
       "discovery": [
         "outline or list",
         "read/search/inspect/properties the target"
@@ -2367,7 +2371,7 @@
     },
     "share": {
       "command": "share",
-      "useWhen": "a value another surface session needs to pick up by name — e.g. a table saved in Excel that a Word or PowerPoint session should read back",
+      "useWhen": "a value another surface session needs to pick up by name \u2014 e.g. a table saved in Excel that a Word or PowerPoint session should read back",
       "syntax": "share <name> = read <selector> | search <text> | outline | \"literal\" | ($pipeline)",
       "discovery": [
         "outline",
@@ -2384,7 +2388,7 @@
         "share meeting-notes.txt = outline"
       ],
       "doNot": [
-        "Do not use share for anything beyond what the signed-in user should hand to their own other sessions — it writes to the user's own Graph app folder, not a public location.",
+        "Do not use share for anything beyond what the signed-in user should hand to their own other sessions \u2014 it writes to the user's own Graph app folder, not a public location.",
         "Do not share the same content repeatedly per turn; share once the value is final."
       ],
       "failureModes": [
@@ -2397,7 +2401,7 @@
     },
     "slide": {
       "command": "slide",
-      "useWhen": "you need to add a new PowerPoint slide with a title and bullet points; at=N inserts it as slide N (at=2 → the new second slide), otherwise it is added at the end. For a native TABLE on a new slide use /add-table-slide slide=new title=\"…\" rows=\"a\\tb\\nc\\td\" instead (slide would flatten rows into bullets)",
+      "useWhen": "you need to add a new PowerPoint slide with a title and bullet points; at=N inserts it as slide N (at=2 \u2192 the new second slide), otherwise it is added at the end. For a native TABLE on a new slide use /add-table-slide slide=new title=\"\u2026\" rows=\"a\\tb\\nc\\td\" instead (slide would flatten rows into bullets)",
       "syntax": "slide \"Title\" \"bullet\" ... [at=N] OR slide \"Title\" (<table expr>) [at=N]",
       "discovery": [
         "outline or list",
@@ -3828,7 +3832,7 @@
         "Emit one compose command."
       ],
       "examples": [
-        "compose \"Follow-up\" \"Hi — summary below.\""
+        "compose \"Follow-up\" \"Hi \u2014 summary below.\""
       ],
       "preview": [
         "subject",
@@ -3878,7 +3882,7 @@
         "Emit one mail command and let Outlook on-send policy remain the final gate."
       ],
       "examples": [
-        "mail \"Thanks — Thursday works for me.\""
+        "mail \"Thanks \u2014 Thursday works for me.\""
       ],
       "preview": [
         "draft body summary",
@@ -4052,7 +4056,7 @@
       "priority": "p0",
       "command": "/add-shape",
       "title": "PowerPoint shape/textbox insertion",
-      "useWhen": "add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command — never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, …); fill=#RRGGBB colours it",
+      "useWhen": "add a text box, a coloured shape or a line to an addressed slide with explicit geometry. Text (a label, a text box) is always shapeType=textBox with text= in the SAME command \u2014 never a rectangle, whose solid theme fill hides the text. Not for a slide whose layout title/body placeholders are empty: fill those with shape pp:shape:<n>:title and the body placeholder (a text box over empty placeholders is refused). Other shapeType values: line, or a geometry (rectangle, roundRectangle, ellipse, triangle, diamond, star5, rightArrow, \u2026); fill=#RRGGBB colours it",
       "hostApis": [
         "PowerPoint.ShapeCollection.addTextBox",
         "PowerPoint.ShapeCollection.addGeometricShape",
@@ -4107,7 +4111,7 @@
       "priority": "p0",
       "command": "/add-table-slide",
       "title": "PowerPoint native slide table",
-      "useWhen": "add a native table (rows and columns) to a new slide (slide=new title=\"…\", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A \"3x3\" (N×M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so (\"3 data rows\"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there",
+      "useWhen": "add a native table (rows and columns) to a new slide (slide=new title=\"\u2026\", at=N to make it slide N) or an existing slide (slide=<number from the snapshot> or slide=last), instead of flattening the rows into bullet text. A \"3x3\" (N\u00d7M) table is N rows in total, the header row included, and M columns; a header on top of N rows only when the user says so (\"3 data rows\"). For factual tables, use observed or user-supplied facts and preserve source precision. Leave missing facts blank or mark TBD; never infer them from the topic. Synthetic examples or proposals require an explicit user request and visible labelling. Number the No column from 1. headerFill=#RRGGBB only when the user names a colour; otherwise the pane colours the header row in the brand colour. On an existing slide give no position: the pane places the table below what is already there",
       "hostApis": [
         "PowerPoint.ShapeCollection.addTable"
       ],
@@ -5381,5 +5385,10 @@
     "set-subject",
     "sort-range",
     "update-message"
-  ]
+  ],
+  "limits": {
+    "maxWritesPerTurn": 30,
+    "maxReadsPerTurn": 8,
+    "maxCellsPerTurn": 10000
+  }
 }

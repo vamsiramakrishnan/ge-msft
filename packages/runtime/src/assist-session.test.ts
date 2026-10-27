@@ -1374,13 +1374,15 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
 
     const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
-    // The unbound $var fails at dry-run resolution → no plan effect, no actuation.
+    // B2: the unbound $var is caught by the static type pass BEFORE dry-run → no plan effect, no
+    // actuation, and the program goes back for repair.
     expect(planEvents(events)).toHaveLength(0);
     expect(bridge.applied).toHaveLength(0);
-    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
-      | Extract<CommandLoopEvent, { type: 'command' }>
+    const typeErr = events.find((e) => e.type === 'type-error') as
+      | Extract<CommandLoopEvent, { type: 'type-error' }>
       | undefined;
-    expect(cmdErr?.compiled).toMatchObject({ error: expect.stringContaining('unbound') });
+    expect(typeErr?.message).toContain('unbound');
+    expect(events.some((e) => e.type === 'repair')).toBe(true);
   });
 
   it('dry-run produces the effect-set without actuating; reject → nothing actuates', async () => {
@@ -2183,6 +2185,48 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
     // A def is not an effect — no plan, no actuation.
     expect(bridge.applied).toHaveLength(0);
     expect(events.some((e) => e.type === 'write-result')).toBe(false);
+  });
+
+  it('B6: a def is stored in the document and reloaded by a fresh session as a recipes-loaded event', async () => {
+    let persisted: unknown;
+    class DurableBridge extends ComposeBridge {
+      readonly recoveryStorage = {
+        load: async () => structuredClone(persisted),
+        save: async (_owner: string, value: unknown) => {
+          persisted = structuredClone(value);
+        },
+      };
+    }
+    const first = new DurableBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef writeTotal($a $b):\n  set $b = ($a | sum amount)\nend\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(first, new StreamAssistClient(tokens, cfg, fetch), {
+      unit,
+      context: { docState: false },
+    });
+    const events = await collectLoop(session.runCommands('define', { approvePlan: () => true }));
+    const reg = events.find((e) => e.type === 'skill-registered') as Extract<
+      CommandLoopEvent,
+      { type: 'skill-registered' }
+    >;
+    expect(reg.result.message).toContain('saved in this document');
+    expect(persisted).toMatchObject({ version: 1, recipes: [{ name: 'writeTotal' }] });
+
+    // A new session over the same document finds the recipe before its first turn.
+    const again = scriptedFetch(['```cmd\ndone\n```']);
+    const second = new AssistSession(
+      new DurableBridge(),
+      new StreamAssistClient(tokens, cfg, again.fetch),
+      { unit, context: { docState: false } },
+    );
+    const later = await collectLoop(second.runCommands('anything', { approvePlan: () => true }));
+    const loaded = later.find((e) => e.type === 'recipes-loaded') as Extract<
+      CommandLoopEvent,
+      { type: 'recipes-loaded' }
+    >;
+    expect(loaded).toMatchObject({ loaded: ['writeTotal'], rejected: [] });
   });
 
   it('a call expands, binds args, and runs as ONE plan gated by approvePlan (approve → actuates)', async () => {

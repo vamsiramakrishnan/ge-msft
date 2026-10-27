@@ -40,9 +40,10 @@ export type {
   PowerPointSeed,
   SlideSeed,
   ShapeSeed,
+  BindingSeed,
   PowerPointSnapshot,
 } from './fake-powerpoint.js';
-export { powerPointSeed, defaultPowerPointSeed } from './fake-powerpoint.js';
+export { powerPointSeed, defaultPowerPointSeed, FAKE_PNG_BASE64 } from './fake-powerpoint.js';
 
 export { scriptedClient } from './scripted-client.js';
 export type { ScriptedClient, ScriptedTurn } from './scripted-client.js';

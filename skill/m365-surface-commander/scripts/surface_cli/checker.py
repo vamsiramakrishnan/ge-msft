@@ -9,7 +9,11 @@ from .parser import (
     extract_command_block_meta,
     _is_expr_line,
     _infer_pipeline_type,
+    _pipeline_law_errors,
     _analysis_refs,
+    _is_each_header,
+    _parse_each_header,
+    _each_body_line_error,
     verified_frame_error,
 )
 from .types import _parse_range, _overlap
@@ -38,6 +42,78 @@ def _analysis_guard_errors(action):
     return errors
 
 
+_DEF_HEADER = re.compile(r"^def\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*:\s*$", re.IGNORECASE)
+_STRUCTURAL = {"let", "def", "end", "finish"}
+
+
+def _split_args(text):
+    return [m.group(1) if m.group(1) is not None else m.group(2)
+            for m in re.finditer(r'"((?:[^"\\]|\\.)*)"|(\S+)', text)]
+
+
+def _group_recipes(raw_lines, recipes):
+    """Pull `def … end` blocks out of a program. Each body line is checked with its parameters
+    replaced by a neutral literal (so `head $n` still parses); the recipe's effect set is recorded
+    for the call sites. Returns the remaining top-level lines plus any corrective errors."""
+    from .generated_language import TRANSFORM_NAMES  # local to avoid an import cycle at load
+    from parse_commands import ALL_VERBS
+    errors, remaining = [], []
+    current = None
+    in_each = False  # C1: an `each … end` block is checked by analyze(), not grouped here
+    for raw in raw_lines:
+        line = raw.strip()
+        if current is None and in_each:
+            if line.lower() == "end":
+                in_each = False
+            remaining.append(raw)
+            continue
+        if current is None and _is_each_header(line):
+            in_each = True
+            remaining.append(raw)
+            continue
+        if current is not None:
+            if line.lower() == "end":
+                recipes[current["name"]] = current
+                current = None
+                continue
+            if _DEF_HEADER.match(line):
+                errors.append(f'nested def in "{current["name"]}" is not allowed')
+                continue
+            if line and not line.startswith("#"):
+                current["body"].append(line)
+                substituted = line
+                for param in current["params"]:
+                    substituted = re.sub(r"\$" + re.escape(param) + r"\b", "1", substituted)
+                rec = parse_line(substituted)
+                if rec and "error" in rec:
+                    errors.append(f'recipe "{current["name"]}": {rec["error"]}')
+                elif rec and rec.get("verb") not in (None, "done", "help") and rec.get("verb") not in _READ_PHASE_VERBS:
+                    verb = rec["verb"]
+                    name = f"/{rec['kind']}" if verb == "invoke" else verb
+                    target = rec.get("range") or rec.get("cell") or rec.get("selector")
+                    current["effects"].append({"verb": name, "target": target, "range": None,
+                                               "external": _authority(name.lstrip("/"), verb == "invoke")["approvalClass"] != "in-document",
+                                               **_authority(name.lstrip("/"), verb == "invoke"), "refs": []})
+            continue
+        m = _DEF_HEADER.match(line)
+        if m:
+            name = m.group(1).lower()
+            params = [p.strip().lstrip("$") for p in re.split(r"[,\s]+", m.group(2).strip()) if p.strip()]
+            if name in _STRUCTURAL or name in ALL_VERBS or name in TRANSFORM_NAMES:
+                errors.append(f'recipe "{name}" shadows a built-in')
+            if len(set(params)) != len(params):
+                errors.append(f'recipe "{name}" repeats a parameter')
+            current = {"name": name, "params": params, "body": [], "effects": []}
+            continue
+        if line.lower() == "end":
+            errors.append("`end` without a matching `def`")
+            continue
+        remaining.append(raw)
+    if current is not None:
+        errors.append(f'def "{current["name"]}" is missing a closing `end`')
+    return remaining, errors
+
+
 def _authority(name, specialized=False):
     info = PREFLIGHT["approvalByKind" if specialized else "approvalByVerb"].get(name)
     return info or {"approvalClass": "in-document", "reversible": True}
@@ -59,14 +135,58 @@ def analyze(program_text: str, capabilities=None):
     bound = set()
     artifact_bound = set()
     finish_requested = False
+    recipes = {}
+    lines, recipe_errors = _group_recipes(inner.splitlines(), recipes)
+    errors.extend(recipe_errors)
+    in_each = None  # C1: (row_var, table_var) while inside an `each … end` block
 
-    for raw in inner.splitlines():
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         if finish_requested:
             errors.append("finish when=verified must be the final program entry")
             break
+
+        # C1 `each $row in $table: … end` — the body is a template of effects, expanded per row by
+        # the runtime BEFORE dry-run (≤ 50 rows, within the write cap). Here: the table must be a
+        # bound (non-artifact) value and every body line an effect naming only `$row.<column>`.
+        if in_each is not None and line.lower() == "end":
+            in_each = None
+            continue
+        if _is_each_header(line):
+            if in_each is not None:
+                errors.append(f"nested each inside each ${in_each[0]} is not allowed")
+                continue
+            header = _parse_each_header(line)
+            if "error" in header:
+                errors.append(header["error"])
+                continue
+            row_var, table_var = header["rowVar"], header["tableVar"]
+            if table_var not in bound:
+                errors.append(f"each: ${table_var} used before it is bound")
+            elif table_var in artifact_bound:
+                errors.append(f"each: ${table_var} is an artifact; use analyze to read it")
+            in_each = (row_var, table_var)
+            continue
+        if in_each is not None:
+            bad = _each_body_line_error(in_each[0], line)
+            if bad:
+                errors.append(f'each body line "{line}": {bad}')
+                continue
+
+        call = line.split(None, 1)[0].lower()
+        if call in recipes:
+            # A recipe call expands into its (already checked) body at runtime; the preflight
+            # checks arity and counts the body's effects once per call, like the TS expansion.
+            given = len(_split_args(line.split(None, 1)[1] if " " in line else ""))
+            if given != len(recipes[call]["params"]):
+                errors.append(f'recipe "{call}" takes {len(recipes[call]["params"])} argument(s), got {given}')
+            for eff in recipes[call]["effects"]:
+                if capabilities is not None and eff["verb"] not in capabilities and not eff["verb"].startswith("/"):
+                    errors.append(f'"{eff["verb"]}" is not in this turn\'s capabilities')
+                effects.append(dict(eff))
+            continue
 
         rec = parse_line(line)
         if rec and "error" in rec:
@@ -103,6 +223,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _names, unknown = _infer_pipeline_type(rhs)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}" in ${name}')
+                errors.extend(_pipeline_law_errors(rhs))
                 if src.split()[0] in _READ_PHASE_VERBS:
                     reads.append(src)
                 for ref in re.findall(r"\$(\w+)", rhs):
@@ -117,6 +238,7 @@ def analyze(program_text: str, capabilities=None):
                 vtype, src, _n, unknown = _infer_pipeline_type(line)
                 for u in unknown:
                     errors.append(f'unknown transform "{u}"')
+                errors.extend(_pipeline_law_errors(line))
                 if src.split()[0] in _READ_PHASE_VERBS:
                     reads.append(src)
             continue
@@ -187,7 +309,12 @@ def analyze(program_text: str, capabilities=None):
                 errors.append(f"spill references unbound ${ref}")
             elif ref in artifact_bound:
                 errors.append(f"${ref} is an artifact; use analyze materialize to write it")
+        if in_each is not None:
+            # One template effect per body line; the runtime multiplies it by the row count.
+            eff["loop"] = f"${in_each[0]} in ${in_each[1]}"
         effects.append(eff)
+    if in_each is not None:
+        errors.append(f"each ${in_each[0]} in ${in_each[1]} is missing a closing `end`")
 
     # Effect→effect dependencies: a later effect whose range overlaps an earlier effect's range
     # depends on it (the derived-range case — table/chart/cf over a spilled region).

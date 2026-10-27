@@ -53,6 +53,11 @@ export const TRANSFORM_NAMES = [
   'tail',
   'sed',
   'derive',
+  // C1 richer algebra — relational transforms over bound tables.
+  'join',
+  'group',
+  'distinct',
+  'rename',
 ] as const;
 
 /**
@@ -72,7 +77,8 @@ export const TRANSFORM_NAMES = [
  * unchanged.
  *
  * SCOPE: `<source> ( '|' <stage> )*` and `let $name = <pipeline>`, where
- *   <source> = `read <selector>` | `search <text>` | `outline` | `$var`.
+ *   <source> = `read <selector>` | `search <text>` | `outline` | `$var`
+ *            | `<number>` | `"<text>"` | `table [[<header>…], [<row>…], …]`   (C1 literals).
  */
 
 /* ───────────────────────────── AST ───────────────────────────── */
@@ -82,7 +88,17 @@ export type PipeSource =
   | { src: 'read'; selector: string }
   | { src: 'search'; text: string }
   | { src: 'outline' }
-  | { src: 'var'; name: string };
+  | { src: 'var'; name: string }
+  // C1 literal sources — a pipeline (or a `let`) may start from a value written in the program
+  // itself: `let $n = 5`, `let $s = "text"`, `let $t = table [["a","b"],["1","2"]]`. The table
+  // literal is a JSON array of rows whose first row is the header; cells are strings (numbers and
+  // booleans are stringified). Literals are data the MODEL wrote, so they carry no host content.
+  | { src: 'number'; value: number }
+  | { src: 'text'; value: string }
+  | { src: 'table'; columns: string[]; rows: string[][] };
+
+/** A pipeline source that reaches the host (everything but a `$var` lookup or a literal). */
+export type HostPipeSource = Extract<PipeSource, { src: 'read' | 'search' | 'outline' }>;
 
 /**
  * One transform stage: the first token is the transform NAME; the remainder is the verbatim
@@ -118,6 +134,13 @@ export const PipeSourceSchema: z.ZodType<PipeSource> = z.discriminatedUnion('src
   z.object({ src: z.literal('search'), text: z.string() }),
   z.object({ src: z.literal('outline') }),
   z.object({ src: z.literal('var'), name: z.string() }),
+  z.object({ src: z.literal('number'), value: z.number() }),
+  z.object({ src: z.literal('text'), value: z.string() }),
+  z.object({
+    src: z.literal('table'),
+    columns: z.array(z.string()),
+    rows: z.array(z.array(z.string())),
+  }),
 ]);
 
 export const TransformStageSchema: z.ZodType<TransformStage> = z.object({
@@ -306,9 +329,30 @@ function parsePipeline(text: string): PipelineExpr | ExprParseError {
   return { kind: 'pipeline', source, stages };
 }
 
-/** A pipeline source: `read <selector>`, `search <text>`, `outline`, or `$var`. */
+/** The largest literal table a program line may carry (rows × columns), so a pasted blob can't bloat a turn. */
+export const MAX_LITERAL_TABLE_CELLS = 2000;
+
+/** A numeric literal source: an optionally signed integer or decimal (`5`, `-3.25`). */
+const NUMBER_LITERAL_RE = /^-?\d+(?:\.\d+)?$/;
+
+/**
+ * A pipeline source: `read <selector>`, `search <text>`, `outline`, `$var`, or a C1 literal
+ * (`<number>`, `"<text>"`, `table [[…], …]`). `table` is also an Excel EFFECT verb (promote a range
+ * to a native table); in source position it is a literal ONLY when followed by a `[` — any other
+ * `table …` head is the effect and stays refused by the pure-only guard.
+ */
 function parseSource(text: string): PipeSource | ExprParseError {
   if (isVarName(text)) return { src: 'var', name: stripDollar(text) };
+  if (NUMBER_LITERAL_RE.test(text)) return { src: 'number', value: Number(text) };
+  if (text.startsWith('"')) {
+    const quoted = scanQuoted(text, 0);
+    if (!quoted || text.slice(quoted.end).trim() !== '') {
+      return {
+        error: 'text literal source must be ONE double-quoted string — e.g. let $s = "hello"',
+      };
+    }
+    return { src: 'text', value: quoted.value };
+  }
 
   const sp = text.search(/\s/);
   const head = (sp === -1 ? text : text.slice(0, sp)).toLowerCase();
@@ -323,13 +367,66 @@ function parseSource(text: string): PipeSource | ExprParseError {
       return { src: 'search', text: stripWrappingQuotes(rest) };
     case 'outline':
       return { src: 'outline' };
+    case 'table':
+      if (rest.startsWith('[')) return parseTableLiteral(rest);
+      return { error: EFFECT_COMPOSE_ERROR };
     default:
       // A pipe into / out of an effect verb (`set X | …`, `read X | set …`) — Phase 1 is pure-only.
       if (EFFECT_VERBS.has(head)) return { error: EFFECT_COMPOSE_ERROR };
       return {
-        error: `unknown pipeline source "${head}" — use read <selector>, search <text>, outline, or $var`,
+        error: `unknown pipeline source "${head}" — use read <selector>, search <text>, outline, $var, a number, a "text" literal, or table [[…]]`,
       };
   }
+}
+
+/**
+ * `table [["col","col"], ["cell","cell"], …]` — a JSON array of rows; the first row is the header.
+ * Cells may be strings, numbers, booleans or null (stringified; null → ""). Rows are padded or
+ * truncated to the header width so the value is rectangular, exactly like a parsed GFM read.
+ */
+function parseTableLiteral(json: string): PipeSource | ExprParseError {
+  const usage =
+    'table literal usage: table [["col1","col2"],["a","1"],["b","2"]] (first row = header)';
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { error: `table literal is not valid JSON — ${usage}` };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(Array.isArray)) {
+    return { error: `table literal must be a non-empty array of row arrays — ${usage}` };
+  }
+  const rowsRaw = parsed as unknown[][];
+  const toCell = (c: unknown): string | undefined => {
+    if (c === null || c === undefined) return '';
+    if (typeof c === 'string') return c;
+    if (typeof c === 'number' || typeof c === 'boolean') return String(c);
+    return undefined;
+  };
+  const header = rowsRaw[0]!.map(toCell);
+  if (header.length === 0 || header.some((c) => c === undefined || c.trim() === '')) {
+    return { error: `table literal header row needs non-empty column names — ${usage}` };
+  }
+  const columns = header.map((c) => c!.trim());
+  if (new Set(columns).size !== columns.length) {
+    return { error: 'table literal header has duplicate column names' };
+  }
+  if (rowsRaw.length * columns.length > MAX_LITERAL_TABLE_CELLS) {
+    return {
+      error: `table literal too large (max ${MAX_LITERAL_TABLE_CELLS} cells) — read it from the document instead`,
+    };
+  }
+  const rows: string[][] = [];
+  for (let r = 1; r < rowsRaw.length; r++) {
+    const cells = rowsRaw[r]!.map(toCell);
+    if (cells.some((c) => c === undefined)) {
+      return { error: `table literal row ${r + 1} has a non-scalar cell — ${usage}` };
+    }
+    const row = (cells as string[]).slice(0, columns.length);
+    while (row.length < columns.length) row.push('');
+    rows.push(row);
+  }
+  return { src: 'table', columns, rows };
 }
 
 /* ───────────────────────── top-level pipe splitting ─────────────────────── */

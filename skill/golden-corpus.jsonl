@@ -81,3 +81,22 @@
 {"name": "unknown-verb-levenshtein-suggestion", "input": "writ A1 5", "expect": {"error_substring": "did you mean"}}
 {"name": "unknown-verb-no-far-suggestion", "input": "frobnicate A1", "expect": {"error_substring": "unknown verb"}}
 {"name": "def-shadowing-keyword-is-an-error", "input": "```cmd\ndef let(a):\nread $a\nend\ndone\n```", "expect": {"has_error": true, "complete": false}}
+{"name": "c1-number-literal-let", "input": "```cmd\nlet $n = 5\nlet $m = -3.25\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-text-literal-let", "input": "```cmd\nlet $s = \"hello | world\"\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-text-literal-trailing-garbage-is-an-error", "input": "```cmd\nlet $s = \"a\" b\n```", "expect": {"has_error": true}}
+{"name": "c1-table-literal-let-and-pipeline", "input": "```cmd\nlet $t = table [[\"region\",\"amount\"],[\"East\",100],[\"West\",true]]\ntable [[\"a\"],[\"1\"]] | count\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-table-literal-malformed-json-is-an-error", "input": "```cmd\nlet $t = table [not json\n```", "expect": {"has_error": true}}
+{"name": "c1-table-literal-duplicate-header-is-an-error", "input": "```cmd\nlet $t = table [[\"a\",\"a\"],[\"1\",\"2\"]]\n```", "expect": {"has_error": true}}
+{"name": "c1-table-effect-in-source-position-is-an-error", "input": "```cmd\ntable Sales!A1:B9 | count\n```", "expect": {"has_error": true}}
+{"name": "c1-boolean-filter-predicate", "input": "```cmd\nlet $x = read A1:C9 | filter region=East and not (amount<5 or amount>9) | count\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-relational-transforms-parse", "input": "```cmd\nlet $o = read Reps!A1:B9\nlet $x = read A1:C9 | join $o on rep=name left | group region agg sum(amount) as total, count(*) as n | distinct region | rename region=Region\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-derive-function-form-parses", "input": "```cmd\nlet $x = read A1:C9 | derive u = upper(name) | derive days = datediff(end, start)\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "c1-each-block-groups-into-one-entry", "input": "```cmd\nlet $t = read Sales!A1:B4\neach $r in $t:\n  set Summary!$r.cell $r.amount\n  # note\n  comment $r.cell \"flag\"\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": false, "complete": true}}
+{"name": "c1-each-missing-end-is-an-error", "input": "```cmd\neach $r in $t:\n  set Summary!B2 $r.amount\n```", "expect": {"has_error": true, "complete": false}}
+{"name": "c1-each-empty-body-is-an-error", "input": "```cmd\neach $r in $t:\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": true, "complete": false}}
+{"name": "c1-each-non-effect-body-is-an-error", "input": "```cmd\neach $r in $t:\n  read $r.cell\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": true, "complete": false}}
+{"name": "c1-each-nested-is-an-error", "input": "```cmd\neach $r in $t:\n  each $s in $u:\n    set B2 1\n  end\nend\ndone\n```", "expect": {"has_error": true, "complete": false}}
+{"name": "c1-each-foreign-row-variable-is-an-error", "input": "```cmd\neach $r in $t:\n  set B2 $row.amount\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": true}}
+{"name": "c1-each-bare-row-variable-is-an-error", "input": "```cmd\neach $r in $t:\n  set B2 $r\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": true}}
+{"name": "c1-each-malformed-header-is-an-error", "input": "```cmd\neach r in $t:\n  set B2 1\nend\ndone\n```", "expect": {"verbs": ["done"], "has_error": true}}
+{"name": "c1-stray-end-is-an-error", "input": "```cmd\nset B2 1\nend\ndone\n```", "expect": {"verbs": ["set", "done"], "has_error": true, "complete": false}}

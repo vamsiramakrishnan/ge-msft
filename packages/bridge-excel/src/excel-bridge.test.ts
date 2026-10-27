@@ -4,6 +4,7 @@ import {
   DocStateSnapshotSchema,
   ResolvedContextSchema,
   type ActuationRequest,
+  type ActuationResult,
   type ContextRef,
   type ProvenancePayload,
 } from '@ge/contracts';
@@ -90,6 +91,12 @@ interface ExcelSeed {
   /** Monotonic counters so each mint gets a deterministic host-assigned name. */
   tableCounter: number;
   chartCounter: number;
+  /** `Worksheet.evaluate` answers by formula text (ExcelApiDesktop 1.1). */
+  evaluations?: Record<string, string | number>;
+  /** When true, `Worksheet.evaluate` throws (a host that refuses the evaluation). */
+  evaluateThrows?: boolean;
+  /** Direct precedents/dependents per sheet-qualified address (ExcelApi 1.15). */
+  dependencies?: Record<string, { precedents?: string[]; dependents?: string[] }>;
 }
 
 function seedOf(init: Partial<ExcelSeed> & { sheets: SheetSeed[] }): ExcelSeed {
@@ -181,6 +188,22 @@ class FakeRange {
 
   get worksheet(): FakeWorksheet {
     return new FakeWorksheet(this.seed, this.sheetName);
+  }
+  /** ExcelApi 1.15 direct precedents; ItemNotFound when the range has none (as Office.js does). */
+  getDirectPrecedents() {
+    return this.dependencyAreas('precedents');
+  }
+  getDirectDependents() {
+    return this.dependencyAreas('dependents');
+  }
+  private dependencyAreas(side: 'precedents' | 'dependents') {
+    const addresses = this.seed.dependencies?.[`${this.sheetName}!${this.a1}`]?.[side] ?? [];
+    if (addresses.length === 0) {
+      const error = new Error(`no ${side}`) as Error & { code: string };
+      error.code = 'ItemNotFound';
+      throw error;
+    }
+    return { areas: { items: addresses.map((address) => ({ address })), load() {} }, load() {} };
   }
   private loaded = new Set<string>();
   private requested = new Set<string>();
@@ -360,6 +383,7 @@ class FakeTable {
   constructor(
     private readonly seed: ExcelSeed,
     private readonly target: TableSeed,
+    readonly isNullObject = false,
   ) {}
   private loaded = false;
   load(props?: string): this {
@@ -369,6 +393,12 @@ class FakeTable {
   get name(): string {
     if (!this.loaded) throw new Error('fake-excel: table "name" not loaded before sync');
     return this.target.name;
+  }
+  /** `Table.delete()` — removes the table from the workbook (the inverse of `tables.add`). */
+  delete(): void {
+    if (this.isNullObject) throw new Error('fake-excel: delete on a null-object table');
+    const i = this.seed.tables.indexOf(this.target);
+    if (i >= 0) this.seed.tables.splice(i, 1);
   }
   getRange(): FakeRange {
     // Not registered with the context's range tracker → auto-flush so the bridge can read
@@ -399,6 +429,15 @@ class FakeTableCollection {
         return table;
       });
     return this;
+  }
+  /** Null-object lookup by the host-minted name (`TableCollection.getItemOrNullObject`). */
+  getItemOrNullObject(name: string): FakeTable {
+    const found = this.seed.tables.find(
+      (t) => t.name === name && (this.sheetName === undefined || t.sheet === this.sheetName),
+    );
+    return found
+      ? new FakeTable(this.seed, found)
+      : new FakeTable(this.seed, { name, sheet: '', address: 'A1', hasHeaders: false }, true);
   }
   add(address: string, hasHeaders: boolean): FakeTable {
     this.added.push({ address, hasHeaders });
@@ -462,6 +501,7 @@ class FakeChart {
   constructor(
     private readonly target: ChartSeed,
     private readonly seed?: ExcelSeed,
+    readonly isNullObject = false,
   ) {}
   private loaded = false;
   get title(): FakeChartTitle {
@@ -489,6 +529,17 @@ class FakeChartCollection {
     private readonly sheetName: string,
   ) {}
   added: Array<{ chartType: string; sourceAddress: string; seriesBy: string }> = [];
+  /** Null-object lookup by the host-minted name, scoped to this worksheet. */
+  getItemOrNullObject(name: string): FakeChart {
+    const found = this.seed.charts.find((c) => c.name === name && c.sheet === this.sheetName);
+    return found
+      ? new FakeChart(found, this.seed)
+      : new FakeChart(
+          { name, sheet: this.sheetName, chartType: '', seriesBy: '', sourceAddress: '' },
+          this.seed,
+          true,
+        );
+  }
   add(chartType: string, sourceData: FakeRange, seriesBy: string): FakeChart {
     sourceData.load('address');
     sourceData.flushLoads();
@@ -585,6 +636,13 @@ class FakeConditionalFormatCollection {
   getCount(): FakeClientResult {
     return new FakeClientResult(this.list().length);
   }
+  /** `getItemAt(index)` — the rule at that ordinal; `delete()` removes it from the range. */
+  getItemAt(index: number): { delete(): void } {
+    const list = this.list();
+    if (index < 0 || index >= list.length)
+      throw new Error('fake-excel: ItemNotFound — no conditional format at that index');
+    return { delete: () => void list.splice(index, 1) };
+  }
   add(type: string): FakeConditionalFormat {
     const rule: CfSeed = { address: this.address, cfType: type };
     this.list().push(rule);
@@ -655,6 +713,11 @@ class FakeWorksheet {
   }
   activate(): void {
     this.seed.activeSheet = this.name;
+  }
+  /** ExcelApiDesktop 1.1: a ClientResult whose value is readable after the batch syncs. */
+  evaluate(formula: string): { value: string | number; load(): void } {
+    if (this.seed.evaluateThrows) throw new Error('evaluate refused');
+    return { value: this.seed.evaluations?.[formula] ?? '#NAME?', load() {} };
   }
 }
 
@@ -794,6 +857,16 @@ class FakeWorkbook {
   readonly names: FakeNamedItemCollection;
   readonly tables: FakeTableCollection;
   readonly comments: FakeCommentCollection;
+  /** Pivots are not modelled here; every lookup is a null object (ExcelApi 1.3 shape). */
+  readonly pivotTables = {
+    getItemOrNullObject: (_name: string) => ({
+      isNullObject: true,
+      load(_props: string): void {},
+      delete(): void {
+        throw new Error('fake-excel: delete on a null-object pivot');
+      },
+    }),
+  };
   constructor(private readonly seed: ExcelSeed) {
     this.worksheets = new FakeWorksheetCollection(seed);
     this.names = new FakeNamedItemCollection(seed);
@@ -1011,9 +1084,11 @@ interface Installed {
  */
 function installExcel(
   seed: ExcelSeed,
-  opts: { apiVersion?: number; withSettings?: boolean } = {},
+  opts: { apiVersion?: number; withSettings?: boolean; desktopVersion?: number } = {},
 ): Installed {
   const apiVersion = opts.apiVersion ?? 13;
+  // ExcelApiDesktop is absent unless a test asks for it (Excel on the web answers false).
+  const desktopVersion = opts.desktopVersion ?? -1;
   let lastWorkbook: FakeWorkbook | undefined;
   const runOptions: Array<{ mergeUndoGroup?: boolean }> = [];
   const excel = {
@@ -1058,8 +1133,10 @@ function installExcel(
     context: {
       requirements: {
         isSetSupported(name: string, version?: string): boolean {
-          if (name !== 'ExcelApi' || !version) return false;
+          if (!version) return false;
           const minor = parseFloat(version.split('.')[1] ?? '0');
+          if (name === 'ExcelApiDesktop') return minor <= desktopVersion;
+          if (name !== 'ExcelApi') return false;
           return minor <= apiVersion;
         },
       },
@@ -2792,5 +2869,347 @@ describe('ExcelBridge.watch (event wiring)', () => {
 
     // Unsubscribe must not throw even though one registration failed.
     expect(() => unsub()).not.toThrow();
+  });
+});
+
+describe('ExcelBridge.previewFormulas (evaluate-before-write, ExcelApiDesktop 1.1)', () => {
+  it('evaluates each formula a write-cells request carries without writing anything', async () => {
+    const seed = salesSeed();
+    seed.evaluations = { '=SUM(C2:C4)': 620, '=C2*2': 600 };
+    active = installExcel(seed, { desktopVersion: 1 });
+    const bridge = new ExcelBridge();
+    const before = structuredClone(seed.sheets[0]?.values);
+    const preview = await bridge.previewFormulas(
+      writeCells({
+        target: { range: 'Sales!D2' },
+        cellValues: [
+          [null, 'note'],
+          [null, null],
+        ],
+        cellFormulas: [
+          ['=SUM(C2:C4)', ''],
+          ['=C2*2', ''],
+        ],
+      }),
+    );
+    expect(preview).toEqual([
+      { cell: 'Sales!D2', formula: '=SUM(C2:C4)', value: '620' },
+      { cell: 'Sales!D3', formula: '=C2*2', value: '600' },
+    ]);
+    expect(seed.sheets[0]?.values).toEqual(before);
+    expect(active.runOptions.every((o) => o.mergeUndoGroup !== true)).toBe(true);
+  });
+
+  it('returns an Excel error value as the value, never as a failure', async () => {
+    const seed = salesSeed();
+    active = installExcel(seed, { desktopVersion: 1 });
+    const preview = await new ExcelBridge().previewFormulas(
+      writeCells({
+        target: { range: 'Sales!D2' },
+        cellValues: [[null]],
+        cellFormulas: [['=NOPE(1)']],
+      }),
+    );
+    expect(preview).toEqual([{ cell: 'Sales!D2', formula: '=NOPE(1)', value: '#NAME?' }]);
+  });
+
+  it.each([
+    ['below ExcelApiDesktop 1.1', { desktopVersion: -1 }, salesSeed(), [['=SUM(C2:C4)']]],
+    [
+      'when the host refuses to evaluate',
+      { desktopVersion: 1 },
+      { ...salesSeed(), evaluateThrows: true },
+      [['=SUM(C2:C4)']],
+    ],
+    ['for an unsafe formula', { desktopVersion: 1 }, salesSeed(), [['=WEBSERVICE("https://x")']]],
+    ['for a literal-only write', { desktopVersion: 1 }, salesSeed(), [['']]],
+  ] as const)(
+    'is empty %s — a preview never blocks a write',
+    async (_label, opts, seed, cellFormulas) => {
+      active = installExcel(seed as ExcelSeed, opts);
+      const preview = await new ExcelBridge().previewFormulas(
+        writeCells({
+          target: { range: 'Sales!D2' },
+          cellValues: [[null]],
+          cellFormulas: cellFormulas.map((r) => [...r]),
+        }),
+      );
+      expect(preview).toEqual([]);
+    },
+  );
+
+  it('previews at most 20 formulas', async () => {
+    const seed = salesSeed();
+    seed.evaluations = {};
+    active = installExcel(seed, { desktopVersion: 1 });
+    const preview = await new ExcelBridge().previewFormulas(
+      writeCells({
+        target: { range: 'Sales!E1' },
+        cellValues: Array.from({ length: 25 }, () => [null]),
+        cellFormulas: Array.from({ length: 25 }, (_, i) => [`=${i}+1`]),
+      }),
+    );
+    expect(preview).toHaveLength(20);
+    expect(preview[0]).toEqual({ cell: 'Sales!E1', formula: '=0+1', value: '#NAME?' });
+    expect(preview[19]?.cell).toBe('Sales!E20');
+  });
+});
+
+describe('ExcelBridge.dependencyImpact (precedents/dependents, ExcelApi 1.15)', () => {
+  it('reports both sides as sheet-qualified addresses', async () => {
+    const seed = salesSeed();
+    seed.dependencies = {
+      'Sales!C2': { precedents: ['Sales!A2', 'Sales!B2'], dependents: ['Sales!C5', 'Summary!B2'] },
+    };
+    active = installExcel(seed, { apiVersion: 15 });
+    await expect(new ExcelBridge().dependencyImpact('Sales!C2')).resolves.toEqual({
+      precedents: ['Sales!A2', 'Sales!B2'],
+      dependents: ['Sales!C5', 'Summary!B2'],
+      truncated: false,
+    });
+  });
+
+  it('reads a side with none (ItemNotFound) as empty, keeping the other side', async () => {
+    const seed = salesSeed();
+    seed.dependencies = { 'Sales!C2': { dependents: ['Sales!C5'] } };
+    active = installExcel(seed, { apiVersion: 15 });
+    await expect(new ExcelBridge().dependencyImpact('Sales!C2')).resolves.toEqual({
+      precedents: [],
+      dependents: ['Sales!C5'],
+      truncated: false,
+    });
+  });
+
+  it('bounds each side at 200 addresses and says so', async () => {
+    const seed = salesSeed();
+    seed.dependencies = {
+      'Sales!C2': { dependents: Array.from({ length: 230 }, (_, i) => `Sales!D${i + 1}`) },
+    };
+    active = installExcel(seed, { apiVersion: 15 });
+    const impact = await new ExcelBridge().dependencyImpact('Sales!C2');
+    expect(impact.dependents).toHaveLength(200);
+    expect(impact.truncated).toBe(true);
+  });
+
+  it('throws below ExcelApi 1.15 so the caller omits the information', async () => {
+    active = installExcel(salesSeed(), { apiVersion: 13 });
+    await expect(new ExcelBridge().dependencyImpact('Sales!C2')).rejects.toThrow(/precedents/);
+  });
+
+  it('throws for a missing worksheet', async () => {
+    active = installExcel(salesSeed(), { apiVersion: 15 });
+    await expect(new ExcelBridge().dependencyImpact('Nope!C2')).rejects.toThrow();
+  });
+});
+
+/* ───────────── ADR-0007 / B3 — applyInverse (undo via recorded inverses) ───────────── */
+
+describe('ExcelBridge.applyInverse (undo via recorded inverses)', () => {
+  const undoOf = (
+    landed: ActuationResult,
+    original: ActuationRequest,
+    id = 'undo-1',
+  ): ActuationRequest => ({
+    ...original,
+    changeId: asChangeId(id),
+    undo: { of: landed.changeId, inverse: landed.inverse! },
+  });
+
+  it('restore-cells writes the recorded prior cells back and verifies by readback', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const original = writeCells(
+      { target: { range: 'Sales!A2:C2' }, cells: [['EAST', 'ALICE', '999']] },
+      'chg-1',
+    );
+    const landed = await bridge.actuate(original);
+    expect(landed.inverse).toMatchObject({ op: 'restore-cells', range: 'Sales!A2:C2' });
+    expect(active.seed.sheets[0]?.values[1]).toEqual(['EAST', 'ALICE', '999']);
+    const res = await bridge.applyInverse(undoOf(landed, original));
+    expect(res).toMatchObject({
+      ok: true,
+      changeId: asChangeId('undo-1'),
+      kind: 'write-cells',
+      undoOf: asChangeId('chg-1'),
+      location: 'Sales!A2:C2',
+      completion: 'verified',
+      verification: { status: 'verified' },
+    });
+    expect(active.seed.sheets[0]?.values[1]).toEqual(['East', 'Alice', '300']);
+  });
+
+  it('restore-cells refuses with target_conflict when the recorded grid no longer fits the range', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const before = structuredClone(active.seed.sheets[0]?.values);
+    const res = await bridge.applyInverse({
+      ...writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['x']] }),
+      changeId: asChangeId('undo-2'),
+      undo: {
+        of: asChangeId('chg-1'),
+        inverse: { op: 'restore-cells', range: 'Sales!A2:C2', values: [['only-one-cell']] },
+      },
+    });
+    expect(res).toMatchObject({ ok: false, error: { code: 'target_conflict' } });
+    expect(res.undoOf).toBe('chg-1');
+    expect(active.seed.sheets[0]?.values).toEqual(before);
+  });
+
+  it('delete-object removes the table this change minted and verifies it is gone', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const original = createTable({ table: { range: 'Sales!A1:C4', hasHeaders: true } }, 'chg-t');
+    const landed = await bridge.actuate(original);
+    expect(landed.inverse).toMatchObject({
+      op: 'delete-object',
+      objectType: 'table',
+      name: 'Table1',
+    });
+    expect(active.seed.tables).toHaveLength(1);
+    const res = await bridge.applyInverse(undoOf(landed, original, 'undo-t'));
+    expect(res).toMatchObject({
+      ok: true,
+      undoOf: asChangeId('chg-t'),
+      location: 'Table1',
+      verification: { status: 'verified' },
+    });
+    expect(active.seed.tables).toHaveLength(0);
+  });
+
+  it('delete-object refuses with target_conflict when the minted object is gone, deleting nothing', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    // A table the user made by hand under another name must survive an undo of a vanished one.
+    active.seed.tables.push({
+      name: 'HandMade',
+      sheet: 'Sales',
+      address: 'A1:C4',
+      hasHeaders: true,
+    });
+    const res = await bridge.applyInverse({
+      ...createTable({ table: { range: 'Sales!A1:C4', hasHeaders: true } }),
+      changeId: asChangeId('undo-x'),
+      undo: {
+        of: asChangeId('chg-gone'),
+        inverse: { op: 'delete-object', objectType: 'table', name: 'Table9' },
+      },
+    });
+    expect(res).toMatchObject({ ok: false, error: { code: 'target_conflict' } });
+    expect(active.seed.tables.map((t) => t.name)).toEqual(['HandMade']);
+  });
+
+  it('delete-object removes a chart on the sheet its source range names', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const original = insertChart(
+      { chart: { chartType: 'column', sourceRange: 'Sales!A1:C4', seriesBy: 'auto' } },
+      'chg-c',
+    );
+    const landed = await bridge.actuate(original);
+    expect(landed.inverse).toMatchObject({ op: 'delete-object', objectType: 'chart' });
+    expect(active.seed.charts).toHaveLength(1);
+    const res = await bridge.applyInverse(undoOf(landed, original, 'undo-c'));
+    expect(res).toMatchObject({
+      ok: true,
+      undoOf: asChangeId('chg-c'),
+      verification: { status: 'verified' },
+    });
+    expect(active.seed.charts).toHaveLength(0);
+  });
+
+  it('clear-conditional deletes the rule at the recorded ordinal and verifies the count dropped', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const original = formatConditional(
+      {
+        conditional: {
+          range: 'Sales!C2:C4',
+          rule: { kind: 'cellValue', operator: 'gt', value: '200', fill: '#C6EFCE' },
+        },
+      },
+      'chg-cf',
+    );
+    const landed = await bridge.actuate(original);
+    expect(landed.inverse).toEqual({
+      op: 'clear-conditional',
+      range: 'Sales!C2:C4',
+      ruleOrdinal: 0,
+    });
+    const res = await bridge.applyInverse(undoOf(landed, original, 'undo-cf'));
+    expect(res).toMatchObject({
+      ok: true,
+      undoOf: asChangeId('chg-cf'),
+      location: 'Sales!C2:C4',
+      verification: { status: 'verified' },
+    });
+    expect(active.seed.conditionalFormats.get('Sales!C2:C4')).toEqual([]);
+  });
+
+  it('clear-conditional refuses with target_conflict when the ordinal no longer exists', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const res = await bridge.applyInverse({
+      ...formatConditional({
+        conditional: {
+          range: 'Sales!C2:C4',
+          rule: { kind: 'cellValue', operator: 'gt', value: '1' },
+        },
+      }),
+      changeId: asChangeId('undo-cf2'),
+      undo: {
+        of: asChangeId('chg-cf'),
+        inverse: { op: 'clear-conditional', range: 'Sales!C2:C4', ruleOrdinal: 3 },
+      },
+    });
+    expect(res).toMatchObject({ ok: false, error: { code: 'target_conflict' } });
+  });
+
+  it('refuses an inverse op Excel does not apply, and a request without undo', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const res = await bridge.applyInverse({
+      ...writeCells({ target: { range: 'Sales!A2' }, cells: [['x']] }),
+      changeId: asChangeId('undo-u'),
+      undo: {
+        of: asChangeId('chg-1'),
+        inverse: { op: 'restore-text', anchor: 'A1', priorText: 'x' },
+      },
+    });
+    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' }, undoOf: 'chg-1' });
+    const bare = await bridge.applyInverse(
+      writeCells({ target: { range: 'Sales!A2' }, cells: [['x']] }),
+    );
+    expect(bare).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
+  });
+
+  it('a host throw after the restore was queued is an unknown outcome, never a success', async () => {
+    active = installExcel(salesSeed());
+    const bridge = new ExcelBridge();
+    const original = writeCells(
+      { target: { range: 'Sales!A2:C2' }, cells: [['a', 'b', 'c']] },
+      'chg-1',
+    );
+    const landed = await bridge.actuate(original);
+    // The batch's syncs before the restore are probes and reads; the host is lost at the first
+    // sync after `values` were queued on the range (the commit of the restore itself).
+    const realSync = FakeContext.prototype.sync;
+    const sync = vi.spyOn(FakeContext.prototype, 'sync').mockImplementation(function (
+      this: FakeContext,
+    ) {
+      const touched = (this as unknown as { touched: FakeRange[] }).touched;
+      if (touched.some((r) => (r as unknown as { pendingValues?: unknown }).pendingValues))
+        throw new Error('simulated host loss');
+      return realSync.call(this);
+    });
+    try {
+      const res = await bridge.applyInverse(undoOf(landed, original));
+      expect(res).toMatchObject({
+        ok: false,
+        recoveryPending: true,
+        error: { code: 'outcome_unknown' },
+      });
+    } finally {
+      sync.mockRestore();
+    }
   });
 });

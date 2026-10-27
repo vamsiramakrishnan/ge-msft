@@ -1,7 +1,9 @@
 import {
   approvalClassOf,
+  effectIdempotencyKey,
   isReversibleKind,
   type ActuationRequest,
+  type ApprovalClass,
   type EffectPlanNode,
   type ResourceRef,
 } from '@ge/contracts';
@@ -232,6 +234,9 @@ export function effectResources(req: ActuationRequest): {
       // Anchored content writes (tracked-change/insert-*/fill-content-control) + estate kinds.
       const anchor = p.target?.matchText ?? p.target?.contentControlId;
       if (anchor) return { reads: [], writes: [{ kind: 'anchor', id: anchor }] };
+      // A range-addressed kind without a dedicated case (filter, validation, …) writes its range, so
+      // a later write into the same cells is ordered after it instead of racing it.
+      if (p.target?.range) return { reads: [], writes: [range(p.target.range)] };
       return { reads: [], writes: [{ kind: 'estate', id: req.kind }] };
     }
   }
@@ -295,7 +300,8 @@ export function analyseEffectDependencies(requests: readonly ActuationRequest[])
       writes: me.writes,
       approvalClass: approvalClassOf(request.kind),
       reversible: isReversibleKind(request.kind),
-      idempotencyKey: request.changeId,
+      // Stable across retries: the intent hash, not the per-attempt changeId (B4).
+      idempotencyKey: effectIdempotencyKey(request),
       failurePolicy: 'stop-dependents' as const,
     };
   });
@@ -323,4 +329,108 @@ export function propagateFailure(
   }
   failed.delete(failedId);
   return { skipped: [...failed], reason: 'prerequisite_failed' };
+}
+
+// ───────────────────────────── scheduling (B1) ─────────────────────────────
+
+/** Severity order of approval authorities — the order phases are taken in. */
+export const APPROVAL_CLASS_ORDER: readonly ApprovalClass[] = [
+  'in-document',
+  'external',
+  'estate',
+  'irreversible',
+];
+
+/**
+ * One batch of effects with no dependency between them (Kahn level). Every node in a level depends
+ * only on nodes in EARLIER levels, so a level's effects may run in any order — or, once a bridge
+ * supports it, be dispatched together. Node order inside a level is source order.
+ */
+export interface ScheduledLevel {
+  level: number;
+  ids: string[];
+}
+
+/**
+ * Partition the DAG into dependency levels (Kahn's algorithm, stable by source order). Level 0 holds
+ * the roots; a node sits at `1 + max(level of its prerequisites)`. The output lists every node once
+ * (the DAG is acyclic by construction: `dependsOn` only names earlier ids). The executor still
+ * dispatches ONE effect at a time — the task journal is single-writer and Office hosts serialise
+ * sync batches — but level order lets independent effects proceed past a failed sibling and gives
+ * the preview an honest "these N can land together" grouping instead of a flat list.
+ */
+export function scheduleEffectLevels(nodes: readonly EffectPlanNode[]): ScheduledLevel[] {
+  const level = new Map<string, number>();
+  for (const node of nodes) {
+    let depth = 0;
+    for (const dep of node.dependsOn) {
+      const upstream = level.get(dep);
+      if (upstream !== undefined) depth = Math.max(depth, upstream + 1);
+    }
+    level.set(node.id, depth);
+  }
+  const buckets = new Map<number, string[]>();
+  for (const node of nodes) {
+    const depth = level.get(node.id)!;
+    const ids = buckets.get(depth) ?? [];
+    ids.push(node.id);
+    buckets.set(depth, ids);
+  }
+  return [...buckets.keys()]
+    .sort((a, b) => a - b)
+    .map((depth) => ({ level: depth, ids: buckets.get(depth)! }));
+}
+
+/** One approval phase: the effects of ONE approval class, taken as one decision. */
+export interface ApprovalPhase {
+  approvalClass: ApprovalClass;
+  ids: string[];
+}
+
+/**
+ * Split a plan into per-class approval phases, severity-ordered (ADR-0008 §break-boundaries): the
+ * user decides each authority separately — the in-document edits first, then the external sends,
+ * then estate writes, then anything irreversible. A phase is only sound when nothing in it depends
+ * on an effect of a LATER phase (an in-document write that reads a slide an irreversible layout
+ * change produces would otherwise run before its prerequisite was ever approved). When that
+ * happens the plan collapses to ONE mixed phase — still carrying every class, so the approval
+ * surface knows the decision bundles authorities and must say so. A single-class plan is one phase.
+ */
+export function approvalPhases(nodes: readonly EffectPlanNode[]): ApprovalPhase[] {
+  const present = APPROVAL_CLASS_ORDER.filter((cls) =>
+    nodes.some((node) => node.approvalClass === cls),
+  );
+  if (present.length <= 1)
+    return present.map((approvalClass) => ({
+      approvalClass,
+      ids: nodes.map((node) => node.id),
+    }));
+  const rank = new Map(present.map((cls, i) => [cls, i]));
+  const classOf = new Map(nodes.map((node) => [node.id, node.approvalClass]));
+  const crossesBack = nodes.some((node) =>
+    node.dependsOn.some((dep) => {
+      const upstream = classOf.get(dep);
+      return upstream !== undefined && rank.get(upstream)! > rank.get(node.approvalClass)!;
+    }),
+  );
+  if (crossesBack)
+    return [{ approvalClass: present[present.length - 1]!, ids: nodes.map((node) => node.id) }];
+  return present.map((approvalClass) => ({
+    approvalClass,
+    ids: nodes.filter((node) => node.approvalClass === approvalClass).map((node) => node.id),
+  }));
+}
+
+/**
+ * The dispatch order of a plan: phase by phase (severity-ordered, so nothing irreversible runs
+ * before the cheaper phases landed), and level by level inside a phase. Returns node ids.
+ */
+export function executionOrder(nodes: readonly EffectPlanNode[]): string[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const out: string[] = [];
+  for (const phase of approvalPhases(nodes)) {
+    const members = phase.ids.map((id) => byId.get(id)!);
+    for (const level of scheduleEffectLevels(members)) out.push(...level.ids);
+  }
+  return out;
 }

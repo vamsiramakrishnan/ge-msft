@@ -1392,6 +1392,7 @@ export class AssistSession {
     const chosen = want ? refs.filter((r) => want.includes(r.kind)) : refs;
     for (const ref of chosen) {
       const resolvedParts = await this.materializeFileParts(
+        ref,
         await this.toolOperation('context:resolve', { ref }, () => this.bridge.resolveContext(ref)),
       );
       this.releaseAttachedParts(ref.id);
@@ -1412,6 +1413,7 @@ export class AssistSession {
     const version = (this.attachmentVersions.get(ref.id) ?? 0) + 1;
     this.attachmentVersions.set(ref.id, version);
     const resolvedParts = await this.materializeFileParts(
+      ref,
       await this.toolOperation('context:resolve', { ref }, () => this.bridge.resolveContext(ref)),
     );
     if (this.attachmentVersions.get(ref.id) !== version) return;
@@ -1427,7 +1429,10 @@ export class AssistSession {
    * failure degrades to a by-name part with a `note` — the model learns the file exists and why its
    * content is absent, and the attach itself never fails because of the upload.
    */
-  private async materializeFileParts(parts: ResolvedContext[]): Promise<ResolvedContext[]> {
+  private async materializeFileParts(
+    attached: ContextRef,
+    parts: ResolvedContext[],
+  ): Promise<ResolvedContext[]> {
     const out: ResolvedContext[] = [];
     for (const part of parts) {
       if (part.value.as !== 'file' || !part.value.uploadable || part.value.fileId) {
@@ -1448,8 +1453,10 @@ export class AssistSession {
         continue;
       }
       try {
-        const raw = await this.toolOperation('context:read-attachment', { ref: part.ref }, () =>
-          this.bridge.readAttachment!(part.ref),
+        // Read through the ref the user attached: it carries the host pointer (an Outlook
+        // attachment id) that a resolved part's ref may not.
+        const raw = await this.toolOperation('context:read-attachment', { ref: attached }, () =>
+          this.bridge.readAttachment!(attached),
         );
         const uploaded = await this.addContextFile({
           fileName: raw.fileName,

@@ -147,3 +147,22 @@ describe('OutlookBridge — read-mode attachments', () => {
     await expect(bridge.resolveContext(stale)).rejects.toThrow('no longer active');
   });
 });
+
+describe('OutlookBridge — resolved parts keep the host pointer', () => {
+  let restore: (() => void) | undefined;
+  afterEach(() => restore?.());
+
+  it('lets the runtime read bytes through a resolved file part as well as the listed ref', async () => {
+    restore = install(seeds);
+    const bridge = new OutlookBridge();
+    const refs = await bridge.listContext();
+    const [pdf] = await bridge.resolveContext(refs[2]!);
+    expect(pdf!.ref.hostRef).toEqual({
+      type: 'outlook.attachment',
+      itemId: 'item-1',
+      attachmentId: 'a3',
+    });
+    const raw = await bridge.readAttachment(pdf!.ref);
+    expect(raw.fileName).toBe('contract.pdf');
+  });
+});

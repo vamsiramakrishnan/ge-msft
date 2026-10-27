@@ -19,6 +19,7 @@
     "@ge/bridge-outlook": "*",
     "@ge/bridge-powerpoint": "*",
     "@ge/bridge-word": "*",
+    "@ge/compute": "*",
     "@ge/contracts": "*",
     "@ge/deck-compiler": "*",
     "@ge/gemini-client": "*",
@@ -26,9 +27,9 @@
     "@ge/runtime": "*",
     "@ge/teams": "*",
     "@ge/triggers": "*",
+    "@microsoft/teams-js": "2.38.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "@ge/compute": "*",
     "zod": "^3.23.0"
   },
   "devDependencies": {

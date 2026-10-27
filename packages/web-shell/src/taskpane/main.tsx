@@ -36,9 +36,10 @@ import {
 } from '../commands/ask-selection-seed.js';
 import { initialUnit } from './unit.js';
 import { createMsal } from './msal.js';
-import { TeamsBridge, type TeamsJsLike } from '@ge/teams';
+import { TeamsBridge } from '@ge/teams';
 import { GraphClient } from '@ge/graph-client';
 import { currentTeamsChatId, graphSharedFiles } from './teams-shared-files.js';
+import { loadTeamsSdk, teamsBridgeOptions, type TeamsSdk } from './teams-sdk.js';
 import {
   shellConfigFromEnv,
   authOptionsFromEnv,
@@ -99,6 +100,8 @@ interface PreparedBoot {
   msal: Awaited<ReturnType<typeof createMsal>>;
   nestedAppAuthBridge: boolean;
   loginHint?: string;
+  /** Initialized TeamsJS on the Teams surface; absent elsewhere or outside a Teams frame. */
+  teamsSdk?: TeamsSdk;
 }
 
 function mount(node: JSX.Element): void {
@@ -322,8 +325,14 @@ async function boot(opts: BootOptions = {}): Promise<void> {
   // across a failed boot. The key is namespaced by surface so two open hosts can't cross-read.
   const pendingSeed = takeAskSelectionSeed(surface);
 
+  // Teams only: load and initialize TeamsJS (bounded; it never resolves outside a Teams frame) so
+  // the bridge gets its feature-detected host slice and the chat id is readable after sign-in.
+  const teamsSdk = surface === 'teams' ? await loadTeamsSdk() : undefined;
+  if (surface === 'teams') recordAuthDebug('teams.sdk', { initialized: Boolean(teamsSdk) });
+  const teamsOptions = teamsBridgeOptions(teamsSdk);
+
   // The surface seam: one host-specific decision, everything downstream is interface-only.
-  const bridge = selectBridge(surface);
+  const bridge = selectBridge(surface, teamsOptions ? { teams: teamsOptions } : {});
   if (!bridge) {
     recordAuthDebug('boot.noBridge', { surface });
     fatal('Unsupported host', `No bridge available for ${surface}.`);
@@ -358,6 +367,7 @@ async function boot(opts: BootOptions = {}): Promise<void> {
       msal: instrumentMsal(msal),
       nestedAppAuthBridge,
       ...(loginHint ? { loginHint } : {}),
+      ...(teamsSdk ? { teamsSdk } : {}),
     };
     const canTryBrokerSilentSso = nestedAppAuthBridge && Boolean(loginHint);
     if (!opts.interactiveAuth && !hasMsalAccount(msal) && !canTryBrokerSilentSso) {
@@ -432,8 +442,7 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
     // user through Graph (Plane B, wired from the shell — the bridge never calls Graph itself).
     // Needs a Graph token source and a chat id from TeamsJS; otherwise the pane lists no files.
     if (prepared.bridge instanceof TeamsBridge && auth.getGraphToken) {
-      const teamsJs = (globalThis as { microsoftTeams?: TeamsJsLike }).microsoftTeams;
-      const chatId = await currentTeamsChatId(teamsJs);
+      const chatId = await currentTeamsChatId(prepared.teamsSdk);
       recordAuthDebug('teams.sharedFiles', { chat: Boolean(chatId) });
       if (chatId) {
         const graph = new GraphClient({ getGraphToken: (scopes) => auth.getGraphToken!(scopes) });

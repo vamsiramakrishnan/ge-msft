@@ -139,3 +139,39 @@ describe('attachment upload on explicit attach', () => {
     expect(session.context.size).toBe(2);
   });
 });
+
+describe('attachment upload reads through the attached ref', () => {
+  it('passes the ref the user attached (with its host pointer), not the resolved part ref', async () => {
+    const listed: ContextRef = {
+      ...pdfRef,
+      hostRef: { type: 'outlook.attachment', itemId: 'item-1', attachmentId: 'a1' },
+    };
+    const resolvedWithoutPointer: ResolvedContext = {
+      ref: { ...pdfRef, id: `${pdfRef.id}#0` },
+      value: fileValue,
+    };
+    const readAttachment = vi.fn(
+      (): Promise<AttachmentBytes> =>
+        Promise.resolve({
+          fileName: 'contract.pdf',
+          mimeType: 'application/pdf',
+          bytes: new Uint8Array(1),
+        }),
+    );
+    const client = new StreamAssistClient(tokens, cfg, vi.fn() as never);
+    vi.spyOn(client, 'addContextFile').mockResolvedValue({
+      fileId: 'file_9',
+      fileName: 'contract.pdf',
+      mimeType: 'application/pdf',
+      byteSize: 1,
+    });
+    const session = new AssistSession(
+      bridgeWith({ readAttachment, parts: [resolvedWithoutPointer] }),
+      client,
+      { unit },
+    );
+    await session.attachRef(listed);
+    expect(readAttachment).toHaveBeenCalledWith(listed);
+    expect(session.context.list()[0]!.value).toMatchObject({ as: 'file', fileId: 'file_9' });
+  });
+});

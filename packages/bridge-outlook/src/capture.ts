@@ -6,6 +6,7 @@ import {
   decodeBase64,
   native,
   toContext,
+  type AttachmentInput,
   type ToContextOptions,
 } from '@ge/content';
 
@@ -215,6 +216,25 @@ export function mailAttachmentToContext(
     ...(attachment.contentType ? { mimeType: attachment.contentType } : {}),
     ...(attachment.size !== undefined ? { sizeBytes: attachment.size } : {}),
   };
+  const hostRef = {
+    type: 'outlook.attachment' as const,
+    itemId: itemId ?? 'item',
+    attachmentId: attachment.id,
+  };
+  // Every resolved part keeps the host pointer so a later byte read can find the attachment.
+  return mailAttachmentParts(base, sourceId, attachment, content, opts).map((part) => ({
+    ...part,
+    ref: { ...part.ref, hostRef },
+  }));
+}
+
+function mailAttachmentParts(
+  base: Omit<AttachmentInput, 'bytes' | 'text'>,
+  sourceId: string,
+  attachment: MailAttachment,
+  content: MailAttachmentContent | undefined,
+  opts: ToContextOptions,
+): ResolvedContext[] {
   if (!content) return attachmentToContext(base, opts);
   switch (content.format) {
     case 'eml':

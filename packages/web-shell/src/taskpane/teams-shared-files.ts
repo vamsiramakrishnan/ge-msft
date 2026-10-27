@@ -1,4 +1,4 @@
-import type { SharedFile, SharedFilesSource, TeamsJsLike } from '@ge/teams';
+import type { SharedFile, SharedFilesSource } from '@ge/teams';
 import { DEFAULT_CONTEXT_FILE_MAX_BYTES } from '@ge/gemini-client';
 import type { GraphClient } from '@ge/graph-client';
 
@@ -18,7 +18,7 @@ export interface TeamsContextLike {
 
 /** Resolve the chat id for the current Teams frame via `app.getContext()`, or none. */
 export async function currentTeamsChatId(
-  teams: (TeamsJsLike & { app?: { getContext?: () => Promise<TeamsContextLike> } }) | undefined,
+  teams: { app?: { getContext?: () => Promise<TeamsContextLike> } } | undefined,
 ): Promise<string | undefined> {
   const getContext = teams?.app?.getContext;
   if (typeof getContext !== 'function') return undefined;

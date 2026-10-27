@@ -29,6 +29,12 @@ export const GRAPH_SCOPES = {
    * review (identity/credentials territory) before shipping.
    */
   shared: ['Files.ReadWrite.AppFolder'],
+  /**
+   * Files shared in the current Teams chat or meeting: the chat's messages name the files
+   * (`attachments[].contentUrl`), and the file itself is read with the `files` scopes as the user.
+   * `Chat.Read` is delegated and user-scoped: only chats the signed-in user is a member of.
+   */
+  chat: ['Chat.Read'],
 } as const;
 
 export function graphUrl(cfg: GraphConfig, path: string): string {

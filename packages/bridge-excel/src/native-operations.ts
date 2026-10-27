@@ -2,6 +2,7 @@ import type { ActuationRequest, ActuationResult, CellSnapshot } from '@ge/contra
 import { excelDocumentId, snapshotRange } from './cell-snapshot.js';
 import { isSet } from './capabilities-runtime.js';
 import { nativeRun } from './native-run.js';
+import { resolveWorksheet, resolveWorksheetPair } from './worksheet-lookup.js';
 
 function hasControl(value: string): boolean {
   return [...value].some((character) => character.charCodeAt(0) < 32);
@@ -75,8 +76,8 @@ export async function applyNativeValidation(req: ActuationRequest): Promise<Actu
   if (!isSet('ExcelApi', '1.8'))
     return refusal(req, 'unsupported_host', 'Native list validation requires ExcelApi 1.8.');
   const documentId = await excelDocumentId();
-  return nativeRun(async (ctx) => {
-    const sheet = ctx.workbook.worksheets.getItem(bounds.sheet);
+  return nativeRun({ undoGroup: true }, async (ctx) => {
+    const sheet = await resolveWorksheet(ctx, bounds.sheet);
     const range = sheet.getRange(p.range);
     const validation = range.dataValidation;
     sheet.protection.load('protected');
@@ -149,8 +150,8 @@ export async function applyNativeFilter(req: ActuationRequest): Promise<Actuatio
   if (!isSet('ExcelApi', '1.9'))
     return refusal(req, 'unsupported_host', 'Native range filters require ExcelApi 1.9.');
   const documentId = await excelDocumentId();
-  return nativeRun(async (ctx) => {
-    const sheet = ctx.workbook.worksheets.getItem(bounds.sheet);
+  return nativeRun({ undoGroup: true }, async (ctx) => {
+    const sheet = await resolveWorksheet(ctx, bounds.sheet);
     const range = sheet.getRange(p.range);
     const filter = sheet.autoFilter;
     filter.load('enabled');
@@ -258,9 +259,12 @@ export async function applyNativePivot(req: ActuationRequest): Promise<Actuation
   if (!isSet('ExcelApi', '1.8'))
     return refusal(req, 'unsupported_host', 'Native PivotTables require ExcelApi 1.8.');
   const documentId = await excelDocumentId();
-  return nativeRun(async (ctx) => {
-    const sourceSheet = ctx.workbook.worksheets.getItem(sourceBounds.sheet);
-    const sheet = ctx.workbook.worksheets.getItem(destination.sheet);
+  return nativeRun({ undoGroup: true }, async (ctx) => {
+    const [sourceSheet, sheet] = await resolveWorksheetPair(
+      ctx,
+      sourceBounds.sheet,
+      destination.sheet,
+    );
     const sourceRange = sourceSheet.getRange(p.sourceRange);
     const destinationRange = sheet.getRange(p.destinationRange);
     sheet.protection.load('protected');
@@ -327,7 +331,11 @@ export async function applyNativePivot(req: ActuationRequest): Promise<Actuation
     );
     pivot.load('id,name');
     await ctx.sync();
-    const inverse = { op: 'delete-object' as const, objectType: 'pivot' as const, name: pivot.id };
+    const inverse = {
+      op: 'delete-object' as const,
+      objectType: 'pivot' as const,
+      name: pivot.id,
+    };
     try {
       pivot.rowHierarchies.add(pivot.hierarchies.getItem(p.rowFields[0]!));
       p.valueFields.forEach((field) => {
@@ -414,7 +422,7 @@ export async function applyNativeWorksheet(req: ActuationRequest): Promise<Actua
     );
   if (!isSet('ExcelApi', '1.2'))
     return refusal(req, 'unsupported_host', 'Worksheet lifecycle checks require ExcelApi 1.2.');
-  return nativeRun(async (ctx) => {
+  return nativeRun({ undoGroup: true }, async (ctx) => {
     const sheets = ctx.workbook.worksheets;
     // Collection metadata is bounded; content is never fetched until a finite empty-delete check.
     sheets.load('items/id,items/name,items/visibility');

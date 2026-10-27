@@ -12,6 +12,7 @@ import {
   type GraphEvent,
   type GraphMessage,
   type GraphUser,
+  GraphChatMessagesSchema,
 } from './graph-types.js';
 import { z } from 'zod';
 
@@ -56,6 +57,82 @@ export class GraphClient {
 
   async getUser(id: string): Promise<GraphUser> {
     return this.getJson(`/users/${enc(id)}`, [...GRAPH_SCOPES.people], GraphUserSchema);
+  }
+
+  // ---- files shared in a Teams chat / meeting (delegated, the user's own chats only) ----
+
+  /**
+   * The files shared in one chat (a meeting's chat included): the chat messages' `reference`
+   * attachments, newest first, resolved to the underlying drive items so they can be read with the
+   * user's own file permissions. A file the user cannot open is skipped, not an error; the listing
+   * is bounded (`maxMessages`) so a long-running chat stays cheap. No message bodies are returned.
+   */
+  async listChatFiles(
+    chatId: string,
+    opts: { maxMessages?: number; maxFiles?: number } = {},
+  ): Promise<ChatSharedFile[]> {
+    const maxMessages = opts.maxMessages ?? 50;
+    const maxFiles = opts.maxFiles ?? 20;
+    const page = await this.getJson(
+      `/chats/${enc(chatId)}/messages?$top=${Math.min(50, maxMessages)}`,
+      [...GRAPH_SCOPES.chat],
+      GraphChatMessagesSchema,
+    );
+    const out: ChatSharedFile[] = [];
+    const seen = new Set<string>();
+    for (const message of page.value ?? []) {
+      for (const attachment of message.attachments ?? []) {
+        if (out.length >= maxFiles) return out;
+        if (attachment.contentType !== 'reference' || !attachment.contentUrl) continue;
+        if (seen.has(attachment.contentUrl)) continue;
+        seen.add(attachment.contentUrl);
+        const item = await this.resolveSharedUrl(attachment.contentUrl).catch(() => undefined);
+        if (!item?.id) continue;
+        out.push({
+          id: item.id,
+          ...(item.parentReference?.driveId ? { driveId: item.parentReference.driveId } : {}),
+          name: item.name ?? attachment.name ?? 'file',
+          ...(item.file?.mimeType ? { mimeType: item.file.mimeType } : {}),
+          ...(item.size !== undefined ? { sizeBytes: item.size } : {}),
+          ...(item.webUrl ? { webUrl: item.webUrl } : {}),
+          ...(message.id ? { messageId: message.id } : {}),
+          ...(message.from?.user?.displayName ? { sharedBy: message.from.user.displayName } : {}),
+          ...(message.createdDateTime ? { sharedAt: message.createdDateTime } : {}),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Resolve a sharing URL (a chat attachment's `contentUrl`) to its drive item via `/shares`. */
+  async resolveSharedUrl(url: string): Promise<GraphDriveItem> {
+    return this.getJson(
+      `/shares/${encodeSharingUrl(url)}/driveItem`,
+      [...GRAPH_SCOPES.files],
+      GraphDriveItemSchema,
+    );
+  }
+
+  /** Download one drive item's bytes as the user (Graph answers `/content` with a redirect fetch follows). */
+  async getDriveItemContent(
+    id: string,
+    driveId?: string,
+    opts: { maxBytes?: number } = {},
+  ): Promise<{ bytes: Uint8Array; mimeType?: string }> {
+    const path = driveId
+      ? `/drives/${enc(driveId)}/items/${enc(id)}/content`
+      : `/me/drive/items/${enc(id)}/content`;
+    const res = await this.send('GET', path, [...GRAPH_SCOPES.files]);
+    const declaredLength = Number(res.headers.get('content-length') ?? '');
+    if (opts.maxBytes !== undefined && declaredLength > opts.maxBytes) {
+      throw new Error(`Graph file exceeds the ${opts.maxBytes} byte read limit.`);
+    }
+    const buffer = await res.arrayBuffer();
+    if (opts.maxBytes !== undefined && buffer.byteLength > opts.maxBytes) {
+      throw new Error(`Graph file exceeds the ${opts.maxBytes} byte read limit.`);
+    }
+    const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim();
+    return { bytes: new Uint8Array(buffer), ...(mimeType ? { mimeType } : {}) };
   }
 
   /**
@@ -206,6 +283,30 @@ export class GraphClient {
 /** Thrown by `send()` on a Graph 404 — callers that treat "missing" as expected (not exceptional)
  *  catch this specifically rather than string-matching an error message. */
 export class GraphNotFoundError extends Error {}
+
+/** A file shared in a Teams chat, resolved to the drive item the user can read. */
+export interface ChatSharedFile {
+  id: string;
+  driveId?: string;
+  name: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  webUrl?: string;
+  messageId?: string;
+  sharedBy?: string;
+  sharedAt?: string;
+}
+
+/**
+ * Graph's sharing-URL token: `u!` + base64url(url) without padding
+ * (https://learn.microsoft.com/graph/api/shares-get — "encoding sharing URLs").
+ */
+export function encodeSharingUrl(url: string): string {
+  const bytes = new TextEncoder().encode(url);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `u!${btoa(binary).replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-')}`;
+}
 
 // ---- mappers (pure-ish; only depend on the parsed Graph shapes) ----
 

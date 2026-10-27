@@ -629,6 +629,7 @@ class FakeWorksheet {
   constructor(
     private readonly seed: ExcelSeed,
     readonly name: string,
+    readonly isNullObject = false,
   ) {}
   load(): this {
     return this;
@@ -695,6 +696,15 @@ class FakeWorksheetCollection {
   }
   getItem(name: string): FakeWorksheet {
     byName(this.seed, name);
+    return new FakeWorksheet(this.seed, name);
+  }
+  /** Null-object lookup: a missing sheet is a null-object worksheet, never a throw. */
+  getItemOrNullObject(name: string): FakeWorksheet {
+    try {
+      byName(this.seed, name);
+    } catch {
+      return new FakeWorksheet(this.seed, name, true);
+    }
     return new FakeWorksheet(this.seed, name);
   }
 }
@@ -804,8 +814,10 @@ const CHART_SELECTED = '<chart>';
 class FakeContext {
   readonly application = {
     calculationState: 'Done',
+    calculationMode: 'Automatic',
     load: () => undefined,
     calculate: () => undefined,
+    suspendApiCalculationUntilNextSync: () => undefined,
   };
   readonly workbook: FakeWorkbook;
   private readonly touched: FakeRange[] = [];
@@ -945,6 +957,8 @@ function trackRanges(workbook: FakeWorkbook, touched: FakeRange[]): FakeWorkbook
   const gi = workbook.worksheets.getItem.bind(workbook.worksheets);
   const ga = workbook.worksheets.getActiveWorksheet.bind(workbook.worksheets);
   workbook.worksheets.getItem = (n: string) => wrapSheet(gi(n));
+  const gio = workbook.worksheets.getItemOrNullObject.bind(workbook.worksheets);
+  workbook.worksheets.getItemOrNullObject = (n: string) => wrapSheet(gio(n));
   workbook.worksheets.getActiveWorksheet = () => wrapSheet(ga());
   const gn = workbook.names.getItemOrNullObject.bind(workbook.names);
   workbook.names.getItemOrNullObject = (n: string): FakeNamedItem => {
@@ -971,6 +985,10 @@ interface SettingsRecorder {
   saveFails: boolean;
   /** When true, saveAsync itself throws synchronously (host bridge quirk). */
   saveThrows: boolean;
+  /** When true, the saveAsync after a provenance `set` never invokes its callback (a hung bag). */
+  saveStalls: boolean;
+  /** The last key written through `set` (lets `saveStalls` target the provenance save only). */
+  lastKey?: string;
   /** When true, calling set() throws. */
   setThrows: boolean;
   saveCalls: number;
@@ -980,6 +998,8 @@ interface Installed {
   seed: ExcelSeed;
   workbook(): FakeWorkbook | undefined;
   settings: SettingsRecorder;
+  /** The `Excel.run` options of every batch, in order (`{}` for the single-arg form). */
+  runOptions: Array<{ mergeUndoGroup?: boolean }>;
   restore(): void;
 }
 
@@ -995,8 +1015,15 @@ function installExcel(
 ): Installed {
   const apiVersion = opts.apiVersion ?? 13;
   let lastWorkbook: FakeWorkbook | undefined;
+  const runOptions: Array<{ mergeUndoGroup?: boolean }> = [];
   const excel = {
-    run: async <T>(cb: (ctx: FakeContext) => Promise<T>): Promise<T> => {
+    // Mirror the real overload: `run(cb)` or `run(options, cb)` (ExcelApi 1.20 undo groups).
+    run: async <T>(
+      optionsOrCb: { mergeUndoGroup?: boolean } | ((ctx: FakeContext) => Promise<T>),
+      maybeCb?: (ctx: FakeContext) => Promise<T>,
+    ): Promise<T> => {
+      const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb!;
+      runOptions.push(typeof optionsOrCb === 'function' ? {} : optionsOrCb);
       const ctx = new FakeContext(seed);
       lastWorkbook = ctx.workbook;
       return cb(ctx);
@@ -1008,17 +1035,20 @@ function installExcel(
     saveStatus: 'succeeded',
     saveFails: false,
     saveThrows: false,
+    saveStalls: false,
     setThrows: false,
     saveCalls: 0,
   };
   const settingsBag = {
     set(name: string, value: unknown): void {
       if (settings.setThrows) throw new Error('settings.set blew up');
+      settings.lastKey = name;
       settings.store.set(name, value);
     },
     saveAsync(cb?: (r: unknown) => void): void {
       settings.saveCalls += 1;
       if (settings.saveThrows) throw new Error('saveAsync blew up');
+      if (settings.saveStalls && settings.lastKey?.startsWith('ge:prov:')) return;
       const status = settings.saveFails ? 'failed' : settings.saveStatus;
       cb?.({ status });
     },
@@ -1047,6 +1077,7 @@ function installExcel(
     seed,
     workbook: () => lastWorkbook,
     settings,
+    runOptions,
     restore() {
       g.Excel = prevExcel;
       g.Office = prevOffice;
@@ -1107,7 +1138,11 @@ function commentReply(params: ActuationRequest['params'], id = 'c1'): ActuationR
   return { changeId: asChangeId(id), kind: 'comment-reply', surface: 'excel', params };
 }
 
-type FakeRun = <T>(cb: (ctx: FakeContext) => Promise<T>) => Promise<T>;
+type FakeRunCallback<T> = (ctx: FakeContext) => Promise<T>;
+type FakeRun = <T>(
+  optionsOrCb: { mergeUndoGroup?: boolean } | FakeRunCallback<T>,
+  maybeCb?: FakeRunCallback<T>,
+) => Promise<T>;
 
 /**
  * Replace the installed `Excel.run` with one that runs a `mutate` hook on each fresh context before
@@ -1118,11 +1153,17 @@ type FakeRun = <T>(cb: (ctx: FakeContext) => Promise<T>) => Promise<T>;
 function patchRun(mutate: (ctx: FakeContext) => void): void {
   const g = globalThis as unknown as { Excel: { run: FakeRun } };
   const orig = g.Excel.run;
-  g.Excel.run = (cb) =>
-    orig((ctx) => {
+  g.Excel.run = <T>(
+    optionsOrCb: { mergeUndoGroup?: boolean } | FakeRunCallback<T>,
+    maybeCb?: FakeRunCallback<T>,
+  ): Promise<T> => {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb!;
+    const wrapped: FakeRunCallback<T> = (ctx) => {
       mutate(ctx);
       return cb(ctx);
-    });
+    };
+    return typeof optionsOrCb === 'function' ? orig(wrapped) : orig(optionsOrCb, wrapped);
+  };
 }
 
 let active: Installed | undefined;
@@ -1596,6 +1637,25 @@ describe('ExcelBridge.revealContext (navigation-only host jump)', () => {
 });
 
 describe('ExcelBridge.actuate write-cells (reversible, address-anchored)', () => {
+  it('merges a write batch into one undo group on ExcelApi 1.20, not below', async () => {
+    for (const [apiVersion, expected] of [
+      [20, true],
+      [13, false],
+    ] as const) {
+      active = installExcel(salesSeed(), { apiVersion });
+      const bridge = new ExcelBridge();
+      await bridge.captureCells('Sales!A2'); // a read batch: never an undo group
+      const res = await bridge.actuate(
+        writeCells({ target: { range: 'Sales!A2' }, cells: [], cellValues: [[42]] }),
+      );
+      expect(res.ok).toBe(true);
+      expect(active.runOptions[0]).toEqual({});
+      const writeBatches = active.runOptions.filter((o) => o.mergeUndoGroup === true);
+      expect(writeBatches.length).toBe(expected ? 1 : 0);
+      active.restore();
+    }
+  });
+
   it.each([
     { cells: [], cellValues: [[42]], range: 'Sales!A2', location: 'Sales!A2' },
     {
@@ -1983,6 +2043,48 @@ describe('ExcelBridge write-cells durable provenance (BUILD-PLAN 1.6)', () => {
     // The reversible write landed; the save throw is observed as a drop, not swallowed silently.
     expect(res.ok).toBe(true);
     expect(res.provenanceDropped).toBe(true);
+  });
+});
+
+describe('ExcelBridge provenance save that never calls back', () => {
+  it('bounds the wait and flags provenanceDropped (write still ok)', async () => {
+    vi.useFakeTimers();
+    try {
+      active = installExcel(salesSeed());
+      active.settings.saveStalls = true;
+      const pending = new ExcelBridge().actuate({
+        ...writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['a', 'b', 'c']] }, 'chg-s'),
+        provenance: PROVENANCE,
+      });
+      // Advance fake time in steps: the write's own bounded waits run on the (faked) clock before
+      // the provenance save is even reached, so a single drain of pending timers is not enough.
+      for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(2_500);
+      const res = await pending;
+      expect(res.ok).toBe(true);
+      expect(res.provenanceDropped).toBe(true);
+      expect(active.settings.saveCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ExcelBridge missing worksheet', () => {
+  it('names the missing sheet before any write is queued', async () => {
+    active = installExcel(salesSeed());
+    const res = await new ExcelBridge().actuate(
+      writeCells({ target: { range: 'Nope!A2:C2' }, cells: [['a', 'b', 'c']] }, 'chg-m'),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatchObject({ code: 'host_refused', reason: 'not_found' });
+    expect(res.error?.message).toContain('Worksheet "Nope" was not found');
+    expect(res.location).toBe('Nope');
+    // Nothing landed on the real sheet.
+    expect(active.seed.sheets.find((s) => s.name === 'Sales')?.values[1]).not.toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
   });
 });
 

@@ -138,6 +138,19 @@ flags and returns detached records so consumers cannot rewrite its stored audit 
 Extension interfaces remain typed in-process contracts. See [runtime extensions](RUNTIME-EXTENSIONS.md)
 for phase payloads, allowed decisions, cancellation, and observer behavior.
 
+### Attachments and shared files as context
+
+A mail attachment (Outlook read mode) or a file shared in the current chat or meeting (Teams, via
+the delegated Graph client wired from the shell) is listed as an `attachment` context ref by name
+only. `@ge/content`'s `attachmentToContext` decides how it grounds: text-like files are decoded,
+bounded and chunked as data; PDF and Office files become one `file` context value marked
+`uploadable`; other types ground by name with a `note`. On an explicit user attach the runtime reads
+the bytes through the bridge's optional `readAttachment` and uploads them as a session context file,
+recording the `fileId` on the part; a model command never triggers an upload. A session request
+carries attached `fileId`s; a sessionless request carries only the file's manifest line, so a command
+turn sees that the file exists and that its content is not available there. Every upload failure
+degrades to a by-name part, never a failed attach.
+
 ### Immutable evidence sources and working context
 
 `packages/contracts/src/evidence.ts` owns source limits, complete snapshot receipts and bounded

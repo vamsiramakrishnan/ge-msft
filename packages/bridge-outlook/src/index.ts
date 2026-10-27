@@ -13,6 +13,11 @@ export {
   searchMailItem,
   MAX_OUTLINE_LINES,
   MAX_SEARCH_LINES,
+  attachmentRefId,
+  mailAttachmentsToRefs,
+  mailAttachmentToContext,
+  type MailAttachment,
+  type MailAttachmentContent,
   type MailItem,
 } from './capture.js';
 export { planReply, type ReplyPlan } from './actuate-plan.js';

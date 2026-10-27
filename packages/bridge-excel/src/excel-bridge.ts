@@ -1,6 +1,7 @@
 import { officeHostProfile } from './office-host-profile.js';
-import { verifyCalculationReady } from './calculation.js';
+import { suspendCalculation, verifyCalculationReady } from './calculation.js';
 import { nativeRun } from './native-run.js';
+import { missingWorksheetMessage, resolveWorksheet } from './worksheet-lookup.js';
 import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
 import {
   cellsMatchRequest,
@@ -129,9 +130,10 @@ export class ExcelBridge implements DocBridge {
   async captureWorksheetIdentity(name: string): Promise<{ id: string; name: string }> {
     if (!name || name.length > 31) throw new Error('A bounded exact worksheet name is required.');
     return nativeRun(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getItem(name);
-      sheet.load('id,name');
+      const sheet = ctx.workbook.worksheets.getItemOrNullObject(name);
+      sheet.load('id,name,isNullObject');
       await ctx.sync();
+      if (sheet.isNullObject) throw new Error(missingWorksheetMessage(name));
       if (!sheet.id || sheet.name !== name) throw new Error('The worksheet identity changed.');
       return { id: sheet.id, name: sheet.name };
     });
@@ -336,7 +338,7 @@ export class ExcelBridge implements DocBridge {
       const { sheetName, rangeAddress } = parseAddress(target.address);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       sheet.activate();
       sheet.getRange(rangeAddress).select();
@@ -710,11 +712,11 @@ export class ExcelBridge implements DocBridge {
     // ADR-0003 element 4: prefer provenance.sources, fall back to params.sources, for the
     // human-visible citation comment layered on top of durable provenance metadata.
     const sources = req.provenance?.sources ?? req.params.sources ?? [];
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(target);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
       const refused = await protectedSheetRefusal(ctx, sheet, range, req, true);
@@ -776,6 +778,7 @@ export class ExcelBridge implements DocBridge {
           };
       }
       if (grid.hasFormulas) {
+        suspendCalculation(ctx);
         range.formulas = grid.formulas as unknown[][];
         range.values = grid.values as unknown[][];
       } else range.values = grid.values as unknown[][];
@@ -793,7 +796,9 @@ export class ExcelBridge implements DocBridge {
           afterHash: after.hash,
           ...(ok
             ? {}
-            : { message: 'The cells do not match the reviewed write or contain formula errors.' }),
+            : {
+                message: 'The cells do not match the reviewed write or contain formula errors.',
+              }),
         };
       } catch {
         verification = {
@@ -864,11 +869,11 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
       const refused = await protectedSheetRefusal(ctx, sheet, range, req, false);
@@ -958,11 +963,11 @@ export class ExcelBridge implements DocBridge {
         ...fail('unsupported_host', 'This host cannot sort ranges (ExcelApi < 1.2).'),
         degraded: true,
       };
-    const result: ActuationResult = await nativeRun(async (ctx) => {
+    const result: ActuationResult = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
       const refused = await protectedSheetRefusal(ctx, sheet, range, req, false);
@@ -1132,11 +1137,11 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result: ActuationResult = await nativeRun(async (ctx) => {
+    const result: ActuationResult = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const source = sheet.getRange(parseAddress(plan.address as string).rangeAddress);
       const refused = await protectedSheetRefusal(ctx, sheet, source, req, false);
@@ -1302,13 +1307,13 @@ export class ExcelBridge implements DocBridge {
         },
       };
     }
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         split.sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(split.sheetName)
+          ? await resolveWorksheet(ctx, split.sheetName)
           : sheetName !== undefined && split.areas.length === 1
-            ? ctx.workbook.worksheets.getItem(sheetName)
+            ? await resolveWorksheet(ctx, sheetName)
             : ctx.workbook.worksheets.getActiveWorksheet();
       // `charts.add(type, sourceData, seriesBy)`. The host enums are erased to strings at runtime;
       // the plan already mapped the agent enums → the `Excel.ChartType`/`ChartSeriesBy` strings.
@@ -1395,11 +1400,11 @@ export class ExcelBridge implements DocBridge {
       };
     }
     const rule = plan.rule;
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const range = sheet.getRange(rangeAddress);
       // Read the rule count BEFORE the add: `add()` inserts the new rule, so its index within the
@@ -1476,11 +1481,11 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'unsupported', message: 'This host cannot add comments (ExcelApi < 1.10).' },
       };
     }
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const { sheetName, rangeAddress } = parseAddress(plan.address as string);
       const sheet =
         sheetName !== undefined
-          ? ctx.workbook.worksheets.getItem(sheetName)
+          ? await resolveWorksheet(ctx, sheetName)
           : ctx.workbook.worksheets.getActiveWorksheet();
       const anchor = sheet.getRange(rangeAddress).getCell(0, 0);
       anchor.load('address');
@@ -1509,7 +1514,7 @@ export class ExcelBridge implements DocBridge {
         error: { code: 'no_comment', message: 'comment-reply needs target.commentId' },
       };
     }
-    const result = await nativeRun(async (ctx) => {
+    const result = await nativeRun({ undoGroup: true }, async (ctx) => {
       const comments = ctx.workbook.comments;
       comments.load('items/id');
       // First sync is required: we must read back the comment ids to locate the target proxy
@@ -1528,7 +1533,12 @@ export class ExcelBridge implements DocBridge {
       comment.replies.add(reply);
       if (req.params.resolveComment) comment.resolved = true;
       await ctx.sync();
-      return { ok: true, changeId: req.changeId, kind: req.kind, location: `comment:${commentId}` };
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: `comment:${commentId}`,
+      };
     });
     if (result.ok) {
       const flags = provFlags(req, await this.persistProvenance(req));
@@ -1564,11 +1574,18 @@ export class ExcelBridge implements DocBridge {
       if (!settings) return true; // no settings bag (older host / harness) — cannot persist ⇒ drop.
       const record = provenanceRecord(req.changeId, req.provenance);
       settings.set(record.key, record.json);
-      // Await the persisted save so an async settings failure is observed, not swallowed.
+      // Await the persisted save so an async settings failure is observed, not swallowed. A save
+      // that never calls back is bounded: past the budget the record counts as dropped (the write
+      // itself already landed), so a stalled settings bag cannot hang the task.
       const status = await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), PROVENANCE_SAVE_TIMEOUT_MS);
         try {
-          settings.saveAsync((result) => resolve(asyncStatus(result)));
+          settings.saveAsync((result) => {
+            clearTimeout(timer);
+            resolve(asyncStatus(result));
+          });
         } catch {
+          clearTimeout(timer);
           resolve('failed');
         }
       });
@@ -1578,6 +1595,9 @@ export class ExcelBridge implements DocBridge {
     }
   }
 }
+
+/** Upper bound on waiting for `settings.saveAsync` to call back before provenance counts as dropped. */
+const PROVENANCE_SAVE_TIMEOUT_MS = 10_000;
 
 /** The minimal slice of `Office.context.document.settings` the bridge persists provenance through. */
 interface OfficeSettingsLike {

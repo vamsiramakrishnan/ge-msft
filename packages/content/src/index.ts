@@ -27,6 +27,15 @@ export {
 } from './doc-state-builder.js';
 export { processContent, processNative, toContext, toContextNative } from './process.js';
 export {
+  attachmentToContext,
+  classifyAttachment,
+  decodeBase64,
+  decodeText,
+  MAX_INLINE_ATTACHMENT_BYTES,
+  type AttachmentClass,
+  type AttachmentInput,
+} from './attachment.js';
+export {
   recommendStrategy,
   ContextBudget,
   DEFAULT_MAX_INLINE_TOKENS,

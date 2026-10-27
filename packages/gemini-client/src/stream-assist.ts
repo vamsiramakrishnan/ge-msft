@@ -744,6 +744,13 @@ export function buildStreamAssistRequest(
     ...(context ?? []).map((c) => contextValueToQueryPart(c.value)),
     ...(grounding?.queryParts ?? []),
   ];
+  // Attached `file` parts that were uploaded ride along as session context files. A sessionless
+  // request cannot carry them: the manifest line already tells the model the content is absent.
+  const attachedFileIds = isSessionLess
+    ? []
+    : (context ?? []).flatMap((c) =>
+        c.value.as === 'file' && c.value.fileId ? [c.value.fileId] : [],
+      );
   const skillSet = skillsForRoute(cfg, skillRoute);
   const mentionText = skillMentionText(skillSet.mentions);
   const out: Record<string, unknown> = {
@@ -775,7 +782,8 @@ export function buildStreamAssistRequest(
       },
     };
   }
-  if (grounding?.fileIds?.length) out.fileIds = [...grounding.fileIds];
+  const fileIds = [...new Set([...attachedFileIds, ...(grounding?.fileIds ?? [])])];
+  if (fileIds.length) out.fileIds = fileIds;
   return out;
 }
 

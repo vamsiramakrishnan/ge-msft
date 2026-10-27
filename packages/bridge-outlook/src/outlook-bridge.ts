@@ -11,14 +11,18 @@ import type {
   ResolvedContext,
   Verification,
 } from '@ge/contracts';
-import type { DocBridge } from '@ge/runtime';
+import type { AttachmentBytes, DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
-import { buildDocStateSnapshot } from '@ge/content';
+import { buildDocStateSnapshot, decodeBase64 } from '@ge/content';
 import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import {
+  mailAttachmentsToRefs,
+  mailAttachmentToContext,
   mailItemToContext,
   mailItemToDocStateBlocks,
   searchMailItem,
+  type MailAttachment,
+  type MailAttachmentContent,
   type MailItem,
 } from './capture.js';
 import {
@@ -59,6 +63,24 @@ function plainAddress(from: string | undefined): string | undefined {
 const DRAFT_NOTE =
   'a draft being written: set-subject, set-body, set-recipients and add-attachment edit it';
 const DRAFT_READ_TIMEOUT_MS = 2000;
+/**
+ * A draft write (`setAsync`/`addAsync`/`add*AttachmentAsync`) that never calls back would otherwise
+ * hang the task forever. Past this budget the write is reported as an UNKNOWN outcome — the host may
+ * still have applied it — never as a success and never as a clean failure.
+ */
+const DRAFT_WRITE_TIMEOUT_MS = 10_000;
+
+/** `isSetSupported` through optional access: a thin or non-mailbox host may lack the probe. */
+function mailboxSetSupported(version: string): boolean {
+  try {
+    const probe = (
+      Office.context as { requirements?: { isSetSupported?(name: string, v: string): boolean } }
+    ).requirements?.isSetSupported;
+    return probe ? probe.call(Office.context.requirements, 'Mailbox', version) === true : false;
+  } catch {
+    return false;
+  }
+}
 
 export class OutlookBridge implements DocBridge {
   private static readonly dispatcher = createBridgeDispatch<OutlookBridge>(
@@ -111,10 +133,14 @@ export class OutlookBridge implements DocBridge {
         ...(subject ? { preview: subject.slice(0, 120) } : {}),
         live: true,
       },
+      // Read-mode attachments (Mailbox 1.1 `item.attachments`): listed by name, content not read.
+      ...mailAttachmentsToRefs(item.itemId, readAttachmentDetails(item)),
     ];
   }
 
   async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.surface === this.surface && ref.kind === 'attachment')
+      return this.resolveAttachment(ref);
     if (ref.surface !== this.surface || ref.kind !== 'mail-item')
       throw new Error('Only the active Outlook mail item can be captured.');
     const current = Office.context.mailbox?.item;
@@ -128,6 +154,86 @@ export class OutlookBridge implements DocBridge {
         'The requested mail item is no longer active. Attach the current item again.',
       );
     return mail ? mailItemToContext(mail) : [];
+  }
+
+  /**
+   * One attachment of the ACTIVE item → context through the shared attachment pipeline. Text-like
+   * files, forwarded messages (`.eml`) and invites are read with `getAttachmentContentAsync`
+   * (Mailbox 1.8) and inlined as data; PDF/Office files become one uploadable `file` part the
+   * runtime materializes on an explicit attach; without 1.8 the attachment grounds by name.
+   */
+  private async resolveAttachment(ref: ContextRef): Promise<ResolvedContext[]> {
+    const { item, attachment } = this.activeAttachment(ref);
+    if (!attachment) return [];
+    const content = await this.readAttachmentContent(item, attachment.id);
+    if (Office.context.mailbox?.item !== item)
+      throw new Error('The active mail item changed during capture.');
+    return mailAttachmentToContext(readItemId(item), attachment, content);
+  }
+
+  /**
+   * Raw bytes of a file attachment for the runtime's session-context upload (explicit user attach
+   * only; never from a model command). Requires Mailbox 1.8; the bytes are returned, not kept.
+   */
+  async readAttachment(ref: ContextRef): Promise<AttachmentBytes> {
+    const { item, attachment } = this.activeAttachment(ref);
+    if (!attachment) throw new Error('This attachment is not on the active mail item.');
+    const content = await this.readAttachmentContent(item, attachment.id);
+    if (!content || content.format !== 'base64')
+      throw new Error('This host cannot read the attachment content.');
+    const bytes = decodeBase64(content.content);
+    return {
+      fileName: attachment.name,
+      mimeType: attachment.contentType ?? 'application/octet-stream',
+      bytes,
+    };
+  }
+
+  /** The active item plus the attachment a ref points at, matched by host pointer and item. */
+  private activeAttachment(ref: ContextRef): {
+    item: Office.Item;
+    attachment: MailAttachment | undefined;
+  } {
+    const item = Office.context.mailbox?.item;
+    if (!item) throw new Error('No active mail item.');
+    const pointer = ref.hostRef?.type === 'outlook.attachment' ? ref.hostRef : undefined;
+    if (!pointer) return { item, attachment: undefined };
+    const itemId = readItemId(item) ?? 'item';
+    if (pointer.itemId !== itemId)
+      throw new Error(
+        'The requested mail item is no longer active. Attach the current item again.',
+      );
+    const attachment = readAttachmentDetails(item).find((a) => a.id === pointer.attachmentId);
+    return { item, attachment };
+  }
+
+  private async readAttachmentContent(
+    item: Office.Item,
+    attachmentId: string,
+  ): Promise<MailAttachmentContent | undefined> {
+    const reader = (item as { getAttachmentContentAsync?: unknown }).getAttachmentContentAsync;
+    if (
+      typeof reader !== 'function' ||
+      !(Office.context.requirements?.isSetSupported?.('Mailbox', '1.8') ?? false)
+    )
+      return undefined;
+    try {
+      const result = await getAsync<{ format: string; content: string }>(
+        (cb) =>
+          (reader as (id: string, cb: (r: Office.AsyncResult<unknown>) => void) => void).call(
+            item,
+            attachmentId,
+            cb as (r: Office.AsyncResult<unknown>) => void,
+          ),
+        ATTACHMENT_READ_TIMEOUT_MS,
+      );
+      return result && typeof result.content === 'string'
+        ? { format: result.format, content: result.content }
+        : undefined;
+    } catch {
+      // A failed or timed-out read grounds the attachment by name; it never breaks the attach.
+      return undefined;
+    }
   }
 
   canRevealContext(ref: ContextRef): boolean {
@@ -246,6 +352,9 @@ export class OutlookBridge implements DocBridge {
   watch(emit: (event: HostEvent) => void): Unsubscribe {
     const mailbox = Office.context.mailbox;
     if (!mailbox) return () => {};
+    // `ItemChanged` arrived with Mailbox 1.5. A host below that (or one that cannot answer the
+    // requirement probe at all) gets a no-op subscription instead of a thrown registration.
+    if (!mailboxSetSupported('1.5')) return () => {};
 
     const handler = (): void => {
       try {
@@ -426,10 +535,12 @@ export class OutlookBridge implements DocBridge {
       for (const { recipients, addresses } of targets) {
         if (Office.context.mailbox?.item !== (resolved.draft as unknown as Office.Item))
           throw new Error('The active draft changed during the recipient update.');
-        await getAsync<void>((cb) =>
-          plan.mode === 'add'
-            ? recipients.addAsync(addresses, cb)
-            : recipients.setAsync(addresses, cb),
+        await getAsync<void>(
+          (cb) =>
+            plan.mode === 'add'
+              ? recipients.addAsync(addresses, cb)
+              : recipients.setAsync(addresses, cb),
+          DRAFT_WRITE_TIMEOUT_MS,
         );
       }
     } catch (err) {
@@ -471,8 +582,9 @@ export class OutlookBridge implements DocBridge {
     }
     try {
       // Call ON the draft: Office.js methods need their item as `this`, and a detached call fails.
-      const id = await getAsync<string>((cb) =>
-        add.call(resolved.draft, plan.value, plan.name, { isInline: plan.isInline }, cb),
+      const id = await getAsync<string>(
+        (cb) => add.call(resolved.draft, plan.value, plan.name, { isInline: plan.isInline }, cb),
+        DRAFT_WRITE_TIMEOUT_MS,
       );
       return {
         ok: true,
@@ -500,15 +612,17 @@ export class OutlookBridge implements DocBridge {
       return actuationError(req, 'no_body', 'set-body needs params.mail.body or params.text');
     }
     try {
-      await getAsync<void>((cb) =>
-        resolved.draft.body.setAsync(
-          plan.data,
-          {
-            coercionType:
-              plan.coercionType === 'text' ? Office.CoercionType.Text : Office.CoercionType.Html,
-          },
-          cb,
-        ),
+      await getAsync<void>(
+        (cb) =>
+          resolved.draft.body.setAsync(
+            plan.data,
+            {
+              coercionType:
+                plan.coercionType === 'text' ? Office.CoercionType.Text : Office.CoercionType.Html,
+            },
+            cb,
+          ),
+        DRAFT_WRITE_TIMEOUT_MS,
       );
     } catch (err) {
       return unknownActuationResult(
@@ -555,7 +669,10 @@ export class OutlookBridge implements DocBridge {
       return actuationError(req, 'no_subject', 'set-subject needs params.mail.subject');
     }
     try {
-      await getAsync<void>((cb) => resolved.draft.subject.setAsync(subject, cb));
+      await getAsync<void>(
+        (cb) => resolved.draft.subject.setAsync(subject, cb),
+        DRAFT_WRITE_TIMEOUT_MS,
+      );
     } catch (err) {
       return unknownActuationResult(
         req,
@@ -637,6 +754,30 @@ async function verifyDraftField(
   }
 }
 
+/** Bound on one `getAttachmentContentAsync` round trip (large files on slow hosts). */
+const ATTACHMENT_READ_TIMEOUT_MS = 10_000;
+
+/** `item.attachments` as plain data (read mode); an item without the collection has none. */
+function readAttachmentDetails(item: Office.Item): MailAttachment[] {
+  const raw: unknown = (item as { attachments?: unknown }).attachments;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((a: unknown): MailAttachment[] => {
+    if (!a || typeof a !== 'object') return [];
+    const d = a as Record<string, unknown>;
+    if (typeof d.id !== 'string' || typeof d.name !== 'string') return [];
+    return [
+      {
+        id: d.id,
+        name: d.name,
+        ...(typeof d.attachmentType === 'string' ? { attachmentType: d.attachmentType } : {}),
+        ...(typeof d.contentType === 'string' ? { contentType: d.contentType } : {}),
+        ...(typeof d.size === 'number' ? { size: d.size } : {}),
+        ...(typeof d.isInline === 'boolean' ? { isInline: d.isInline } : {}),
+      },
+    ];
+  });
+}
+
 /** Read the sender's SMTP address (read-mode `EmailAddressDetails`); undefined when unavailable. */
 function readFrom(item: Office.Item): string | undefined {
   const from: unknown = (item as { from?: unknown }).from;
@@ -661,7 +802,7 @@ function getAsync<T>(
     const timer =
       timeoutMs === undefined
         ? undefined
-        : setTimeout(() => reject(new Error('Outlook readback timed out.')), timeoutMs);
+        : setTimeout(() => reject(new Error('Outlook host call timed out.')), timeoutMs);
     try {
       call((result) => {
         if (timer !== undefined) clearTimeout(timer);

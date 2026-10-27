@@ -61,6 +61,14 @@ export interface DocBridge {
    */
   resolveContext(ref: ContextRef): Promise<ResolvedContext[]>;
 
+  /**
+   * Read the raw bytes of an `attachment` ref whose content grounds as a session context file (a
+   * PDF or Office attachment). Called by the runtime only on an explicit user attach, never from a
+   * model command; the bytes go straight to the upload and are not retained. Optional: a surface
+   * without binary attachments omits it.
+   */
+  readAttachment?(ref: ContextRef): Promise<AttachmentBytes>;
+
   /** Perform a reversible, provenanced write. Never called without user confirmation. */
   actuate(request: ActuationRequest): Promise<ActuationResult>;
 
@@ -132,6 +140,13 @@ export interface AuthClient {
   getGraphToken?(scopes: string[]): Promise<string>;
   /** Signed-in identity for provenance stamping (e.g. "v.k@acme"). */
   getIdentity(): Promise<UserIdentity>;
+}
+
+/** Raw attachment content handed to the session-context upload. */
+export interface AttachmentBytes {
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
 }
 
 export interface UserIdentity {

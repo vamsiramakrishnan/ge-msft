@@ -56,6 +56,24 @@ const SURFACE_NAMES: Record<Surface, string> = {
 const HOST_REFUSALS: Readonly<Record<string, HostRefusalReason>> = {};
 
 /**
+ * A refusal a bridge raises from inside a host batch at a point where it KNOWS nothing has been
+ * written yet (a read-only probe such as a worksheet lookup or an edit-mode check). Throwing it
+ * lets deeply nested host wiring unwind without threading `ActuationResult` through every helper;
+ * the dispatcher turns it into a `host_refused` result. Never raise it after a write statement
+ * has been queued: that outcome must stay unknown.
+ */
+export class BridgeRefusal extends Error {
+  constructor(
+    readonly reason: HostRefusalReason,
+    message: string,
+    readonly location?: string,
+  ) {
+    super(message);
+    this.name = 'BridgeRefusal';
+  }
+}
+
+/**
  * Execution authority comes from these host handlers, never descriptive capability metadata.
  * Freeze a private table so discovery and dispatch cannot drift after construction. Validation
  * precedes host access; host errors, inverses, verification and provenance remain host-owned.
@@ -187,6 +205,16 @@ export function createBridgeDispatch<Host>(
         result = await table[request.kind]!(host, request);
         outcome = result.ok ? 'completed' : result.recoveryPending ? 'unknown' : 'refused';
       } catch (error) {
+        if (error instanceof BridgeRefusal) {
+          outcome = 'refused';
+          return {
+            ok: false,
+            changeId: request.changeId,
+            kind: request.kind,
+            ...(error.location ? { location: error.location } : {}),
+            error: { code: 'host_refused', reason: error.reason, message: error.message },
+          };
+        }
         const code = (error as { code?: unknown } | null)?.code;
         const reason = typeof code === 'string' ? HOST_REFUSALS[code] : undefined;
         // Anything else may have failed after a write landed: the caller keeps it unknown.

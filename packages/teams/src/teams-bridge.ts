@@ -8,9 +8,9 @@ import type {
   DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
-import type { DocBridge } from '@ge/runtime';
+import type { AttachmentBytes, DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
-import { buildDocStateSnapshot } from '@ge/content';
+import { attachmentToContext, buildDocStateSnapshot, classifyAttachment } from '@ge/content';
 import { TEAMS_CAPABILITIES } from './capabilities.js';
 import {
   searchTranscript,
@@ -62,30 +62,122 @@ export class TeamsBridge implements DocBridge {
    * `setTranscript`) — Teams gives no native object to enumerate.
    */
   async listContext(): Promise<ContextRef[]> {
+    const refs: ContextRef[] = [];
     const input = this.transcript;
-    if (!input || !input.transcript.trim()) return [];
-    const title = input.meetingTitle ? `Transcript: ${input.meetingTitle}` : 'Meeting transcript';
-    return [
-      {
+    if (input && input.transcript.trim()) {
+      const title = input.meetingTitle ? `Transcript: ${input.meetingTitle}` : 'Meeting transcript';
+      refs.push({
         id: 'teams:transcript',
         kind: 'transcript',
         surface: 'teams',
         title,
         preview: input.transcript.slice(0, 120),
         live: true,
-      },
-    ];
+      });
+    }
+    refs.push(...(await this.listSharedFileRefs()));
+    return refs;
   }
 
   /**
-   * Materialize the transcript window into attach-ready context. Re-reads the freshest snapshot
+   * Materialize a handle into attach-ready context. The transcript re-reads the freshest snapshot
    * (the constructor value, later mutated via `setTranscript`) so a `live` re-resolve at send-time
-   * picks up newly captured turns. Empty when no transcript has been captured yet.
+   * picks up newly captured turns. A shared file goes through the shared attachment pipeline:
+   * text-like files are read (bounded) and inlined as data; PDF/Office files become one uploadable
+   * `file` part the runtime materializes on an explicit attach. Empty when nothing is captured.
    */
-  async resolveContext(_ref: ContextRef): Promise<ResolvedContext[]> {
+  async resolveContext(ref: ContextRef): Promise<ResolvedContext[]> {
+    if (ref.kind === 'attachment') return this.resolveSharedFile(ref);
     const input = this.transcript;
     if (!input || !input.transcript.trim()) return [];
     return transcriptToContext(input);
+  }
+
+  /**
+   * Raw bytes of a shared file for the runtime's session-context upload (explicit user attach
+   * only). Reads as the signed-in user through the injected source; never retained here.
+   */
+  async readAttachment(ref: ContextRef): Promise<AttachmentBytes> {
+    const file = this.sharedFileFor(ref);
+    const source = this.options.files;
+    if (!file || !source) throw new Error('This file is not available in the current chat.');
+    const read = await source.read(file.id);
+    const { mimeType } = classifyAttachment(file.name, read.mimeType ?? file.mimeType);
+    return { fileName: file.name, mimeType, bytes: read.bytes };
+  }
+
+  /**
+   * Install (or replace) the source of files shared in the current chat/meeting. The host wires
+   * this after sign-in, when a delegated Graph reader for the chat exists; without it the bridge
+   * lists no files. Kept off the constructor like `setTranscript`.
+   */
+  setSharedFiles(source: SharedFilesSource | undefined): void {
+    this.options.files = source;
+    this.sharedFiles = undefined;
+  }
+
+  private sharedFiles: SharedFile[] | undefined;
+
+  private async listSharedFileRefs(): Promise<ContextRef[]> {
+    const source = this.options.files;
+    if (!source) return [];
+    let files: SharedFile[];
+    try {
+      files = await source.list();
+    } catch {
+      // A chat the user cannot read, or no chat in this frame: no files, never a broken pane.
+      return [];
+    }
+    this.sharedFiles = files;
+    return files.map((file): ContextRef => {
+      const { cls, mimeType } = classifyAttachment(file.name, file.mimeType);
+      const how =
+        cls === 'text'
+          ? 'readable text'
+          : cls === 'file'
+            ? 'attach to read as a context file'
+            : 'content not readable';
+      const who = file.sharedBy ? ` · shared by ${file.sharedBy}` : '';
+      return {
+        id: sharedFileRefId(file.id),
+        kind: 'attachment',
+        surface: 'teams',
+        title: file.name,
+        preview: `${how}${who}`,
+        mimeType,
+        ...(file.sizeBytes !== undefined ? { sizeBytes: file.sizeBytes } : {}),
+        ...(file.webUrl ? { hostRef: { type: 'teams.deepLink', url: file.webUrl } } : {}),
+      };
+    });
+  }
+
+  private sharedFileFor(ref: ContextRef): SharedFile | undefined {
+    const id = sharedFileIdFromRef(ref);
+    return id === undefined ? undefined : this.sharedFiles?.find((f) => f.id === id);
+  }
+
+  private async resolveSharedFile(ref: ContextRef): Promise<ResolvedContext[]> {
+    const source = this.options.files;
+    if (!source) return [];
+    if (!this.sharedFiles) await this.listSharedFileRefs();
+    const file = this.sharedFileFor(ref);
+    if (!file) return [];
+    const base = {
+      sourceId: ref.id,
+      surface: 'teams' as const,
+      fileName: file.name,
+      ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+      ...(file.sizeBytes !== undefined ? { sizeBytes: file.sizeBytes } : {}),
+    };
+    // Only text-like files are read here; a binary is uploaded by the runtime on attach instead.
+    if (classifyAttachment(file.name, file.mimeType).cls !== 'text')
+      return attachmentToContext(base);
+    try {
+      const read = await source.read(file.id);
+      return attachmentToContext({ ...base, bytes: read.bytes });
+    } catch {
+      return attachmentToContext(base);
+    }
   }
 
   /**
@@ -277,6 +369,40 @@ export interface TeamsBridgeOptions {
   /** Explicit deep link to the closest navigable Teams context; not inferred from opaque ids. */
   deepLink?: string;
   teams?: TeamsJsLike;
+  /** Files shared in the current chat/meeting, read as the signed-in user (wired by the host). */
+  files?: SharedFilesSource;
+}
+
+/** One file shared in the current chat or meeting, as the host's file source lists it. */
+export interface SharedFile {
+  id: string;
+  name: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  webUrl?: string;
+  sharedBy?: string;
+}
+
+/**
+ * The host-injected reader for files shared in the current chat. The bridge never calls Graph
+ * itself (Plane B stays in `@ge/graph-client`, wired from the shell); it only asks this source,
+ * which must act as the signed-in user and may refuse any file the user cannot open.
+ */
+export interface SharedFilesSource {
+  list(): Promise<SharedFile[]>;
+  read(id: string): Promise<{ bytes: Uint8Array; mimeType?: string }>;
+}
+
+const SHARED_FILE_PREFIX = 'teams:file:';
+
+export function sharedFileRefId(fileId: string): string {
+  return `${SHARED_FILE_PREFIX}${fileId}`;
+}
+
+function sharedFileIdFromRef(ref: ContextRef): string | undefined {
+  return ref.kind === 'attachment' && ref.id.startsWith(SHARED_FILE_PREFIX)
+    ? ref.id.slice(SHARED_FILE_PREFIX.length)
+    : undefined;
 }
 
 /**

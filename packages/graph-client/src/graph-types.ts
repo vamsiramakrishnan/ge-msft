@@ -77,6 +77,42 @@ export const GraphChildrenSchema = z
   .passthrough();
 export type GraphChildren = z.infer<typeof GraphChildrenSchema>;
 
+/** One page of `GET /chats/{id}/messages` — only the attachment references we turn into files. */
+export const GraphChatMessagesSchema = z
+  .object({
+    value: z
+      .array(
+        z
+          .object({
+            id: z.string().optional(),
+            createdDateTime: z.string().optional(),
+            from: z
+              .object({
+                user: z.object({ displayName: z.string().optional() }).passthrough().optional(),
+              })
+              .passthrough()
+              .optional(),
+            attachments: z
+              .array(
+                z
+                  .object({
+                    id: z.string().optional(),
+                    contentType: z.string().optional(),
+                    contentUrl: z.string().optional(),
+                    name: z.string().optional(),
+                  })
+                  .passthrough(),
+              )
+              .optional(),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    '@odata.nextLink': z.string().optional(),
+  })
+  .passthrough();
+export type GraphChatMessages = z.infer<typeof GraphChatMessagesSchema>;
+
 export const GraphUserSchema = z
   .object({
     id: z.string().optional(),

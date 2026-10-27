@@ -7,6 +7,9 @@
 export {
   TeamsBridge,
   HANDLED_ACTUATIONS,
+  sharedFileRefId,
+  type SharedFile,
+  type SharedFilesSource,
   type TeamsBridgeOptions,
   type TeamsJsLike,
   type TeamsComposeRequest,

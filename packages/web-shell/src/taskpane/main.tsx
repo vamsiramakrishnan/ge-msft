@@ -36,6 +36,9 @@ import {
 } from '../commands/ask-selection-seed.js';
 import { initialUnit } from './unit.js';
 import { createMsal } from './msal.js';
+import { TeamsBridge, type TeamsJsLike } from '@ge/teams';
+import { GraphClient } from '@ge/graph-client';
+import { currentTeamsChatId, graphSharedFiles } from './teams-shared-files.js';
 import {
   shellConfigFromEnv,
   authOptionsFromEnv,
@@ -425,6 +428,18 @@ async function finishBoot(prepared: PreparedBoot, opts: BootOptions = {}): Promi
         discoverCatalog: true,
       });
     recordAuthDebug('compose.success');
+    // Teams: files shared in this chat/meeting become attachable context, read as the signed-in
+    // user through Graph (Plane B, wired from the shell — the bridge never calls Graph itself).
+    // Needs a Graph token source and a chat id from TeamsJS; otherwise the pane lists no files.
+    if (prepared.bridge instanceof TeamsBridge && auth.getGraphToken) {
+      const teamsJs = (globalThis as { microsoftTeams?: TeamsJsLike }).microsoftTeams;
+      const chatId = await currentTeamsChatId(teamsJs);
+      recordAuthDebug('teams.sharedFiles', { chat: Boolean(chatId) });
+      if (chatId) {
+        const graph = new GraphClient({ getGraphToken: (scopes) => auth.getGraphToken!(scopes) });
+        prepared.bridge.setSharedFiles(graphSharedFiles(graph, chatId));
+      }
+    }
     if (warmUp.length)
       recordAuthDebug('warmup.skills', { results: warmUp.map((w) => w.action).join(',') });
     recordAuthDebug('catalog.discovered', {

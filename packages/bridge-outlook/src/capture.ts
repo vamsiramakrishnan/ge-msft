@@ -1,6 +1,13 @@
 import type { Block } from '@ge/content';
-import type { ResolvedContext } from '@ge/contracts';
-import { native, toContext, type ToContextOptions } from '@ge/content';
+import type { ContextRef, ResolvedContext } from '@ge/contracts';
+import {
+  attachmentToContext,
+  classifyAttachment,
+  decodeBase64,
+  native,
+  toContext,
+  type ToContextOptions,
+} from '@ge/content';
 
 /**
  * Pure mapping from an Outlook mail item into grounding-ready context — no Office.js here,
@@ -122,4 +129,143 @@ export function searchMailItem(item: MailItem, query: string): ResolvedContext[]
     body: matched.join('\n'),
     bodyType: 'text',
   });
+}
+
+/* ───────────────────────────── attachments ───────────────────────────── */
+
+/**
+ * The read-mode view of one mail attachment (`item.attachments[]`, Mailbox 1.1). Inline images
+ * (`isInline`) are part of the rendered body, not grounding; `item` attachments are forwarded
+ * messages the host returns as `.eml` text; `cloud` attachments are links the host returns as a URL.
+ */
+export interface MailAttachment {
+  id: string;
+  name: string;
+  attachmentType?: 'file' | 'item' | 'cloud' | string;
+  contentType?: string;
+  size?: number;
+  isInline?: boolean;
+}
+
+/** Stable context id for a mail attachment: scoped to the item so a different mail never aliases it. */
+export function attachmentRefId(itemId: string | undefined, attachmentId: string): string {
+  return `outlook:attachment:${itemId ?? 'item'}:${attachmentId}`;
+}
+
+/**
+ * The attachable handles for a mail item's attachments: one `attachment` ref per non-inline file,
+ * forwarded item, or cloud link, with the host pointer the bridge needs to fetch its content. Pure:
+ * no content is read here, so listing stays cheap (`attachments` / `list attachment`).
+ */
+export function mailAttachmentsToRefs(
+  itemId: string | undefined,
+  attachments: readonly MailAttachment[],
+): ContextRef[] {
+  return attachments
+    .filter((a) => !a.isInline && a.id && a.name)
+    .map((a): ContextRef => {
+      const { cls, mimeType } = classifyAttachment(a.name, a.contentType);
+      const kindNote =
+        a.attachmentType === 'item'
+          ? 'forwarded message'
+          : a.attachmentType === 'cloud'
+            ? 'cloud link'
+            : cls === 'text'
+              ? 'readable text'
+              : cls === 'file'
+                ? 'attach to read as a context file'
+                : 'content not readable';
+      return {
+        id: attachmentRefId(itemId, a.id),
+        kind: 'attachment',
+        surface: 'outlook',
+        title: a.name,
+        preview: `${kindNote}${a.size ? ` · ${formatSize(a.size)}` : ''}`,
+        mimeType,
+        ...(a.size !== undefined ? { sizeBytes: a.size } : {}),
+        hostRef: { type: 'outlook.attachment', itemId: itemId ?? 'item', attachmentId: a.id },
+      };
+    });
+}
+
+/** What `getAttachmentContentAsync` returned for one attachment (Mailbox 1.8), host-format tagged. */
+export interface MailAttachmentContent {
+  /** `base64` for files, `eml` for forwarded messages, `url` for cloud links, `iCalendar` for invites. */
+  format: 'base64' | 'eml' | 'url' | 'iCalendar' | string;
+  content: string;
+}
+
+/**
+ * Turn one attachment (plus its fetched content, when available) into attach-ready context through
+ * the shared `attachmentToContext` pipeline. Forwarded messages and invites are text; a cloud link
+ * grounds as a one-line reference (the file itself lives in OneDrive/SharePoint); a `base64` file
+ * is decoded and classified. Without content, the attachment grounds by name with a note.
+ */
+export function mailAttachmentToContext(
+  itemId: string | undefined,
+  attachment: MailAttachment,
+  content?: MailAttachmentContent,
+  opts: ToContextOptions = {},
+): ResolvedContext[] {
+  const sourceId = attachmentRefId(itemId, attachment.id);
+  const base = {
+    sourceId,
+    surface: 'outlook' as const,
+    fileName: attachment.name,
+    ...(attachment.contentType ? { mimeType: attachment.contentType } : {}),
+    ...(attachment.size !== undefined ? { sizeBytes: attachment.size } : {}),
+  };
+  if (!content) return attachmentToContext(base, opts);
+  switch (content.format) {
+    case 'eml':
+      return attachmentToContext(
+        {
+          ...base,
+          fileName: ensureExtension(attachment.name, '.eml'),
+          mimeType: 'message/rfc822',
+          text: content.content,
+        },
+        opts,
+      );
+    case 'iCalendar':
+      return attachmentToContext(
+        {
+          ...base,
+          fileName: ensureExtension(attachment.name, '.ics'),
+          mimeType: 'text/calendar',
+          text: content.content,
+        },
+        opts,
+      );
+    case 'url':
+      return toContext(
+        {
+          sourceId,
+          text: `File: ${attachment.name}\n\nCloud attachment link: ${content.content}`,
+          format: 'plain',
+          surface: 'outlook',
+          title: attachment.name,
+        },
+        opts,
+      ).map((part) => ({ ...part, ref: { ...part.ref, kind: 'attachment' as const } }));
+    default: {
+      let bytes: Uint8Array | undefined;
+      try {
+        bytes = decodeBase64(content.content);
+      } catch {
+        bytes = undefined;
+      }
+      return attachmentToContext({ ...base, ...(bytes ? { bytes } : {}) }, opts);
+    }
+  }
+}
+
+function ensureExtension(name: string, ext: string): string {
+  return name.toLowerCase().endsWith(ext) ? name : `${name}${ext}`;
+}
+
+function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -71,13 +71,20 @@ Each host exposes a `Host.run(ctx => …)` batch model (Outlook is the exception
 
 ### Outlook — `bridge-outlook`
 - **Read:** `mailbox.item` — subject, from, body (`getAsync`, HTML/text), recipients; appointments.
-  (Read mode is callback-based, not a `run` batch.)
+  (Read mode is callback-based, not a `run` batch.) **Attachments:** `item.attachments` lists them
+  by name; `getAttachmentContentAsync` (Mailbox 1.8) reads text-like files, forwarded `.eml`
+  messages and invites inline as data, while PDF/Office files are uploaded as a session context
+  file only when the user attaches them (`@ge/content` `attachmentToContext`).
 - **Write:** `displayReplyForm` / `displayNewMessageForm` — **reviewable**, never silent send.
 - **Events:** `ItemChanged` (pinned pane) → `mail-compose`/`mail-received`; **`OnMessageSend`**
   launch event (Smart Alerts) → the **on-send gate** (`event.completed({allowEvent})`).
 
 ### Teams — `teams`
 - **Read:** meeting **transcript** (RSC-consented, injected into the bridge), participants.
+  **Shared files:** the chat's `reference` attachments resolved through Graph (`/chats/{id}/messages`
+  with `Chat.Read`, `/shares/{token}/driveItem` and `/content` with the user's file permissions),
+  injected into the bridge as a `SharedFilesSource` from the shell; same attachment pipeline as
+  Outlook.
 - **Write:** reviewable **post-message** / Adaptive Card to the chat.
 - **Events:** `registerMeetingEndHandler` → `meeting-ended`; session start/end.
 
@@ -109,6 +116,7 @@ coauthor's edit or our own write-back) so the system never reacts to itself. The
 | **Federation to Google** | Workforce Identity Federation (RFC 8693 STS), browser-side | ✅ `WifTokenClient` — no Google secret on the client |
 | Graph **least privilege** | delegated scopes, **`Sites.Selected`** over all-sites | ✅ scoped in `@ge/graph-client` |
 | Graph **search as the user** | `/search/query` (driveItem/listItem/site), `/me/messages`, `/me/events`, `/users` | ✅ `GraphClient` (Plane B) |
+| Graph **chat files as the user** | `/chats/{id}/messages` (`Chat.Read`), `/shares/{token}/driveItem`, `/drives/{d}/items/{i}/content` | ✅ `GraphClient.listChatFiles` / `getDriveItemContent` (Teams shared files) |
 
 Microsoft Graph is reached **directly from the add-in** as the signed-in user (delegated) — not via
 Gemini Enterprise's connectors. (Gemini's *federated data stores* are a separate, engine-side path

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asChangeId, type ActuationRequest, type ActuationResult } from '@ge/contracts';
 import {
+  BridgeRefusal,
   createBridgeDispatch as createDispatch,
   type BridgeActuationHandlers,
 } from './bridge-dispatch.js';
@@ -201,5 +202,21 @@ describe('host refusals', () => {
       'write-cells': () => Promise.reject(hostError(code)),
     });
     await expect(dispatcher.dispatch({}, request())).rejects.toThrow(code);
+  });
+
+  it('maps a BridgeRefusal raised by a read-only probe to host_refused with its reason', async () => {
+    const dispatcher = createBridgeDispatch('excel', {
+      'write-cells': () =>
+        Promise.reject(new BridgeRefusal('not_found', 'Worksheet "Nope" was not found.', 'Nope')),
+    });
+    expect(await dispatcher.dispatch({}, request())).toMatchObject({
+      ok: false,
+      location: 'Nope',
+      error: {
+        code: 'host_refused',
+        reason: 'not_found',
+        message: 'Worksheet "Nope" was not found.',
+      },
+    });
   });
 });

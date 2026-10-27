@@ -50,8 +50,24 @@ export interface NewMessageFormSeed {
   toRecipients?: string[];
 }
 
+/** One read-mode attachment the fake item exposes (`item.attachments[]` + `getAttachmentContentAsync`). */
+export interface AttachmentSeed {
+  id: string;
+  name: string;
+  attachmentType?: 'file' | 'item' | 'cloud';
+  contentType?: string;
+  size?: number;
+  isInline?: boolean;
+  /** What `getAttachmentContentAsync` returns: the host format tag plus the content string. */
+  content?: { format: 'base64' | 'eml' | 'url' | 'iCalendar'; content: string };
+  /** When true, `getAttachmentContentAsync` fails for this attachment. */
+  contentReadFails?: boolean;
+}
+
 /** The Outlook mail-item seed: the active item's header fields + body, plus recorded writes. */
 export interface OutlookSeed {
+  /** Read-mode attachments on the active item (absent ⇒ no `attachments` collection). */
+  attachments?: AttachmentSeed[];
   /** The saved item id (read mode). Undefined/empty for an unsaved compose draft. */
   itemId?: string;
   subject?: string;
@@ -110,6 +126,30 @@ class FakeMailItem {
   }
   get from(): MailFromSeed | undefined {
     return this.seed.from;
+  }
+  /** `item.attachments` (Mailbox 1.1): the read-mode attachment details, content excluded. */
+  get attachments(): Array<Omit<AttachmentSeed, 'content' | 'contentReadFails'>> | undefined {
+    return this.seed.attachments?.map(
+      ({ content: _c, contentReadFails: _f, ...details }) => details,
+    );
+  }
+  /** `getAttachmentContentAsync` (Mailbox 1.8): resolves on the next microtask like `body.getAsync`. */
+  getAttachmentContentAsync(
+    attachmentId: string,
+    callback: (result: FakeAsyncResult<{ format: string; content: string }>) => void,
+  ): void {
+    const found = this.seed.attachments?.find((a) => a.id === attachmentId);
+    queueMicrotask(() => {
+      if (!found || found.contentReadFails || !found.content) {
+        callback({
+          status: ASYNC_RESULT_STATUS.Failed,
+          value: { format: '', content: '' },
+          error: { message: 'simulated attachment read failure' },
+        });
+        return;
+      }
+      callback({ status: ASYNC_RESULT_STATUS.Succeeded, value: found.content });
+    });
   }
   /** Reviewable reply WRITE — record the opened form rather than sending. */
   displayReplyForm(options: {

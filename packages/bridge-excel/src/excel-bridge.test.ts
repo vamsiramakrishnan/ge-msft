@@ -2066,7 +2066,9 @@ describe('ExcelBridge provenance save that never calls back', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
+    // Draining 20 s of faked timers (calculation polls, the 10 s provenance bound) is real work on a
+    // slow CI runner; the default 5 s test budget is not enough for it.
+  }, 30_000);
 });
 
 describe('ExcelBridge missing worksheet', () => {

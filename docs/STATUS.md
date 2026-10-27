@@ -102,7 +102,8 @@ no product features. See [the ownership decision](ADR-0015-architecture-unificat
 
 TypeScript project build clean · **2,671 tests passed, 16 optional live tests skipped across 198
 files** (Vitest) · ESLint and Prettier clean · all workspace production builds and language/resource
-drift checks passed. Skill validation passed 46 Python tests, 71 parity cases, parser self-tests,
+drift checks passed. Skill validation passed 46 Python tests, 83 parity cases (run through both the
+TypeScript grammar and the Python preflight), parser self-tests,
 14 deterministic eval cases, and exact source checks for all three archives. Bun 1.3.13 validates
 the frozen lockfile; dependency corrections changed no resolved versions.
 

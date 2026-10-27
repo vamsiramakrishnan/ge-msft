@@ -7,7 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from parse_commands import parse_line, extract_command_block_meta, verified_frame_error  # noqa: E402
+from parse_commands import (  # noqa: E402
+    _has_top_level_pipe,
+    _split_pipeline,
+    extract_command_block_meta,
+    parse_line,
+    verified_frame_error,
+)
 from .types import _AGG
 from .generated_language import TRANSFORM_NAMES
 
@@ -43,27 +49,21 @@ def _is_expr_line(line: str) -> bool:
     s = line.strip()
     if re.match(r"^let\s", s, re.IGNORECASE):
         return True
-    depth = 0
-    for i, ch in enumerate(s):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
-        elif ch == "|" and depth == 0 and 0 < i < len(s) - 1 and s[i - 1] == " " and s[i + 1] == " ":
-            return True
-    return False
+    # Quote- and paren-aware, and independent of surrounding spaces: `comment A1 "x | y"` is a
+    # command, `read A1:B3|sum x` is a pipeline — exactly as the TS `findTopLevelPipes`.
+    return _has_top_level_pipe(s)
 
 
 def _infer_pipeline_type(rhs: str):
     """Infer the value type (`Table`/`Number`) of a pipeline RHS from its last transform. Returns
     (vtype, source, transform_names, unknown_transforms)."""
-    parts = [p.strip() for p in re.split(r"\s\|\s", rhs.strip())]
+    parts = [p.strip() for p in _split_pipeline(rhs.strip())]
     source = parts[0]
     stages = parts[1:]
     vtype = "Number" if source.lstrip("$").split()[0] in _AGG else "Table"
     names, unknown = [], []
     for st in stages:
-        name = st.split()[0] if st.split() else ""
+        name = st.split()[0].lower() if st.split() else ""
         names.append(name)
         if name not in TRANSFORM_NAMES:
             unknown.append(name)

@@ -23,7 +23,13 @@
  *     surfaced verbatim as context, not executed.
  */
 
-import type { TeamsBridgeOptions, TeamsComposeRequest, TeamsJsLike } from '@ge/teams';
+import type {
+  SharedFile,
+  SharedFilesSource,
+  TeamsBridgeOptions,
+  TeamsComposeRequest,
+  TeamsJsLike,
+} from '@ge/teams';
 
 /** A recorded post the host staged for review via `chat.openConversation` / `sharing.shareWebContent`. */
 export interface StagedPost {
@@ -51,6 +57,16 @@ export interface TeamsSeed {
   meetingEndSource?: boolean;
   /** When set, the chosen compose path throws this on invocation (host compose failure path). */
   composeThrows?: Error;
+  /** Files shared in the chat, as the host's delegated reader would list them (absent ⇒ none). */
+  files?: SharedFileSeed[];
+}
+
+/** One shared file the fake chat exposes; `text` is its UTF-8 content, `bytes` raw content. */
+export interface SharedFileSeed extends SharedFile {
+  text?: string;
+  bytes?: Uint8Array;
+  /** When true, reading this file fails (the user cannot open it). */
+  readFails?: boolean;
 }
 
 /** A read-back view of the Teams host after a run. */
@@ -155,6 +171,24 @@ export function installFakeTeams(seed: TeamsSeed = defaultTeamsSeed()): TeamsSim
       : { chat: { openConversation: stage('chat') } }),
   };
 
+  const files: SharedFilesSource | undefined = seed.files
+    ? {
+        list: () =>
+          Promise.resolve(
+            seed.files!.map(({ text: _t, bytes: _b, readFails: _r, ...file }) => file),
+          ),
+        read: (id) => {
+          const found = seed.files!.find((f) => f.id === id);
+          if (!found || found.readFails) return Promise.reject(new Error('cannot open this file'));
+          const bytes = found.bytes ?? new TextEncoder().encode(found.text ?? '');
+          return Promise.resolve({
+            bytes,
+            ...(found.mimeType ? { mimeType: found.mimeType } : {}),
+          });
+        },
+      }
+    : undefined;
+
   const bridgeOptions: TeamsBridgeOptions = {
     teams,
     transcript: {
@@ -163,6 +197,7 @@ export function installFakeTeams(seed: TeamsSeed = defaultTeamsSeed()): TeamsSim
       ...(seed.participants ? { participants: seed.participants } : {}),
     },
     ...(seed.meetingId !== undefined ? { meetingId: seed.meetingId } : {}),
+    ...(files ? { files } : {}),
   };
 
   return {

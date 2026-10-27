@@ -72,6 +72,8 @@ interface DraftSeed {
   subjectReadbackMismatch?: boolean;
   bodyReadbackStalls?: boolean;
   subjectReadbackStalls?: boolean;
+  /** Write APIs whose callback never fires (a hung host): the bridge must bound the wait. */
+  writeStalls?: boolean;
   attachmentAddFails?: boolean;
   /** Strip every compose write API → the item looks like a READ-mode message. */
   readOnly?: boolean;
@@ -125,6 +127,8 @@ function installOutlook(
     throwOnRemove?: boolean;
     /** The newest Mailbox requirement set the host supports (default 1.15). */
     mailboxVersion?: number;
+    /** Drop `Office.context.requirements` entirely (a host that cannot answer the probe). */
+    noRequirements?: boolean;
   } = {},
 ): Installed {
   const replyForms: ReplyFormCall[] = [];
@@ -149,6 +153,7 @@ function installOutlook(
     const recipientField = (field: 'to' | 'cc' | 'bcc') => ({
       setAsync(list: string[], cb: ResultCb<void>): void {
         recipientWrites.push({ mode: 'set', field, addresses: list });
+        if (d?.writeStalls) return;
         if (d?.recipientsFailsOn === field) {
           cb(fail('recipient write failed'));
         } else {
@@ -185,6 +190,7 @@ function installOutlook(
           name,
           isInline: options?.isInline === true,
         });
+        if (d?.writeStalls) return;
         if (d?.attachmentAddFails) {
           cb(fail('attachment upload failed'));
         } else {
@@ -204,6 +210,7 @@ function installOutlook(
               },
               setAsync(value: string, cb: ResultCb<void>): void {
                 subjectSets.push({ subject: value });
+                if (d.writeStalls) return;
                 if (d.subjectSetFails) cb(fail('subject write failed'));
                 else {
                   if (!d.subjectReadbackMismatch) seed.subject = value;
@@ -239,6 +246,7 @@ function installOutlook(
                 cb: ResultCb<void>,
               ): void {
                 bodySets.push({ data, coercionType: options?.coercionType });
+                if (d.writeStalls) return;
                 if (d.bodySetFails) cb(fail('body write failed'));
                 else {
                   if (!d.bodyReadbackMismatch) seed.body = data;
@@ -293,11 +301,16 @@ function installOutlook(
   const office = {
     context: {
       mailbox,
-      requirements: {
-        isSetSupported: (name: string, version?: string) =>
-          name === 'Mailbox' &&
-          Number((version ?? '1.1').split('.')[1]) <= Number(String(mailboxVersion).split('.')[1]),
-      },
+      ...(opts.noRequirements
+        ? {}
+        : {
+            requirements: {
+              isSetSupported: (name: string, version?: string) =>
+                name === 'Mailbox' &&
+                Number((version ?? '1.1').split('.')[1]) <=
+                  Number(String(mailboxVersion).split('.')[1]),
+            },
+          }),
     },
     CoercionType: { Html: 'html', Text: 'text' },
     AsyncResultStatus: { Succeeded: 'succeeded', Failed: 'failed' },
@@ -1044,6 +1057,63 @@ describe('Outlook saved compose context and lifecycle', () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe('OutlookBridge.watch (Mailbox 1.5 requirement gate)', () => {
+  it('registers nothing on a host below Mailbox 1.5 and returns a no-op unsubscribe', () => {
+    active = installOutlook(readMail(), { mailboxVersion: 1.4 });
+    const unsub = new OutlookBridge().watch(() => {});
+    expect(active.handlers).toHaveLength(0);
+    expect(() => unsub()).not.toThrow();
+  });
+
+  it('registers nothing when the host cannot answer the requirement probe', () => {
+    active = installOutlook(readMail(), { noRequirements: true });
+    const unsub = new OutlookBridge().watch(() => {});
+    expect(active.handlers).toHaveLength(0);
+    expect(() => unsub()).not.toThrow();
+  });
+
+  it('registers the ItemChanged handler on a host at or above Mailbox 1.5', () => {
+    active = installOutlook(readMail(), { mailboxVersion: 1.5 });
+    new OutlookBridge().watch(() => {});
+    expect(active.handlers).toHaveLength(1);
+  });
+});
+
+describe('OutlookBridge draft writes that never call back', () => {
+  it.each([
+    ['set-recipients', { mail: { to: ['a@b.test'] } }, 'recipients'],
+    ['set-body', { text: 'Body text' }, 'body'],
+    ['set-subject', { mail: { subject: 'Subject' } }, 'subject'],
+    [
+      'add-attachment',
+      { attachment: { name: 'a.txt', uri: 'https://example.test/a.txt' } },
+      'attachment',
+    ],
+  ] as const)(
+    '%s reports an unknown outcome after the write budget, never a success',
+    async (kind, params, _label) => {
+      vi.useFakeTimers();
+      try {
+        active = installOutlook(draftMail({ writeStalls: true }));
+        const pending = new OutlookBridge().actuate(act(kind, params as ActuationParams));
+        // Below the budget the write is still pending — nothing has been decided.
+        await vi.advanceTimersByTimeAsync(9_999);
+        let settled = false;
+        void pending.then(() => (settled = true));
+        await Promise.resolve();
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(2);
+        const res = await pending;
+        expect(res.ok).toBe(false);
+        expect(res.error?.code).toBe('outcome_unknown');
+        expect(res.error?.message).toContain('timed out');
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe('OutlookBridge.actuate unsupported', () => {

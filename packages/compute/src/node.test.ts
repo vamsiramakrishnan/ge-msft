@@ -74,7 +74,10 @@ describe('Node-only real DuckDB analytics', () => {
       sources: [],
       lineage: { parents: [], operation: 'snapshot' },
     });
-    const limits = { maxQueryMs: 250 };
+    // The budget is frozen at construction (so the later mutation is inert) and it bounds every
+    // query on a cold worker: DuckDB's first query on a loaded CI runner alone took >250 ms, so the
+    // bound is 1.5 s — still far below the 5 s the deadline assertion allows for the kill.
+    const limits = { maxQueryMs: 1500 };
     const compute = createNodeCompute(limits);
     try {
       await expect(compute.query('SELECT 1 AS n', [])).resolves.toMatchObject({ rows: [[1]] });

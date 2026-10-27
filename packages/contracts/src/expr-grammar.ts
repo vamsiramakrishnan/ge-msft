@@ -297,7 +297,9 @@ function parsePipeline(text: string): PipelineExpr | ExprParseError {
     const seg = segments[i]!.trim();
     if (seg === '') return { error: 'empty pipeline stage (a `|` with nothing after it)' };
     const sp = seg.search(/\s/);
-    const name = sp === -1 ? seg : seg.slice(0, sp);
+    // Transform names are case-insensitive (`| SUM x` ≡ `| sum x`), matching the Python preflight;
+    // the runtime registry is keyed by the lowercase name.
+    const name = (sp === -1 ? seg : seg.slice(0, sp)).toLowerCase();
     const args = sp === -1 ? '' : seg.slice(sp + 1).trim();
     stages.push({ name, args });
   }

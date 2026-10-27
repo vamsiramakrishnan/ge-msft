@@ -284,3 +284,20 @@ describe('fake-powerpoint fidelity', () => {
     expect(out.selectedIndex).toBe(1);
   });
 });
+
+describe('fake Excel: Excel.run overloads', () => {
+  it('accepts run(options, cb) and records the options per batch', async () => {
+    const sim = installFakeExcel();
+    try {
+      await Excel.run(async (ctx) => {
+        ctx.workbook.worksheets.getActiveWorksheet();
+      });
+      await Excel.run({ mergeUndoGroup: true }, async (ctx) => {
+        ctx.workbook.worksheets.getActiveWorksheet();
+      });
+      expect(sim.runOptions).toEqual([{}, { mergeUndoGroup: true }]);
+    } finally {
+      sim.restore();
+    }
+  });
+});

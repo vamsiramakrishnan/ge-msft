@@ -8,6 +8,7 @@ import {
   stripFollowUpBlock,
   parseCommandLine,
   parseCommandBlock,
+  parseProgramBlock,
   grammarFor,
   isCommandParseError,
 } from './command-grammar.js';
@@ -1514,5 +1515,30 @@ describe('stripFollowUpBlock', () => {
   it('keeps CRLF line endings of the program it returns', () => {
     const crlf = '```cmd\r\nset A1 1\r\n```\r\n```suggested_questions\r\n[]\r\n```\r\n';
     expect(stripFollowUpBlock(crlf)).toBe('```cmd\r\nset A1 1\r\n```');
+  });
+});
+
+describe('command-grammar — parity fixes (golden corpus drift, 2026-10)', () => {
+  it('rejects arguments after outline instead of silently dropping them', () => {
+    const r = parseCommandLine('outline Sales');
+    expect(isCommandParseError(r) && r.error).toContain('outline takes no arguments');
+    expect(parseCommandLine('outline')).toEqual({ verb: 'outline' });
+  });
+
+  it('stamps program-block parse errors with the fence-relative line and source text', () => {
+    const { entries } = parseProgramBlock('```cmd\n# header\nread A1\nset A1\n```');
+    expect(entries[0]).toEqual({ verb: 'read', selector: 'A1' });
+    expect(entries[1]).toMatchObject({ line: 3, source: 'set A1' });
+    expect('error' in entries[1]! && entries[1]!.error).toContain('set needs a cell');
+  });
+
+  it('leaves program-level fence errors without a line', () => {
+    // Unclosed fence whose last line is prose: the program-level frame check fires.
+    const { entries } = parseProgramBlock('```cmd\nread A1\nfinish when=verified\n\nSummary.');
+    const fenceError = entries.find(
+      (e) => 'error' in e && e.error.startsWith('finish when=verified requires'),
+    );
+    expect(fenceError).toBeDefined();
+    expect(fenceError).not.toHaveProperty('line');
   });
 });

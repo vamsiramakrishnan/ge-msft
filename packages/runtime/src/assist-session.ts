@@ -651,7 +651,7 @@ export interface AssistSessionOptions {
  * Drive, and person references. These are the cheap, high-value handles the unit is built on;
  * they are never evicted by compaction (preserving them is the whole point of grounding).
  */
-const GROUNDING_VALUE_KINDS = new Set(['indexed-document', 'drive-document', 'person']);
+const GROUNDING_VALUE_KINDS = new Set(['indexed-document', 'drive-document', 'person', 'file']);
 
 /** What a `prime` turn asks of the engine: absorb the working context, don't act on it. */
 const PRIME_INSTRUCTION =
@@ -1391,8 +1391,9 @@ export class AssistSession {
     const refs = await this.toolOperation('context:list', {}, () => this.bridge.listContext());
     const chosen = want ? refs.filter((r) => want.includes(r.kind)) : refs;
     for (const ref of chosen) {
-      const resolvedParts = await this.toolOperation('context:resolve', { ref }, () =>
-        this.bridge.resolveContext(ref),
+      const resolvedParts = await this.materializeFileParts(
+        ref,
+        await this.toolOperation('context:resolve', { ref }, () => this.bridge.resolveContext(ref)),
       );
       this.releaseAttachedParts(ref.id);
       for (const resolved of resolvedParts) this.addAttachedPart(ref.id, resolved);
@@ -1411,13 +1412,74 @@ export class AssistSession {
   async attachRef(ref: ContextRef): Promise<void> {
     const version = (this.attachmentVersions.get(ref.id) ?? 0) + 1;
     this.attachmentVersions.set(ref.id, version);
-    const resolvedParts = await this.toolOperation('context:resolve', { ref }, () =>
-      this.bridge.resolveContext(ref),
+    const resolvedParts = await this.materializeFileParts(
+      ref,
+      await this.toolOperation('context:resolve', { ref }, () => this.bridge.resolveContext(ref)),
     );
     if (this.attachmentVersions.get(ref.id) !== version) return;
     // A re-attach replaces the previous resolution: a deck that shrank must not keep stale chunks.
     this.releaseAttachedParts(ref.id);
     for (const resolved of resolvedParts) this.addAttachedPart(ref.id, resolved);
+  }
+
+  /**
+   * An attached `file` part (a PDF/Office mail attachment, a file shared in a chat) grounds as a
+   * session context file: on this explicit user attach, read its bytes through the bridge and
+   * upload them, recording the `fileId` on the part. Model commands never reach this path. Every
+   * failure degrades to a by-name part with a `note` — the model learns the file exists and why its
+   * content is absent, and the attach itself never fails because of the upload.
+   */
+  private async materializeFileParts(
+    attached: ContextRef,
+    parts: ResolvedContext[],
+  ): Promise<ResolvedContext[]> {
+    const out: ResolvedContext[] = [];
+    for (const part of parts) {
+      if (part.value.as !== 'file' || !part.value.uploadable || part.value.fileId) {
+        out.push(part);
+        continue;
+      }
+      const fileValue = part.value;
+      const withNote = (note: string): ResolvedContext => ({
+        ...part,
+        value: { ...fileValue, uploadable: false, note },
+      });
+      if (!this.bridge.readAttachment) {
+        out.push(withNote('this host cannot read the file content'));
+        continue;
+      }
+      if ((part.value.sizeBytes ?? 0) > DEFAULT_CONTEXT_FILE_MAX_BYTES) {
+        out.push(withNote('too large to attach as a context file'));
+        continue;
+      }
+      try {
+        // Read through the ref the user attached: it carries the host pointer (an Outlook
+        // attachment id) that a resolved part's ref may not.
+        const raw = await this.toolOperation('context:read-attachment', { ref: attached }, () =>
+          this.bridge.readAttachment!(attached),
+        );
+        const uploaded = await this.addContextFile({
+          fileName: raw.fileName,
+          mimeType: raw.mimeType,
+          contents: raw.bytes,
+        });
+        out.push({
+          ...part,
+          value: {
+            ...fileValue,
+            mimeType: uploaded.mimeType,
+            sizeBytes: uploaded.byteSize,
+            fileId: uploaded.fileId,
+          },
+        });
+      } catch (err) {
+        void err;
+        out.push(
+          withNote('could not be attached as a context file; attach it again or paste the content'),
+        );
+      }
+    }
+    return out;
   }
 
   private addAttachedPart(refId: string, resolved: ResolvedContext): void {
@@ -3092,7 +3154,14 @@ export class AssistSession {
       const fix = entry.error.startsWith('finish when=verified requires a closed cmd fence')
         ? ': end the block with a line of three backticks, or end it with done instead'
         : '';
-      plan.results.push({ error: entry.error + fix });
+      // Echo the position and the offending source so the repair turn targets one line, not the
+      // whole program (parse errors are aligned to entries, not source lines, in the result block).
+      const where = entry.line !== undefined ? `line ${entry.line}: ` : '';
+      plan.results.push({
+        error: where + entry.error + fix,
+        ...(entry.line !== undefined ? { line: entry.line } : {}),
+        ...(entry.source !== undefined ? { source: entry.source } : {}),
+      });
       return;
     }
     const command = entry;
@@ -4657,6 +4726,18 @@ export class AssistSession {
             return { label: `inspect ${intent.selector}`, result: observed };
           const found = await this.findContextRef(intent.selector);
           if (found?.found) {
+            // An attachment's content enters the session only on the user's explicit attach: a
+            // model-issued `inspect` on an unattached attachment returns its properties, never its
+            // bytes (a prompt-injected turn must not pull mail attachments or chat files in).
+            if (found.ref.kind === 'attachment' && !this.attachedParts.has(found.ref.id)) {
+              return {
+                label: `inspect ${intent.selector}`,
+                result: {
+                  ...(contextRefProperties(found.ref, this.bridge) as object),
+                  note: 'Attachment content is read only after the user attaches it. Ask the user to attach this file to read it.',
+                },
+              };
+            }
             const reads = await withHostReadTimeout(`inspect ${intent.selector}`, () =>
               this.bridge.resolveContext(found.ref),
             );

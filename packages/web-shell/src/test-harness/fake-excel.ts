@@ -848,26 +848,35 @@ class FakeWorksheet {
   }
   readonly visibility = 'Visible';
   get protection(): { protected: boolean; load(_props?: string): void } {
+    if (this.isNullObject) return { protected: false, load() {} };
     return { protected: sheetByName(this.seed, this.name).protected === true, load() {} };
   }
+  /**
+   * `worksheets.getItemOrNullObject(name)` on a missing sheet yields a null-object worksheet: like
+   * Office.js, its ranges are null objects too (`getRange` degrades), and loads succeed.
+   */
   constructor(
     private readonly seed: ExcelSeed,
     readonly name: string,
+    readonly isNullObject = false,
   ) {}
   load(_props?: string): this {
     return this;
   }
   getUsedRange(): FakeRange {
+    if (this.isNullObject) return new FakeRange(this.seed, this.seed.activeSheet, 'A1', true);
     const sheet = sheetByName(this.seed, this.name);
     return new FakeRange(this.seed, this.name, stripSheet(usedAddress(sheet)));
   }
   getUsedRangeOrNullObject(): FakeRange {
+    if (this.isNullObject) return new FakeRange(this.seed, this.seed.activeSheet, 'A1', true);
     const sheet = sheetByName(this.seed, this.name);
     const empty = sheet.values.every((row) => row.every((c) => String(c ?? '').trim() === ''));
     if (empty) return new FakeRange(this.seed, this.name, 'A1', true);
     return new FakeRange(this.seed, this.name, stripSheet(usedAddress(sheet)));
   }
   getRange(a1: string): FakeRange {
+    if (this.isNullObject) return new FakeRange(this.seed, this.seed.activeSheet, 'A1', true);
     return new FakeRange(this.seed, this.name, a1.replace(/\$/g, ''));
   }
 }
@@ -924,6 +933,15 @@ class FakeWorksheetCollection {
   }
   getItem(name: string): FakeWorksheet {
     sheetByName(this.seed, name); // throw on a typo
+    return new FakeWorksheet(this.seed, name);
+  }
+  /** The null-object lookup the bridge uses to name a missing sheet before any write is queued. */
+  getItemOrNullObject(name: string): FakeWorksheet {
+    try {
+      sheetByName(this.seed, name);
+    } catch {
+      return new FakeWorksheet(this.seed, name, true);
+    }
     return new FakeWorksheet(this.seed, name);
   }
 }
@@ -1032,8 +1050,10 @@ class FakeWorkbook {
 class FakeRequestContext {
   readonly application = {
     calculationState: 'Done',
+    calculationMode: 'Automatic',
     load: () => undefined,
     calculate: () => undefined,
+    suspendApiCalculationUntilNextSync: () => undefined,
   };
   readonly workbook: FakeWorkbook;
   /** Every proxy handed out this batch; their queued loads flush and writes commit on sync. */
@@ -1083,6 +1103,8 @@ function trackRanges(workbook: FakeWorkbook, touched: Syncable[]): FakeWorkbook 
     return sheet;
   };
   workbook.worksheets.getItem = (name: string) => wrapSheet(origGetItem(name));
+  const origGetItemOrNull = workbook.worksheets.getItemOrNullObject.bind(workbook.worksheets);
+  workbook.worksheets.getItemOrNullObject = (name: string) => wrapSheet(origGetItemOrNull(name));
   workbook.worksheets.getActiveWorksheet = () => wrapSheet(origActive());
 
   // The named-range read path: `names.getItemOrNullObject(name).getRange()` returns a range that
@@ -1128,9 +1150,15 @@ function registerRange(range: FakeRange, touched: Syncable[]): FakeRange {
   return range;
 }
 
+/** The subset of `Excel.RunOptions` the bridge passes (ExcelApi 1.20 undo-group merging). */
+export interface FakeRunOptions {
+  mergeUndoGroup?: boolean;
+}
+
 /** The `Excel` namespace object installed onto `globalThis.Excel`. */
 interface FakeExcelNamespace {
   run<T>(callback: (ctx: FakeRequestContext) => Promise<T>): Promise<T>;
+  run<T>(options: FakeRunOptions, callback: (ctx: FakeRequestContext) => Promise<T>): Promise<T>;
 }
 
 /* ─────────────────────────── grid read/write helpers ───────────────────── */
@@ -1199,6 +1227,8 @@ export interface ExcelSimulator {
   readonly events: ExcelEvents;
   /** Fire raw Office-level events (selection/view), e.g. the Word/PowerPoint Office bus. */
   readonly officeHandlers: OfficeHandlerRegistry;
+  /** The `Excel.run` options of every batch, in order (`{}` for the single-arg form). */
+  readonly runOptions: readonly FakeRunOptions[];
   /** Remove the installed globals (`Excel`, `Office`). Idempotent. */
   restore(): void;
 }
@@ -1217,8 +1247,15 @@ export function installFakeExcel(
 
   // Hold the most-recent context's collections so `events.*` fires the same sinks the bridge wired.
   let lastWorkbook: FakeWorkbook | undefined;
+  const runOptions: FakeRunOptions[] = [];
   const excel: FakeExcelNamespace = {
-    run: async <T>(callback: (ctx: FakeRequestContext) => Promise<T>): Promise<T> => {
+    run: async <T>(
+      optionsOrCallback: FakeRunOptions | ((ctx: FakeRequestContext) => Promise<T>),
+      maybeCallback?: (ctx: FakeRequestContext) => Promise<T>,
+    ): Promise<T> => {
+      // Mirror the real overload: `run(cb)` or `run(options, cb)` (ExcelApi 1.20 undo groups).
+      const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
+      runOptions.push(typeof optionsOrCallback === 'function' ? {} : optionsOrCallback);
       const ctx = new FakeRequestContext(seed);
       lastWorkbook = ctx.workbook;
       return callback(ctx);
@@ -1250,6 +1287,7 @@ export function installFakeExcel(
     office,
     events,
     officeHandlers,
+    runOptions,
     snapshot: () => ({
       sheets: seed.sheets.map((s) => ({ name: s.name, values: s.values.map((r) => [...r]) })),
       comments: seed.comments.map((c) => ({ ...c, replies: [...c.replies] })),

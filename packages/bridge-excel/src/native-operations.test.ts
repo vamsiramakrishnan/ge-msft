@@ -11,7 +11,11 @@ import { ExcelBridge } from './excel-bridge.js';
 
 const state = vi.hoisted(() => ({ context: undefined as unknown, failSync: 0, syncs: 0 }));
 vi.mock('./native-run.js', () => ({
-  nativeRun: (work: (context: unknown) => unknown) => work(state.context),
+  // Mirror the overload: `nativeRun(work)` or `nativeRun(options, work)`.
+  nativeRun: (
+    optionsOrWork: unknown | ((context: unknown) => unknown),
+    maybeWork?: (context: unknown) => unknown,
+  ) => (typeof optionsOrWork === 'function' ? optionsOrWork : maybeWork!)(state.context),
 }));
 vi.mock('./cell-snapshot.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./cell-snapshot.js')>();
@@ -195,6 +199,10 @@ function host() {
       const value = sheets.items.find((item) => item.name === name);
       if (!value) throw new Error('not found');
       return value;
+    },
+    getItemOrNullObject: (name: string) => {
+      const value = sheets.items.find((item) => item.name === name);
+      return value ?? { isNullObject: true, load() {} };
     },
     getActiveWorksheet: () => sheets.items.find((item) => item.id === activeId)!,
     add: vi.fn((name: string) => {
@@ -439,7 +447,8 @@ describe('bounded native grouped pivots', () => {
   });
   it('preserves the minted inverse after a configuration sync failure', async () => {
     const h = host();
-    state.failSync = 2;
+    // Sync 1 resolves the two worksheets, sync 2 mints the pivot, sync 3 is its configuration.
+    state.failSync = 3;
     expect(
       await applyNativePivot(request('insert-pivot', { pivot: await params(h) })),
     ).toMatchObject({ ok: false, recoveryPending: true, inverse: { name: 'minted-pivot-id' } });

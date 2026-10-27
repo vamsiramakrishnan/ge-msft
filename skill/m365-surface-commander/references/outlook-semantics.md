@@ -12,7 +12,13 @@ load_when: The active surface is Outlook or a plan mentions mail, thread, attach
 Load this when the active surface is Outlook. Cross-surface table:
 [capability-map.md](capability-map.md).
 
-**Reading:** `read` returns the open mail item (or the compose draft). **Nothing auto-sends** — every
+**Reading:** `read` returns the open mail item (or the compose draft). `attachments` lists the
+item's attachments by name (text files, forwarded messages and invites are readable; PDF/Office files
+read only after the user attaches them, which uploads the file as a session context file; images and
+archives are listed but not readable); `inspect <refId>` returns a readable attachment's content as
+data, or the file's name/type/size plus a note saying why its content is unavailable. Never ask the
+user to paste attachment content and never claim to have read a file whose part says content is
+unavailable. **Nothing auto-sends** — every
 Plane-A write mutates the open **compose draft**, and the draft only leaves on the user's Send, which
 passes through the on-send veto gate. So every compose write is inherently draft-reviewable.
 

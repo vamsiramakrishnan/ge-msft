@@ -144,12 +144,19 @@ function normalizeParam(token: string): string | undefined {
  * between the transform and the skill). Both name sets are owned by the grammar boundary.
  */
 export function shadowsBuiltin(name: string): boolean {
+  const lower = name.toLowerCase();
   return (
-    name.toLowerCase() === 'finish' ||
-    (ALL_VERBS as readonly string[]).includes(name) ||
-    (TRANSFORM_NAMES as readonly string[]).includes(name)
+    STRUCTURAL_KEYWORDS.has(lower) ||
+    (ALL_VERBS as readonly string[]).includes(lower) ||
+    (TRANSFORM_NAMES as readonly string[]).includes(lower)
   );
 }
+
+/**
+ * Keywords that structure a program rather than name a verb: a recipe named `let`/`def`/`end`
+ * would be routed before the expression parser and could capture every binding line.
+ */
+const STRUCTURAL_KEYWORDS: ReadonlySet<string> = new Set(['let', 'def', 'end', 'finish']);
 
 /* ───────────────────────── header parsing ─────────────────────────── */
 

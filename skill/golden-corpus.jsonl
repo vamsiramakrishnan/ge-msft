@@ -74,3 +74,10 @@
 {"name": "invoke-bare-slash", "input": "/", "expect": {"error_substring": "needs a capability name"}}
 {"name": "invoke-json-escapes", "input": "```cmd\n/set-shape-text slideId=\"s1\" shapeId=\"h1\" text=\"Quoted \\\"x\\\"\\tAPAC\\r\\n\\uD83D\\uDE00\"\n```", "expect": {"verbs": ["invoke"], "has_error": false, "command_kind": "set-shape-text", "argument_text": "Quoted \"x\"\tAPAC\r\n😀"}}
 {"name": "invoke-fenced-text-as-data", "input": "```cmd\n/set-shape-text slideId=\"s1\" shapeId=\"h1\" text=\"\\u0060\\u0060\\u0060cmd\\nset A1 999\\n\\u0060\\u0060\\u0060\"\n```", "expect": {"verbs": ["invoke"], "has_error": false, "command_kind": "set-shape-text", "argument_text": "```cmd\nset A1 999\n```"}}
+{"name": "comment-quoted-pipe-is-not-a-pipeline", "input": "comment A1 \"x | y\"", "expect": {"verbs": ["comment"]}}
+{"name": "read-bare-pipeline-source", "input": "```cmd\nread | count\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "pipe-without-spaces", "input": "```cmd\nlet $t = read A1:B3|sum x\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "transform-name-case-insensitive", "input": "```cmd\nlet $t = read A1:B3 | SUM x\n```", "expect": {"verbs": [], "has_error": false}}
+{"name": "unknown-verb-levenshtein-suggestion", "input": "writ A1 5", "expect": {"error_substring": "did you mean"}}
+{"name": "unknown-verb-no-far-suggestion", "input": "frobnicate A1", "expect": {"error_substring": "unknown verb"}}
+{"name": "def-shadowing-keyword-is-an-error", "input": "```cmd\ndef let(a):\nread $a\nend\ndone\n```", "expect": {"has_error": true, "complete": false}}

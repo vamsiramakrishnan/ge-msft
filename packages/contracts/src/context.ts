@@ -112,6 +112,22 @@ export const ContextValueSchema = z.discriminatedUnion('as', [
     email: z.string().optional(),
     personId: z.string().optional(),
   }),
+  /**
+   * An opaque file (a mail attachment, a file shared in a Teams chat) whose content is not inlined.
+   * `uploadable` says the engine can ingest it as a session context file (PDF/Office/CSV…); the
+   * runtime uploads it on an explicit user attach and records the resulting `fileId`. Without a
+   * `fileId` the part grounds only by name: the model sees that the file exists and why its content
+   * is not available (`note`). Bytes never live in this value.
+   */
+  z.object({
+    as: z.literal('file'),
+    fileName: z.string(),
+    mimeType: z.string(),
+    sizeBytes: z.number().optional(),
+    uploadable: z.boolean(),
+    fileId: z.string().optional(),
+    note: z.string().optional(),
+  }),
 ]);
 export type ContextValue = z.infer<typeof ContextValueSchema>;
 

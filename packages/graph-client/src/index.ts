@@ -13,7 +13,15 @@ export {
   eventToContext,
   userToContext,
   driveItemToContext,
+  encodeSharingUrl,
+  type ChatSharedFile,
   type GraphTokenSource,
 } from './graph-client.js';
-export type { GraphMessage, GraphEvent, GraphDriveItem, GraphUser } from './graph-types.js';
+export type {
+  GraphMessage,
+  GraphEvent,
+  GraphDriveItem,
+  GraphUser,
+  GraphChatMessages,
+} from './graph-types.js';
 export { GraphSharedStore } from './shared-store.js';

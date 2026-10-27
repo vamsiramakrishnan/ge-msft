@@ -85,9 +85,10 @@ describe('artifact bindings and verified completion', () => {
   it.each(['done', 'set S!A1 6', 'finish when=verified', 'def example():'])(
     'rejects content after verified completion',
     (line) => {
-      expect(parse('finish when=verified', line)).toContainEqual({
-        error: 'finish when=verified must be the final program entry',
-      });
+      // Block-level errors now carry the fence-relative `line`/`source`; match on the message.
+      expect(parse('finish when=verified', line)).toContainEqual(
+        expect.objectContaining({ error: 'finish when=verified must be the final program entry' }),
+      );
     },
   );
 

@@ -1783,6 +1783,40 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     expect(bridge.resolved).toBe(0);
   });
 
+  it('`inspect` on an unattached attachment returns its properties and never reads its content', async () => {
+    class AttachmentBridge extends ComposeBridge {
+      resolved = 0;
+      override listContext(): Promise<ContextRef[]> {
+        return Promise.resolve([
+          {
+            id: 'outlook:attachment:item-1:a1',
+            kind: 'attachment',
+            surface: 'excel',
+            title: 'contract.pdf',
+            mimeType: 'application/pdf',
+          },
+        ]);
+      }
+      override resolveContext(): Promise<ResolvedContext[]> {
+        this.resolved += 1;
+        return Promise.resolve([]);
+      }
+    }
+    const bridge = new AttachmentBridge();
+    const { fetch, bodies } = scriptedFetch([
+      '```cmd\ninspect contract.pdf\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    await collectLoop(session.runCommands('read the contract', { approvePlan: () => true }));
+
+    // A model command never pulls attachment content in; only the user's attach does.
+    expect(bridge.resolved).toBe(0);
+    const resultTurn = JSON.stringify(bodies.at(-1));
+    expect(resultTurn).toContain('attaches it');
+  });
+
   it('refuses to resend a write whose earlier identical attempt has an unknown outcome', async () => {
     class UncertainBridge extends ComposeBridge {
       calls = 0;
@@ -1985,7 +2019,8 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     } finally {
       vi.useRealTimers();
     }
-  });
+    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
+  }, 30_000);
 
   it('a `read <selector>` the host never answers gives up after the read timeout (live 2026-10-16)', async () => {
     // Live: `read slide:2` waited ~24 min on a stalled PowerPoint for the web; only `context:*`
@@ -2013,7 +2048,8 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     } finally {
       vi.useRealTimers();
     }
-  });
+    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
+  }, 30_000);
 
   it('refuses to re-apply a write identical to one that already landed in the task', async () => {
     const bridge = new ComposeBridge();

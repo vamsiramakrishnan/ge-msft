@@ -9,7 +9,7 @@ import type { CapabilityManifest } from '@ge/contracts';
  */
 export const TEAMS_CAPABILITIES: CapabilityManifest = {
   surface: 'teams',
-  contextKinds: ['transcript'],
+  contextKinds: ['transcript', 'attachment'],
   // Read verbs Teams serves (ADR-0006 closure): whole-transcript `read` via `captureDocState` (a
   // transcript has no addressable sub-range, so the "document" is the captured window — meeting
   // title + turn lines), and `search` via `searchDocument` (a transcript-line scan). No `outline`:

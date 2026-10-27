@@ -18,7 +18,7 @@ import {
   type DeGroundingSupport,
   type DeReference,
 } from './de-types.js';
-import { parseJsonArrayStream } from './json-stream.js';
+import { parseJsonArrayStream, type JsonStreamStatus } from './json-stream.js';
 import { contentHash } from './hash.js';
 import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
@@ -362,11 +362,17 @@ export class StreamAssistClient {
     let skippedReasons: string[] | undefined;
 
     const body = idleMs > 0 ? withIdleTimeout(res.body, idleMs, onIdle) : res.body;
+    // `done` is a claim that the provider finished. A clean EOF is not that claim: a proxy or the
+    // network can close the body mid-array and the bytes so far still parse. Only a terminal
+    // answer state or the array's closing bracket proves completion.
+    const framing: JsonStreamStatus = { closed: false, incomplete: false };
+    let terminal = false;
     try {
-      for await (const chunk of parseJsonArrayStream(body)) {
+      for await (const chunk of parseJsonArrayStream(body, framing)) {
         const resp = DeStreamAssistResponseSchema.safeParse(chunk);
         if (!resp.success) continue; // tolerate non-conforming keepalive/metadata frames
         const data = resp.data;
+        if (isTerminalAnswerState(data.answer?.state)) terminal = true;
         if (!isSessionLess) session = data.sessionInfo?.session ?? session;
         for (const skill of data.invokedSkills ?? []) {
           const name = skill.displayName ?? skill.name;
@@ -491,6 +497,16 @@ export class StreamAssistClient {
     // provenance record over suppressed content. End the stream cleanly.
     if (policyBlocked) {
       yield { type: 'done' };
+      return;
+    }
+
+    if (!terminal && !(framing.closed && !framing.incomplete)) {
+      yield {
+        type: 'error',
+        code: 'incomplete_response',
+        message:
+          'The assistant response ended before completion was confirmed. Its commands were not executed. Review this run before continuing.',
+      };
       return;
     }
 
@@ -654,6 +670,11 @@ function policyReason(): string {
   return 'This response was blocked by your organization’s content policy.';
 }
 
+/** The answer states Discovery Engine reports once a turn is finished, success or not. */
+function isTerminalAnswerState(state: string | undefined): boolean {
+  return state === 'SUCCEEDED' || state === 'FAILED' || state === 'SKIPPED';
+}
+
 function codeExecutionOutcome(
   outcome: string,
 ): Extract<SseEvent, { type: 'code-execution-result' }>['outcome'] {
@@ -720,9 +741,16 @@ export function buildStreamAssistRequest(
       );
   }
   const attached = [
-    ...(context ?? []).map((c) => contextValueToQueryPart(c.value)),
+    ...(context ?? []).map((c) => contextValueToQueryPart(c.value, { sessionless: isSessionLess })),
     ...(grounding?.queryParts ?? []),
   ];
+  // Attached `file` parts that were uploaded ride along as session context files. A sessionless
+  // request cannot carry them: the manifest line already tells the model the content is absent.
+  const attachedFileIds = isSessionLess
+    ? []
+    : (context ?? []).flatMap((c) =>
+        c.value.as === 'file' && c.value.fileId ? [c.value.fileId] : [],
+      );
   const skillSet = skillsForRoute(cfg, skillRoute);
   const mentionText = skillMentionText(skillSet.mentions);
   const out: Record<string, unknown> = {
@@ -754,7 +782,8 @@ export function buildStreamAssistRequest(
       },
     };
   }
-  if (grounding?.fileIds?.length) out.fileIds = [...grounding.fileIds];
+  const fileIds = [...new Set([...attachedFileIds, ...(grounding?.fileIds ?? [])])];
+  if (fileIds.length) out.fileIds = fileIds;
   return out;
 }
 

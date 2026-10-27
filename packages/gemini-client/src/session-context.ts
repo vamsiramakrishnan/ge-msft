@@ -43,7 +43,10 @@ export type QueryPart =
   | { driveDocumentReference: { driveId: string; documentName?: string; displayTitle?: string } }
   | { personReference: { displayName: string; email?: string; personId?: string } };
 
-export function contextValueToQueryPart(value: ContextValue): QueryPart {
+export function contextValueToQueryPart(
+  value: ContextValue,
+  options: { sessionless?: boolean } = {},
+): QueryPart {
   switch (value.as) {
     case 'text':
       return value.mimeType ? { text: value.text, mimeType: value.mimeType } : { text: value.text };
@@ -70,5 +73,32 @@ export function contextValueToQueryPart(value: ContextValue): QueryPart {
           ...(value.personId ? { personId: value.personId } : {}),
         },
       };
+    case 'file':
+      // The file itself travels as a session context file (`fileIds`, see
+      // `buildStreamAssistRequest`); this part only names it so the answer can cite it, and says
+      // when the content is not available in this request.
+      return { text: fileManifestLine(value, options) };
   }
+}
+
+/** One data line describing an attached file; never the file's content. */
+export function fileManifestLine(
+  value: Extract<ContextValue, { as: 'file' }>,
+  options: { sessionless?: boolean } = {},
+): string {
+  const size = value.sizeBytes !== undefined ? `, ${formatBytes(value.sizeBytes)}` : '';
+  // A sessionless request cannot carry session context files, so an uploaded file is still
+  // out of scope there; say so rather than let the model believe the file is readable.
+  const state = value.fileId
+    ? options.sessionless
+      ? 'content not available in this request (no session)'
+      : 'attached as a session context file'
+    : (value.note ?? 'content not available in this request');
+  return `[Attached file: ${value.fileName} (${value.mimeType}${size}) — ${state}]`;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

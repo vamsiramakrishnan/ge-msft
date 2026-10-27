@@ -106,6 +106,12 @@ The TypeScript planner parser owns supported planner keywords. Cross-surface gui
 `step`/`clarify` lines; Python-only `workflow`, `source`, `target`, `phase`, and `handoff` directives are
 not accepted planner syntax. See [the planner skill](../skill/m365-command-planner/SKILL.md).
 
+The golden corpus (`skill/golden-corpus.jsonl`) is the differential conformance gate: every case
+runs through the TypeScript grammar (`packages/contracts/src/golden-corpus.test.ts`) and the Python
+preflight (`skill/parity_corpus_test.py`) with the same expectation semantics, so a behaviour that
+diverges fails on one side. Block-level parse errors carry the fence-relative `line` and `source`;
+the runtime echoes them in the `result` block so a repair turn targets one line.
+
 Generate CLI manifests with `bun run skills:generate`, then run `bun run skills:check`. The Python
 loader rejects absent, corrupt, incompatible, or incomplete generated metadata rather than
 substituting empty capability sets. Unsupported schema checks stop metadata generation. The
@@ -131,6 +137,19 @@ flags and returns detached records so consumers cannot rewrite its stored audit 
 
 Extension interfaces remain typed in-process contracts. See [runtime extensions](RUNTIME-EXTENSIONS.md)
 for phase payloads, allowed decisions, cancellation, and observer behavior.
+
+### Attachments and shared files as context
+
+A mail attachment (Outlook read mode) or a file shared in the current chat or meeting (Teams, via
+the delegated Graph client wired from the shell) is listed as an `attachment` context ref by name
+only. `@ge/content`'s `attachmentToContext` decides how it grounds: text-like files are decoded,
+bounded and chunked as data; PDF and Office files become one `file` context value marked
+`uploadable`; other types ground by name with a `note`. On an explicit user attach the runtime reads
+the bytes through the bridge's optional `readAttachment` and uploads them as a session context file,
+recording the `fileId` on the part; a model command never triggers an upload. A session request
+carries attached `fileId`s; a sessionless request carries only the file's manifest line, so a command
+turn sees that the file exists and that its content is not available there. Every upload failure
+degrades to a by-name part, never a failed attach.
 
 ### Immutable evidence sources and working context
 

@@ -144,3 +144,13 @@ describe('parseProgramBlock — mixed simple commands + expressions', () => {
     expect(isProgramExpr(entries[0]!)).toBe(true);
   });
 });
+
+describe('expr-grammar — transform names are case-insensitive (Python parity)', () => {
+  it('lowercases the stage name so `| SUM x` resolves to the sum transform', () => {
+    const r = parseExpressionLine('read A1:B3 | SUM x | Head 2');
+    expect(isExprParseError(r)).toBe(false);
+    if (!isExprParseError(r) && r.kind === 'pipeline') {
+      expect(r.stages.map((s) => s.name)).toEqual(['sum', 'head']);
+    }
+  });
+});

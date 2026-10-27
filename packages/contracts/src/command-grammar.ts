@@ -34,7 +34,7 @@ import { registryEntryForKindAndSurface } from './capability-registry.js';
  * The command line is the *assembly language* the model emits; the typed `ActuationRequest`
  * (ADR-0002) is the *bytecode* the bridge executes. Robust quoting is now OUR job — the
  * model never has to emit schema-valid JSON. On a parse failure we return a CLI-style
- * corrective error (`unknown verb "writ" — did you mean "write"? (run help)`) the model
+ * corrective error (`unknown verb "sett" — did you mean "set"? (run help)`) the model
  * self-corrects on the next turn.
  *
  * SCOPE: `outline · read · search · list · inspect · properties · comments · attachments · tables ·
@@ -374,9 +374,23 @@ export const ParsedCommandSchema: z.ZodType<ParsedCommand> = z.discriminatedUnio
   z.object({ verb: z.literal('help'), topic: z.string().optional() }),
 ]);
 
-/** A parse error carries a CLI-style corrective message the model self-corrects against. */
+/**
+ * A parse error carries a CLI-style corrective message the model self-corrects against. When the
+ * error was raised while parsing a program block, `line` is the 1-based line number inside the
+ * ```cmd fence (blank and comment lines count) and `source` is the offending line's text, so the
+ * runtime can echo exactly which line failed instead of leaving the model to guess. Program-level
+ * errors (a malformed fence, a stray `finish`) carry neither.
+ */
 export interface CommandParseError {
   error: string;
+  line?: number;
+  source?: string;
+}
+
+/** Attach the fence-relative position to an error entry; non-error entries pass through untouched. */
+function atLine<T extends ProgramEntry>(entry: T, line: number, source: string): T {
+  if (!('error' in entry) || 'line' in entry) return entry;
+  return { ...entry, line, source };
 }
 
 export function isCommandParseError(c: ParsedCommand | CommandParseError): c is CommandParseError {
@@ -477,6 +491,9 @@ export function parseCommandLine(line: string): ParsedCommand | CommandParseErro
 
   switch (verb) {
     case 'outline':
+      // `outline` takes no arguments: a trailing selector is a misread of `read`, not a no-op.
+      if (rest !== '')
+        return { error: `outline takes no arguments — got "${rest}" (usage: outline)` };
       return { verb: 'outline' };
     case 'done':
       return parseDone(rest);
@@ -1743,23 +1760,27 @@ export function parseProgramBlock(
     const line = lines[i]!.trim();
     i++;
     if (line === '' || line.startsWith('#')) continue;
+    // `i` was just advanced past this line, so it is also the 1-based fence-relative line number.
+    const lineNo = i;
     if (finished) {
-      entries.push({ error: 'finish when=verified must be the final program entry' });
+      entries.push(
+        atLine({ error: 'finish when=verified must be the final program entry' }, lineNo, line),
+      );
       break;
     }
 
     if (isSkillEnd(line)) {
       // A stray `end` with no open `def` — corrective, not a silent drop.
-      entries.push({ error: '`end` without a matching `def`' });
+      entries.push(atLine({ error: '`end` without a matching `def`' }, lineNo, line));
       continue;
     }
     if (isSkillDefHeader(line)) {
       const def = collectSkillDef(line, lines, i);
-      entries.push(def.entry);
+      entries.push(atLine(def.entry, lineNo, line));
       i = def.nextIndex;
       continue;
     }
-    const entry = parseProgramLine(line, knownSkills);
+    const entry = atLine(parseProgramLine(line, knownSkills), lineNo, line);
     entries.push(entry);
     finished = isProgramVerifiedFinish(entry);
   }

@@ -106,6 +106,12 @@ The TypeScript planner parser owns supported planner keywords. Cross-surface gui
 `step`/`clarify` lines; Python-only `workflow`, `source`, `target`, `phase`, and `handoff` directives are
 not accepted planner syntax. See [the planner skill](../skill/m365-command-planner/SKILL.md).
 
+The golden corpus (`skill/golden-corpus.jsonl`) is the differential conformance gate: every case
+runs through the TypeScript grammar (`packages/contracts/src/golden-corpus.test.ts`) and the Python
+preflight (`skill/parity_corpus_test.py`) with the same expectation semantics, so a behaviour that
+diverges fails on one side. Block-level parse errors carry the fence-relative `line` and `source`;
+the runtime echoes them in the `result` block so a repair turn targets one line.
+
 Generate CLI manifests with `bun run skills:generate`, then run `bun run skills:check`. The Python
 loader rejects absent, corrupt, incompatible, or incomplete generated metadata rather than
 substituting empty capability sets. Unsupported schema checks stop metadata generation. The

@@ -3092,7 +3092,14 @@ export class AssistSession {
       const fix = entry.error.startsWith('finish when=verified requires a closed cmd fence')
         ? ': end the block with a line of three backticks, or end it with done instead'
         : '';
-      plan.results.push({ error: entry.error + fix });
+      // Echo the position and the offending source so the repair turn targets one line, not the
+      // whole program (parse errors are aligned to entries, not source lines, in the result block).
+      const where = entry.line !== undefined ? `line ${entry.line}: ` : '';
+      plan.results.push({
+        error: where + entry.error + fix,
+        ...(entry.line !== undefined ? { line: entry.line } : {}),
+        ...(entry.source !== undefined ? { source: entry.source } : {}),
+      });
       return;
     }
     const command = entry;

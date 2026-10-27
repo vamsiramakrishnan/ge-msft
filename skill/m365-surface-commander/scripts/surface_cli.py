@@ -328,6 +328,23 @@ done
         assert "\n".join(lines) == response and notes
     lines, notes = normalize(bound_read + '\nanalyze {"kind":"inspect","id":"$source"}')
     assert lines[0] == bound_read and notes
+    # Parity with the TS grammar (golden corpus, 2026-10): a quoted `|` is data, a pipe needs no
+    # surrounding spaces, transform names are case-insensitive, and an aggregate types as Number.
+    quoted = analyze('```cmd\ncomment A1 "x | y"\ndone\n```')
+    if quoted["errors"]:
+        failures.append(f"quoted pipe inside a comment was treated as a pipeline: {quoted['errors']}")
+    tight = analyze("```cmd\nlet $t = read A1:B3|SUM x\nspill C1 = ($t)\ndone\n```")
+    if tight["errors"]:
+        failures.append(f"`read A1:B3|SUM x` did not parse as a pipeline: {tight['errors']}")
+    if not any(b["name"] == "t" and b["type"] == "Number" for b in tight["bindings"]):
+        failures.append(f"`| SUM x` should type as Number, got {tight['bindings']}")
+    bare = analyze("```cmd\nlet $n = read | count\ndone\n```")
+    if bare["errors"]:
+        failures.append(f"bare `read` pipeline source rejected: {bare['errors']}")
+    if failures:
+        for f in failures:
+            print("FAIL:", f)
+        return 1
     print(
         "SURFACE-CLI SELF-TEST OK — check/budget/plan/normalize, capability scope, dep inference, risk"
     )

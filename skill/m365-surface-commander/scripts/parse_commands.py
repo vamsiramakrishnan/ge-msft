@@ -255,10 +255,31 @@ def _is_effect_expr(value: str) -> bool:
     return v.startswith("$") or v.startswith("(")
 
 
+def _levenshtein(a: str, b: str) -> int:
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _nearest(word: str, candidates):
+    """The closest candidate within the TS grammar's edit-distance threshold
+    (≤ min(3, max(1, ⌈len/2⌉))), so both parsers suggest the same correction, or None."""
+    best, best_d = None, None
+    for cand in sorted(candidates):
+        d = _levenshtein(word, cand)
+        if best_d is None or d < best_d:
+            best, best_d = cand, d
+    threshold = min(3, max(1, -(-len(word) // 2)))
+    return best if best is not None and best_d <= threshold else None
+
+
 def _did_you_mean(verb: str):
-    import difflib
-    near = difflib.get_close_matches(verb, sorted(ALL_VERBS), n=1)
-    return f" — did you mean '{near[0]}'?" if near else ""
+    near = _nearest(verb, ALL_VERBS)
+    return f" — did you mean '{near}'?" if near else ""
 
 
 def _split_pipeline(value: str):
@@ -309,11 +330,13 @@ def _parse_pipeline_source(head: str):
             return {"src": "var", "name": head[1:]}
         return {"error": f"invalid pipeline variable '{head}'"}
     parts = head.split(None, 1)
+    src = parts[0].lower()
+    arg = parts[1].strip() if len(parts) == 2 else ""
+    if src == "read":
+        # A bare `read` pages the document (TS parity): `read | count` is a valid pipeline.
+        return {"src": "read", "selector": arg}
     if len(parts) != 2:
         return {"error": "pipeline needs a source — e.g. read <selector> | <transform>"}
-    src, arg = parts[0].lower(), parts[1].strip()
-    if src == "read":
-        return {"src": "read", "selector": arg}
     if src == "search":
         if not arg:
             return {"error": "search pipeline source needs text"}

@@ -159,3 +159,11 @@ describe('parseProgramBlock — def … end grouping', () => {
     expect(entries.map((e) => (e as { verb?: string }).verb)).toEqual(['read', 'set', 'done']);
   });
 });
+
+describe('skill-grammar — shadowing covers structural keywords and ignores case', () => {
+  it.each(['let', 'def', 'end', 'finish', 'LET', 'Set', 'SUM'])('rejects def %s', (name) => {
+    expect(shadowsBuiltin(name)).toBe(true);
+    const r = parseSkillDefHeader(`def ${name}(a):`);
+    expect(isSkillParseError(r) && r.error).toContain('shadows a built-in');
+  });
+});

@@ -196,7 +196,6 @@ def analyze(program_text: str, capabilities=None):
         for j in range(i):
             if e["range"] and effects[j]["range"] and _overlap(e["range"], effects[j]["range"]):
                 deps.append((i, j))
-                break
 
     return {
         "version": LANGUAGE_VERSION,

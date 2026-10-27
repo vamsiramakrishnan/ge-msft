@@ -26,6 +26,25 @@ describe('unified manifest (real)', () => {
   it('has no warnings either (all surface scopes present, placeholders clean)', () => {
     expect(lintUnifiedManifest(unified())).toEqual([]);
   });
+
+  it('declares a requirement set for every Office surface it serves', () => {
+    const manifest = JSON.parse(unified()) as {
+      extensions: Array<{ requirements: { capabilities: Array<{ name: string }> } }>;
+    };
+    const names = manifest.extensions[0]!.requirements.capabilities.map((c) => c.name).sort();
+    expect(names).toEqual(['ExcelApi', 'Mailbox', 'PowerPointApi', 'WordApi']);
+  });
+
+  it('exposes the ribbon in Outlook read and compose, not only the document default', () => {
+    const manifest = JSON.parse(unified()) as {
+      extensions: Array<{ ribbons: Array<{ contexts: string[] }> }>;
+    };
+    expect(manifest.extensions[0]!.ribbons[0]!.contexts).toEqual([
+      'default',
+      'mailRead',
+      'mailCompose',
+    ]);
+  });
 });
 
 describe('unified manifest (negative cases)', () => {

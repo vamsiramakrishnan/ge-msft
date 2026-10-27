@@ -10,7 +10,12 @@ import type {
 } from '@ge/contracts';
 import type { AttachmentBytes, DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
-import { attachmentToContext, buildDocStateSnapshot, classifyAttachment } from '@ge/content';
+import {
+  attachmentToContext,
+  buildDocStateSnapshot,
+  classifyAttachment,
+  MAX_INLINE_ATTACHMENT_BYTES,
+} from '@ge/content';
 import { TEAMS_CAPABILITIES } from './capabilities.js';
 import {
   searchTranscript,
@@ -169,8 +174,12 @@ export class TeamsBridge implements DocBridge {
       ...(file.mimeType ? { mimeType: file.mimeType } : {}),
       ...(file.sizeBytes !== undefined ? { sizeBytes: file.sizeBytes } : {}),
     };
-    // Only text-like files are read here; a binary is uploaded by the runtime on attach instead.
-    if (classifyAttachment(file.name, file.mimeType).cls !== 'text')
+    // Only text-like files within the inline bound are read here; a binary is uploaded by the
+    // runtime on attach instead, and an oversized text file grounds by name.
+    if (
+      classifyAttachment(file.name, file.mimeType).cls !== 'text' ||
+      (file.sizeBytes ?? 0) > MAX_INLINE_ATTACHMENT_BYTES
+    )
       return attachmentToContext(base);
     try {
       const read = await source.read(file.id);

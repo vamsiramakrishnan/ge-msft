@@ -1466,7 +1466,10 @@ export class AssistSession {
           },
         });
       } catch (err) {
-        out.push(withNote(`could not attach as a context file: ${errMsg(err)}`));
+        void err;
+        out.push(
+          withNote('could not be attached as a context file; attach it again or paste the content'),
+        );
       }
     }
     return out;
@@ -4716,6 +4719,18 @@ export class AssistSession {
             return { label: `inspect ${intent.selector}`, result: observed };
           const found = await this.findContextRef(intent.selector);
           if (found?.found) {
+            // An attachment's content enters the session only on the user's explicit attach: a
+            // model-issued `inspect` on an unattached attachment returns its properties, never its
+            // bytes (a prompt-injected turn must not pull mail attachments or chat files in).
+            if (found.ref.kind === 'attachment' && !this.attachedParts.has(found.ref.id)) {
+              return {
+                label: `inspect ${intent.selector}`,
+                result: {
+                  ...(contextRefProperties(found.ref, this.bridge) as object),
+                  note: 'Attachment content is read only after the user attaches it. Ask the user to attach this file to read it.',
+                },
+              };
+            }
             const reads = await withHostReadTimeout(`inspect ${intent.selector}`, () =>
               this.bridge.resolveContext(found.ref),
             );

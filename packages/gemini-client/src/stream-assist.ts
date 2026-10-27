@@ -741,7 +741,7 @@ export function buildStreamAssistRequest(
       );
   }
   const attached = [
-    ...(context ?? []).map((c) => contextValueToQueryPart(c.value)),
+    ...(context ?? []).map((c) => contextValueToQueryPart(c.value, { sessionless: isSessionLess })),
     ...(grounding?.queryParts ?? []),
   ];
   // Attached `file` parts that were uploaded ride along as session context files. A sessionless

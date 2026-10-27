@@ -13,7 +13,12 @@ import type {
 } from '@ge/contracts';
 import type { AttachmentBytes, DocBridge } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
-import { buildDocStateSnapshot, decodeBase64 } from '@ge/content';
+import {
+  buildDocStateSnapshot,
+  classifyAttachment,
+  decodeBase64,
+  MAX_INLINE_ATTACHMENT_BYTES,
+} from '@ge/content';
 import { OUTLOOK_CAPABILITIES } from './capabilities.js';
 import {
   mailAttachmentsToRefs,
@@ -165,6 +170,15 @@ export class OutlookBridge implements DocBridge {
   private async resolveAttachment(ref: ContextRef): Promise<ResolvedContext[]> {
     const { item, attachment } = this.activeAttachment(ref);
     if (!attachment) return [];
+    // Only content that can be inlined is read here: a text-like file within the inline bound, a
+    // forwarded message, an invite or a cloud link. A PDF/Office file is uploaded on attach
+    // instead; its bytes are not pulled through the host for a listing.
+    const { cls } = classifyAttachment(attachment.name, attachment.contentType);
+    const inlineCandidate =
+      attachment.attachmentType === 'item' ||
+      attachment.attachmentType === 'cloud' ||
+      (cls === 'text' && (attachment.size ?? 0) <= MAX_INLINE_ATTACHMENT_BYTES);
+    if (!inlineCandidate) return mailAttachmentToContext(readItemId(item), attachment);
     const content = await this.readAttachmentContent(item, attachment.id);
     if (Office.context.mailbox?.item !== item)
       throw new Error('The active mail item changed during capture.');
@@ -179,6 +193,8 @@ export class OutlookBridge implements DocBridge {
     const { item, attachment } = this.activeAttachment(ref);
     if (!attachment) throw new Error('This attachment is not on the active mail item.');
     const content = await this.readAttachmentContent(item, attachment.id);
+    if (Office.context.mailbox?.item !== item)
+      throw new Error('The active mail item changed during capture.');
     if (!content || content.format !== 'base64')
       throw new Error('This host cannot read the attachment content.');
     const bytes = decodeBase64(content.content);

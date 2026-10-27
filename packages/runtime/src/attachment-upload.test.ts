@@ -111,7 +111,10 @@ describe('attachment upload on explicit attach', () => {
     const session = new AssistSession(bridge, client, { unit });
     await expect(session.attachRef(pdfRef)).resolves.toBeUndefined();
     const [attached] = session.context.list();
-    expect(attached!.value.as === 'file' && attached!.value.note).toContain('403 quota');
+    // The host/Graph error text stays out of the model-facing note.
+    const note = attached!.value.as === 'file' ? attached!.value.note : undefined;
+    expect(note).toContain('could not be attached');
+    expect(note).not.toContain('403 quota');
     expect(attached!.value).not.toHaveProperty('fileId');
   });
 

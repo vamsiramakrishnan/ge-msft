@@ -1,6 +1,6 @@
 import type { EstateRef, ResolvedContext } from '@ge/contracts';
 import { toContext } from '@ge/content';
-import { GraphConfig, GRAPH_SCOPES, graphUrl } from './config.js';
+import { GraphConfig, GRAPH_SCOPES, graphUrl, isAllowedSharingUrl } from './config.js';
 import {
   GraphChildrenSchema,
   GraphDriveItemSchema,
@@ -86,6 +86,9 @@ export class GraphClient {
         if (attachment.contentType !== 'reference' || !attachment.contentUrl) continue;
         if (seen.has(attachment.contentUrl)) continue;
         seen.add(attachment.contentUrl);
+        // Untrusted: any member can post a reference to any URL. Resolve only the tenant's own
+        // SharePoint/OneDrive links, never a foreign host, and never as anything but the user.
+        if (!isAllowedSharingUrl(attachment.contentUrl, this.config.sharingHosts)) continue;
         const item = await this.resolveSharedUrl(attachment.contentUrl).catch(() => undefined);
         if (!item?.id) continue;
         out.push({
@@ -113,16 +116,34 @@ export class GraphClient {
     );
   }
 
-  /** Download one drive item's bytes as the user (Graph answers `/content` with a redirect fetch follows). */
+  /**
+   * Download one drive item's bytes as the user. The item is first read for its size and its
+   * short-lived pre-authenticated `@microsoft.graph.downloadUrl`; that URL is fetched WITHOUT the
+   * Graph bearer token (it must never travel to the storage host), and the size is checked before
+   * any body is read. Falls back to `/content` only when the item carries no download URL.
+   */
   async getDriveItemContent(
     id: string,
     driveId?: string,
     opts: { maxBytes?: number } = {},
   ): Promise<{ bytes: Uint8Array; mimeType?: string }> {
-    const path = driveId
-      ? `/drives/${enc(driveId)}/items/${enc(id)}/content`
-      : `/me/drive/items/${enc(id)}/content`;
-    const res = await this.send('GET', path, [...GRAPH_SCOPES.files]);
+    const base = driveId
+      ? `/drives/${enc(driveId)}/items/${enc(id)}`
+      : `/me/drive/items/${enc(id)}`;
+    const item = await this.getJson(
+      `${base}?$select=id,size,file,@microsoft.graph.downloadUrl`,
+      [...GRAPH_SCOPES.files],
+      GraphDriveItemSchema,
+    );
+    if (opts.maxBytes !== undefined && item.size !== undefined && item.size > opts.maxBytes) {
+      throw new Error(`Graph file exceeds the ${opts.maxBytes} byte read limit.`);
+    }
+    const downloadUrl = (item as Record<string, unknown>)['@microsoft.graph.downloadUrl'];
+    const res =
+      typeof downloadUrl === 'string' && downloadUrl.startsWith('https://')
+        ? await this.fetchImpl(downloadUrl, { method: 'GET' })
+        : await this.send('GET', `${base}/content`, [...GRAPH_SCOPES.files]);
+    if (!res.ok) throw new Error(`Graph file download failed (${res.status}).`);
     const declaredLength = Number(res.headers.get('content-length') ?? '');
     if (opts.maxBytes !== undefined && declaredLength > opts.maxBytes) {
       throw new Error(`Graph file exceeds the ${opts.maxBytes} byte read limit.`);

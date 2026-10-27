@@ -63,6 +63,8 @@ describe('file context values', () => {
     expect(body.fileIds).toBeUndefined();
     expect(body.isSessionLess).toBe(true);
     const parts = (body.query as { parts: Array<{ text?: string }> }).parts;
-    expect(parts.some((p) => p.text?.includes('deck.pptx'))).toBe(true);
+    const line = parts.find((p) => p.text?.includes('deck.pptx'))?.text ?? '';
+    expect(line).toContain('content not available in this request');
+    expect(line).not.toContain('attached as a session context file');
   });
 });

@@ -134,17 +134,12 @@ export function attachmentToContext(
     ];
   }
 
-  const text = input.text ?? decodeText(input.bytes);
-  if (text === undefined) {
-    const reason =
-      size !== undefined && size > MAX_INLINE_ATTACHMENT_BYTES
-        ? 'too large to inline'
-        : 'content was not read';
-    return [filePart(false, `${reason}; attach it to read it`)];
-  }
+  // Bound before decoding: the declared size, or the bytes actually handed in.
   if (size !== undefined && size > MAX_INLINE_ATTACHMENT_BYTES) {
     return [filePart(false, 'too large to inline; content omitted')];
   }
+  const text = input.text ?? decodeText(input.bytes);
+  if (text === undefined) return [filePart(false, 'content was not read; attach it to read it')];
   const format =
     mimeType === 'text/html' ? 'html' : mimeType === 'text/markdown' ? 'markdown' : 'plain';
   const parts = toContext(

@@ -7,6 +7,35 @@
 export interface GraphConfig {
   /** Override for sovereign/regional clouds; default global v1.0. */
   baseUrl?: string;
+  /**
+   * Hosts a chat attachment's `contentUrl` may point at before it is resolved as the user. A chat
+   * member can post a reference to any URL; only the tenant's SharePoint/OneDrive hosts are
+   * resolved, so a foreign link never becomes a listed "shared file". Suffix match on the host
+   * (`sharepoint.com` covers `contoso.sharepoint.com` and `contoso-my.sharepoint.com`). Override
+   * for sovereign clouds (`sharepoint.us`, `sharepoint.de`, `sharepoint.cn`).
+   */
+  sharingHosts?: readonly string[];
+}
+
+export const DEFAULT_SHARING_HOSTS: readonly string[] = ['sharepoint.com'];
+
+/** True when `url` is an https link whose host is (a subdomain of) an allowed sharing host. */
+export function isAllowedSharingUrl(
+  url: string,
+  hosts: readonly string[] = DEFAULT_SHARING_HOSTS,
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  return hosts.some((h) => {
+    const suffix = h.toLowerCase();
+    return host === suffix || host.endsWith(`.${suffix}`);
+  });
 }
 
 export const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';

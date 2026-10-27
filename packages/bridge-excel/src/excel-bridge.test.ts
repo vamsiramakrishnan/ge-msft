@@ -2048,27 +2048,18 @@ describe('ExcelBridge write-cells durable provenance (BUILD-PLAN 1.6)', () => {
 
 describe('ExcelBridge provenance save that never calls back', () => {
   it('bounds the wait and flags provenanceDropped (write still ok)', async () => {
-    vi.useFakeTimers();
-    try {
-      active = installExcel(salesSeed());
-      active.settings.saveStalls = true;
-      const pending = new ExcelBridge().actuate({
-        ...writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['a', 'b', 'c']] }, 'chg-s'),
-        provenance: PROVENANCE,
-      });
-      // Advance fake time in steps: the write's own bounded waits run on the (faked) clock before
-      // the provenance save is even reached, so a single drain of pending timers is not enough.
-      for (let i = 0; i < 8; i++) await vi.advanceTimersByTimeAsync(2_500);
-      const res = await pending;
-      expect(res.ok).toBe(true);
-      expect(res.provenanceDropped).toBe(true);
-      expect(active.settings.saveCalls).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-    // Draining 20 s of faked timers (calculation polls, the 10 s provenance bound) is real work on a
-    // slow CI runner; the default 5 s test budget is not enough for it.
-  }, 30_000);
+    // Real timers with a short injected bound: the faked-clock version had to drain the write's
+    // own waits plus the 10 s provenance bound and never settled on a loaded CI runner.
+    active = installExcel(salesSeed());
+    active.settings.saveStalls = true;
+    const res = await new ExcelBridge({ provenanceSaveTimeoutMs: 50 }).actuate({
+      ...writeCells({ target: { range: 'Sales!A2:C2' }, cells: [['a', 'b', 'c']] }, 'chg-s'),
+      provenance: PROVENANCE,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.provenanceDropped).toBe(true);
+    expect(active.settings.saveCalls).toBe(1);
+  });
 });
 
 describe('ExcelBridge missing worksheet', () => {

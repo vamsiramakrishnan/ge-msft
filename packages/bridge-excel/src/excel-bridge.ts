@@ -88,7 +88,14 @@ const BORDER_EDGES = [
  * `worksheet.getRange`). Pure mapping lives in `capture.ts` / `actuate-plan.ts` (unit-tested);
  * this file is the host wiring.
  */
+export interface ExcelBridgeOptions {
+  /** Upper bound on waiting for a provenance `settings.saveAsync` callback (default 10 s). */
+  provenanceSaveTimeoutMs?: number;
+}
+
 export class ExcelBridge implements DocBridge {
+  constructor(private readonly options: ExcelBridgeOptions = {}) {}
+
   private static readonly dispatcher = createBridgeDispatch<ExcelBridge>(
     'excel',
     {
@@ -1578,7 +1585,10 @@ export class ExcelBridge implements DocBridge {
       // that never calls back is bounded: past the budget the record counts as dropped (the write
       // itself already landed), so a stalled settings bag cannot hang the task.
       const status = await new Promise<string>((resolve) => {
-        const timer = setTimeout(() => resolve('timeout'), PROVENANCE_SAVE_TIMEOUT_MS);
+        const timer = setTimeout(
+          () => resolve('timeout'),
+          this.options.provenanceSaveTimeoutMs ?? PROVENANCE_SAVE_TIMEOUT_MS,
+        );
         try {
           settings.saveAsync((result) => {
             clearTimeout(timer);

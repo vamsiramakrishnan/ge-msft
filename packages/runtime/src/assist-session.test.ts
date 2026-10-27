@@ -2019,7 +2019,8 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     } finally {
       vi.useRealTimers();
     }
-  });
+    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
+  }, 30_000);
 
   it('a `read <selector>` the host never answers gives up after the read timeout (live 2026-10-16)', async () => {
     // Live: `read slide:2` waited ~24 min on a stalled PowerPoint for the web; only `context:*`
@@ -2047,7 +2048,8 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     } finally {
       vi.useRealTimers();
     }
-  });
+    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
+  }, 30_000);
 
   it('refuses to re-apply a write identical to one that already landed in the task', async () => {
     const bridge = new ComposeBridge();

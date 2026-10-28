@@ -14,6 +14,7 @@ import type { DocStateSnapshot } from '@ge/contracts';
 import {
   AssistSession,
   HOST_READ_TIMEOUT_MS,
+  HostReadTimeoutError,
   DOC_STATE_REF_ID,
   READ_REF_PREFIX,
 } from './assist-session.js';
@@ -1994,34 +1995,75 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
 
   it('a host snapshot that never settles is skipped after the read timeout, not a frozen task', async () => {
     // Live 2026-10-02: PowerPoint for the web stalled reading the deck right after insert-slide.
+    const realSetTimeout = setTimeout;
+    const realClearTimeout = clearTimeout;
     vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
       class StallingBridge extends ComposeBridge {
+        captures = 0;
+        private captureWaiter?: () => void;
+
         captureDocState(): Promise<DocStateSnapshot | undefined> {
+          this.captures += 1;
+          this.captureWaiter?.();
+          this.captureWaiter = undefined;
           return new Promise(() => {});
+        }
+
+        waitForCapture(after: number): Promise<void> {
+          if (this.captures > after) return Promise.resolve();
+          return new Promise((resolve) => {
+            this.captureWaiter = resolve;
+          });
         }
       }
       const bridge = new StallingBridge();
       const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
       const client = new StreamAssistClient(tokens, cfg, fetch);
       const session = new AssistSession(bridge, client, { unit });
-      let settled = false;
-      const run = collectLoop(session.runCommands('write', { approvePlan: () => true })).finally(
-        () => {
-          settled = true;
-        },
-      );
-      // Step the clock until the task settles: one big advance can run before the stalled read
-      // starts on a loaded machine, and then its timer is never reached (flaked under full load).
-      for (let i = 0; i < 30 && !settled; i++)
-        await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS / 4);
+      const run = collectLoop(session.runCommands('write', { approvePlan: () => true }));
+      const deadline = new Promise<never>((_, reject) => {
+        watchdog = realSetTimeout(
+          () => reject(new Error('Snapshot test did not progress')),
+          20_000,
+        );
+      });
+      let handled = 0;
+      // Wait for each native read to actually start before advancing its timeout. The task may
+      // capture again after the write, and arbitrary clock stepping can finish before that read
+      // is scheduled on a busy runner.
+      while (
+        await Promise.race([
+          bridge.waitForCapture(handled).then(() => true),
+          run.then(() => false),
+          deadline,
+        ])
+      ) {
+        handled = bridge.captures;
+        if (handled === 1) {
+          await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS - 1);
+          expect(bridge.applied).toHaveLength(0);
+          expect(warn).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+        } else {
+          await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS);
+        }
+      }
       await run;
+      expect(handled).toBeGreaterThanOrEqual(2);
+      expect(warn).toHaveBeenCalledTimes(handled);
+      expect(warn.mock.calls.every(([, error]) => error instanceof HostReadTimeoutError)).toBe(
+        true,
+      );
       expect(bridge.applied).toHaveLength(1);
       expect(session.executions.list().at(-1)?.status).toBe('completed');
     } finally {
+      if (watchdog !== undefined) realClearTimeout(watchdog);
+      warn.mockRestore();
       vi.useRealTimers();
     }
-    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
   }, 30_000);
 
   it('a `read <selector>` the host never answers gives up after the read timeout (live 2026-10-16)', async () => {

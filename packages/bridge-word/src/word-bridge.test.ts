@@ -112,6 +112,22 @@ class FakeWordHost implements WordHost {
   readonly revealedContext: ContextRef[] = [];
   /** When true, the next addComment reports failure (unsupported / anchor gone). */
   commentFails = false;
+  /** Critique annotations minted via insertAnnotation (C2): id → readback state. */
+  readonly annotations = new Map<string, string>();
+  /** insert-annotation writes (C2), for assertions. */
+  readonly insertedAnnotations: Array<{
+    query: string;
+    colorScheme: string;
+    suggestions: readonly string[];
+    chosen: string;
+    mintedId: string;
+  }> = [];
+  /** When set, the port has no annotation API at all (a thin host): the bridge must fall back. */
+  withoutAnnotationApi = false;
+  /** Anchors currently highlighted by highlightAnchor (C2 preview). */
+  highlighted: string[] = [];
+  clearedHighlights = 0;
+  nextAnnotationId = 41;
   /** When true, persistProvenance reports failure (API unsupported). */
   provenanceFails = false;
   lastHandlers?: WordHandlers;
@@ -170,6 +186,44 @@ class FakeWordHost implements WordHost {
     this.addedComments.push({ query, matchCase, text });
     return Promise.resolve({ ok: true });
   }
+
+  insertAnnotation?: WordHost['insertAnnotation'] = (query, _opts, critique, choose) => {
+    if (this.withoutAnnotationApi) throw new Error('unreachable: the bridge must not call this');
+    const hits = this.searchHits.get(query) ?? [];
+    const idx = choose(hits);
+    const chosen = idx >= 0 ? hits[idx] : undefined;
+    if (chosen === undefined) return Promise.resolve({ status: 'drift' });
+    const mintedId = String(this.nextAnnotationId++);
+    this.annotations.set(mintedId, 'Created');
+    this.insertedAnnotations.push({
+      query,
+      colorScheme: critique.colorScheme,
+      suggestions: critique.suggestions,
+      chosen,
+      mintedId,
+    });
+    return Promise.resolve({
+      status: 'applied',
+      location: `annotation:${mintedId}`,
+      annotationId: mintedId,
+    });
+  };
+  readAnnotation?: WordHost['readAnnotation'] = (id) => {
+    const state = this.annotations.get(id);
+    return Promise.resolve(state === undefined ? { exists: false } : { exists: true, state });
+  };
+  deleteAnnotation?: WordHost['deleteAnnotation'] = (id) =>
+    Promise.resolve({ ok: this.annotations.delete(id) });
+  highlightAnchor?: WordHost['highlightAnchor'] = (matchText) => {
+    if (!(this.searchHits.get(matchText) ?? []).length) return Promise.resolve({ ok: false });
+    this.highlighted.push(matchText);
+    return Promise.resolve({ ok: true });
+  };
+  clearHighlight?: WordHost['clearHighlight'] = () => {
+    this.clearedHighlights += 1;
+    this.highlighted = [];
+    return Promise.resolve();
+  };
 
   persistProvenance(xml: string): Promise<{ ok: boolean }> {
     if (this.provenanceFails) return Promise.resolve({ ok: false });
@@ -361,6 +415,10 @@ function trackedChange(params: ActuationRequest['params'], id = 'c1'): Actuation
 
 function addComment(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
   return { changeId: asChangeId(id), kind: 'add-comment', surface: 'word', params };
+}
+
+function insertAnnotationReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
+  return { changeId: asChangeId(id), kind: 'insert-annotation', surface: 'word', params };
 }
 
 function insertTextReq(params: ActuationRequest['params'], id = 'c1'): ActuationRequest {
@@ -623,6 +681,57 @@ describe('WordBridge orchestration (against a fake host)', () => {
       await bridge.revealContext(selection);
       await bridge.revealContext(document);
       expect(host.revealedContext).toEqual([selection]);
+    });
+
+    it('highlights a content-anchored ref on WordApi 1.8 and clearPreview removes it', async () => {
+      const restore = installWordRequirements(8);
+      try {
+        const host = new FakeWordHost();
+        host.searchHits.set('SLA clause', ['SLA clause']);
+        const bridge = new WordBridge(host);
+        const ref: ContextRef = {
+          id: 'ctx:hit',
+          kind: 'paragraph',
+          surface: 'word',
+          title: 'Clause',
+          anchor: { matchText: 'SLA clause' },
+        };
+        await bridge.revealContext(ref);
+        expect(host.revealedContext).toEqual([ref]);
+        expect(host.highlighted).toEqual(['SLA clause']);
+        // A second reveal clears the previous highlight before applying the next one.
+        await bridge.revealContext(ref);
+        expect(host.highlighted).toEqual(['SLA clause']);
+        // The first reveal also clears any host-owned prior preview; that clear is a no-op when
+        // there was no prior highlight, but the fake counts the call.
+        expect(host.clearedHighlights).toBe(2);
+        await bridge.clearPreview();
+        expect(host.highlighted).toEqual([]);
+        expect(host.clearedHighlights).toBe(3);
+      } finally {
+        restore();
+      }
+    });
+
+    it('never highlights below WordApi 1.8 (reveal still selects)', async () => {
+      const restore = installWordRequirements(7);
+      try {
+        const host = new FakeWordHost();
+        host.searchHits.set('SLA clause', ['SLA clause']);
+        const bridge = new WordBridge(host);
+        await bridge.revealContext({
+          id: 'ctx:hit',
+          kind: 'paragraph',
+          surface: 'word',
+          title: 'Clause',
+          anchor: { matchText: 'SLA clause' },
+        });
+        expect(host.revealedContext).toHaveLength(1);
+        expect(host.highlighted).toEqual([]);
+        await bridge.clearPreview(); // no-op, never throws
+      } finally {
+        restore();
+      }
     });
 
     it('treats content anchors, content controls, and comments as revealable targets', () => {
@@ -990,6 +1099,185 @@ describe('WordBridge orchestration (against a fake host)', () => {
         params: { text: 'done' },
       });
       expect(res).toMatchObject({ ok: false, error: { code: 'no_comment' } });
+    });
+  });
+
+  describe('actuate insert-annotation (C2 critiques)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = installWordRequirements(8); // WordApi 1.8: annotations + popups
+    });
+    afterEach(() => restore());
+
+    it('draws a critique on the chosen hit, verifies the minted id, and records its inverse', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('99.5%', ['99.5%']);
+      const res = await new WordBridge(host).actuate(
+        insertAnnotationReq(
+          {
+            target: { matchText: '99.5%' },
+            text: 'Policy requires 99.9%.',
+            annotation: { suggestion: '99.9%', severity: 'warning' },
+          },
+          'chg-ann',
+        ),
+      );
+      expect(res).toEqual({
+        ok: true,
+        changeId: asChangeId('chg-ann'),
+        kind: 'insert-annotation',
+        location: 'annotation:41',
+        completion: 'verified',
+        inverse: { op: 'delete-object', objectType: 'annotation', name: '41' },
+        provenanceMissing: true,
+      });
+      expect(host.insertedAnnotations).toEqual([
+        {
+          query: '99.5%',
+          colorScheme: 'Lavender',
+          suggestions: ['99.9%'],
+          chosen: '99.5%',
+          mintedId: '41',
+        },
+      ]);
+      expect(host.addedComments).toEqual([]);
+    });
+
+    it('offers the finding itself as the popup suggestion when none was given, red for errors', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('net 90', ['net 90']);
+      await new WordBridge(host).actuate(
+        insertAnnotationReq({
+          target: { matchText: 'net 90' },
+          text: 'Payment terms exceed\nthe 60-day policy.',
+          annotation: { severity: 'error' },
+        }),
+      );
+      expect(host.insertedAnnotations[0]).toMatchObject({
+        colorScheme: 'Red',
+        suggestions: ['Payment terms exceed the 60-day policy.'],
+      });
+    });
+
+    it('reports `unknown` completion when the minted id does not read back', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('x', ['x']);
+      host.readAnnotation = () => Promise.resolve({ exists: false });
+      const res = await new WordBridge(host).actuate(
+        insertAnnotationReq({ target: { matchText: 'x' }, text: 'finding' }),
+      );
+      expect(res).toMatchObject({ ok: true, completion: 'unknown', location: 'annotation:41' });
+    });
+
+    it('degrades to a panel item (anchor_drift) when the anchor is gone, with no comment fallback', async () => {
+      const host = new FakeWordHost();
+      const res = await new WordBridge(host).actuate(
+        insertAnnotationReq({ target: { matchText: 'vanished' }, text: 'finding' }),
+      );
+      expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'anchor_drift' } });
+      expect(host.addedComments).toEqual([]);
+      expect(host.insertedAnnotations).toEqual([]);
+    });
+
+    it('falls back to an anchored comment below WordApi 1.7 (finding + suggestion, one line)', async () => {
+      const restoreOld = installWordRequirements(6);
+      try {
+        const host = new FakeWordHost();
+        host.searchHits.set('99.5%', ['99.5%']);
+        const res = await new WordBridge(host).actuate(
+          insertAnnotationReq(
+            {
+              target: { matchText: '99.5%' },
+              text: 'Policy requires 99.9%.',
+              annotation: { suggestion: '99.9%' },
+            },
+            'chg-fb',
+          ),
+        );
+        expect(res).toEqual({
+          ok: true,
+          changeId: asChangeId('chg-fb'),
+          kind: 'insert-annotation',
+          location: 'comment',
+          completion: 'applied',
+          degraded: true,
+          provenanceMissing: true,
+        });
+        expect(host.addedComments).toEqual([
+          { query: '99.5%', matchCase: false, text: 'Policy requires 99.9%. Suggestion: 99.9%' },
+        ]);
+        expect(host.insertedAnnotations).toEqual([]);
+      } finally {
+        restoreOld();
+      }
+    });
+
+    it('advertises and dispatches comment fallback at WordApi 1.4, but refuses below 1.4', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('clause', ['clause']);
+      const bridge = new WordBridge(host);
+      const restore14 = installWordRequirements(4);
+      try {
+        expect(
+          bridge.getCapabilities().actuations.find((a) => a.kind === 'insert-annotation'),
+        ).toMatchObject({ reversible: false });
+        const result = await bridge.actuate(
+          insertAnnotationReq({ target: { matchText: 'clause' }, text: 'finding' }),
+        );
+        expect(result).toMatchObject({ ok: true, location: 'comment', degraded: true });
+        expect(host.addedComments).toHaveLength(1);
+      } finally {
+        restore14();
+      }
+
+      const restore13 = installWordRequirements(3);
+      try {
+        expect(
+          bridge.getCapabilities().actuations.some((a) => a.kind === 'insert-annotation'),
+        ).toBe(false);
+        const result = await bridge.actuate(
+          insertAnnotationReq({ target: { matchText: 'clause' }, text: 'finding' }),
+        );
+        expect(result).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+        expect(host.addedComments).toHaveLength(1);
+        expect(host.insertedAnnotations).toHaveLength(0);
+      } finally {
+        restore13();
+      }
+    });
+
+    it('reports a native critique as reversible when the host supports it', () => {
+      const capability = new WordBridge(new FakeWordHost())
+        .getCapabilities()
+        .actuations.find((a) => a.kind === 'insert-annotation');
+      expect(capability).toMatchObject({ reversible: true });
+    });
+
+    it('falls back to a comment on a port without the annotation API even at WordApi 1.8', async () => {
+      const host = new FakeWordHost();
+      host.withoutAnnotationApi = true;
+      host.insertAnnotation = undefined;
+      host.searchHits.set('x', ['x']);
+      const res = await new WordBridge(host).actuate(
+        insertAnnotationReq({ target: { matchText: 'x' }, text: 'finding' }),
+      );
+      expect(res).toMatchObject({ ok: true, location: 'comment', degraded: true });
+      expect(host.addedComments).toHaveLength(1);
+    });
+
+    it('fails closed without an anchor or without text before touching the host', async () => {
+      const host = new FakeWordHost();
+      const spy = vi.spyOn(host, 'addComment');
+      const bridge = new WordBridge(host);
+      expect(await bridge.actuate(insertAnnotationReq({ text: 'finding' }))).toMatchObject({
+        ok: false,
+        error: { code: 'no_anchor' },
+      });
+      expect(
+        await bridge.actuate(insertAnnotationReq({ target: { matchText: 'x' }, text: '  ' })),
+      ).toMatchObject({ ok: false, error: { code: 'no_text' } });
+      expect(spy).not.toHaveBeenCalled();
+      expect(host.insertedAnnotations).toEqual([]);
     });
   });
 
@@ -1839,6 +2127,34 @@ describe('WordBridge orchestration (against a fake host)', () => {
 
       unsub();
       expect(host.unsubscribed).toBe(true);
+    });
+
+    it('maps annotation lifecycle + popup-action events, one per id, dropping blank ids', () => {
+      const host = new FakeWordHost();
+      const events: HostEvent[] = [];
+      new WordBridge(host).watch((e) => events.push(e));
+      const h = host.lastHandlers;
+
+      h?.onAnnotationClicked?.({ id: 'a1' });
+      h?.onAnnotationInserted?.({ ids: ['a2', ' ', 'a3'] });
+      h?.onAnnotationRemoved?.({ ids: ['a2'] });
+      h?.onAnnotationRemoved?.({}); // no id → dropped
+      h?.onAnnotationPopupAction?.({ id: 'a3', action: 'Accept', critiqueSuggestion: '99.9%' });
+
+      expect(events).toEqual([
+        { type: 'annotation-clicked', surface: 'word', origin: 'local', annotationId: 'a1' },
+        { type: 'annotation-inserted', surface: 'word', origin: 'local', annotationId: 'a2' },
+        { type: 'annotation-inserted', surface: 'word', origin: 'local', annotationId: 'a3' },
+        { type: 'annotation-removed', surface: 'word', origin: 'local', annotationId: 'a2' },
+        {
+          type: 'annotation-action',
+          surface: 'word',
+          origin: 'local',
+          annotationId: 'a3',
+          action: 'Accept',
+          suggestion: '99.9%',
+        },
+      ]);
     });
 
     it('falls back across commentId / id / ids and drops comment events without any id', () => {

@@ -154,3 +154,89 @@ describe('expr-grammar — transform names are case-insensitive (Python parity)'
     }
   });
 });
+
+describe('expr-grammar — C1 literal pipeline sources', () => {
+  it('a number literal binds a number source', () => {
+    expect(parseExpressionLine('let $n = 5')).toEqual({
+      kind: 'let',
+      name: 'n',
+      pipeline: { kind: 'pipeline', source: { src: 'number', value: 5 }, stages: [] },
+    });
+    expect(parseExpressionLine('let $n = -3.25')).toMatchObject({
+      pipeline: { source: { src: 'number', value: -3.25 } },
+    });
+  });
+
+  it('a double-quoted text literal binds a text source (escapes honored)', () => {
+    expect(parseExpressionLine('let $s = "hello \\"there\\""')).toMatchObject({
+      pipeline: { source: { src: 'text', value: 'hello "there"' } },
+    });
+    expect(parseExpressionLine('let $s = "a" b')).toMatchObject({
+      error: expect.stringContaining('ONE double-quoted string'),
+    });
+  });
+
+  it('a table literal is a JSON array of rows, header first, cells stringified', () => {
+    const r = parseExpressionLine(
+      'let $t = table [["region","amount"],["East",100],["West",true,"extra"],["North"]]',
+    );
+    expect(r).toMatchObject({
+      pipeline: {
+        source: {
+          src: 'table',
+          columns: ['region', 'amount'],
+          rows: [
+            ['East', '100'],
+            ['West', 'true'],
+            ['North', ''],
+          ],
+        },
+      },
+    });
+  });
+
+  it('a table literal can start a pipeline with stages', () => {
+    const r = parseExpressionLine('table [["a"],["1"],["2"]] | count');
+    expect(r).toMatchObject({
+      kind: 'pipeline',
+      source: { src: 'table' },
+      stages: [{ name: 'count' }],
+    });
+  });
+
+  it('malformed table literals are corrective', () => {
+    expect(parseExpressionLine('let $t = table [not json')).toMatchObject({
+      error: expect.stringContaining('not valid JSON'),
+    });
+    expect(parseExpressionLine('let $t = table []')).toMatchObject({
+      error: expect.stringContaining('non-empty array of row arrays'),
+    });
+    expect(parseExpressionLine('let $t = table [["a",""]]')).toMatchObject({
+      error: expect.stringContaining('non-empty column names'),
+    });
+    expect(parseExpressionLine('let $t = table [["a","a"]]')).toMatchObject({
+      error: expect.stringContaining('duplicate column names'),
+    });
+    expect(parseExpressionLine('let $t = table [["a"],[{"x":1}]]')).toMatchObject({
+      error: expect.stringContaining('non-scalar cell'),
+    });
+  });
+
+  it('`table <range>` in source position is still the Excel effect, refused by the pure-only guard', () => {
+    expect(parseExpressionLine('table Sales!A1:B9 | count')).toEqual({
+      error: EFFECT_COMPOSE_ERROR,
+    });
+  });
+
+  it('the unknown-source corrective advertises the literal forms', () => {
+    expect(parseExpressionLine('frob x | count')).toMatchObject({
+      error: expect.stringContaining('table [[…]]'),
+    });
+  });
+
+  it('the Zod schema accepts the literal sources', () => {
+    for (const line of ['let $n = 5', 'let $s = "x"', 'let $t = table [["a"],["1"]]']) {
+      expect(ParsedExprSchema.safeParse(parseExpressionLine(line)).success).toBe(true);
+    }
+  });
+});

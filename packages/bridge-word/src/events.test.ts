@@ -1,10 +1,42 @@
 import { describe, it, expect } from 'vitest';
 import {
+  annotationEvent,
   originFromWordSource,
   selectionChangedEvent,
   documentChangedEvent,
   commentAddedEvent,
 } from './events.js';
+
+describe('annotationEvent (pure)', () => {
+  it('builds lifecycle events as local Word events carrying only the id', () => {
+    expect(annotationEvent('annotation-clicked', 'a1')).toEqual({
+      type: 'annotation-clicked',
+      surface: 'word',
+      origin: 'local',
+      annotationId: 'a1',
+    });
+    expect(annotationEvent('annotation-removed', 'a1', { action: 'ignored' })).toEqual({
+      type: 'annotation-removed',
+      surface: 'word',
+      origin: 'local',
+      annotationId: 'a1',
+    });
+  });
+
+  it('carries the popup action and optional suggestion on annotation-action only', () => {
+    expect(annotationEvent('annotation-action', 'a2', { action: 'Accept' })).toEqual({
+      type: 'annotation-action',
+      surface: 'word',
+      origin: 'local',
+      annotationId: 'a2',
+      action: 'Accept',
+    });
+    expect(
+      annotationEvent('annotation-action', 'a2', { action: 'Reject', suggestion: 'x' }),
+    ).toMatchObject({ action: 'Reject', suggestion: 'x' });
+    expect(annotationEvent('annotation-action', 'a2')).toMatchObject({ action: '' });
+  });
+});
 
 describe('word event origin (pure)', () => {
   it('derives remote only when the host says remote', () => {

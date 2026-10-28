@@ -68,6 +68,7 @@ import type {
   ActuationParams,
   ActuationRequest,
   ActuationResult,
+  InverseDescriptor,
   ApprovalClass,
   EffectPlanNode,
   CellSnapshot,
@@ -92,6 +93,7 @@ import type {
   TextTargetCapture,
 } from '@ge/contracts';
 import {
+  formulasForRequest,
   asChangeId,
   asSessionId,
   CapabilityManifestSchema,
@@ -102,6 +104,8 @@ import {
   isProgramVerifiedFinish,
   isProgramSkillCall,
   isProgramSkillDef,
+  isProgramEachBlock,
+  EFFECT_VERBS,
   parseProgramBlock,
   quoteSheetNames,
   canonicalSheetNames,
@@ -115,7 +119,7 @@ import {
   type WorkspaceVerb,
   type ParsedExpr,
   type PlanContextHint,
-  type PipeSource,
+  type HostPipeSource,
   type ProgramEntry,
   type WriteVerb,
 } from '@ge/contracts';
@@ -136,7 +140,7 @@ import {
   type UploadedContextFile,
 } from '@ge/gemini-client';
 import type { HostEvent, TriggerRegistry } from '@ge/triggers';
-import type { DocBridge } from './bridge.js';
+import type { DocBridge, FormulaPreview } from './bridge.js';
 import {
   compileCommand,
   isCompileError,
@@ -146,9 +150,19 @@ import {
   type WorkspaceIntent,
 } from './command-protocol.js';
 import { evalExpr, renderValue, type RunRead, type Value } from './compose.js';
-import { analyseEffectDependencies } from './planning.js';
+import {
+  analyseEffectDependencies,
+  approvalPhases,
+  executionOrder,
+  scheduleEffectLevels,
+  type ApprovalPhase,
+  type ScheduledLevel,
+} from './planning.js';
 import { BRIEF_REF_ID, ContextModel, type CommitMode } from './context-model.js';
 import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
+import { RecipeStore } from './recipe-store.js';
+import { staticScope, typecheckProgram } from './static-types.js';
+import { expandEachBlock, MAX_EACH_ROWS } from './each-expansion.js';
 import { WorkspaceStore, type WorkspaceResult } from './workspace.js';
 import {
   createDocFs,
@@ -364,6 +378,26 @@ export type CommandLoopEvent =
    * part of THIS turn's plan), or was rejected (undefined name / arity / bad expansion).
    */
   | { type: 'skill-expanded'; turn: number; name: string; lines: string[] }
+  /**
+   * B6 — the recipes (`def … end`) stored in this document were loaded into the registry at the
+   * start of this task: the names accepted, and the stored ones the grammar or registry refused.
+   * Emitted once per document binding, and only when the store held something.
+   */
+  | {
+      type: 'recipes-loaded';
+      turn: number;
+      loaded: string[];
+      rejected: Array<{ name: string; reason: string }>;
+    }
+  /** C1 — an `each` block expanded into concrete effect lines (empty `lines` = refused). */
+  | {
+      type: 'each-expanded';
+      turn: number;
+      rowVar: string;
+      tableVar: string;
+      rows: number;
+      lines: string[];
+    }
   /** One read executed and its (host-content) result, carried as data. */
   | { type: 'read-result'; turn: number; intentLabel: string; result: unknown }
   /**
@@ -380,6 +414,12 @@ export type CommandLoopEvent =
       // plan, severity-ordered. `length > 1` means the plan mixes authorities (e.g. an in-document
       // edit + an external post): the approval surface must NOT bundle them into one silent decision.
       approvalClasses: ApprovalClass[];
+      // B1 — the dependency levels (independent effects share a level) and the per-class approval
+      // phases the executor will take, in order. `phases.length > 1` ⇒ `approvePlan` is called once
+      // PER phase; a single phase carrying several classes means the plan could not be split (a
+      // cross-class dependency) and the decision bundles authorities.
+      levels: ScheduledLevel[];
+      phases: ApprovalPhase[];
     }
   /** One write gated + actuated (or blocked). */
   | { type: 'write-result'; turn: number; changeId: string; result: ActuationResult }
@@ -389,6 +429,12 @@ export type CommandLoopEvent =
   /** A per-turn command/write ceiling was hit; extra commands in the block were refused. */
   /** `deferred` names a write held back by the per-turn cap; the model may send it next turn. */
   | { type: 'capped'; turn: number; reason: string; deferred?: string }
+  /**
+   * B2 — the static type pass refused an entry of this turn's program before dry-run (an unknown
+   * transform, a value of the wrong kind, an unbound `$name`, a column the table lacks). One per
+   * offending entry; a `repair` event follows for a model-authored program.
+   */
+  | { type: 'type-error'; turn: number; index: number; message: string }
   /**
    * A model-authored program failed dry-run validation: none of its writes ran, `done` was ignored,
    * and the errors went back to the model for a bounded repair turn.
@@ -441,7 +487,15 @@ export interface PlanEffect {
    * formula — closing the render-shows-formula / execute-writes-value divergence. Absent for literal
    * effects, whose command line already shows exactly what lands.
    */
-  dryRun?: { target?: string; resolved?: string };
+  dryRun?: {
+    target?: string;
+    resolved?: string;
+    /**
+     * What each formula a `write-cells` effect carries evaluates to on this workbook, from the
+     * bridge's no-write `previewFormulas` (Excel desktop). Absent when the host cannot evaluate.
+     */
+    evaluated?: FormulaPreview[];
+  };
   /**
    * ADR-0008 §break-boundaries (audit §H) — the approval AUTHORITY of this effect
    * (`in-document` < `external` < `estate` < `irreversible`), and whether it is reversible. The
@@ -450,6 +504,14 @@ export interface PlanEffect {
    */
   approvalClass: ApprovalClass;
   reversible: boolean;
+}
+
+/** B1 — which approval phase of a plan an `approvePlan` call decides (see {@link ApprovalPhase}). */
+export interface PlanApprovalPhase {
+  approvalClass: ApprovalClass;
+  /** 0-based position of this phase and the number of phases in the plan. */
+  index: number;
+  count: number;
 }
 
 /**
@@ -507,8 +569,20 @@ export interface RunCommandsOptions {
    * every effect is actuated through the existing gate + provenance (the plan approval supersedes
    * the per-write {@link approveWrite}; the trigger gate still runs as the second line of defense).
    * When present, this takes precedence over {@link approveWrite}.
+   *
+   * B1 — a plan mixing approval authorities is approved in PHASES (ADR-0008 §break-boundaries):
+   * `approvePlan` is then called once per phase, severity-ordered, with that phase's effects and a
+   * {@link PlanApprovalPhase} naming the class and the phase's position. Rejecting a phase blocks it
+   * AND every later (more severe) phase. A single-class plan is one phase, as before.
    */
-  approvePlan?: (effects: PlanEffect[]) => boolean | Promise<boolean>;
+  approvePlan?: (effects: PlanEffect[], phase?: PlanApprovalPhase) => boolean | Promise<boolean>;
+  /**
+   * B1 — what happens to the REST of an approved plan when one effect does not land. The default
+   * `skip-dependents` (ADR-0008 §7 saga) skips only the effects that depend on the failed one and
+   * lets independent effects proceed; `stop-plan` halts at the first failure and marks every effect
+   * not yet dispatched `plan_stopped`, for callers that want nothing further to land after a surprise.
+   */
+  onEffectFailure?: 'skip-dependents' | 'stop-plan';
   /**
    * Per-write human-in-the-loop approval — the confirmation the `DocBridge` contract ("never
    * called without user confirmation") and ADR-0004 require. The loop calls this for EVERY compiled
@@ -587,6 +661,11 @@ export interface AssistSessionOptions {
   commandCapsuleBytes?: number;
   compute?: () => Promise<ComputeEngine>;
   recoveryOwner?: string;
+  /**
+   * B6 — persist `def … end` recipes in the host document (through `DocBridge.recoveryStorage`)
+   * and reload them at the start of each task. Default on where the host can store them.
+   */
+  durableRecipes?: boolean;
   taskJournal?: TaskJournal;
   /** Principal/document-scoped deterministic DAG checkpoints; programs contain user content, never approval state. */
   durablePrograms?: DurableProgramStore;
@@ -711,8 +790,21 @@ export class AssistSession {
   readonly executions = new ExecutionLedger();
   readonly analysis?: AnalysisWorkspace;
   readonly recovery: RecoveryCoordinator;
+  /**
+   * ADR-0007 / B3 — the session's receipt ledger: every effect this session dispatched, by
+   * changeId, with the inverse its receipt recorded. The pane's undo action reads it (through
+   * {@link canUndo}) so a landed change can be reversed by its OWN recorded inverse, conflict-checked
+   * by the bridge — not by re-deriving what to delete from the live document. Bounded; a change
+   * that fell out can no longer be undone from here (the recovery journal still covers Excel cells).
+   */
+  private readonly receipts = new Map<
+    string,
+    { request: ActuationRequest; result: ActuationResult; undone?: boolean }
+  >();
   journal?: TaskJournal;
   private journalDocumentKey?: string;
+  /** B4 — true only while a durable stage runs (see {@link runDurableStage}). */
+  private replayIntents = false;
   private taskDocumentKey?: string;
   readonly evidence?: EvidencePipeline;
   readonly sourceWorkspace: EvidenceWorkspace;
@@ -1033,8 +1125,81 @@ export class AssistSession {
     }
   }
 
+  /**
+   * B6 — bind the recipe store to the current document and load its recipes into the registry
+   * once per document. Returns the `recipes-loaded` event the first time a store held anything;
+   * later calls (same document) return nothing. A document without recovery storage loads nothing.
+   */
+  private async loadRecipes(): Promise<
+    Extract<CommandLoopEvent, { type: 'recipes-loaded' }> | undefined
+  > {
+    if (this.options.durableRecipes === false || !this.bridge.recoveryStorage) return undefined;
+    const key = this.bridge.documentKey?.() ?? '';
+    if (this.recipes && key === this.recipesDocumentKey) {
+      await this.recipesLoaded;
+      return undefined;
+    }
+    this.recipes = new RecipeStore(this.bridge, this.options.recoveryOwner ?? 'session');
+    this.recipesDocumentKey = key;
+    this.recipesLoaded = (async () => {
+      const outcome = await this.recipes!.load(this.skills);
+      if (outcome.loaded.length === 0 && outcome.rejected.length === 0) return undefined;
+      return { type: 'recipes-loaded' as const, turn: 0, ...outcome };
+    })();
+    return this.recipesLoaded;
+  }
+
+  /** B6 — save the registry's definitions in the document; reports the outcome, never throws. */
+  private async persistRecipes(): Promise<'saved' | 'failed' | undefined> {
+    if (this.options.durableRecipes === false || !this.bridge.recoveryStorage) return undefined;
+    if (!this.recipes) await this.loadRecipes();
+    try {
+      await this.recipes!.save([...this.skills.names()].map((name) => this.skills.get(name)!));
+      return 'saved';
+    } catch (err) {
+      console.warn('[assist] recipes could not be stored in the document', errMsg(err));
+      return 'failed';
+    }
+  }
+
+  /**
+   * ADR-0007 / B3 — whether the pane may offer Undo for a landed change: the Excel cell-recovery
+   * journal can restore it, OR this session holds its receipt with a usable recorded inverse and
+   * the bridge implements `applyInverse`. An undo receipt itself, an undone change, a failed write
+   * and a `not-reversible` marker are never undoable. This is advice for the UI — the undo still
+   * runs through the approval card and the gate like any other write.
+   */
+  canUndo(changeId: string): boolean {
+    if (this.recovery.list().some((r) => r.id === changeId && r.canUndo)) return true;
+    const entry = this.receipts.get(changeId);
+    return (
+      entry !== undefined &&
+      entry.result.ok &&
+      !entry.undone &&
+      !entry.request.undo &&
+      entry.result.inverse !== undefined &&
+      entry.result.inverse.op !== 'not-reversible' &&
+      typeof this.bridge.applyInverse === 'function'
+    );
+  }
+
+  /** The changes {@link canUndo} currently answers true for, newest first. */
+  undoableChanges(): string[] {
+    return [...this.receipts.keys()].reverse().filter((id) => this.canUndo(id));
+  }
+
   private async recordEffect(request: ActuationRequest, result: ActuationResult): Promise<void> {
     this.task?.effects.push(structuredClone(result));
+    this.receipts.set(result.changeId, {
+      request: structuredClone(request),
+      result: structuredClone(result),
+    });
+    if (request.undo && result.ok) {
+      const original = this.receipts.get(request.undo.of);
+      if (original) original.undone = true;
+    }
+    while (this.receipts.size > MAX_RECEIPTS)
+      this.receipts.delete(this.receipts.keys().next().value as string);
     if (this.task)
       this.effectTurns.set(this.task, [
         ...(this.effectTurns.get(this.task) ?? []),
@@ -1132,6 +1297,12 @@ export class AssistSession {
    * loop's turns; durable host-metadata persistence is a follow-up.
    */
   private readonly skills = new SkillRegistry();
+  /** B6 — the document-stored recipes, bound per document key (see {@link loadRecipes}). */
+  private recipes?: RecipeStore;
+  private recipesDocumentKey?: string;
+  private recipesLoaded?: Promise<
+    Extract<CommandLoopEvent, { type: 'recipes-loaded' }> | undefined
+  >;
   /**
    * The advertised actuation kinds for the active surface, captured at the start of a
    * {@link runCommands} loop. The ADR-0005 Phase-2 type-check rejects an effect whose verb maps to
@@ -1240,34 +1411,68 @@ export class AssistSession {
         yield { type: 'done', turn: 1, answer: 'The result has no rows. No changes were made.' };
         return;
       }
-      const manifest = await this.effectiveCapabilities();
-      if (!manifest.actuations.some((a) => a.kind === 'write-cells'))
-        throw new Error('Cell writes are disabled for this surface or release profile.');
-      let request =
-        materialization && 'request' in materialization
-          ? materialization.request
-          : await this.recovery.request(action.id, action.kind === 'undo');
-      request = await this.recovery.prepare(request);
-      const command = `${action.kind} → ${request.params.target?.range}`;
-      const effect: PlanEffect = {
-        request,
-        command,
-        approvalClass: 'in-document',
-        reversible: true,
-        dryRun: {
-          target: request.params.target?.range,
-          resolved: JSON.stringify({
-            values: request.params.cellValues ?? request.params.cells,
-            formulas: request.params.cellFormulas,
-          }),
-        },
-      };
+      // B3 — an undo of a change the cell-recovery journal does not hold runs through the receipt's
+      // recorded inverse instead (any surface whose bridge implements `applyInverse`).
+      const viaInverse =
+        action.kind === 'undo' &&
+        !this.recovery.list().some((r) => r.id === action.id) &&
+        this.canUndo(action.id);
+      if (!viaInverse) {
+        const manifest = await this.effectiveCapabilities();
+        if (!manifest.actuations.some((a) => a.kind === 'write-cells'))
+          throw new Error('Cell writes are disabled for this surface or release profile.');
+      }
+      let request: ActuationRequest;
+      let effect: PlanEffect;
+      if (viaInverse) {
+        const entry = this.receipts.get(action.id)!;
+        request = {
+          changeId: asChangeId(`undo:${crypto.randomUUID()}`),
+          kind: entry.request.kind,
+          surface: entry.request.surface,
+          params: structuredClone(entry.request.params),
+          undo: { of: entry.result.changeId, inverse: structuredClone(entry.result.inverse!) },
+        };
+        effect = {
+          request,
+          command: `undo ${entry.result.changeId}`,
+          approvalClass: 'in-document',
+          reversible: false,
+          dryRun: {
+            ...(entry.result.location ? { target: entry.result.location } : {}),
+            resolved: describeInverse(entry.result.inverse!),
+          },
+        };
+      } else {
+        request =
+          materialization && 'request' in materialization
+            ? materialization.request
+            : await this.recovery.request(action.id, action.kind === 'undo');
+        request = await this.recovery.prepare(request);
+        const command = `${action.kind} → ${request.params.target?.range}`;
+        effect = {
+          request,
+          command,
+          approvalClass: 'in-document',
+          reversible: true,
+          dryRun: {
+            target: request.params.target?.range,
+            resolved: JSON.stringify({
+              values: request.params.cellValues ?? request.params.cells,
+              formulas: request.params.cellFormulas,
+            }),
+          },
+        };
+      }
+      const singleDag = analyseEffectDependencies([request]);
       yield {
         type: 'plan-preview',
         turn: 1,
         effects: [effect],
-        dag: analyseEffectDependencies([request]),
+        dag: singleDag,
         approvalClasses: ['in-document'],
+        levels: scheduleEffectLevels(singleDag),
+        phases: approvalPhases(singleDag),
       };
       yield* this.executePlan(1, [{ index: 0, effect }], opts, [], undefined);
     } else {
@@ -1480,6 +1685,31 @@ export class AssistSession {
       }
     }
     return out;
+  }
+
+  /**
+   * Ask the bridge what each formula in a `write-cells` effect evaluates to, so the approver sees
+   * the number a formula produces, not only its text. Read-only, bounded by the bridge, and never a
+   * reason to withhold the plan: a host that cannot evaluate simply adds nothing.
+   */
+  private async attachFormulaPreviews(effects: PlanEffect[]): Promise<void> {
+    if (!this.bridge.previewFormulas) return;
+    for (const effect of effects) {
+      const request = effect.request;
+      if (
+        request.kind !== 'write-cells' ||
+        !formulasForRequest(request).some((r) => r.some(Boolean))
+      )
+        continue;
+      try {
+        const evaluated = await this.toolOperation('context:preview-formulas', { request }, () =>
+          this.bridge.previewFormulas!(request),
+        );
+        if (evaluated.length) effect.dryRun = { ...effect.dryRun, evaluated };
+      } catch {
+        // The preview is advisory: an evaluation failure changes nothing about the plan.
+      }
+    }
   }
 
   private addAttachedPart(refId: string, resolved: ResolvedContext): void {
@@ -1935,6 +2165,8 @@ export class AssistSession {
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
     const capabilities = await this.effectiveCapabilities();
+    const recipesEvent = await this.loadRecipes();
+    if (recipesEvent) yield recipesEvent;
     // Capture the advertised actuation kinds for the ADR-0005 Phase-2 effect type-check.
     this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
     this.capabilitySubstitutes = substitutesOf(capabilities);
@@ -2473,6 +2705,9 @@ export class AssistSession {
   ): AsyncGenerator<SseEvent | CommandLoopEvent, ActuationResult[]> {
     const start = this.task!.effects.length;
     let invalid = false;
+    // B4 — a durable stage re-attempts ONE known intent: let the journal replay its verified prior
+    // outcome (same stable idempotency key, same task) instead of landing the effect twice.
+    this.replayIntents = true;
     const stageOptions: RunCommandsOptions = {
       ...opts,
       maxWritesPerTurn: 1,
@@ -2482,14 +2717,14 @@ export class AssistSession {
         await assertOwned();
       },
       approveShare: () => false,
-      approvePlan: async (effects) => {
+      approvePlan: async (effects, phase) => {
         if (invalid || effects.length !== 1) return false;
         const context = await this.applicationContext();
         await checkpointEffect(
           effects[0]!.request,
           deriveDurableInspection(effects[0]!.request, context.documentId),
         );
-        if (opts.approvePlan) return this.callApprovePlan(opts.approvePlan, effects);
+        if (opts.approvePlan) return this.callApprovePlan(opts.approvePlan, effects, phase);
         return opts.approveWrite ? opts.approveWrite(effects[0]!.request) : false;
       },
     };
@@ -2512,6 +2747,8 @@ export class AssistSession {
       // Settle an already observed native receipt even when cancellation interrupted finish/control
       // processing. The program remains cancelled; no later stage receives dispatch authority.
       if (!opts.signal?.aborted || invalid) throw error;
+    } finally {
+      this.replayIntents = false;
     }
     return this.task!.effects.slice(start);
   }
@@ -2662,6 +2899,8 @@ export class AssistSession {
   ): AsyncGenerator<SseEvent | CommandLoopEvent> {
     const body = program.trim();
     if (!body) return;
+    const recipesEvent = await this.loadRecipes();
+    if (recipesEvent) yield recipesEvent;
 
     const capabilities = await this.effectiveCapabilities();
     this.capabilityKinds = new Set(capabilities.actuations.map((a) => a.kind));
@@ -2744,6 +2983,40 @@ export class AssistSession {
       plan.results.push(
         advisory({ error: `too many commands in one block; only the first ${maxCommands} ran` }),
       );
+    }
+    // B2 — the static type pass: infer every binding's type and reject unknown transforms, a
+    // transform fed the wrong kind of value, an unbound `$name` and a column-law violation BEFORE any
+    // line reads the host or stages a write. All-or-nothing, like dry-run: a program with a static
+    // error runs nothing and goes back for one bounded repair turn (a direct/SDK program just fails).
+    const typed = typecheckProgram(
+      entries,
+      staticScope(this.composeEnv, this.analysisBindings.snapshot().keys()),
+      { skills: this.skills, maxSkillDepth: MAX_SKILL_DEPTH, maxCommands },
+    );
+    if (typed.diagnostics.length > 0) {
+      for (const diagnostic of typed.diagnostics) {
+        const source = programEntrySource(entries[diagnostic.index]!);
+        const error = `type error${source ? ` in \`${source}\`` : ''}: ${diagnostic.message}`;
+        plan.results.push({ error });
+        yield { type: 'type-error', turn, index: diagnostic.index, message: diagnostic.message };
+      }
+      const withheldWrites = entries.filter(
+        (entry) => isProgramCommand(entry) && EFFECT_VERBS.has(entry.verb),
+      ).length;
+      plan.results.push({
+        error: repairInstruction(typed.diagnostics.length, withheldWrites, []),
+      });
+      if (this.task?.mode === 'command') {
+        yield {
+          type: 'repair',
+          turn,
+          errors: typed.diagnostics.length,
+          withheldWrites,
+          alreadyApplied: [],
+        };
+        return { results: plan.results, done: false, repair: true, failed: true };
+      }
+      return { results: plan.results, done: false, failed: true };
     }
     for (const entry of entries) {
       if (plan.budget <= 0) break;
@@ -2875,6 +3148,7 @@ export class AssistSession {
       const order: ApprovalClass[] = ['in-document', 'external', 'estate', 'irreversible'];
       const present = new Set(effects.map((e) => e.approvalClass));
       const approvalClasses = order.filter((c) => present.has(c));
+      await this.attachFormulaPreviews(effects);
       if (effects.length)
         yield {
           type: 'plan-preview',
@@ -2882,6 +3156,8 @@ export class AssistSession {
           effects: structuredClone(effects),
           dag,
           approvalClasses,
+          levels: scheduleEffectLevels(dag),
+          phases: approvalPhases(dag),
         };
       plan.rejected = yield* this.executePlan(
         turn,
@@ -3084,10 +3360,13 @@ export class AssistSession {
     // ADR-0005 Phase 3 — a `def` registers a skill (no execution). Confirmation result only.
     if (isProgramSkillDef(entry)) {
       const reg = this.skills.register(entry);
+      // B6 — persist the registry in the document when the host can hold it; a refused save keeps
+      // the recipe for this session only and says so (never a silent loss).
+      const stored = reg.ok ? await this.persistRecipes() : undefined;
       const message = reg.ok
         ? `registered skill "${reg.name}"(${reg.params.map((p) => `$${p}`).join(' ')})${
             reg.redefined ? ' (redefined)' : ''
-          }`
+          }${stored === 'saved' ? ' — saved in this document' : stored === 'failed' ? ' — kept for this session only (the document could not store it)' : ''}`
         : reg.error;
       plan.results.push(reg.ok ? { skill: message } : { error: message });
       yield { type: 'skill-registered', turn, name: entry.name, result: { ok: reg.ok, message } };
@@ -3120,6 +3399,99 @@ export class AssistSession {
         // A `def`/`call` inside an expansion would be a structural surprise; the parser already
         // rejects a nested `def`, and a nested call re-parses as a call here (depth-bounded above).
         // Each expanded entry flows through the SAME plan logic — effects still gate.
+        for await (const ev of this.processEntry(
+          sub,
+          plan,
+          capabilities,
+          depth + 1,
+          opts,
+          turnProvenance,
+        ))
+          yield ev;
+        if (plan.done) return;
+      }
+      return;
+    }
+
+    // C1 — a bounded `each $row in $table: … end` loop expands into CONCRETE effect lines before
+    // dry-run, so the approval card shows every substituted write. Refused as a whole (no partial
+    // expansion, nothing staged) when the table is too large, a column is unknown, the expansion
+    // would exceed this turn's write cap or command budget, or any expanded line is not an effect.
+    if (isProgramEachBlock(entry)) {
+      const refuse = (error: string): CommandLoopEvent => {
+        plan.results.push({ error });
+        return {
+          type: 'each-expanded',
+          turn,
+          rowVar: entry.rowVar,
+          tableVar: entry.tableVar,
+          rows: 0,
+          lines: [],
+        };
+      };
+      if (this.analysisBindings.has(entry.tableVar)) {
+        yield refuse(
+          `each: $${entry.tableVar} is an artifact; use analyze to read it, or bind a table with let`,
+        );
+        return;
+      }
+      const expanded = expandEachBlock(entry, this.composeEnv, {
+        maxRows: MAX_EACH_ROWS,
+        // Earlier entries (including other loops and expanded recipes) may already have reserved
+        // slots. Check the entire loop against what remains before processing any of its body.
+        maxEffects: Math.max(0, plan.maxWrites - plan.planSlots.length),
+      });
+      if (!expanded.ok) {
+        yield refuse(expanded.error);
+        return;
+      }
+      if (expanded.lines.length > plan.budget) {
+        yield refuse(
+          `each: ${expanded.lines.length} expanded lines exceed the remaining command budget (${plan.budget}) — narrow the table`,
+        );
+        return;
+      }
+      const reparsed = reparseExpandedLines(expanded.lines, this.skills.names());
+      const notEffect = reparsed.find((e) => !('verb' in e && EFFECT_VERBS.has(e.verb)));
+      if (notEffect) {
+        const why = 'error' in notEffect ? notEffect.error : 'not an effect command';
+        const at =
+          'source' in notEffect && notEffect.source !== undefined ? ` — ${notEffect.source}` : '';
+        yield refuse(`each: expanded line rejected: ${why}${at}`);
+        return;
+      }
+      // Outward effects have a separate, lower cap. Reserve against it as a whole too, or the
+      // ordinary per-effect check below could admit a prefix of an otherwise valid expansion.
+      const outwardUsed = plan.planSlots.filter((slot) =>
+        leavesDocument(slot.effect.request.kind),
+      ).length;
+      const outwardCount = reparsed.filter((command) => {
+        if (!isProgramCommand(command)) return false;
+        const kind =
+          command.verb === 'invoke'
+            ? (command.kind as ActuationKind)
+            : WRITE_VERB_TO_KIND[command.verb as keyof typeof WRITE_VERB_TO_KIND];
+        return kind !== undefined && leavesDocument(kind);
+      }).length;
+      const outwardRemaining = Math.max(
+        0,
+        Math.min(plan.maxWrites, MAX_OUTWARD_WRITES_PER_TURN) - outwardUsed,
+      );
+      if (outwardCount > outwardRemaining) {
+        yield refuse(
+          `each: ${outwardCount} outward effects exceed the remaining outward write cap of ${outwardRemaining} — narrow the table or split the work`,
+        );
+        return;
+      }
+      yield {
+        type: 'each-expanded',
+        turn,
+        rowVar: entry.rowVar,
+        tableVar: entry.tableVar,
+        rows: expanded.rows,
+        lines: expanded.lines,
+      };
+      for (const sub of reparsed) {
         for await (const ev of this.processEntry(
           sub,
           plan,
@@ -3794,32 +4166,58 @@ export class AssistSession {
       this.hookContext(),
     );
 
-    // Decide the plan-level disposition once. `approvePlan` is authoritative when present.
-    let planApproved: boolean | undefined;
-    if (opts.approvePlan) {
-      planApproved = await this.callApprovePlan(opts.approvePlan, effects);
-    } else if (!opts.approveWrite) {
-      // Neither approver ⇒ fail-closed: block the whole plan.
-      planApproved = false;
-    }
-    // else: no approvePlan but approveWrite present ⇒ fall back to per-write (planApproved stays
-    // undefined; each effect goes through applyRequest with approveWrite, ADR-0004 Track A).
-
     // ADR-0008 §7 — enforce the dependency DAG as a saga with bounded compensation: when an effect
     // fails (or is skipped), its dependents are NOT actuated — they record `prerequisite_failed`.
     // Independent effects still run. `dag[k]` aligns with `planSlots[k]` (same order); `dependsOn`
     // references earlier node ids (`e1`…). Inferred by the compiler — never authored by the model.
     const dag = analyseEffectDependencies(effects.map((e) => e.request));
+    const slotOf = new Map(dag.map((node, k) => [node.id, k]));
+    // B1 — approval is taken PER PHASE (one approval class each, severity-ordered) and effects are
+    // dispatched phase by phase, level by level inside a phase. Dispatch stays serial: the task
+    // journal is single-writer and Office batches serialise anyway; levels decide ORDER and let an
+    // independent sibling proceed past a failure, they do not run effects concurrently.
+    const phases = approvalPhases(dag);
+    const order = executionOrder(dag);
+    const policy = opts.onEffectFailure ?? 'skip-dependents';
+
+    // Decide each phase's disposition. `approvePlan` is authoritative when present; a rejected
+    // phase also blocks every later (more severe) phase — the user said no to part of this plan.
+    // Neither approver ⇒ fail-closed: block the whole plan. No approvePlan but approveWrite present
+    // ⇒ per-write fallback (ADR-0004 Track A): each effect goes through applyRequest with
+    // approveWrite and `approved` stays undefined.
+    const approved = new Map<string, boolean | undefined>();
+    let declined = false;
+    if (opts.approvePlan) {
+      let blocked = false;
+      for (const [index, phase] of phases.entries()) {
+        const phaseEffects = phase.ids.map((id) => effects[slotOf.get(id)!]!);
+        const ok =
+          !blocked &&
+          (await this.callApprovePlan(opts.approvePlan, phaseEffects, {
+            approvalClass: phase.approvalClass,
+            index,
+            count: phases.length,
+          }));
+        if (!ok) {
+          declined = true;
+          blocked = true;
+        }
+        for (const id of phase.ids) approved.set(id, ok);
+      }
+    } else if (!opts.approveWrite) for (const node of dag) approved.set(node.id, false);
+
     const failedNodes = new Set<string>();
     // The cells earlier effects of this batch produced: a later effect may find them changed.
     const landed: CellSnapshot[] = [];
+    let stopped = false;
 
-    for (let k = 0; k < planSlots.length; k++) {
+    for (const nodeId of order) {
       opts.signal?.throwIfAborted();
+      const k = slotOf.get(nodeId)!;
       const { index, effect } = planSlots[k]!;
-      const nodeId = dag[k]?.id ?? `e${k + 1}`;
+      const planApproved = approved.get(nodeId);
       const failedPrereqs = (dag[k]?.dependsOn ?? []).filter((d) => failedNodes.has(d));
-      if (planApproved !== false && failedPrereqs.length === 0 && landed.length > 0)
+      if (planApproved !== false && !stopped && failedPrereqs.length === 0 && landed.length > 0)
         effect.request = await this.recovery.rebase(effect.request, landed);
       let result: ActuationResult;
       if (planApproved === false) {
@@ -3828,6 +4226,17 @@ export class AssistSession {
           changeId: effect.request.changeId,
           kind: effect.request.kind,
           error: { code: 'plan_unapproved', message: 'plan requires approval (none granted)' },
+        };
+      } else if (stopped) {
+        // `stop-plan`: an earlier effect did not land and the caller wants nothing further to.
+        result = {
+          ok: false,
+          changeId: effect.request.changeId,
+          kind: effect.request.kind,
+          error: {
+            code: 'plan_stopped',
+            message: 'skipped — an earlier effect of this plan did not land (stop-plan policy)',
+          },
         };
       } else if (failedPrereqs.length > 0) {
         // A prerequisite effect did not succeed — skip this dependent WITHOUT actuating it.
@@ -3860,9 +4269,13 @@ export class AssistSession {
       // Any non-ok result (failed, degraded-to-error, unapproved, or skipped) propagates to dependents.
       if (!this.task?.effects.some((r) => r.changeId === result.changeId))
         await this.recordEffect(effect.request, result);
-      if (!['verified', 'unverified'].includes(assessActuationResult(result)))
+      const assessment = assessActuationResult(result);
+      if (!['verified', 'unverified'].includes(assessment)) {
         failedNodes.add(nodeId);
-      else if (assessActuationResult(result) === 'verified' && k < planSlots.length - 1) {
+        // A refusal the user made (or a plan the caller blocked) is not a surprise: it never trips
+        // the stop-plan policy — only an effect that was dispatched (or was eligible) and did not land.
+        if (policy === 'stop-plan' && planApproved !== false) stopped = true;
+      } else if (assessment === 'verified' && order.indexOf(nodeId) < order.length - 1) {
         const cells = await this.recovery.landed(effect.request, result);
         if (cells) landed.push(cells);
       }
@@ -3870,16 +4283,21 @@ export class AssistSession {
       yield { type: 'write-result', turn, changeId: effect.request.changeId, result };
     }
     // True only for the user's own "no" (an approver that declined), never for a missing approver.
-    return planApproved === false && opts.approvePlan !== undefined;
+    return declined;
   }
 
   /** Call the plan approver defensively — a thrown approver fails closed (treated as a reject). */
   private async callApprovePlan(
-    approve: (effects: PlanEffect[]) => boolean | Promise<boolean>,
+    approve: NonNullable<RunCommandsOptions['approvePlan']>,
     effects: PlanEffect[],
+    phase: PlanApprovalPhase = {
+      approvalClass: effects[0]?.approvalClass ?? 'in-document',
+      index: 0,
+      count: 1,
+    },
   ): Promise<boolean> {
     try {
-      return await approve(snapshot(effects) as PlanEffect[]);
+      return await approve(snapshot(effects) as PlanEffect[], phase);
     } catch (err) {
       console.warn('[assist] approvePlan threw; failing closed (plan blocked)', err);
       return false;
@@ -4187,7 +4605,7 @@ export class AssistSession {
    * reads are free text). The read result is host content — data, never instructions.
    */
   private composeRunRead(): RunRead {
-    return async (source: Exclude<PipeSource, { src: 'var' }>): Promise<string> => {
+    return async (source: HostPipeSource): Promise<string> => {
       const intent: ReadIntent =
         source.src === 'outline'
           ? { read: 'outline' }
@@ -4754,10 +5172,30 @@ export class AssistSession {
               result: { error: `no context ref or safe selector found for "${intent.selector}"` },
             };
           }
-          return {
-            label: `properties ${intent.selector}`,
-            result: contextRefProperties(found.ref, this.bridge),
-          };
+          const properties = contextRefProperties(found.ref, this.bridge) as Record<
+            string,
+            unknown
+          >;
+          // Excel ranges: direct precedents/dependents when the host can answer (ExcelApi 1.15).
+          const hostRef = found.ref.hostRef;
+          const address =
+            hostRef?.type === 'excel.range'
+              ? hostRef.worksheet
+                ? `${hostRef.worksheet}!${hostRef.address}`
+                : hostRef.address
+              : undefined;
+          if (address && this.bridge.dependencyImpact) {
+            try {
+              properties.dependencyImpact = await this.toolOperation(
+                'context:dependency-impact',
+                { address },
+                () => this.bridge.dependencyImpact!(address),
+              );
+            } catch {
+              // Not every host (or range) can report dependencies; the rest of the properties stand.
+            }
+          }
+          return { label: `properties ${intent.selector}`, result: properties };
         }
         case 'context-kind': {
           const refs = await this.contextRefs(intent.kind);
@@ -4910,7 +5348,10 @@ export class AssistSession {
       await this.effectiveCapabilities(),
     );
     if (admission.rejection) return admission.rejection;
-    request = await this.recovery.prepare(admission.request);
+    // An undo carries its own recorded prior state; the cell-recovery capture is for fresh writes.
+    request = admission.request.undo
+      ? admission.request
+      : await this.recovery.prepare(admission.request);
     const stamped: ActuationRequest = {
       ...request,
       ...(provenance ? { provenance } : {}),
@@ -5083,10 +5524,33 @@ export class AssistSession {
               },
             };
           dispatched = true;
+          if (stamped.undo) {
+            // B3 — an undo never re-applies `params`: it goes to the bridge's inverse applier, which
+            // conflict-checks the recorded anchor. No applier ⇒ a clean refusal, nothing touched.
+            if (!this.bridge.applyInverse)
+              return {
+                ok: false,
+                changeId: stamped.changeId,
+                kind: stamped.kind,
+                error: {
+                  code: 'unsupported',
+                  message: 'This surface cannot apply recorded inverses yet.',
+                },
+              };
+            const undone = await this.bridge.applyInverse(stamped);
+            return undone.ok ? { ...undone, undoOf: undone.undoOf ?? stamped.undo.of } : undone;
+          }
           return this.bridge.actuate(stamped);
         };
         return this.journal
-          ? this.journal.execute(this.task?.taskId ?? this.hookContext().taskId, stamped, dispatch)
+          ? this.journal.execute(
+              this.task?.taskId ?? this.hookContext().taskId,
+              stamped,
+              dispatch,
+              {
+                replayIntent: this.replayIntents,
+              },
+            )
           : dispatch();
       });
       await this.recordEffect(stamped, result);
@@ -6051,4 +6515,62 @@ function commandText(command: ParsedCommand): string {
     (key) => typeof c[key] === 'string',
   );
   return target ? `${c.verb} ${String(c[target])} …` : `${c.verb} …`;
+}
+
+/** B3 — the receipt ledger bound (see `AssistSession.receipts`). */
+const MAX_RECEIPTS = 512;
+
+/** A one-line, content-free description of what applying an inverse does, for the approval card. */
+export function describeInverse(inverse: InverseDescriptor): string {
+  switch (inverse.op) {
+    case 'delete-object':
+      return `remove the ${inverse.objectType} this change added`;
+    case 'restore-cells':
+    case 'restore-values':
+      return `restore the prior cells in ${inverse.range}`;
+    case 'clear-conditional':
+      return `remove the conditional format added on ${inverse.range}`;
+    case 'restore-text':
+      return 'restore the prior text';
+    case 'restore-style':
+      return `restore the prior style (${inverse.priorStyle})`;
+    case 'restore-content-control':
+      return 'restore the prior content-control text';
+    case 'restore-doc-properties':
+      return 'restore the prior document properties';
+    case 'detach-list':
+      return 'detach the list formatting this change applied';
+    case 'restore-slide':
+      return 'restore the deleted slide';
+    case 'move-slide':
+      return `move the slide back to position ${inverse.toIndex + 1}`;
+    case 'apply-layout':
+      return 'restore the prior slide layout';
+    case 'restore-shape-format':
+      return 'restore the prior shape formatting';
+    case 'restore-message':
+      return 'restore the prior message text';
+    case 'restore-mail-state':
+      return 'restore the prior mail state';
+    case 'not-reversible':
+      return `not reversible: ${inverse.reason}`;
+  }
+}
+
+/** A short source rendering of a program entry for a type-error message (never host content). */
+function programEntrySource(entry: ProgramEntry): string | undefined {
+  if (isProgramExpr(entry)) {
+    const pipeline = entry.kind === 'let' ? entry.pipeline : entry;
+    const head =
+      pipeline.source.src === 'var'
+        ? `$${pipeline.source.name}`
+        : pipeline.source.src === 'read'
+          ? `read ${pipeline.source.selector}`
+          : pipeline.source.src;
+    const text = [head, ...pipeline.stages.map((s) => `${s.name} ${s.args}`.trim())].join(' | ');
+    return entry.kind === 'let' ? `let $${entry.name} = ${text}` : text;
+  }
+  if (isProgramEachBlock(entry)) return `each $${entry.rowVar} in $${entry.tableVar}:`;
+  if (isProgramCommand(entry)) return entry.verb;
+  return undefined;
 }

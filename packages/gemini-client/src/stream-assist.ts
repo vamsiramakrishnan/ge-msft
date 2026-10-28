@@ -20,7 +20,16 @@ import {
 } from './de-types.js';
 import { parseJsonArrayStream, type JsonStreamStatus } from './json-stream.js';
 import { contentHash } from './hash.js';
-import { withRetry, defaultIsRetriable, HttpError, type RetryOptions } from './retry.js';
+import {
+  withRetry,
+  defaultIsRetriable,
+  backoffDelay,
+  parseRetryAfter,
+  CircuitBreaker,
+  CircuitOpenError,
+  HttpError,
+  type RetryOptions,
+} from './retry.js';
 import { ByteOffsetMapper, byteOffsetToCharIndex } from './byte-offset.js';
 import { contextValueToQueryPart, type QueryPart } from './session-context.js';
 import { defaultFetch } from './de-fetch.js';
@@ -74,14 +83,45 @@ export interface StreamOptions {
    * consumer that is busy between reads does not. 0 disables it.
    */
   idleTimeoutMs?: number;
+  /**
+   * Abort the whole turn (POST and read) after this long, whatever the engine is doing (default
+   * {@link DEFAULT_DEADLINE_MS}); the idle watchdog still bounds each silent gap. 0 disables it.
+   */
+  deadlineMs?: number;
 }
 
 /** Long enough for a slow reasoning turn's first frame; short enough that a hang is not forever. */
 export const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+/** A whole turn, however chatty the stream, ends within this; longer answers are not a thing. */
+export const DEFAULT_DEADLINE_MS = 180_000;
+
+/** Error codes a turn is asked again for, once, when nothing of the answer reached the consumer. */
+const TURN_RETRY_CODES = new Set(['network', 'incomplete_response']);
+/** Events that mean part of an answer reached the consumer: after one, a failure is final. */
+const CONTENT_EVENT_TYPES = new Set([
+  'token',
+  'citation',
+  'finding',
+  'slide',
+  'code-execution',
+  'code-execution-result',
+  'grounding-support',
+  'related-questions',
+  'policy',
+  'provenance',
+  'done',
+]);
 
 type FetchLike = typeof fetch;
 
 class StreamRequestError extends Error {}
+
+const isAbort = (err: unknown): boolean =>
+  err instanceof DOMException
+    ? err.name === 'AbortError'
+    : (err as { name?: string })?.name === 'AbortError';
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 class IdleTimeoutError extends Error {}
 
@@ -124,6 +164,50 @@ function withIdleTimeout(
   );
 }
 
+/**
+ * Make every read of `body` observe `signal`. A real fetch body errors when its request signal
+ * aborts, but a proxy, a polyfill, or a test double may not, and the per-turn deadline must end
+ * the read either way.
+ */
+function withAbort(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  const abortError = (): Error =>
+    signal.reason instanceof Error ? signal.reason : new DOMException('aborted', 'AbortError');
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (signal.aborted) {
+          void reader.cancel().catch(() => {});
+          controller.error(abortError());
+          return;
+        }
+        let onAbort: (() => void) | undefined;
+        const aborted = new Promise<never>((_, reject) => {
+          onAbort = () => reject(abortError());
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+        try {
+          const { done, value } = await Promise.race([reader.read(), aborted]);
+          if (done) controller.close();
+          else controller.enqueue(value);
+        } catch (error) {
+          if (signal.aborted) void reader.cancel().catch(() => {});
+          controller.error(error);
+        } finally {
+          if (onAbort) signal.removeEventListener('abort', onAbort);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
 function timeoutEvent(ms: number): SseEvent {
   return {
     type: 'error',
@@ -131,6 +215,20 @@ function timeoutEvent(ms: number): SseEvent {
     message: `The assistant did not respond for ${Math.round(ms / 1000)} seconds. Try again.`,
   };
 }
+
+function deadlineEvent(ms: number): SseEvent {
+  return {
+    type: 'error',
+    code: 'timeout',
+    message: `The assistant did not finish within ${Math.round(ms / 1000)} seconds. Try again.`,
+  };
+}
+
+const CIRCUIT_OPEN_EVENT: SseEvent = {
+  type: 'error',
+  code: 'circuit_open',
+  message: 'The assistant is temporarily unavailable after repeated failures. Try again shortly.',
+};
 
 /**
  * Calls Gemini Enterprise `:streamAssist` directly as the signed-in user and
@@ -179,6 +277,9 @@ async function* withoutSkippedCitations(
 export const SKIP_RETRY_FRAME = 'Answer this briefly: ';
 
 export class StreamAssistClient {
+  /** Shared across turns: repeated POST failures open it for every caller of this client. */
+  private readonly breaker: CircuitBreaker | undefined;
+
   constructor(
     private readonly tokens: TokenSource,
     private config: GeminiClientConfig,
@@ -189,7 +290,19 @@ export class StreamAssistClient {
      * boundary. Pass {} to opt out of any backoff.
      */
     private readonly retryOpts: RetryOptions = {},
-  ) {}
+  ) {
+    const cb = config.resilience?.circuitBreaker;
+    this.breaker =
+      cb === false
+        ? undefined
+        : (retryOpts.breaker ??
+          new CircuitBreaker(cb?.threshold ?? 5, cb?.cooldownMs ?? 30_000, Date.now, cb?.windowMs));
+  }
+
+  /** The breaker's current state, for diagnostics and tests. */
+  get circuitState(): 'closed' | 'open' | 'half-open' | 'disabled' {
+    return this.breaker?.current ?? 'disabled';
+  }
 
   /** Applies to subsequent turns; undefined returns model choice to the engine. */
   setModelId(modelId: string | undefined): void {
@@ -254,7 +367,7 @@ export class StreamAssistClient {
     // no error. A chat question is asked once more, framed as a request, the way the Gemini Enterprise web app
     // does. Any other skip, or a second one, is reported instead of ending in silence.
     const first: AttemptOutcome = {};
-    yield* withoutSkippedCitations(this.attempt(req, opts, first), first);
+    yield* withoutSkippedCitations(this.attemptWithTurnRetry(req, opts, first), first);
     if (!first.skipped) return;
     const question = req.query?.trim();
     if (!first.skipped.retryable || !opts.retrySkipped || !question || opts.signal?.aborted) {
@@ -266,10 +379,51 @@ export class StreamAssistClient {
     // The skipped call may have opened the chat session: keep the retry in it, not a second one.
     const session = first.skipped.session ?? opts.session;
     yield* withoutSkippedCitations(
-      this.attempt(retry, { ...opts, ...(session ? { session } : {}) }, again),
+      this.attemptWithTurnRetry(retry, { ...opts, ...(session ? { session } : {}) }, again),
       again,
     );
     if (again.skipped) yield SKIPPED_ERROR;
+  }
+
+  /**
+   * One turn, asked a second time when it failed before any of the answer reached the consumer: a
+   * dropped connection or a body cut short with nothing yet shown costs the user a retry, not an
+   * error. Once a content event has been yielded the failure is final — a second answer could not
+   * be reconciled with the partial one already consumed. The retry is a fresh attempt with the
+   * same request and options (same session or sessionless mode), after a short jittered wait.
+   */
+  private async *attemptWithTurnRetry(
+    req: AssistRequest,
+    opts: StreamOptions,
+    outcome: AttemptOutcome,
+  ): AsyncGenerator<SseEvent> {
+    let contentEmitted = false;
+    for await (const event of this.attempt(req, opts, outcome)) {
+      if (
+        !contentEmitted &&
+        event.type === 'error' &&
+        TURN_RETRY_CODES.has(event.code) &&
+        !opts.signal?.aborted
+      ) {
+        await (this.retryOpts.sleep ?? defaultSleep)(
+          backoffDelay(
+            0,
+            this.retryOpts.baseMs ?? 500,
+            2_000,
+            this.retryOpts.random ?? Math.random,
+          ),
+        );
+        if (opts.signal?.aborted) {
+          yield event;
+          return;
+        }
+        yield { type: 'activity', text: 'Connection dropped before the answer started; retrying.' };
+        yield* this.attempt(req, opts, outcome);
+        return;
+      }
+      if (CONTENT_EVENT_TYPES.has(event.type)) contentEmitted = true;
+      yield event;
+    }
   }
 
   /** One streamAssist call: POST, then read the answer. A skipped answer sets `outcome.skipped`. */
@@ -282,12 +436,22 @@ export class StreamAssistClient {
     // by mutating their options while a response is in flight.
     const isSessionLess = opts.isSessionLess === true;
     const idleMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
-    // One signal for the whole turn: the caller's cancel, or our idle watchdog.
+    const deadlineMs = opts.deadlineMs ?? DEFAULT_DEADLINE_MS;
+    // One signal for the whole turn: the caller's cancel, our idle watchdog, or the deadline.
     const turn = new AbortController();
     const forwardAbort = (): void => turn.abort(opts.signal?.reason);
     if (opts.signal?.aborted) forwardAbort();
     opts.signal?.addEventListener('abort', forwardAbort, { once: true });
     let timedOut = false;
+    let deadlineHit = false;
+    const deadlineTimer =
+      deadlineMs > 0
+        ? setTimeout(() => {
+            deadlineHit = true;
+            timedOut = true;
+            turn.abort();
+          }, deadlineMs)
+        : undefined;
     try {
       let res: Response;
       const postTimer =
@@ -300,8 +464,16 @@ export class StreamAssistClient {
       try {
         res = await this.post(req, { ...opts, isSessionLess, signal: turn.signal });
       } catch (err) {
+        if (deadlineHit) {
+          yield deadlineEvent(deadlineMs);
+          return;
+        }
         if (timedOut) {
           yield timeoutEvent(idleMs);
+          return;
+        }
+        if (err instanceof CircuitOpenError) {
+          yield CIRCUIT_OPEN_EVENT;
           return;
         }
         yield {
@@ -318,18 +490,29 @@ export class StreamAssistClient {
       } finally {
         clearTimeout(postTimer);
       }
-      yield* this.readStream(
-        res,
-        opts,
-        isSessionLess,
-        idleMs,
-        () => {
-          timedOut = true;
-          turn.abort();
-        },
-        outcome,
-      );
+      try {
+        yield* this.readStream(
+          res,
+          opts,
+          isSessionLess,
+          idleMs,
+          () => {
+            timedOut = true;
+            turn.abort();
+          },
+          outcome,
+          turn.signal,
+        );
+      } catch (err) {
+        // The deadline cut the body mid-read: say so instead of a raw abort.
+        if (deadlineHit) {
+          yield deadlineEvent(deadlineMs);
+          return;
+        }
+        throw err;
+      }
     } finally {
+      clearTimeout(deadlineTimer);
       opts.signal?.removeEventListener('abort', forwardAbort);
     }
   }
@@ -341,6 +524,7 @@ export class StreamAssistClient {
     idleMs: number,
     onIdle: () => void,
     outcome: AttemptOutcome = {},
+    signal?: AbortSignal,
   ): AsyncGenerator<SseEvent> {
     if (!res.ok || !res.body) {
       const detail = await safeText(res);
@@ -361,7 +545,8 @@ export class StreamAssistClient {
     let policyBlocked = false;
     let skippedReasons: string[] | undefined;
 
-    const body = idleMs > 0 ? withIdleTimeout(res.body, idleMs, onIdle) : res.body;
+    const raw = signal ? withAbort(res.body, signal) : res.body;
+    const body = idleMs > 0 ? withIdleTimeout(raw, idleMs, onIdle) : raw;
     // `done` is a claim that the provider finished. A clean EOF is not that claim: a proxy or the
     // network can close the body mid-array and the bytes so far still parse. Only a terminal
     // answer state or the array's closing bracket proves completion.
@@ -554,17 +739,25 @@ export class StreamAssistClient {
       // 401 is *not* transient — it has its own invalidate-and-retry-once below — so
       // we never let it ride the backoff path.
       if (res.status !== 401 && defaultIsRetriable(new HttpError(res.status, ''))) {
-        throw new HttpError(res.status, `streamAssist failed (${res.status})`);
+        throw new HttpError(
+          res.status,
+          `streamAssist failed (${res.status})`,
+          parseRetryAfter(res.headers.get('retry-after')),
+        );
       }
       return res;
     };
 
     // Backoff applies to the pre-stream POST only; once we return a Response the caller
-    // consumes the body, after which a failure can no longer be safely retried.
+    // consumes the body, after which a failure can no longer be safely retried. The breaker
+    // counts POSTs that failed after their backoff was spent (not each inner attempt, so one
+    // turn's own retries cannot trip it): a run of such failures opens it for the whole client.
+    this.breaker?.assertClosed();
     let res: Response;
     try {
       res = await withRetry(send, this.retryOpts);
     } catch (err) {
+      if (!isAbort(err)) this.breaker?.recordFailure();
       // Exhausted/non-retriable transient → surface a real (non-2xx, no body) Response
       // so stream()'s existing `!res.ok` branch maps it to an http_<status> error.
       // A failed WIF exchange is sign-in, not a Gemini status: let stream() report auth_exchange.
@@ -572,6 +765,7 @@ export class StreamAssistClient {
         return new Response(null, { status: err.status });
       throw err; // a genuine network throw — stream() catches it as a network error.
     }
+    this.breaker?.recordSuccess();
     // On 401 the federated token likely expired mid-cache; re-exchange once (distinct
     // from backoff — we do not retry a 401 via jittered retries).
     if (res.status === 401 && this.tokens.invalidate) {

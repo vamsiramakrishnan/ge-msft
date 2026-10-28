@@ -38,6 +38,36 @@ export function documentChangedEvent(origin: EventOrigin): HostEvent {
   return { type: 'document-changed', surface: 'word', origin };
 }
 
+/** The Word annotation lifecycle events a bridge maps (WordApi 1.7 + the 1.8 popup action). */
+export type WordAnnotationEventType =
+  | 'annotation-clicked'
+  | 'annotation-inserted'
+  | 'annotation-removed'
+  | 'annotation-action';
+
+/**
+ * Build an annotation HostEvent. Annotation events carry no coauthor source in Office.js, so the
+ * origin is always `'local'` (a click/popup action is by definition this user's). `action` /
+ * `suggestion` ride only the `annotation-action` event.
+ */
+export function annotationEvent(
+  type: WordAnnotationEventType,
+  annotationId: string,
+  popup?: { readonly action: string; readonly suggestion?: string },
+): HostEvent {
+  if (type === 'annotation-action') {
+    return {
+      type,
+      surface: 'word',
+      origin: 'local',
+      annotationId,
+      action: popup?.action ?? '',
+      ...(popup?.suggestion !== undefined ? { suggestion: popup.suggestion } : {}),
+    };
+  }
+  return { type, surface: 'word', origin: 'local', annotationId };
+}
+
 /** Build a `comment-added` HostEvent. Text is optional (not all hosts surface it). */
 export function commentAddedEvent(
   origin: EventOrigin,

@@ -39,6 +39,14 @@ import { planInsertSlide } from './actuate-plan.js';
 import { documentChanged, selectionChanged } from './events.js';
 import { readPowerPointPage } from './document-reader.js';
 import { captureNativeDeckTemplate, readNativeLayout } from './deck-template.js';
+import {
+  bindingIdFor,
+  bindingRef,
+  provenanceFlags,
+  resolveBinding,
+  shapeReceipt,
+  slideReceipt,
+} from './receipts.js';
 
 /**
  * Upper bound on slides materialized by a single read port (`searchDocument`/
@@ -73,6 +81,9 @@ export const MAX_READ_SLIDES = 60;
  *   - There is NO PowerPoint image-insertion API in this typings version (`addImage` exists only on
  *     Excel's ShapeCollection, l.55471; PPT's `getImageAsBase64` is read-only), so `insert-image`
  *     stays un-advertised for this surface.
+ *   - `Presentation.bindings` (`add(shape, 'Shape', id)` / `getItemOrNullObject` / `Binding.getShape`)
+ *     → PowerPointApi 1.8; `Shape.tags` / `Slide.tags` (`TagCollection.add`) → 1.3;
+ *     `Slide.getImageAsBase64` → 1.8, `Shape.getImageAsBase64` → 1.10 (see `receipts.ts`).
  *   - PowerPoint exposes NO object-model selection/change event in this typings, so `watch` uses the
  *     Office-level `Office.EventType.DocumentSelectionChanged` (l.645) + `ActiveViewChanged` (l.582)
  *     with add/removeHandlerAsync (l.3875 / l.3965). Neither carries a coauthor source → origin 'local'.
@@ -90,7 +101,9 @@ export class PowerPointBridge implements DocBridge {
       'apply-slide-layout': (host, request) => host.applySlideLayout(request),
     },
     {
-      provenance: 'unsupported',
+      // Tags (1.3) persist the change marker and provenance record on the written shape or slide;
+      // each handler reports what actually persisted (`receipts.ts`), like the Excel bridge.
+      provenance: 'reported',
       capabilities: (host) => host.getCapabilities(),
       documentKey: (host) => host.documentKey(),
     },
@@ -422,6 +435,341 @@ export class PowerPointBridge implements DocBridge {
     return PowerPointBridge.dispatcher.dispatch(this, req);
   }
 
+  /**
+   * ADR-0007 / B3 — apply the inverse a landed receipt recorded, reversing change `req.undo.of`.
+   * `req.kind`/`req.params` are the ORIGINAL effect's and are never re-applied; only
+   * `req.undo.inverse` drives the host. Every op anchors by the id captured at apply-time and is
+   * conflict-checked against the live deck: a shape is found through the binding the original
+   * receipt minted (`ge-<changeId>`, 1.8) or the exact slide id the command named, never by
+   * position or text; an absent or moved object is a `target_conflict`, nothing else is touched.
+   * Receipts carry `undoOf`; verification is a readback or `unknown`, never assumed.
+   */
+  async applyInverse(req: ActuationRequest): Promise<ActuationResult> {
+    const undo = req.undo;
+    if (!undo)
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'no_inverse', message: 'applyInverse needs request.undo.' },
+      };
+    const inverse = undo.inverse;
+    const stamp = (result: ActuationResult): ActuationResult =>
+      result.ok ? { ...result, undoOf: undo.of } : result;
+    let mutationQueued = false;
+    try {
+      switch (inverse.op) {
+        case 'delete-object':
+          if (inverse.objectType === 'shape')
+            return stamp(
+              await nativeRun(async (ctx) => {
+                const target = await this.resolveUndoShape(ctx, req, inverse.name);
+                if ('error' in target) return target.error;
+                const slide = ctx.presentation.slides.getItem(target.slideId);
+                const shape = slide.shapes.getItemOrNullObject(target.shapeId);
+                shape.load('isNullObject');
+                await ctx.sync();
+                if (shape.isNullObject)
+                  return undoConflict(req, 'The added shape is already gone.');
+                mutationQueued = true;
+                shape.delete();
+                await ctx.sync();
+                const verification = await readbackGone(ctx, () =>
+                  slide.shapes.getItemOrNullObject(target.shapeId),
+                );
+                return {
+                  ok: true,
+                  changeId: req.changeId,
+                  kind: req.kind,
+                  location: `shape:${target.slideId}:${target.shapeId}`,
+                  completion: verification.status === 'verified' ? 'verified' : 'unknown',
+                  verification,
+                  ...provenanceFlags(req, 'unsupported'),
+                };
+              }),
+            );
+          if (inverse.objectType === 'slide')
+            return stamp(
+              await nativeRun(async (ctx) => {
+                const slides = ctx.presentation.slides;
+                slides.load('items/id');
+                await ctx.sync();
+                if (!slides.items.some((slide) => slide.id === inverse.name))
+                  return undoConflict(req, 'The added slide is already gone.');
+                mutationQueued = true;
+                slides.getItem(inverse.name).delete();
+                await ctx.sync();
+                let verification: NonNullable<ActuationResult['verification']> = {
+                  status: 'unknown',
+                };
+                try {
+                  slides.load('items/id');
+                  await ctx.sync();
+                  verification = {
+                    status: slides.items.some((slide) => slide.id === inverse.name)
+                      ? 'mismatch'
+                      : 'verified',
+                  };
+                } catch {
+                  /* The delete synced; the readback did not. Report the uncertainty, not success. */
+                }
+                return {
+                  ok: true,
+                  changeId: req.changeId,
+                  kind: req.kind,
+                  location: `slide:${inverse.name}`,
+                  completion: verification.status === 'verified' ? 'verified' : 'unknown',
+                  verification,
+                  ...provenanceFlags(req, 'unsupported'),
+                };
+              }),
+            );
+          return unsupportedInverse(req, `delete-object ${inverse.objectType}`);
+        case 'restore-text': {
+          const anchor = /^(?:pp:)?shape:([^:]+):(.+)$/.exec(inverse.anchor.trim());
+          if (!anchor)
+            return undoConflict(req, 'The recorded text anchor does not name a slide and shape.');
+          const [, slideRef, shapeRef] = anchor;
+          return stamp(
+            await nativeRun(async (ctx) => {
+              const target = await resolveShapeTarget(ctx, slideRef!, shapeRef!);
+              if ('error' in target) return undoConflict(req, target.error, target.reason);
+              const slide = ctx.presentation.slides.getItem(target.slideId);
+              const shape = slide.shapes.getItemOrNullObject(target.shapeId);
+              shape.load('isNullObject,type');
+              await ctx.sync();
+              if (shape.isNullObject || !TEXT_SHAPE_TYPES.has(shape.type))
+                return undoConflict(req, 'The shape whose text was changed no longer exists.');
+              const range = shape.textFrame.textRange;
+              range.load('text');
+              await ctx.sync();
+              const beforeHash = await contentHash({ text: range.text ?? '' });
+              if (!inverse.expectedTextHash || inverse.expectedTextHash !== beforeHash)
+                return undoConflict(
+                  req,
+                  inverse.expectedTextHash
+                    ? 'The shape text changed since the original write. Review it before undoing.'
+                    : 'The original shape text could not be verified. Review it before undoing.',
+                  'conflict',
+                );
+              mutationQueued = true;
+              writeParagraphs(range, inverse.priorText);
+              await ctx.sync();
+              let verification: NonNullable<ActuationResult['verification']> = {
+                status: 'unknown',
+                beforeHash,
+              };
+              try {
+                range.load('text');
+                await ctx.sync();
+                verification = {
+                  status: range.text === inverse.priorText ? 'verified' : 'mismatch',
+                  beforeHash,
+                  afterHash: await contentHash({ text: range.text ?? '' }),
+                };
+              } catch {
+                /* The restore synced; the readback did not. */
+              }
+              return {
+                ok: true,
+                changeId: req.changeId,
+                kind: req.kind,
+                location: `shape:${target.slideId}:${target.shapeId}`,
+                completion: verification.status === 'verified' ? 'verified' : 'unknown',
+                verification,
+                ...provenanceFlags(req, 'unsupported'),
+              };
+            }),
+          );
+        }
+        case 'restore-shape-format':
+          return stamp(
+            await nativeRun(async (ctx) => {
+              const target = await this.resolveUndoShape(ctx, req, inverse.shapeId);
+              if ('error' in target) return target.error;
+              const slide = ctx.presentation.slides.getItem(target.slideId);
+              const shape = slide.shapes.getItemOrNullObject(target.shapeId);
+              shape.load('isNullObject');
+              await ctx.sync();
+              if (shape.isNullObject)
+                return undoConflict(req, 'The formatted shape no longer exists.');
+              // Only the facets THIS change recorded are restored; an empty prior value means the
+              // host reported nothing before, which cannot be written back.
+              const prior = inverse.prior;
+              const facets: Array<() => void> = [];
+              if (prior['fill']) facets.push(() => (shape.fill.foregroundColor = prior['fill']!));
+              if (prior['line']) facets.push(() => (shape.lineFormat.color = prior['line']!));
+              const font = shape.textFrame.textRange.font;
+              if (prior['font.bold'] !== undefined && prior['font.bold'] !== '')
+                facets.push(() => (font.bold = prior['font.bold'] === 'true'));
+              if (prior['font.italic'] !== undefined && prior['font.italic'] !== '')
+                facets.push(() => (font.italic = prior['font.italic'] === 'true'));
+              if (prior['font.underline'])
+                facets.push(
+                  () =>
+                    (font.underline = prior[
+                      'font.underline'
+                    ] as PowerPoint.ShapeFontUnderlineStyle),
+                );
+              if (prior['font.color']) facets.push(() => (font.color = prior['font.color']!));
+              if (prior['font.size']) facets.push(() => (font.size = Number(prior['font.size'])));
+              if (prior['font.name']) facets.push(() => (font.name = prior['font.name']!));
+              if (facets.length === 0)
+                return undoConflict(req, 'This change recorded no prior formatting to restore.');
+              mutationQueued = true;
+              for (const apply of facets) apply();
+              await ctx.sync();
+              return {
+                ok: true,
+                changeId: req.changeId,
+                kind: req.kind,
+                location: `shape:${target.slideId}:${target.shapeId}`,
+                // Formatting is written facet by facet with no single readback value to compare.
+                completion: 'unknown',
+                verification: { status: 'unknown', message: 'Formatting restored; not read back.' },
+                ...provenanceFlags(req, 'unsupported'),
+              };
+            }),
+          );
+        case 'move-slide': {
+          const slideId = req.params.target?.slideId;
+          if (!slideId) return undoConflict(req, 'The moved slide is not named in the change.');
+          return stamp(
+            await nativeRun(async (ctx) => {
+              const slides = ctx.presentation.slides;
+              slides.load('items/id');
+              await ctx.sync();
+              if (!slides.items.some((slide) => slide.id === slideId))
+                return undoConflict(req, 'The moved slide no longer exists.');
+              if (inverse.toIndex < 0 || inverse.toIndex >= slides.items.length)
+                return undoConflict(req, 'The recorded position is outside the deck now.');
+              mutationQueued = true;
+              slides.getItem(slideId).moveTo(inverse.toIndex);
+              await ctx.sync();
+              let verification: NonNullable<ActuationResult['verification']> = {
+                status: 'unknown',
+              };
+              try {
+                slides.load('items/id');
+                await ctx.sync();
+                verification = {
+                  status: slides.items[inverse.toIndex]?.id === slideId ? 'verified' : 'mismatch',
+                };
+              } catch {
+                /* The move synced; the readback did not. */
+              }
+              return {
+                ok: true,
+                changeId: req.changeId,
+                kind: req.kind,
+                location: `slide:${slideId}`,
+                completion: verification.status === 'verified' ? 'verified' : 'unknown',
+                verification,
+                ...provenanceFlags(req, 'unsupported'),
+              };
+            }),
+          );
+        }
+        case 'restore-slide':
+          return stamp(
+            await nativeRun(async (ctx) => {
+              const slides = ctx.presentation.slides;
+              const before = slides.getCount();
+              await ctx.sync();
+              const options: PowerPoint.InsertSlideOptions = {};
+              if (inverse.targetSlideId !== undefined) {
+                slides.load('items/id');
+                await ctx.sync();
+                if (!slides.items.some((slide) => slide.id === inverse.targetSlideId))
+                  return undoConflict(req, 'The slide it was next to no longer exists.');
+                options.targetSlideId = inverse.targetSlideId;
+              }
+              mutationQueued = true;
+              ctx.presentation.insertSlidesFromBase64(
+                inverse.base64,
+                Object.keys(options).length ? options : undefined,
+              );
+              await ctx.sync();
+              let verification: NonNullable<ActuationResult['verification']> = {
+                status: 'unknown',
+              };
+              try {
+                const after = slides.getCount();
+                await ctx.sync();
+                verification = { status: after.value > before.value ? 'verified' : 'mismatch' };
+              } catch {
+                /* The insert synced; the count readback did not. */
+              }
+              return {
+                ok: true,
+                changeId: req.changeId,
+                kind: req.kind,
+                location: 'inserted-deck',
+                completion: verification.status === 'verified' ? 'verified' : 'unknown',
+                verification,
+                ...provenanceFlags(req, 'unsupported'),
+              };
+            }),
+          );
+        case 'apply-layout':
+          return unsupportedInverse(
+            req,
+            'apply-layout (a layout restore needs the captured master, layout and hash; apply the layout again from the template)',
+          );
+        default:
+          return unsupportedInverse(req, inverse.op);
+      }
+    } catch (error) {
+      if (mutationQueued)
+        return unknownActuationResult(
+          req,
+          `PowerPoint did not confirm the undo${hostErrorSuffix(error)}. Inspect the deck before trying again.`,
+        );
+      return undoConflict(req, 'The deck could not be re-read before undoing.', 'reread_failed');
+    }
+  }
+
+  /**
+   * The slide + shape an undo addresses: the binding the ORIGINAL receipt minted for the change
+   * (`ge-<changeId>`, exact and reorder-proof) when the host has bindings, else the exact slide id
+   * the original command named. Positions (`slide=2`, `last`) are never trusted for an undo, and
+   * the resolved shape id must equal the recorded one.
+   */
+  private async resolveUndoShape(
+    ctx: PowerPoint.RequestContext,
+    req: ActuationRequest,
+    shapeId: string,
+  ): Promise<{ slideId: string; shapeId: string } | { error: ActuationResult }> {
+    if (isSet('PowerPointApi', '1.8')) {
+      const bound = await resolveBinding(ctx, bindingIdFor(req.undo!.of));
+      if (!('error' in bound)) {
+        if (bound.shapeId !== shapeId)
+          return {
+            error: undoConflict(
+              req,
+              'The binding for this change now points at a different shape; nothing was changed.',
+            ),
+          };
+        return bound;
+      }
+    }
+    const slideRef = req.params.target?.slideId?.trim().replace(/^(?:pp:)?slide:/i, '');
+    if (slideRef) {
+      const slides = ctx.presentation.slides;
+      slides.load('items/id');
+      await ctx.sync();
+      if (slides.items.some((slide) => slide.id === slideRef))
+        return { slideId: slideRef, shapeId };
+    }
+    return {
+      error: undoConflict(
+        req,
+        'The changed shape cannot be found by its recorded anchor (no binding, and the command ' +
+          'named the slide by position). Edit it in PowerPoint directly.',
+      ),
+    };
+  }
+
   private async applySlideLayout(req: ActuationRequest): Promise<ActuationResult> {
     const selected = req.params.layout;
     const slideId = req.params.target?.slideId;
@@ -487,6 +835,7 @@ export class PowerPointBridge implements DocBridge {
         } catch {
           /* Preserve known dispatched outcome, not false completion. */
         }
+        const extras = await slideReceipt(ctx, req, slide);
         return {
           ok: true,
           kind: req.kind,
@@ -494,6 +843,7 @@ export class PowerPointBridge implements DocBridge {
           location: `slide:${slideId}`,
           completion: verified ? 'verified' : 'unknown',
           verification: { status: verified ? 'verified' : 'unknown' },
+          ...extras,
         };
       });
     } catch (error) {
@@ -613,6 +963,7 @@ export class PowerPointBridge implements DocBridge {
         } catch {
           /* The write sync succeeded. Preserve the inverse and report failed readback separately. */
         }
+        const extras = await shapeReceipt(ctx, req, shape, slide);
         return {
           ok: true,
           changeId: req.changeId,
@@ -620,11 +971,19 @@ export class PowerPointBridge implements DocBridge {
           location: `shape:${target.slideId}:${target.shapeId}`,
           completion: verification.status === 'verified' ? 'verified' : 'unknown',
           verification,
-          inverse: {
-            op: 'restore-text',
-            anchor: `pp:shape:${target.slideId}:${target.shapeId}`,
-            priorText,
-          },
+          inverse:
+            verification.status === 'verified' && verification.afterHash
+              ? {
+                  op: 'restore-text',
+                  anchor: `pp:shape:${target.slideId}:${target.shapeId}`,
+                  priorText,
+                  expectedTextHash: verification.afterHash,
+                }
+              : {
+                  op: 'not-reversible',
+                  reason: 'The text written to the shape could not be verified.',
+                },
+          ...extras,
         };
       });
     } catch (error) {
@@ -667,7 +1026,14 @@ export class PowerPointBridge implements DocBridge {
         await ctx.sync();
         const location =
           plan.slideCount === undefined ? 'inserted-deck' : `inserted-deck:${plan.slideCount}`;
-        return { ok: true, changeId: req.changeId, kind: req.kind, location };
+        // The merged slides have no handle here, so nothing durable can be stamped on them.
+        return {
+          ok: true,
+          changeId: req.changeId,
+          kind: req.kind,
+          location,
+          ...provenanceFlags(req, 'unsupported'),
+        };
       });
     }
 
@@ -710,6 +1076,8 @@ export class PowerPointBridge implements DocBridge {
         if (!wrote()) return unknownActuationResult(req, SHIFTED_WHILE_WRITING);
         newIndex = index;
         knownIds = ids;
+        // By position: the slide's id is still provisional inside this request (see above).
+        const extras = await slideReceipt(ctx, req, ctx.presentation.slides.getItemAt(index));
         // A position past the end means "append": the slide is already there.
         if (plan.targetIndex !== undefined && plan.targetIndex < index) {
           try {
@@ -725,6 +1093,7 @@ export class PowerPointBridge implements DocBridge {
               changeId: req.changeId,
               kind: req.kind,
               location: `slide:${slideId}`,
+              ...extras,
               error: {
                 code: 'not_moved',
                 message:
@@ -740,6 +1109,7 @@ export class PowerPointBridge implements DocBridge {
           changeId: req.changeId,
           kind: req.kind,
           location: `slide:${slideId}`,
+          ...extras,
         };
       } catch (error) {
         // The slide may already be in the deck; never report an unconfirmed write as success.
@@ -817,12 +1187,14 @@ export class PowerPointBridge implements DocBridge {
         added.load('id');
         await ctx.sync();
         const mintedId = added.id;
+        const extras = await shapeReceipt(ctx, req, added, slide);
         return {
           ok: true,
           changeId: req.changeId,
           kind: req.kind,
           location: `shape:${target.slideId}:${mintedId}`,
           inverse: { op: 'delete-object', objectType: 'shape', name: mintedId },
+          ...extras,
         };
       });
     } catch (error) {
@@ -977,12 +1349,14 @@ export class PowerPointBridge implements DocBridge {
           shape.setZOrder(Z_ORDER[format.zOrder]);
         }
         await ctx.sync();
+        const extras = await shapeReceipt(ctx, req, shape, slide);
         return {
           ok: true,
           changeId: req.changeId,
           kind: req.kind,
           location: `shape:${target.slideId}:${target.shapeId}`,
           inverse: { op: 'restore-shape-format', shapeId: target.shapeId, prior },
+          ...extras,
         };
       });
     } catch (error) {
@@ -1161,12 +1535,19 @@ export class PowerPointBridge implements DocBridge {
         await ctx.sync();
         if (wrote && !wrote()) return unknownActuationResult(req, SHIFTED_WHILE_WRITING);
         const mintedId = added.id;
+        // The table's slide by position: a `slide=new` slide's id is still provisional here.
+        const tableSlide =
+          newSlideIndex !== undefined
+            ? ctx.presentation.slides.getItemAt(newSlideIndex)
+            : ctx.presentation.slides.getItem(slideLocation);
+        const extras = await shapeReceipt(ctx, req, added, tableSlide);
         const landed: ActuationResult = {
           ok: true,
           changeId: req.changeId,
           kind: req.kind,
           location: `shape:${slideLocation}:${mintedId}`,
           inverse: { op: 'delete-object', objectType: 'shape', name: mintedId },
+          ...extras,
         };
         // `slide=new at=N`: the host only appends, so move the finished slide into place.
         const targetIndex = req.params.target?.slideIndex;
@@ -2291,6 +2672,14 @@ async function resolveShapeTarget(
   slideRef: string,
   shapeRef: string,
 ): Promise<{ slideId: string; shapeId: string } | { error: string; reason: ActuationErrorReason }> {
+  // `binding:<id>` — the anchor a receipt minted (`bindingId`); it outlives id shifts and reorders.
+  const bound = bindingRef(shapeRef);
+  if (bound !== undefined) {
+    const resolved = await resolveBinding(ctx, bound);
+    if ('error' in resolved)
+      return { error: resolved.error, reason: resolved.gone ? 'shape_gone' : 'shape_not_found' };
+    return resolved;
+  }
   const slide = await resolveSlideRef(ctx, slideRef);
   if ('error' in slide) return slide;
   const collection = ctx.presentation.slides.getItem(slide.slideId).shapes;
@@ -2318,7 +2707,8 @@ async function resolveShapeTarget(
       `Shape ${JSON.stringify(key.slice(0, 64))} was not found on that slide (there are no shape ` +
       `numbers or names). For the slide title use title as the shape: shape pp:shape:${slideKey}:title ` +
       `"…" (or shape=title on /format-shape). Otherwise use one of its shape ids: ` +
-      `${shown || 'the slide has no shapes'}. A shape you added has the id in its add-shape result.`,
+      `${shown || 'the slide has no shapes'}. A shape you added has the id in its add-shape result ` +
+      `(or address it by its receipt's bindingId: shape=binding:<id>).`,
     reason: 'shape_not_found',
   };
 }
@@ -2556,6 +2946,45 @@ async function readNewSlideIdAt(index: number, ids: NewSlideIds): Promise<string
     });
   } catch {
     return undefined;
+  }
+}
+
+/** A failed undo: the recorded anchor no longer matches the live deck; nothing was touched. */
+function undoConflict(
+  req: ActuationRequest,
+  message: string,
+  reason: ActuationErrorReason = 'shape_gone',
+): ActuationResult {
+  return {
+    ok: false,
+    changeId: req.changeId,
+    kind: req.kind,
+    degraded: true,
+    error: { code: 'target_conflict', message, reason },
+  };
+}
+
+function unsupportedInverse(req: ActuationRequest, what: string): ActuationResult {
+  return {
+    ok: false,
+    changeId: req.changeId,
+    kind: req.kind,
+    error: { code: 'unsupported', message: `This PowerPoint cannot undo ${what} yet.` },
+  };
+}
+
+/** Read back whether a deleted object is gone; an unreadable host leaves the status unknown. */
+async function readbackGone(
+  ctx: PowerPoint.RequestContext,
+  lookup: () => { isNullObject: boolean; load(props: string): unknown },
+): Promise<NonNullable<ActuationResult['verification']>> {
+  try {
+    const probe = lookup();
+    probe.load('isNullObject');
+    await ctx.sync();
+    return { status: probe.isNullObject ? 'verified' : 'mismatch' };
+  } catch {
+    return { status: 'unknown' };
   }
 }
 

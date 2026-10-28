@@ -24,6 +24,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "m365-surface-commander" / "scripts"))
 import surface_cli  # noqa: E402
+from surface_cli.budget import DEFAULT_LIMITS  # noqa: E402
 
 CORPUS = HERE / "eval-corpus.jsonl"
 
@@ -31,10 +32,12 @@ CORPUS = HERE / "eval-corpus.jsonl"
 def _flagged(case) -> bool:
     """The helper's verdict: does it flag this program (an error or a budget overrun)?"""
     result = surface_cli.analyze(case["program"], set(case.get("capabilities") or []) or None)
+    # The budget defaults are the generated manifest's `limits` (the same numbers the runtime gate
+    # re-checks); a case may narrow them to seed a budget defect against a smaller signature.
     limits = {
-        "max_effects": case.get("max_effects", 8),
-        "max_reads": case.get("max_reads", 8),
-        "max_cells": case.get("max_cells", 10000),
+        "max_effects": case.get("max_effects", DEFAULT_LIMITS["max_effects"]),
+        "max_reads": case.get("max_reads", DEFAULT_LIMITS["max_reads"]),
+        "max_cells": case.get("max_cells", DEFAULT_LIMITS["max_cells"]),
     }
     return bool(result["errors"]) or surface_cli._budget_exceeded(result, limits)
 

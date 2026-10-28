@@ -25,6 +25,7 @@ import {
   type WorkspaceSource,
 } from '@ge/contracts';
 import { TRANSFORM_USAGE } from './compose.js';
+import { MAX_EACH_ROWS } from './each-expansion.js';
 import { discoverCommands, renderCommandCard, writeSignatures } from './capability-catalog.js';
 import { HELP_INLINE_MAX_BYTES } from './result-store.js';
 
@@ -568,6 +569,19 @@ function paramsFromInvoke(
         contentControlId: props.contentControlId ?? props.id ?? props.cc ?? '',
       };
       break;
+    case 'insert-annotation': {
+      // `/insert-annotation match="…" text="…" [suggestion="…"] [severity=info|warning|error]`.
+      // An unknown severity is dropped (the bridge defaults it), never passed through as a string.
+      const severity = props.severity;
+      const annotation = {
+        ...(props.suggestion !== undefined ? { suggestion: props.suggestion } : {}),
+        ...(severity === 'info' || severity === 'warning' || severity === 'error'
+          ? { severity }
+          : {}),
+      };
+      if (Object.keys(annotation).length > 0) p.annotation = annotation;
+      break;
+    }
     case 'insert-content-control':
       p.contentControl = {
         type: props.type ?? args[0] ?? 'richText',
@@ -1424,8 +1438,11 @@ export function renderGrammarPrompt(manifest: CapabilityManifest): string {
     `  read <selector> | filter <col><op><val> | sum <col>   -> compute over a read`,
     `  let $x = read <selector> | filter <col>=<val>          -> bind a value; reuse it as $x`,
     `  $x | count                                              -> a $var can be a pipeline source`,
+    `  let $n = 5 / let $s = "text" / let $t = table [["col"],["v"]] -> literal values (JSON rows, header first)`,
     `  transforms:`,
     ...transformLines,
+    `  each $row in $table:  …effect lines using $row.<column>…  end`,
+    `    -> one write per row (max ${MAX_EACH_ROWS} rows, within the write cap); expanded before approval`,
     ``,
     `COMPOSED WRITES — a write's value/text may CONSUME a composed value: write \`$var\` or a`,
     `parenthesized pipeline \`( ... )\` and I resolve it before the write. Everything else is a`,
@@ -1469,8 +1486,10 @@ function renderTransformHelp(): string {
     'read <selector> | filter <col><op><val> | sum <col>   -> compute over a read',
     'let $x = read <selector> | filter <col>=<val>          -> bind a value; reuse it as $x',
     '$x | count                                              -> a $var can be a pipeline source',
+    'let $n = 5 / let $s = "text" / let $t = table [["col"],["v"]] -> literal values (JSON rows, header first)',
     'transforms:',
     ...Object.values(TRANSFORM_USAGE).map((u) => `  ${u}`),
+    `each $row in $table:  …effect lines using $row.<column>…  end  -> one write per row (max ${MAX_EACH_ROWS} rows), expanded before approval`,
   ].join('\n');
 }
 

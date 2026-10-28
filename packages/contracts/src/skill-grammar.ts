@@ -156,7 +156,7 @@ export function shadowsBuiltin(name: string): boolean {
  * Keywords that structure a program rather than name a verb: a recipe named `let`/`def`/`end`
  * would be routed before the expression parser and could capture every binding line.
  */
-const STRUCTURAL_KEYWORDS: ReadonlySet<string> = new Set(['let', 'def', 'end', 'finish']);
+const STRUCTURAL_KEYWORDS: ReadonlySet<string> = new Set(['let', 'def', 'end', 'finish', 'each']);
 
 /* ───────────────────────── header parsing ─────────────────────────── */
 

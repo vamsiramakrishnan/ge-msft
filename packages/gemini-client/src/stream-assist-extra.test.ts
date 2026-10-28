@@ -52,8 +52,10 @@ describe('StreamAssistClient — network and failure paths', () => {
     });
     const client = new StreamAssistClient(tokens, cfg(), f as never, noSleep);
     const events = await collect(client.stream(assistReq()));
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    // One turn-level retry is announced before the failure is final.
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'activity' });
+    expect(events[1]).toMatchObject({
       type: 'error',
       code: 'network',
       message: 'Failed to fetch',

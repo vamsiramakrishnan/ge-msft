@@ -32,6 +32,7 @@ describe('Word capability closure', () => {
       'tracked-change',
       'fill-content-control',
       'add-comment',
+      'insert-annotation',
       'comment-reply',
       'apply-style',
       'insert-table',

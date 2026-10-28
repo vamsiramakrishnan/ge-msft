@@ -31,6 +31,7 @@ export * from './quick-actions.js';
 export * from './expr-grammar.js';
 export * from './language-manifest.js';
 export * from './skill-grammar.js';
+export * from './each-grammar.js';
 export * from './manifest-lint.js';
 export * from './release-profile.js';
 export * from './docfs.js';

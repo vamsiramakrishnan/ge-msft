@@ -168,7 +168,7 @@ export async function certifyNativeFixture(
           )
             throw new Error('Native fixture host or document changed during source validation.');
         },
-        approvePlan: async (effects) => {
+        approvePlan: async (effects, phase) => {
           const requests = effects.map((effect) => ActuationRequestSchema.parse(effect.request));
           const valid =
             requests.length === expected.length &&
@@ -186,7 +186,7 @@ export async function certifyNativeFixture(
             return false;
           }
           let accepted = false;
-          if (options.approvePlan) accepted = await options.approvePlan(effects);
+          if (options.approvePlan) accepted = await options.approvePlan(effects, phase);
           else if (options.approveWrite) {
             accepted = true;
             for (const request of requests) {

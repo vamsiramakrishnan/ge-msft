@@ -13,14 +13,14 @@ import { ActuationRequestSchema, parseCommandLine } from '@ge/contracts';
 import type { StreamAssistClient, StreamOptions } from '@ge/gemini-client';
 import type { AssistRequest } from '@ge/contracts';
 import { TriggerRegistry } from '@ge/triggers';
-import { AssistSession, type CommandLoopEvent } from './assist-session.js';
+import { AssistSession, type CommandLoopEvent, type PlanEffect } from './assist-session.js';
 import {
   compileCommand,
   normalizeCommentId,
   renderCommandHelp,
   renderGrammarPrompt,
 } from './command-protocol.js';
-import type { DocBridge } from './bridge.js';
+import type { DependencyImpact, DocBridge, FormulaPreview } from './bridge.js';
 import { asChangeId } from '@ge/contracts';
 
 /* ───────────────────────── compileCommand unit tests ──────────────────── */
@@ -2640,5 +2640,110 @@ describe('explicit native Word insertion positions', () => {
         mintChangeId: () => 'position-fixture' as ActuationRequest['changeId'],
       }),
     ).toHaveProperty('error');
+  });
+});
+
+/* ───────────── C4 — evaluate-before-write preview and dependency impact (Excel) ───────────── */
+
+describe('AssistSession — Excel formula preview and dependency impact', () => {
+  class PreviewingExcelBridge extends FakeExcelBridge {
+    previewed: ActuationRequest[] = [];
+    impactAsked: string[] = [];
+    failPreview = false;
+    failImpact = false;
+    previewFormulas(request: ActuationRequest): Promise<FormulaPreview[]> {
+      this.previewed.push(request);
+      if (this.failPreview) return Promise.reject(new Error('evaluate refused'));
+      const first = request.params.cells?.[0]?.[0] ?? request.params.cellFormulas?.[0]?.[0] ?? '';
+      return Promise.resolve([{ cell: 'Sales!D2', formula: first, value: '620' }]);
+    }
+    dependencyImpact(range: string): Promise<DependencyImpact> {
+      this.impactAsked.push(range);
+      if (this.failImpact) return Promise.reject(new Error('below ExcelApi 1.15'));
+      return Promise.resolve({
+        precedents: ['Sales!A2'],
+        dependents: ['Summary!B2'],
+        truncated: false,
+      });
+    }
+  }
+
+  it('attaches the evaluated formula to the plan-preview effect and still runs the write', async () => {
+    const bridge = new PreviewingExcelBridge();
+    const { client } = fakeClient(['```cmd\nset Sales!D2 =SUM(C2:C4)\n```', '```cmd\ndone\n```']);
+    const session = new AssistSession(bridge, client, { unit });
+
+    let previewed: PlanEffect[] | undefined;
+    const events = await collect(
+      session.runCommands('total the revenue', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    expect(bridge.previewed).toHaveLength(1);
+    expect(previewed?.[0]?.dryRun?.evaluated).toEqual([
+      { cell: 'Sales!D2', formula: '=SUM(C2:C4)', value: '620' },
+    ]);
+    expect(loopEvents(events).some((e) => e.type === 'write-result')).toBe(true);
+    expect(bridge.applied).toHaveLength(1);
+  });
+
+  it('never asks for a preview of a literal write, and a failed preview changes nothing', async () => {
+    const bridge = new PreviewingExcelBridge();
+    bridge.failPreview = true;
+    const { client } = fakeClient([
+      '```cmd\nset Sales!D2 "42"\nset Sales!D3 =C2*2\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, client, { unit });
+
+    let previewed: PlanEffect[] | undefined;
+    await collect(
+      session.runCommands('write two cells', {
+        approvePlan: (effects) => {
+          previewed = effects;
+          return true;
+        },
+      }),
+    );
+
+    // Only the formula write was offered for evaluation; the literal never was.
+    expect(bridge.previewed.map((r) => r.params.cells)).toEqual([[['=C2*2']]]);
+    expect(previewed?.every((e) => e.dryRun?.evaluated === undefined)).toBe(true);
+    expect(bridge.applied).toHaveLength(2);
+  });
+
+  it('adds precedents/dependents to `properties` of an Excel range, and omits them when unavailable', async () => {
+    for (const failImpact of [false, true]) {
+      const bridge = new PreviewingExcelBridge();
+      bridge.failImpact = failImpact;
+      const { client } = fakeClient([
+        '```cmd\nproperties xl:Sales!A1:C9\n```',
+        '```cmd\ndone\n```',
+      ]);
+      const session = new AssistSession(bridge, client, { unit });
+
+      const events = await collect(session.runCommands('What feeds this range?'));
+      const read = loopEvents(events).find((e) => e.type === 'read-result');
+
+      expect(bridge.impactAsked).toEqual(['Sales!A1:C9']);
+      const result = (read as { result?: Record<string, unknown> } | undefined)?.result;
+      expect(result?.hostRef).toEqual({
+        type: 'excel.range',
+        worksheet: 'Sales',
+        address: 'A1:C9',
+      });
+      if (failImpact) expect(result?.dependencyImpact).toBeUndefined();
+      else
+        expect(result?.dependencyImpact).toEqual({
+          precedents: ['Sales!A2'],
+          dependents: ['Summary!B2'],
+          truncated: false,
+        });
+      expect(bridge.applied).toEqual([]);
+    }
   });
 });

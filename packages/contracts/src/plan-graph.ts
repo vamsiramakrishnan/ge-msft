@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { ActuationKindSchema, ActuationRequestSchema, type ActuationKind } from './capability.js';
+import {
+  ActuationKindSchema,
+  ActuationRequestSchema,
+  type ActuationKind,
+  type ActuationRequest,
+} from './capability.js';
 
 /**
  * ADR-0008 §7 — the dependency-aware effect plan (the DAG the runtime compiles a linear program into).
@@ -51,6 +56,7 @@ export const EffectPlanNodeSchema = z.object({
   writes: z.array(ResourceRefSchema),
   approvalClass: ApprovalClassSchema,
   reversible: z.boolean(),
+  /** Stable intent hash (see {@link effectIdempotencyKey}); not the changeId. */
   idempotencyKey: z.string(),
   failurePolicy: FailurePolicySchema,
 });
@@ -70,6 +76,9 @@ export type PlanNode = z.infer<typeof PlanNodeSchema>;
 export const IRREVERSIBLE_KINDS: ReadonlySet<ActuationKind> = new Set([
   'insert-text',
   'insert-ooxml',
+  // Word's native critique can be deleted, but its comment fallback has no recorded inverse.
+  // Planning is kind-based, so use the stronger approval until it can select by host capability.
+  'insert-annotation',
   'resolve-revisions',
   'send-activity-notification',
   'delete-message',
@@ -121,6 +130,56 @@ export function approvalClassOf(kind: ActuationKind): ApprovalClass {
 /** Whether a kind has a reliable inverse (the saga can compensate it). */
 export function isReversibleKind(kind: ActuationKind): boolean {
   return !IRREVERSIBLE_KINDS.has(kind);
+}
+
+/** JSON with object keys sorted at every depth, so equal intents serialize identically. */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(record)
+          .sort()
+          .filter((key) => record[key] !== undefined)
+          .map((key) => [key, record[key]]),
+      );
+    }
+    return item;
+  });
+}
+
+/** FNV-1a (64-bit, computed in BigInt) over UTF-8 bytes — a fast, synchronous, non-cryptographic hash. */
+function fnv1a64(text: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(text)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/** The shape of an idempotency key: `intent:` + 16 lowercase hex digits. */
+export const IDEMPOTENCY_KEY_RE = /^intent:[a-f0-9]{16}$/;
+
+/**
+ * ADR-0008 §7 — the STABLE idempotency key of an effect: a hash of its intent (surface, kind,
+ * params, preconditions), independent of the client-minted `changeId`. Two requests that would do
+ * the same thing to the same target under the same preconditions share a key, so a retried or
+ * resumed program can find the prior journaled outcome of an effect instead of landing it twice.
+ * The key is a lookup handle for the task journal, never an authorization or an integrity token
+ * (the journal's `sha256` fingerprint remains the integrity check).
+ */
+export function effectIdempotencyKey(
+  request: Pick<ActuationRequest, 'surface' | 'kind' | 'params' | 'preconditions'>,
+): string {
+  return `intent:${fnv1a64(
+    canonicalJson({
+      surface: request.surface,
+      kind: request.kind,
+      params: request.params,
+      preconditions: request.preconditions ?? [],
+    }),
+  )}`;
 }
 
 // Re-export so consumers importing from plan-graph get the kind schema without a second import.

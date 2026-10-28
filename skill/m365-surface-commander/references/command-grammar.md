@@ -157,18 +157,57 @@ write.**
 read <selector> | filter <col><op><val> | sum <col>     -> a value
 let $x = read <selector> | filter region=East           -> bind it; reuse as $x
 $x | count                                              -> a $var can start a pipeline
+let $n = 5                                              -> a number literal
+let $s = "text"                                         -> a text literal (one double-quoted string)
+let $t = table [["region","amount"],["East",100]]       -> a table literal: JSON rows, header first
 ```
+
+A literal is data the program itself carries (never host content). A `table` literal is a JSON
+array of rows; the first row is the header, cells are stringified, rows are padded to the header
+width. `table <range>` (no `[`) is still the Excel effect and cannot start a pipeline.
 
 Transforms:
 
-| Transform                     | Usage                                                                        |
-| ----------------------------- | ---------------------------------------------------------------------------- |
-| `filter`                      | `filter <col><op><val>` — ops: `= != > < >= <= contains`; keep matching rows |
-| `select`                      | `select <col,col,…>` — keep only these columns                               |
-| `sum` / `avg` / `min` / `max` | `<agg> <col>` — over a numeric column → a number                             |
-| `count`                       | `count` — number of rows → a number                                          |
-| `sort`                        | `sort <col> [desc]` — sort rows by a column                                  |
-| `head` / `tail`               | `head <n>` / `tail <n>` — first / last n rows                                |
+| Transform                     | Usage                                                                                                                                    |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter`                      | `filter <pred>` — a comparison `<col><op><val>` (ops: `= != > < >= <= contains`), or several joined with `and` / `or` / `not` and `( )` |
+| `select`                      | `select <col,col,…>` — keep only these columns                                                                                           |
+| `sum` / `avg` / `min` / `max` | `<agg> <col>` — over a numeric column → a number                                                                                         |
+| `count`                       | `count` — number of rows → a number                                                                                                      |
+| `sort`                        | `sort <col> [desc]` — sort rows by a column                                                                                              |
+| `head` / `tail`               | `head <n>` / `tail <n>` — first / last n rows                                                                                            |
+| `derive`                      | `derive <new> = <col\|num> <+ - * /> <col\|num>` or `derive <new> = <fn>(<args>)` — fn: `upper lower trim len concat round year month day datediff` |
+| `join`                        | `join $other on <col>[=<otherCol>] [left\|inner]` — combine rows with a bound table (inner by default; `left` keeps unmatched rows)      |
+| `group`                       | `group <col,…> agg <fn>(<col>) as <name>[, …]` — fn: `sum avg min max count` (`count(*)` = rows); one row per group                       |
+| `distinct`                    | `distinct [<col,…>]` — unique rows, or the unique values of the listed columns                                                           |
+| `rename`                      | `rename <old>=<new>[, …]` — rename columns                                                                                               |
+| `sed`                         | `sed s/pattern/replacement/[g]` — substitution over cells or text                                                                        |
+
+Predicates: `not` binds tightest, then `and`, then `or`; quote a value that contains one of those
+words or a space (`filter title contains "rock and roll"`). `join` output keeps the input columns,
+then the other table's columns minus its key; a colliding name gets a `_2` suffix. `derive`
+function arguments are column names, `"quoted"` text or numbers; `datediff(a, b)` is `a − b` in
+days; `round(col, digits)` defaults to 0 digits.
+
+### Loops over a table (`each`)
+
+`each` writes one effect line per row of a BOUND table. The body is a template: every line must
+be an effect command and may reference the current row only as `$row.<column>`.
+
+```
+let $late = read Invoices!A1:D40 | filter status=overdue and days>30
+each $r in $late:
+  set Invoices!$r.cell "overdue"
+  comment $r.cell "Overdue by $r.days days"
+end
+```
+
+The loop is expanded into concrete lines BEFORE dry-run, so the approval shows every substituted
+write. It is refused as a whole (nothing staged) when the table has more than 50 rows, when
+rows × body lines would exceed the per-turn write cap, when a referenced column does not exist, or
+when any expanded line is not an effect. A body cannot contain `let`, reads, pipelines, `def` or
+another `each`. Cell text stays data: inside a quoted argument it is escaped; outside quotes a cell
+containing `|`, `(`, `)`, `"` or `\` is refused — reference such cells inside quotes.
 
 ### Composed writes
 

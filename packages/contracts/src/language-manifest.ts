@@ -27,12 +27,25 @@ import { TRANSFORM_NAMES, EFFECT_VERBS } from './expr-grammar.js';
  * comes from the injected capability signature (`grammarFor`), scoped to a surface's advertised
  * `ActuationKind`s. The language is stable; the per-turn capability slice is dynamic.
  *
- * It includes targeted help and advisory compiler metadata, but omits per-run policy
- * limits (effect/cell budgets are a separate policy decision; ADR-0008 Phase 2/3). A bump to
+ * It includes targeted help, advisory compiler metadata and the DEFAULT per-turn program limits
+ * the runtime enforces ({@link DEFAULT_PROGRAM_LIMITS}), so the skill-side preflight budgets the
+ * same numbers the gate re-checks (ADR-0008 "budget is defense-in-depth"). A tenant policy may
+ * lower them at runtime; the manifest carries the defaults only. A bump to
  * {@link LANGUAGE_VERSION} is required whenever the verb set, transform set, value types, or
  * verb→kind map changes.
  */
 export const LANGUAGE_VERSION = 'm365-cli/1.0' as const;
+
+/**
+ * Default per-turn program limits. `maxWritesPerTurn` mirrors the runtime's
+ * `DEFAULT_MAX_WRITES_PER_TURN` (packages/runtime/src/assist-session.ts); the runtime test suite
+ * pins the two together. `maxReadsPerTurn`/`maxCellsPerTurn` are the preflight's advisory bounds.
+ */
+export const DEFAULT_PROGRAM_LIMITS = {
+  maxWritesPerTurn: 30,
+  maxReadsPerTurn: 8,
+  maxCellsPerTurn: 10_000,
+} as const;
 
 /**
  * The value algebra (ADR-0008 §1). Pure operators consume and produce these; effect operators
@@ -103,6 +116,12 @@ export const LanguageManifestSchema = z.object({
    * `actuationKinds`, and the two are disjoint.
    */
   specializedKinds: z.array(z.string()),
+  /** Default per-turn program limits the runtime enforces; the preflight budgets against them. */
+  limits: z.object({
+    maxWritesPerTurn: z.number().int().positive(),
+    maxReadsPerTurn: z.number().int().positive(),
+    maxCellsPerTurn: z.number().int().positive(),
+  }),
 });
 export type LanguageManifest = z.infer<typeof LanguageManifestSchema>;
 
@@ -136,6 +155,7 @@ export function buildLanguageManifest(): LanguageManifest {
       const core = new Set<string>(Object.values(WRITE_VERB_TO_KIND));
       return [...ActuationKindSchema.options].filter((k) => !core.has(k)).sort();
     })(),
+    limits: { ...DEFAULT_PROGRAM_LIMITS },
   };
 }
 

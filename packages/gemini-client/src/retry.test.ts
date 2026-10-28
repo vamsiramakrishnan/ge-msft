@@ -102,3 +102,54 @@ describe('defaultIsRetriable — aborts', () => {
     expect(defaultIsRetriable(new TypeError('Failed to fetch'))).toBe(true);
   });
 });
+
+describe('Retry-After', () => {
+  it('parses delay-seconds and HTTP dates, capped at 30 s', async () => {
+    const { parseRetryAfter, MAX_RETRY_AFTER_MS } = await import('./retry.js');
+    const now = () => Date.UTC(2026, 9, 27, 10, 0, 0);
+    expect(parseRetryAfter('2', now)).toBe(2_000);
+    expect(parseRetryAfter('120', now)).toBe(MAX_RETRY_AFTER_MS);
+    expect(parseRetryAfter('Tue, 27 Oct 2026 10:00:05 GMT', now)).toBe(5_000);
+    expect(parseRetryAfter('Tue, 27 Oct 2026 09:59:00 GMT', now)).toBe(0);
+    expect(parseRetryAfter('soon', now)).toBeUndefined();
+    expect(parseRetryAfter(null, now)).toBeUndefined();
+  });
+
+  it('is a floor on the backoff wait', async () => {
+    const { delays, sleep } = recordingSleep();
+    let calls = 0;
+    const result = await withRetry(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw new HttpError(429, 'slow down', 3_000);
+        return 'ok';
+      },
+      { sleep, random: () => 0.01, baseMs: 100 },
+    );
+    expect(result).toBe('ok');
+    expect(delays).toEqual([3_000]);
+  });
+});
+
+describe('CircuitBreaker window', () => {
+  it('counts only failures inside the window and re-opens on a failed probe', () => {
+    let t = 0;
+    const breaker = new CircuitBreaker(3, 1_000, () => t, 10_000);
+    breaker.recordFailure();
+    t = 20_000; // the first failure has aged out of the window
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.current).toBe('closed');
+    breaker.recordFailure();
+    expect(breaker.current).toBe('open');
+    expect(() => breaker.assertClosed()).toThrow(/circuit open/);
+    t = 21_100;
+    expect(breaker.current).toBe('half-open');
+    breaker.recordFailure(); // a failed probe re-opens at once
+    expect(breaker.current).toBe('open');
+    t = 22_200;
+    expect(breaker.current).toBe('half-open');
+    breaker.recordSuccess();
+    expect(breaker.current).toBe('closed');
+  });
+});

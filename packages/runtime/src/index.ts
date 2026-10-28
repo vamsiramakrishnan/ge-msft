@@ -2,7 +2,14 @@
  * @ge/runtime — the surface-agnostic core. Build the assist loop once; every bridge
  * (Word/Excel/Outlook/…) plugs into it. See docs/CAPABILITY-MAP.md and ADR-0002.
  */
-export type { DocBridge, AuthClient, UserIdentity, AttachmentBytes } from './bridge.js';
+export type {
+  DocBridge,
+  AuthClient,
+  UserIdentity,
+  AttachmentBytes,
+  FormulaPreview,
+  DependencyImpact,
+} from './bridge.js';
 export {
   AssistSession,
   type AssistSessionOptions,
@@ -10,6 +17,7 @@ export {
   type ContextLoopOptions,
   type CommandLoopEvent,
   type PlanEffect,
+  type PlanApprovalPhase,
   type RunCommandsOptions,
   DOC_STATE_REF_ID,
   READ_REF_PREFIX,
@@ -33,8 +41,15 @@ export {
   type Value,
   type EvalError,
   type Transform,
+  type TransformContext,
   type RunRead,
 } from './compose.js';
+export {
+  expandEachBlock,
+  MAX_EACH_ROWS,
+  type EachExpansion,
+  type EachLimits,
+} from './each-expansion.js';
 export {
   ContextModel,
   BRIEF_REF_ID,
@@ -47,7 +62,17 @@ export {
   type OrchestratorHandlers,
   type OrchestratorOptions,
 } from './orchestrator.js';
-export { analyseEffectDependencies, propagateFailure, effectResources } from './planning.js';
+export {
+  analyseEffectDependencies,
+  propagateFailure,
+  effectResources,
+  scheduleEffectLevels,
+  approvalPhases,
+  executionOrder,
+  APPROVAL_CLASS_ORDER,
+  type ScheduledLevel,
+  type ApprovalPhase,
+} from './planning.js';
 // Type-only; no runtime cost. @ge/runtime has no package.json subpath exports, so this barrel
 // is the only way web-shell/controller.ts's artifact rendering can reach these workspace types.
 export { type WorkspaceArtifactSummary, type WorkspaceResult } from './workspace.js';
@@ -114,3 +139,18 @@ export * from './office-handoff.js';
 export { prepareNativeOperationPreconditions } from './native-operation-preflight.js';
 export * from './office-benchmark.js';
 export * from './office-acceptance.js';
+export {
+  RecipeStore,
+  recipeSource,
+  MAX_RECIPES,
+  type StoredRecipe,
+  type RecipeLoadOutcome,
+} from './recipe-store.js';
+export {
+  typecheckProgram,
+  inferPipeline,
+  staticScope,
+  type StaticType,
+  type StaticBinding,
+  type StaticDiagnostic,
+} from './static-types.js';

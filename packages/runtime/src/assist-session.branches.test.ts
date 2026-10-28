@@ -567,21 +567,128 @@ describe('AssistSession.runCommands — dependency DAG enforcement (ADR-0008 §7
     const client = new StreamAssistClient(tokens, cfg, fetch);
     const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
 
-    const results = writeResults(
-      await collectLoop(session.runCommands('go', { approvePlan: () => true })),
-    ).map((e) => e.result);
-
-    expect(results[0]?.ok).toBe(false); // e1 actuated, failed
-    expect(results[0]?.error?.code).toBe('boom');
-    expect(results[1]?.ok).toBe(false); // e2 skipped (depends on the failed e1)
-    expect(results[1]?.error?.code).toBe('prerequisite_failed');
-    expect(results[2]?.ok).toBe(true); // e3 independent, ran
+    const events = await collectLoop(session.runCommands('go', { approvePlan: () => true }));
+    const preview = events.find((e) => e.type === 'plan-preview') as Extract<
+      CommandLoopEvent,
+      { type: 'plan-preview' }
+    >;
+    const byRange = new Map(
+      writeResults(events).map((e) => [
+        preview.effects.find((x) => x.request.changeId === e.changeId)?.request.params.target
+          ?.range,
+        e.result,
+      ]),
+    );
+    // Receipts arrive in EXECUTION order (B1 levels: the independent e3 runs with e1, before the
+    // dependent e2), so look them up by target rather than by position.
+    expect(byRange.get('Report!A1')?.ok).toBe(false); // e1 actuated, failed
+    expect(byRange.get('Report!A1')?.error?.code).toBe('boom');
+    expect(byRange.get('Report!A1:B2')?.ok).toBe(false); // e2 skipped (depends on the failed e1)
+    expect(byRange.get('Report!A1:B2')?.error?.code).toBe('prerequisite_failed');
+    expect(byRange.get('Other!Z9')?.ok).toBe(true); // e3 independent, ran
 
     // The skipped dependent NEVER reached the bridge; the failed prereq and the independent did.
     const ranges = bridge.actuated.map((r) => r.params.target?.range);
     expect(ranges).toContain('Report!A1');
     expect(ranges).toContain('Other!Z9');
     expect(ranges).not.toContain('Report!A1:B2');
+  });
+
+  it('stop-plan halts after the first failure: the independent effect is marked plan_stopped, never actuated (B1)', async () => {
+    const bridge = new DagBridge();
+    const program =
+      '```cmd\nset Report!A1 5\nformat Report!A1:B2 bold=true\nformat Other!Z9 bold=true\n```';
+    const { fetch } = scriptedFetch([program, '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+
+    const results = writeResults(
+      await collectLoop(
+        session.runCommands('go', { approvePlan: () => true, onEffectFailure: 'stop-plan' }),
+      ),
+    ).map((e) => e.result);
+    expect(results.map((r) => r?.error?.code)).toEqual(['boom', 'plan_stopped', 'plan_stopped']);
+    expect(bridge.actuated.map((r) => r.params.target?.range)).toEqual(['Report!A1']);
+  });
+
+  it('plan-preview carries dependency levels and approval phases (B1)', async () => {
+    const bridge = new DagBridge();
+    const program =
+      '```cmd\nset Report!A1 5\nformat Report!A1:B2 bold=true\nformat Other!Z9 bold=true\n```';
+    const { fetch } = scriptedFetch([program, '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    const events = await collectLoop(session.runCommands('go', { approvePlan: () => true }));
+    const preview = events.find((e) => e.type === 'plan-preview') as Extract<
+      CommandLoopEvent,
+      { type: 'plan-preview' }
+    >;
+    expect(preview.levels).toEqual([
+      { level: 0, ids: ['e1', 'e3'] },
+      { level: 1, ids: ['e2'] },
+    ]);
+    expect(preview.phases).toEqual([{ approvalClass: 'in-document', ids: ['e1', 'e2', 'e3'] }]);
+  });
+
+  it('approves a mixed-authority plan phase by phase; a rejected phase blocks the later ones (B1)', async () => {
+    const bridge = new FlexBridge('excel', {
+      actuations: [
+        { kind: 'write-cells', surface: 'excel', title: 'set', reversible: true },
+        { kind: 'post-message', surface: 'excel', title: 'post', reversible: true },
+      ],
+    });
+    const { fetch } = scriptedFetch(['```cmd\npost "hi"\nset A1 5\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    const phases: Array<{ cls: string; index: number; count: number; kinds: string[] }> = [];
+    const events = await collectLoop(
+      session.runCommands('go', {
+        approvePlan: (effects, phase) => {
+          phases.push({
+            cls: phase!.approvalClass,
+            index: phase!.index,
+            count: phase!.count,
+            kinds: effects.map((e) => e.request.kind),
+          });
+          // Approve the in-document edit, decline the external send.
+          return phase!.approvalClass === 'in-document';
+        },
+      }),
+    );
+    expect(phases).toEqual([
+      { cls: 'in-document', index: 0, count: 2, kinds: ['write-cells'] },
+      { cls: 'external', index: 1, count: 2, kinds: ['post-message'] },
+    ]);
+    const byKind = new Map(writeResults(events).map((w) => [w.result.kind, w.result]));
+    expect(byKind.get('write-cells')?.ok).toBe(true);
+    expect(byKind.get('post-message')?.error?.code).toBe('plan_unapproved');
+    expect(bridge.applied.map((r) => r.kind)).toEqual(['write-cells']);
+  });
+
+  it('a declined first phase never asks for the later phase and blocks it (B1)', async () => {
+    const bridge = new FlexBridge('excel', {
+      actuations: [
+        { kind: 'write-cells', surface: 'excel', title: 'set', reversible: true },
+        { kind: 'post-message', surface: 'excel', title: 'post', reversible: true },
+      ],
+    });
+    const { fetch } = scriptedFetch(['```cmd\nset A1 5\npost "hi"\n```', '```cmd\ndone\n```']);
+    const client = new StreamAssistClient(tokens, cfg, fetch);
+    const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
+    const asked: string[] = [];
+    const events = await collectLoop(
+      session.runCommands('go', {
+        approvePlan: (_effects, phase) => {
+          asked.push(phase!.approvalClass);
+          return false;
+        },
+      }),
+    );
+    expect(asked).toEqual(['in-document']);
+    expect(writeResults(events).every((w) => w.result.error?.code === 'plan_unapproved')).toBe(
+      true,
+    );
+    expect(bridge.applied).toHaveLength(0);
   });
 
   it('plan-preview surfaces the distinct approval classes so authorities are not silently bundled (§H)', async () => {

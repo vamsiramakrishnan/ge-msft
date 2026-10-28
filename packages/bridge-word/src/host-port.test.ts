@@ -28,6 +28,8 @@ interface InstallOpts {
   contextParas?: Record<string, string | undefined>;
   /** Hit texts that sit inside a tracked deletion (struck-through, still found by `body.search`). */
   deletedHits?: string[];
+  /** Reviewed text for a search hit; null simulates an unavailable readback. */
+  reviewedHit?: string | null;
   /** Existing comments for `getComments()` (thread fields are optional; ids are required). */
   comments?: Array<{
     id: string;
@@ -115,7 +117,15 @@ function install(opts: InstallOpts = {}): { rec: Recorder; restore: () => void }
     /** For a word from `getTextRanges`: its position and the range's words. */
     index = 0;
     all: string[] = [];
-    constructor(public text: string) {}
+    readonly getReviewedText?: () => { value: string };
+    constructor(public text: string) {
+      if (Object.hasOwn(opts, 'reviewedHit')) {
+        this.getReviewedText = () => {
+          if (opts.reviewedHit === null) throw new Error('Reviewed text unavailable');
+          return { value: opts.reviewedHit ?? this.text };
+        };
+      }
+    }
     load(p?: string): this {
       rec.trace.push(`result.load:${p ?? ''}`);
       return this;
@@ -717,6 +727,73 @@ describe('OfficeWordHost.insertOoxml (block content goes after the anchor paragr
 });
 
 describe('OfficeWordHost.addComment (requirement-set gated, best-effort)', () => {
+  it('rejects ambiguous and tracked-deleted targets for a critique fallback', async () => {
+    const rec = setup({ searchHits: { claim: ['claim', 'claim'] }, requirements: { WordApi: 6 } });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).resolves.toEqual({ ok: false });
+    expect(rec.addedComments).toHaveLength(0);
+  });
+
+  it('rejects a unique tracked-deleted target for a critique fallback', async () => {
+    const rec = setup({
+      searchHits: { claim: ['claim'] },
+      deletedHits: ['claim'],
+      requirements: { WordApi: 6 },
+    });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).resolves.toEqual({ ok: false });
+    expect(rec.addedComments).toHaveLength(0);
+  });
+
+  it('requires verified current text on a WordApi 1.4 fallback', async () => {
+    const rec = setup({
+      searchHits: { claim: ['claim'] },
+      requirements: { WordApi: 4 },
+      reviewedHit: null,
+    });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).resolves.toEqual({ ok: false });
+    expect(rec.addedComments).toHaveLength(0);
+  });
+
+  it('rejects a WordApi 1.4 fallback when reviewed text differs from the raw hit', async () => {
+    const rec = setup({
+      searchHits: { claim: ['claim'] },
+      requirements: { WordApi: 4 },
+      reviewedHit: '',
+    });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).resolves.toEqual({ ok: false });
+    expect(rec.addedComments).toHaveLength(0);
+  });
+
+  it('accepts verified current text on a WordApi 1.4 fallback', async () => {
+    const rec = setup({
+      searchHits: { claim: ['claim'] },
+      requirements: { WordApi: 4 },
+      reviewedHit: 'claim',
+    });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).resolves.toEqual({ ok: true });
+    expect(rec.addedComments).toHaveLength(1);
+  });
+
+  it('preserves uncertainty if critique fallback sync fails after queuing a comment', async () => {
+    const rec = setup({
+      searchHits: { claim: ['claim'] },
+      requirements: { WordApi: 6 },
+      failSyncAt: 3,
+    });
+    await expect(
+      new OfficeWordHost().addComment('claim', false, 'note', { requireUnique: true }),
+    ).rejects.toThrow();
+    expect(rec.addedComments).toHaveLength(1);
+  });
   it('inserts a comment on the first re-resolved hit when WordApi 1.4 is supported', async () => {
     const rec = setup({ searchHits: { claim: ['the claim'] }, requirements: { WordApi: 4 } });
     const res = await new OfficeWordHost().addComment('claim', false, 'Needs a source');

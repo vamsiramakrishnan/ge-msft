@@ -14,6 +14,7 @@ import type { DocStateSnapshot } from '@ge/contracts';
 import {
   AssistSession,
   HOST_READ_TIMEOUT_MS,
+  HostReadTimeoutError,
   DOC_STATE_REF_ID,
   READ_REF_PREFIX,
 } from './assist-session.js';
@@ -1374,13 +1375,15 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
     const session = new AssistSession(bridge, client, { unit, context: { docState: false } });
 
     const events = await collectLoop(session.runCommands('write', { approvePlan: () => true }));
-    // The unbound $var fails at dry-run resolution → no plan effect, no actuation.
+    // B2: the unbound $var is caught by the static type pass BEFORE dry-run → no plan effect, no
+    // actuation, and the program goes back for repair.
     expect(planEvents(events)).toHaveLength(0);
     expect(bridge.applied).toHaveLength(0);
-    const cmdErr = events.find((e) => e.type === 'command' && 'error' in e.compiled) as
-      | Extract<CommandLoopEvent, { type: 'command' }>
+    const typeErr = events.find((e) => e.type === 'type-error') as
+      | Extract<CommandLoopEvent, { type: 'type-error' }>
       | undefined;
-    expect(cmdErr?.compiled).toMatchObject({ error: expect.stringContaining('unbound') });
+    expect(typeErr?.message).toContain('unbound');
+    expect(events.some((e) => e.type === 'repair')).toBe(true);
   });
 
   it('dry-run produces the effect-set without actuating; reject → nothing actuates', async () => {
@@ -1992,34 +1995,75 @@ describe('AssistSession.runCommands — ADR-0005 Phase 2 (gated effect compositi
 
   it('a host snapshot that never settles is skipped after the read timeout, not a frozen task', async () => {
     // Live 2026-10-02: PowerPoint for the web stalled reading the deck right after insert-slide.
+    const realSetTimeout = setTimeout;
+    const realClearTimeout = clearTimeout;
     vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
       class StallingBridge extends ComposeBridge {
+        captures = 0;
+        private captureWaiter?: () => void;
+
         captureDocState(): Promise<DocStateSnapshot | undefined> {
+          this.captures += 1;
+          this.captureWaiter?.();
+          this.captureWaiter = undefined;
           return new Promise(() => {});
+        }
+
+        waitForCapture(after: number): Promise<void> {
+          if (this.captures > after) return Promise.resolve();
+          return new Promise((resolve) => {
+            this.captureWaiter = resolve;
+          });
         }
       }
       const bridge = new StallingBridge();
       const { fetch } = scriptedFetch(['```cmd\nset A1 1\n```', '```cmd\ndone\n```']);
       const client = new StreamAssistClient(tokens, cfg, fetch);
       const session = new AssistSession(bridge, client, { unit });
-      let settled = false;
-      const run = collectLoop(session.runCommands('write', { approvePlan: () => true })).finally(
-        () => {
-          settled = true;
-        },
-      );
-      // Step the clock until the task settles: one big advance can run before the stalled read
-      // starts on a loaded machine, and then its timer is never reached (flaked under full load).
-      for (let i = 0; i < 30 && !settled; i++)
-        await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS / 4);
+      const run = collectLoop(session.runCommands('write', { approvePlan: () => true }));
+      const deadline = new Promise<never>((_, reject) => {
+        watchdog = realSetTimeout(
+          () => reject(new Error('Snapshot test did not progress')),
+          20_000,
+        );
+      });
+      let handled = 0;
+      // Wait for each native read to actually start before advancing its timeout. The task may
+      // capture again after the write, and arbitrary clock stepping can finish before that read
+      // is scheduled on a busy runner.
+      while (
+        await Promise.race([
+          bridge.waitForCapture(handled).then(() => true),
+          run.then(() => false),
+          deadline,
+        ])
+      ) {
+        handled = bridge.captures;
+        if (handled === 1) {
+          await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS - 1);
+          expect(bridge.applied).toHaveLength(0);
+          expect(warn).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+        } else {
+          await vi.advanceTimersByTimeAsync(HOST_READ_TIMEOUT_MS);
+        }
+      }
       await run;
+      expect(handled).toBeGreaterThanOrEqual(2);
+      expect(warn).toHaveBeenCalledTimes(handled);
+      expect(warn.mock.calls.every(([, error]) => error instanceof HostReadTimeoutError)).toBe(
+        true,
+      );
       expect(bridge.applied).toHaveLength(1);
       expect(session.executions.list().at(-1)?.status).toBe('completed');
     } finally {
+      if (watchdog !== undefined) realClearTimeout(watchdog);
+      warn.mockRestore();
       vi.useRealTimers();
     }
-    // Stepping the faked clock through the 20 s read bound is real work on a loaded runner.
   }, 30_000);
 
   it('a `read <selector>` the host never answers gives up after the read timeout (live 2026-10-16)', async () => {
@@ -2162,6 +2206,28 @@ const skillExpanded = (
   >;
 
 describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => {
+  it('allows a recipe binding to feed a later effect in the same turn', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef load($src):\n  let $t = read $src\nend\n```',
+      '```cmd\nload Sales!A1:B5\nset Summary!B2 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, new StreamAssistClient(tokens, cfg, fetch), {
+      unit,
+      context: { docState: false },
+    });
+    const events = await collectLoop(
+      session.runCommands('sum the data', { approvePlan: () => true }),
+    );
+    expect(events.some((event) => event.type === 'type-error')).toBe(false);
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] },
+    });
+  });
+
   it('a def registers (no execution) → a skill-registered event, nothing actuates', async () => {
     const bridge = new ComposeBridge();
     const { fetch } = scriptedFetch([
@@ -2183,6 +2249,57 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
     // A def is not an effect — no plan, no actuation.
     expect(bridge.applied).toHaveLength(0);
     expect(events.some((e) => e.type === 'write-result')).toBe(false);
+  });
+
+  it('B6: a def is stored in the document and reloaded by a fresh session as a recipes-loaded event', async () => {
+    let persisted: unknown;
+    class DurableBridge extends ComposeBridge {
+      readonly recoveryStorage = {
+        load: async () => structuredClone(persisted),
+        save: async (_owner: string, value: unknown) => {
+          persisted = structuredClone(value);
+        },
+      };
+    }
+    const first = new DurableBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef writeTotal($a):\n  let $t = read $a\nend\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(first, new StreamAssistClient(tokens, cfg, fetch), {
+      unit,
+      context: { docState: false },
+    });
+    const events = await collectLoop(session.runCommands('define', { approvePlan: () => true }));
+    const reg = events.find((e) => e.type === 'skill-registered') as Extract<
+      CommandLoopEvent,
+      { type: 'skill-registered' }
+    >;
+    expect(reg.result.message).toContain('saved in this document');
+    expect(persisted).toMatchObject({ version: 1, recipes: [{ name: 'writeTotal' }] });
+
+    // A new session over the same document finds the recipe before its first turn.
+    const again = scriptedFetch([
+      '```cmd\nwriteTotal Sales!A1:B5\nset Summary!B2 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const secondBridge = new DurableBridge();
+    const second = new AssistSession(
+      secondBridge,
+      new StreamAssistClient(tokens, cfg, again.fetch),
+      { unit, context: { docState: false } },
+    );
+    const later = await collectLoop(second.runCommands('anything', { approvePlan: () => true }));
+    const loaded = later.find((e) => e.type === 'recipes-loaded') as Extract<
+      CommandLoopEvent,
+      { type: 'recipes-loaded' }
+    >;
+    expect(loaded).toMatchObject({ loaded: ['writeTotal'], rejected: [] });
+    expect(later.some((event) => event.type === 'type-error')).toBe(false);
+    expect(secondBridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] },
+    });
   });
 
   it('a call expands, binds args, and runs as ONE plan gated by approvePlan (approve → actuates)', async () => {

@@ -16,13 +16,17 @@
  *   - `ctx.document.changeTrackingMode = trackAll` (recorded for assertions).
  *   - `ctx.document.body.getComments()` → items `{ id }`; `comment.reply(text)`; `comment.resolved=`.
  *   - `ctx.document.customXmlParts.add(xml)` (durable provenance WRITE, via `Office`).
+ *   - WordApi 1.7/1.8 critiques: `hit.paragraphs.getFirst().insertAnnotations({ critiques })` →
+ *     minted ids; `ctx.document.getAnnotationById(id)` → `{ id, state, delete() }` (throws on a
+ *     missing id, as the host does at sync); `hit.highlight()` / `removeHighlight()` (temporary,
+ *     content untouched); `document.onAnnotation{Clicked,Inserted,Removed,PopupAction}.add()`
+ *     with {@link WordSimulator.fireAnnotationEvent} to simulate the host.
  *
  * Fidelity notes / boundary:
- *   - `body.search` is a case-insensitive substring scan over each paragraph's text; a hit's text is
- *     the matched query (as Office returns the matched range), and its first-paragraph context hint
- *     is the containing paragraph. This is faithful enough for anchor choice + drift degradation.
- *   - `insertText(replace)` replaces the FIRST occurrence of the anchor text in the body, so a later
- *     search for the old anchor degrades to drift (the apply-time re-resolution the bridge relies on).
+ *   - `body.search` returns an individual range for each match, retaining the matched casing and
+ *     paragraph-local position. Its first-paragraph context is the containing paragraph.
+ *   - `insertText(replace)` updates the selected occurrence, so a later search for the old anchor
+ *     degrades to drift when no matching text remains.
  */
 
 import { installGlobal, composeRestores } from './globals.js';
@@ -68,6 +72,55 @@ export interface WordSeed {
   addedComments: Array<{ anchor: string; text: string }>;
   /** Recorded native tables inserted via `insertTable` (cell values per row). */
   tables?: string[][][];
+  /** Critique annotations minted via `insertAnnotations` (WordApi 1.7); deleted ones are removed. */
+  annotations?: WordAnnotationSeed[];
+  /** Anchor texts currently carrying a temporary `Range.highlight()` (WordApi 1.8). */
+  highlights?: string[];
+}
+
+/** One minted critique annotation (the `Word.Annotation` + its `Critique`). */
+export interface WordAnnotationSeed {
+  id: string;
+  /** The critiqued text (the search hit the critique was addressed from). */
+  anchor: string;
+  paragraphIndex: number;
+  start: number;
+  length: number;
+  colorScheme: string;
+  /** Popup suggestions (WordApi 1.8 `popupOptions`); empty when the host sent none. */
+  suggestions: string[];
+  state: 'Created' | 'Accepted' | 'Rejected';
+}
+
+/** The Word annotation events the fake document exposes (`document.onAnnotation*`). */
+export type WordAnnotationEventName =
+  | 'onAnnotationClicked'
+  | 'onAnnotationInserted'
+  | 'onAnnotationRemoved'
+  | 'onAnnotationPopupAction';
+
+type AnnotationHandler = (args: Record<string, unknown>) => Promise<void>;
+
+/** Retained `document.onAnnotation*` handlers, shared by every `Word.run` context of a simulator. */
+class WordEventRegistry {
+  private readonly handlers = new Map<WordAnnotationEventName, Set<AnnotationHandler>>();
+  /** The `EventHandlers`-shaped member installed on the fake document for `name`. */
+  member(name: WordAnnotationEventName): { add(handler: AnnotationHandler): { remove(): void } } {
+    return {
+      add: (handler) => {
+        const set = this.handlers.get(name) ?? new Set<AnnotationHandler>();
+        set.add(handler);
+        this.handlers.set(name, set);
+        return { remove: () => void set.delete(handler) };
+      },
+    };
+  }
+  async fire(name: WordAnnotationEventName, args: Record<string, unknown>): Promise<void> {
+    for (const handler of this.handlers.get(name) ?? []) await handler(args);
+  }
+  count(name: WordAnnotationEventName): number {
+    return this.handlers.get(name)?.size ?? 0;
+  }
 }
 
 /** The whole body text — paragraphs joined by newlines (mirrors `body.text`). */
@@ -214,14 +267,16 @@ class FakeSearchResult {
   constructor(
     private readonly seed: WordSeed,
     matchText: string,
+    position?: { para: number; start: number; length: number },
   ) {
     this.text = matchText;
-    const paragraph = seed.paragraphs.findIndex((p) =>
-      p.text.toLowerCase().includes(matchText.toLowerCase()),
-    );
+    this.position = position;
+    const paragraph =
+      position?.para ??
+      seed.paragraphs.findIndex((p) => p.text.toLowerCase().includes(matchText.toLowerCase()));
     if (paragraph >= 0) {
       const text = seed.paragraphs[paragraph]!.text;
-      const start = text.toLowerCase().indexOf(matchText.toLowerCase());
+      const start = position?.start ?? text.toLowerCase().indexOf(matchText.toLowerCase());
       this.reviewedSpan = {
         paragraph,
         prefix: text.slice(0, start),
@@ -287,7 +342,7 @@ class FakeSearchResult {
     return { value: a < b ? 'Before' : a === b ? 'Equal' : 'After' };
   }
   get paragraphs(): {
-    getFirst(): { getRange(where: string): FakeParagraphBlock };
+    getFirst(): FakeParagraphHandle;
     getLast(): { getRange(where: string): FakeParagraphBlock } & {
       getRange(_where: string): { insertOoxml(ooxml: string, _loc: string): void };
     };
@@ -297,7 +352,7 @@ class FakeSearchResult {
     const index = this.anchorIndex();
     const containing = this.seed.paragraphs[index];
     return {
-      getFirst: () => ({ getRange: () => new FakeParagraphBlock(this.seed, index, index) }),
+      getFirst: () => new FakeParagraphHandle(this.seed, index, this.text),
       getFirstOrNullObject: () => new FakeParagraphProxy(containing?.text, this.seed, index),
       // Block content goes after the anchor's paragraph, as its own paragraph(s).
       getLast: () => ({
@@ -321,9 +376,15 @@ class FakeSearchResult {
     this.style = name;
   }
   private anchorIndex(): number {
-    return this.seed.paragraphs.findIndex((p) =>
-      p.text.toLowerCase().includes(this.text.toLowerCase()),
+    return (
+      this.position?.para ??
+      this.seed.paragraphs.findIndex((p) => p.text.toLowerCase().includes(this.text.toLowerCase()))
     );
+  }
+  /** Select this range without modifying the document. */
+  select(): void {
+    this.seed.selectionText = this.text;
+    if (this.position) this.seed.cursorParagraph = this.position.para;
   }
   /** Inline OOXML after the anchor text. */
   insertOoxml(ooxml: string, _location: string): void {
@@ -366,6 +427,15 @@ class FakeSearchResult {
     else replaceFirst(this.seed, this.text, replacement);
     return insertedRange(entry);
   }
+  /** WordApi 1.8 `Range.highlight()`: a temporary highlight — body text is untouched. */
+  highlight(): void {
+    const highlights = (this.seed.highlights ??= []);
+    if (!highlights.includes(this.text)) highlights.push(this.text);
+  }
+  /** WordApi 1.8 `Range.removeHighlight()`. */
+  removeHighlight(): void {
+    this.seed.highlights = (this.seed.highlights ?? []).filter((t) => t !== this.text);
+  }
   /** Comments-as-citations WRITE. */
   insertComment(text: string): void {
     this.seed.addedComments.push({ anchor: this.text, text });
@@ -378,6 +448,77 @@ class FakeSearchResult {
   }
 }
 
+/**
+ * The containing paragraph of a search hit (`hit.paragraphs.getFirst()`): its text, its whole
+ * range, and the WordApi 1.7 `insertAnnotations` critique WRITE addressed by (start, length) in it.
+ */
+class FakeParagraphHandle {
+  constructor(
+    private readonly seed: WordSeed,
+    private readonly index: number,
+    private readonly hitText: string,
+  ) {}
+  get text(): string {
+    return this.seed.paragraphs[this.index]?.text ?? '';
+  }
+  load(_props?: string): this {
+    return this;
+  }
+  getRange(_where: string): FakeParagraphBlock {
+    return new FakeParagraphBlock(this.seed, this.index, this.index);
+  }
+  /** Mint one annotation per critique; ids come back post-sync as `ClientResult.value`. */
+  insertAnnotations(set: {
+    critiques: Array<{
+      colorScheme: string;
+      start: number;
+      length: number;
+      popupOptions?: { suggestions?: string[] };
+    }>;
+  }): { value: string[] } {
+    const annotations = (this.seed.annotations ??= []);
+    const ids = set.critiques.map((critique) => {
+      const id = `sim-word-annotation-${annotations.length + 1}`;
+      annotations.push({
+        id,
+        anchor: this.text.slice(critique.start, critique.start + critique.length) || this.hitText,
+        paragraphIndex: this.index,
+        start: critique.start,
+        length: critique.length,
+        colorScheme: critique.colorScheme,
+        suggestions: [...(critique.popupOptions?.suggestions ?? [])],
+        state: 'Created',
+      });
+      return id;
+    });
+    return { value: ids };
+  }
+}
+
+/** `Word.Annotation` by id: reads throw for a missing id, as the host does at `sync()`. */
+class FakeAnnotationProxy {
+  constructor(
+    private readonly seed: WordSeed,
+    readonly id: string,
+  ) {}
+  private find(): WordAnnotationSeed {
+    const found = (this.seed.annotations ?? []).find((a) => a.id === this.id);
+    if (!found) throw new Error(`ItemNotFound: annotation ${this.id}`);
+    return found;
+  }
+  get state(): string {
+    return this.find().state;
+  }
+  load(_props?: string): this {
+    this.find();
+    return this;
+  }
+  delete(): void {
+    this.find();
+    this.seed.annotations = (this.seed.annotations ?? []).filter((a) => a.id !== this.id);
+  }
+}
+
 /** Incremented by every `ctx.sync()`; a proxy's loaded properties exist only after one. */
 let syncGeneration = 0;
 
@@ -385,30 +526,21 @@ class FakeSearchResultCollection {
   private readonly hits: FakeSearchResult[];
   private readonly createdAt = syncGeneration;
   constructor(seed: WordSeed, query: string, matchCase: boolean, matchWholeWord?: boolean) {
-    // A find/replace search (it always passes matchWholeWord): one hit per occurrence, at its exact
-    // position, honouring whole-word and case like Word. "month" never matches inside "monthly".
-    if (matchWholeWord !== undefined) {
-      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(
-        matchWholeWord ? `(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])` : escaped,
-        matchCase ? 'gu' : 'giu',
-      );
-      this.hits = seed.paragraphs.flatMap((p, para) =>
-        [...p.text.matchAll(pattern)].map((m) => {
-          const hit = new FakeSearchResult(seed, m[0]);
-          hit.position = { para, start: m.index ?? 0, length: m[0].length };
-          return hit;
-        }),
-      );
+    // Word returns one range for each occurrence, including repeated hits in one paragraph.
+    if (!query) {
+      this.hits = [];
       return;
     }
-    const hay = (s: string): string => (matchCase ? s : s.toLowerCase());
-    const needle = matchCase ? query : query.toLowerCase();
-    // One hit per paragraph that contains the query (mirrors Office's per-occurrence ranges,
-    // collapsed to paragraph granularity — enough for anchor choice + drift).
-    this.hits = seed.paragraphs
-      .filter((p) => hay(p.text).includes(needle))
-      .map(() => new FakeSearchResult(seed, query));
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(
+      matchWholeWord ? `(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])` : escaped,
+      matchCase ? 'gu' : 'giu',
+    );
+    this.hits = seed.paragraphs.flatMap((p, para) =>
+      [...p.text.matchAll(pattern)].map(
+        (m) => new FakeSearchResult(seed, m[0], { para, start: m.index ?? 0, length: m[0].length }),
+      ),
+    );
   }
   /** Like Word, `items` is unavailable until a sync: reading it first throws PropertyNotLoaded. */
   get items(): FakeSearchResult[] {
@@ -615,15 +747,28 @@ class FakeWordDocument {
   private _mode = '';
   readonly body: FakeBody;
   readonly customXmlParts: FakeCustomXmlPartCollection;
+  readonly onAnnotationClicked: ReturnType<WordEventRegistry['member']>;
+  readonly onAnnotationInserted: ReturnType<WordEventRegistry['member']>;
+  readonly onAnnotationRemoved: ReturnType<WordEventRegistry['member']>;
+  readonly onAnnotationPopupAction: ReturnType<WordEventRegistry['member']>;
   constructor(
     private readonly seed: WordSeed,
     office: OfficeSeed,
+    events: WordEventRegistry,
   ) {
     this.body = new FakeBody(seed);
     this.customXmlParts = new FakeCustomXmlPartCollection(office);
+    this.onAnnotationClicked = events.member('onAnnotationClicked');
+    this.onAnnotationInserted = events.member('onAnnotationInserted');
+    this.onAnnotationRemoved = events.member('onAnnotationRemoved');
+    this.onAnnotationPopupAction = events.member('onAnnotationPopupAction');
   }
   getSelection(): FakeSelection {
     return new FakeSelection(this.seed);
+  }
+  /** WordApi 1.7 `Document.getAnnotationById`. */
+  getAnnotationById(id: string): FakeAnnotationProxy {
+    return new FakeAnnotationProxy(this.seed, id);
   }
   set changeTrackingMode(mode: string) {
     this._mode = mode;
@@ -639,8 +784,8 @@ class FakeWordDocument {
 
 class FakeWordContext {
   readonly document: FakeWordDocument;
-  constructor(seed: WordSeed, office: OfficeSeed) {
-    this.document = new FakeWordDocument(seed, office);
+  constructor(seed: WordSeed, office: OfficeSeed, events: WordEventRegistry) {
+    this.document = new FakeWordDocument(seed, office, events);
   }
   sync(): Promise<void> {
     syncGeneration += 1;
@@ -693,6 +838,8 @@ export interface WordSnapshot {
   addedComments: ReadonlyArray<{ anchor: string; text: string }>;
   changeTrackingMode?: string;
   tables?: ReadonlyArray<string[][]>;
+  annotations: ReadonlyArray<WordAnnotationSeed>;
+  highlights: ReadonlyArray<string>;
 }
 
 /** The installed Word simulator. */
@@ -701,6 +848,10 @@ export interface WordSimulator {
   readonly office: OfficeSeed;
   readonly officeHandlers: OfficeHandlerRegistry;
   snapshot(): WordSnapshot;
+  /** Simulate the host raising a `document.onAnnotation*` event with raw Office.js args. */
+  fireAnnotationEvent(name: WordAnnotationEventName, args: Record<string, unknown>): Promise<void>;
+  /** How many handlers `watch()` registered for an annotation event (0 when gated off). */
+  annotationHandlerCount(name: WordAnnotationEventName): number;
   restore(): void;
 }
 
@@ -715,10 +866,11 @@ export function installFakeWord(
 ): WordSimulator {
   const office = makeOfficeSeed(requirements);
   const { office: officeNs, handlers: officeHandlers } = makeFakeOffice(office);
+  const events = new WordEventRegistry();
 
   const word: FakeWordNamespace = {
     run: async <T>(callback: (ctx: FakeWordContext) => Promise<T>): Promise<T> =>
-      callback(new FakeWordContext(seed, office)),
+      callback(new FakeWordContext(seed, office, events)),
     InsertLocation: INSERT_LOCATION,
     ChangeTrackingMode: CHANGE_TRACKING_MODE,
   };
@@ -736,10 +888,14 @@ export function installFakeWord(
       comments: seed.comments.map((c) => ({ ...c, replies: [...c.replies] })),
       inserts: seed.inserts.map((i) => ({ ...i })),
       addedComments: seed.addedComments.map((c) => ({ ...c })),
+      annotations: (seed.annotations ?? []).map((a) => ({ ...a, suggestions: [...a.suggestions] })),
+      highlights: [...(seed.highlights ?? [])],
       ...(seed.changeTrackingMode !== undefined
         ? { changeTrackingMode: seed.changeTrackingMode }
         : {}),
     }),
+    fireAnnotationEvent: (name, args) => events.fire(name, args),
+    annotationHandlerCount: (name) => events.count(name),
     restore,
   };
 }

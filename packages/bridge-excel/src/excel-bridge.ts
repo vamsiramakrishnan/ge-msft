@@ -2,15 +2,17 @@ import { officeHostProfile } from './office-host-profile.js';
 import { suspendCalculation, verifyCalculationReady } from './calculation.js';
 import { nativeRun } from './native-run.js';
 import { missingWorksheetMessage, resolveWorksheet } from './worksheet-lookup.js';
-import { createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
+import { BridgeRefusal, createBridgeDispatch, negotiateCapabilities } from '@ge/runtime';
 import {
   cellsMatchRequest,
   formulasForRequest,
   hasScalarFormulaFootprint,
   hasFormulaErrors,
   rangeForGrid,
+  unknownActuationResult,
   type ActuationRequest as CellRequest,
   type CellSnapshot,
+  type InverseDescriptor,
 } from '@ge/contracts';
 import {
   excelDocumentId,
@@ -29,7 +31,7 @@ import type {
   DocStateSnapshot,
   ResolvedContext,
 } from '@ge/contracts';
-import type { DocBridge } from '@ge/runtime';
+import type { DependencyImpact, DocBridge, FormulaPreview } from '@ge/runtime';
 import type { HostEvent, Unsubscribe } from '@ge/triggers';
 import { buildDocStateSnapshot, type DocStateSheet } from '@ge/content';
 import { EXCEL_CAPABILITIES } from './capabilities.js';
@@ -183,6 +185,83 @@ export class ExcelBridge implements DocBridge {
       }
       return snapshots;
     }
+  }
+
+  /**
+   * Evaluate the formulas a `write-cells` request carries without writing them (ExcelApiDesktop 1.1
+   * `Worksheet.evaluate`), so the approval card shows the value each formula produces on THIS
+   * workbook. Read-only, at most {@link MAX_FORMULA_PREVIEWS} formulas, one batch; unsafe formulas
+   * are never evaluated (the write path refuses them too); any host failure yields `[]`.
+   */
+  async previewFormulas(req: ActuationRequest): Promise<FormulaPreview[]> {
+    if (req.kind !== 'write-cells' || !isSet('ExcelApiDesktop', '1.1')) return [];
+    const plan = planWriteCells(req);
+    if (!plan.address) return [];
+    const grid = splitFormulaGrid(formulasForRequest(req));
+    if (grid.rejected.length > 0) return [];
+    const { sheetName, rangeAddress } = parseAddress(plan.address);
+    const origin = topLeftCell(rangeAddress);
+    if (!origin) return [];
+    const targets: Array<{ cell: string; formula: string }> = [];
+    grid.formulas.forEach((row, r) =>
+      row.forEach((formula, c) => {
+        if (formula && targets.length < MAX_FORMULA_PREVIEWS)
+          targets.push({
+            cell: `${sheetName ?? ''}${sheetName ? '!' : ''}${cellAt(origin, r, c)}`,
+            formula,
+          });
+      }),
+    );
+    if (targets.length === 0) return [];
+    try {
+      return await nativeRun(async (ctx) => {
+        const sheet =
+          sheetName !== undefined
+            ? await resolveWorksheet(ctx, sheetName)
+            : ctx.workbook.worksheets.getActiveWorksheet();
+        const results = targets.map((t) => sheet.evaluate(t.formula));
+        await ctx.sync();
+        return targets.map((t, i) => {
+          const value = results[i]!.value as unknown;
+          return value === undefined || value === null
+            ? { ...t, error: 'no value' }
+            : { ...t, value: String(value) };
+        });
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Direct precedents and dependents of a range (ExcelApi 1.15 `getDirectPrecedents` /
+   * `getDirectDependents`), bounded to {@link MAX_IMPACT_ADDRESSES} each. Each side is read in its
+   * own batch because Excel raises `ItemNotFound` for a range with none; that reads as an empty
+   * list, never as a failure of the other side. Throws below ExcelApi 1.15.
+   */
+  async dependencyImpact(range: string): Promise<DependencyImpact> {
+    if (!isSet('ExcelApi', '1.15'))
+      throw new Error('This host cannot report formula precedents or dependents.');
+    const read = (side: 'precedents' | 'dependents'): Promise<string[]> =>
+      nativeRun(async (ctx) => {
+        const target = resolveReadRange(ctx, range);
+        if (!target) throw new Error('A source range could not be resolved.');
+        const areas =
+          side === 'precedents' ? target.getDirectPrecedents() : target.getDirectDependents();
+        areas.load('areas/items/address');
+        await ctx.sync();
+        return areas.areas.items.map((item) => item.address);
+      }).catch((error: unknown) => {
+        if ((error as { code?: unknown } | null)?.code === 'ItemNotFound') return [];
+        throw error;
+      });
+    const [precedents, dependents] = await Promise.all([read('precedents'), read('dependents')]);
+    return {
+      precedents: precedents.slice(0, MAX_IMPACT_ADDRESSES),
+      dependents: dependents.slice(0, MAX_IMPACT_ADDRESSES),
+      truncated:
+        precedents.length > MAX_IMPACT_ADDRESSES || dependents.length > MAX_IMPACT_ADDRESSES,
+    };
   }
 
   /** Monotonic `<doc_state>` version, bumped on each capture (ADR-0003 Layer B element 1). */
@@ -550,6 +629,330 @@ export class ExcelBridge implements DocBridge {
 
   async actuate(req: ActuationRequest): Promise<ActuationResult> {
     return ExcelBridge.dispatcher.dispatch(this, req);
+  }
+
+  /**
+   * ADR-0007 / B3 — apply the inverse a landed receipt recorded, reversing `request.undo.of`.
+   * `kind`/`params` are the ORIGINAL effect's and are never re-applied; the inverse descriptor is
+   * the whole instruction. Each op is conflict-checked against the live host by the identity the
+   * receipt captured at apply-time (a host-minted table/chart/pivot name, a landed range address,
+   * a rule ordinal) — never re-resolved from a label — and refuses with `target_conflict` when that
+   * identity no longer matches, so an undo can never delete or overwrite something it did not add.
+   * Verification is by readback; a step that lands but cannot be read back reports `unknown`.
+   */
+  async applyInverse(req: ActuationRequest): Promise<ActuationResult> {
+    const undo = req.undo;
+    if (!undo)
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'invalid_request', message: 'applyInverse needs request.undo.' },
+      };
+    const inverse = undo.inverse;
+    // Set once a write statement has been queued: a throw after that point is an unknown outcome.
+    let queued = false;
+    const markQueued = (): void => {
+      queued = true;
+    };
+    let result: ActuationResult;
+    try {
+      switch (inverse.op) {
+        case 'restore-cells':
+        case 'restore-values':
+          result = await this.undoRestoreCells(req, inverse, markQueued);
+          break;
+        case 'delete-object':
+          result = await this.undoDeleteObject(req, inverse, markQueued);
+          break;
+        case 'clear-conditional':
+          result = await this.undoClearConditional(req, inverse, markQueued);
+          break;
+        default:
+          result = {
+            ok: false,
+            changeId: req.changeId,
+            kind: req.kind,
+            error: {
+              code: 'unsupported',
+              message: `Excel cannot apply a recorded ${inverse.op} inverse.`,
+            },
+          };
+      }
+    } catch (error) {
+      if (error instanceof BridgeRefusal && !queued)
+        result = {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          ...(error.location ? { location: error.location } : {}),
+          error: { code: 'host_refused', reason: error.reason, message: error.message },
+        };
+      else if (!queued)
+        result = {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: { code: 'actuate_failed', message: errorMessage(error) },
+        };
+      else
+        result = unknownActuationResult(
+          req,
+          'The undo was interrupted after it reached Excel. Inspect the workbook before retrying.',
+        );
+    }
+    return { ...result, undoOf: undo.of };
+  }
+
+  /** `restore-cells` / `restore-values`: write the recorded prior cells back and read them back. */
+  private async undoRestoreCells(
+    req: ActuationRequest,
+    inverse: Extract<InverseDescriptor, { op: 'restore-cells' | 'restore-values' }>,
+    markQueued: () => void,
+  ): Promise<ActuationResult> {
+    const values = inverse.values as Array<Array<string | number | boolean | null>>;
+    const formulas = inverse.op === 'restore-cells' ? inverse.formulas : undefined;
+    const rows = values.length;
+    const cols = values[0]?.length ?? 0;
+    if (rows === 0 || cols === 0 || values.some((row) => row.length !== cols))
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: { code: 'invalid_request', message: 'The recorded prior cells are not a grid.' },
+      };
+    return nativeRun({ undoGroup: true }, async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(inverse.range);
+      const sheet =
+        sheetName !== undefined
+          ? await resolveWorksheet(ctx, sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const range = sheet.getRange(rangeAddress);
+      const refused = await protectedSheetRefusal(ctx, sheet, range, req, true);
+      if (refused) return refused;
+      range.load('address,rowCount,columnCount');
+      await ctx.sync();
+      if (range.rowCount !== rows || range.columnCount !== cols)
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: range.address,
+          error: {
+            code: 'target_conflict',
+            message: 'The recorded cells no longer match the range they came from. Inspect it.',
+          },
+        };
+      const documentId = await excelDocumentId();
+      const before = await snapshotRange(range, ctx, documentId);
+      // The same channel split as write-cells: a prior `=` formula goes back through `formulas`,
+      // every other prior value stays literal (so text Excel would convert stays text).
+      const hasFormulas = formulas?.some((row) => row.some((f) => f?.startsWith('='))) === true;
+      const literal = values.map((row, r) =>
+        row.map((v, c) =>
+          formulas?.[r]?.[c]?.startsWith('=')
+            ? null
+            : typeof v === 'string' && v !== '' && (EXCEL_CONVERTS.test(v) || FORMULA_LIKE.test(v))
+              ? `'${v}`
+              : (v ?? ''),
+        ),
+      );
+      markQueued();
+      if (hasFormulas) {
+        suspendCalculation(ctx);
+        range.formulas = values.map((row, r) =>
+          row.map((_, c) => (formulas?.[r]?.[c]?.startsWith('=') ? formulas[r]![c]! : null)),
+        ) as unknown[][];
+        range.values = literal as unknown[][];
+      } else range.values = literal as unknown[][];
+      await ctx.sync();
+      const wanted: CellRequest = {
+        ...req,
+        kind: 'write-cells',
+        params: {
+          target: { range: before.locator },
+          cellValues: values,
+          ...(formulas ? { cellFormulas: formulas } : {}),
+        },
+      };
+      let verification: NonNullable<ActuationResult['verification']>;
+      try {
+        if (hasFormulas) await verifyCalculationReady(ctx);
+        const after = await snapshotRange(range, ctx, documentId);
+        const ok = cellsMatchRequest(after, wanted) && !hasFormulaErrors(after);
+        verification = {
+          status: ok ? 'verified' : 'mismatch',
+          beforeHash: before.hash,
+          afterHash: after.hash,
+          ...(ok ? {} : { message: 'The restored cells do not match the recorded prior state.' }),
+        };
+      } catch {
+        verification = {
+          status: 'unknown',
+          beforeHash: before.hash,
+          message: 'The restore landed, but readback could not complete.',
+        };
+      }
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        completion: verification.status === 'verified' ? 'verified' : 'unknown',
+        verification,
+      };
+    });
+  }
+
+  /**
+   * `delete-object`: remove the table/chart/pivot THIS change minted, found by its host-minted name
+   * through the null-object lookup. A chart lives on its worksheet, which the original request's
+   * source range names; a table or pivot is workbook-wide.
+   */
+  private async undoDeleteObject(
+    req: ActuationRequest,
+    inverse: Extract<InverseDescriptor, { op: 'delete-object' }>,
+    markQueued: () => void,
+  ): Promise<ActuationResult> {
+    if (!['table', 'chart', 'pivot'].includes(inverse.objectType))
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unsupported',
+          message: `Excel cannot delete a recorded ${inverse.objectType} by inverse.`,
+        },
+      };
+    const name = inverse.name;
+    return nativeRun({ undoGroup: true }, async (ctx) => {
+      const lookup = async (): Promise<{ isNullObject: boolean; delete(): void } | undefined> => {
+        let object: { isNullObject: boolean; delete(): void; load(props: string): unknown };
+        if (inverse.objectType === 'table') object = ctx.workbook.tables.getItemOrNullObject(name);
+        else if (inverse.objectType === 'pivot') {
+          if (!isSet('ExcelApi', '1.3')) return undefined;
+          object = ctx.workbook.pivotTables.getItemOrNullObject(name);
+        } else {
+          const source = req.params.chart?.sourceRange;
+          const sheetName = source ? parseAddress(splitAreasFirst(source)).sheetName : undefined;
+          const sheet =
+            sheetName !== undefined
+              ? await resolveWorksheet(ctx, sheetName)
+              : ctx.workbook.worksheets.getActiveWorksheet();
+          object = sheet.charts.getItemOrNullObject(name);
+        }
+        object.load('isNullObject');
+        await ctx.sync();
+        return object;
+      };
+      const object = await lookup();
+      if (!object)
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: { code: 'unsupported_host', message: 'This host cannot address pivot tables.' },
+        };
+      if (object.isNullObject)
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          error: {
+            code: 'target_conflict',
+            message: `The ${inverse.objectType} this change added is no longer in the workbook under its recorded name. Nothing was deleted.`,
+          },
+        };
+      markQueued();
+      object.delete();
+      await ctx.sync();
+      let verification: NonNullable<ActuationResult['verification']>;
+      try {
+        const after = await lookup();
+        verification = after?.isNullObject
+          ? { status: 'verified' }
+          : { status: 'mismatch', message: `The ${inverse.objectType} is still present.` };
+      } catch {
+        verification = { status: 'unknown', message: 'The delete landed, but readback failed.' };
+      }
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: name,
+        completion: verification.status === 'verified' ? 'verified' : 'unknown',
+        verification,
+      };
+    });
+  }
+
+  /** `clear-conditional`: delete the rule at the recorded ordinal of the recorded range. */
+  private async undoClearConditional(
+    req: ActuationRequest,
+    inverse: Extract<InverseDescriptor, { op: 'clear-conditional' }>,
+    markQueued: () => void,
+  ): Promise<ActuationResult> {
+    if (!isSet('ExcelApi', '1.6'))
+      return {
+        ok: false,
+        changeId: req.changeId,
+        kind: req.kind,
+        error: {
+          code: 'unsupported_host',
+          message: 'This host cannot address conditional formats.',
+        },
+      };
+    return nativeRun({ undoGroup: true }, async (ctx) => {
+      const { sheetName, rangeAddress } = parseAddress(inverse.range);
+      const sheet =
+        sheetName !== undefined
+          ? await resolveWorksheet(ctx, sheetName)
+          : ctx.workbook.worksheets.getActiveWorksheet();
+      const range = sheet.getRange(rangeAddress);
+      const cfs = range.conditionalFormats;
+      const count = cfs.getCount();
+      range.load('address');
+      await ctx.sync();
+      const priorCount = count.value;
+      if (
+        !Number.isInteger(inverse.ruleOrdinal) ||
+        inverse.ruleOrdinal < 0 ||
+        priorCount <= inverse.ruleOrdinal
+      )
+        return {
+          ok: false,
+          changeId: req.changeId,
+          kind: req.kind,
+          location: range.address,
+          error: {
+            code: 'target_conflict',
+            message:
+              'The conditional-format rules on this range changed since the write. Nothing was removed.',
+          },
+        };
+      markQueued();
+      cfs.getItemAt(inverse.ruleOrdinal).delete();
+      await ctx.sync();
+      let verification: NonNullable<ActuationResult['verification']>;
+      try {
+        const after = cfs.getCount();
+        await ctx.sync();
+        verification =
+          after.value === priorCount - 1
+            ? { status: 'verified' }
+            : { status: 'mismatch', message: 'The rule count did not drop by one.' };
+      } catch {
+        verification = { status: 'unknown', message: 'The delete landed, but readback failed.' };
+      }
+      return {
+        ok: true,
+        changeId: req.changeId,
+        kind: req.kind,
+        location: range.address,
+        completion: verification.status === 'verified' ? 'verified' : 'unknown',
+        verification,
+      };
+    });
   }
 
   /**
@@ -1609,6 +2012,31 @@ export class ExcelBridge implements DocBridge {
 /** Upper bound on waiting for `settings.saveAsync` to call back before provenance counts as dropped. */
 const PROVENANCE_SAVE_TIMEOUT_MS = 10_000;
 
+/** Formulas evaluated for one write preview; a bigger grid previews its first formulas only. */
+const MAX_FORMULA_PREVIEWS = 20;
+/** Addresses reported per side of a dependency impact. */
+const MAX_IMPACT_ADDRESSES = 200;
+
+/** The top-left cell of an A1 range (`B2:D9` → `{ column: 2, row: 2 }`), or none when not A1. */
+function topLeftCell(rangeAddress: string): { column: number; row: number } | undefined {
+  const m = /^\$?([A-Za-z]{1,3})\$?([1-9]\d*)/.exec(rangeAddress);
+  if (!m) return undefined;
+  const column = [...m[1]!.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  return { column, row: Number(m[2]) };
+}
+
+/** The A1 address `rows` down and `columns` right of a top-left cell. */
+function cellAt(origin: { column: number; row: number }, rows: number, columns: number): string {
+  let n = origin.column + columns;
+  let letters = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letters = String.fromCharCode(65 + rem) + letters;
+    n = Math.floor((n - 1) / 26);
+  }
+  return `${letters}${origin.row + rows}`;
+}
+
 /** The minimal slice of `Office.context.document.settings` the bridge persists provenance through. */
 interface OfficeSettingsLike {
   set(name: string, value: unknown): void;
@@ -1955,4 +2383,19 @@ async function readSelectedRange(): Promise<SelectedRange | undefined> {
     if ((error as { code?: unknown } | null)?.code === 'InvalidSelection') return undefined;
     throw error;
   }
+}
+
+/** The first area of a (possibly multi-area) chart source address. */
+function splitAreasFirst(address: string): string {
+  let quoted = false;
+  for (let i = 0; i < address.length; i++) {
+    const ch = address[i];
+    if (ch === "'") quoted = !quoted;
+    if (ch === ',' && !quoted) return address.slice(0, i).trim();
+  }
+  return address.trim();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

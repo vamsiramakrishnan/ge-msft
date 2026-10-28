@@ -613,6 +613,8 @@ describe('PanelController — result card', () => {
         turn: 1,
         dag: [],
         approvalClasses: [],
+        levels: [],
+        phases: [],
         effects: [
           {
             request,

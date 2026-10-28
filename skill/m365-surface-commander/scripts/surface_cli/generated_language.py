@@ -16,6 +16,7 @@ from parse_commands import (  # noqa: E402
     CAPABILITY_REGISTRY,
     LANGUAGE_VERSION,
     PREFLIGHT,
+    LIMITS,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "CAPABILITY_REGISTRY",
     "LANGUAGE_VERSION",
     "PREFLIGHT",
+    "LIMITS",
 ]

@@ -836,6 +836,17 @@ class TestSurfaceCliPreflight(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(harness)], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, f"eval gate failed:\n{proc.stdout}\n{proc.stderr}")
 
+    def test_evaluation_matrix_expectations_and_ship_bar(self):
+        # ADR-0008 §Consequences — the deterministic three-condition matrix (base · commander ·
+        # commander+cli) replayed through parse_commands + surface_cli. Every row's `expect` block
+        # must hold and the helper must not score worse than the skill alone (the ship bar).
+        import subprocess
+
+        harness = HERE / "eval" / "matrix_harness.py"
+        proc = subprocess.run([sys.executable, str(harness)], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, f"matrix gate failed:\n{proc.stdout}\n{proc.stderr}")
+        self.assertIn("MATRIX OK", proc.stderr)  # the verdict line goes to stderr, the table to stdout
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

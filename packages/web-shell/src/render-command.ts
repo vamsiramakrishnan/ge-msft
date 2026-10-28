@@ -10,6 +10,8 @@ import type { ActuationRequest } from '@ge/contracts';
  * throwing, because a missing label must never block (or crash) the fail-closed approval path.
  */
 export function renderCommandLine(request: ActuationRequest): string {
+  // B3 — an undo request is shown as the undo it is, not as the original command it reverses.
+  if (request.undo) return `undo ${request.undo.of}`;
   const p = request.params;
   switch (request.kind) {
     case 'insert-text': {

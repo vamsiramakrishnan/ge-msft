@@ -55,6 +55,8 @@ COMMAND_HELP = _LANGUAGE["commandHelp"]
 CAPABILITY_REGISTRY = _LANGUAGE["capabilityRegistry"]
 LANGUAGE_VERSION = _LANGUAGE["version"]
 PREFLIGHT = _LANGUAGE["preflight"]
+# Default per-turn limits the runtime enforces (absent only in a bundle predating the block).
+LIMITS = dict(_LANGUAGE.get("limits") or {})
 CONTEXT_KINDS = set(PREFLIGHT["contextKinds"])
 CONTEXT_HINTS = set(PREFLIGHT["contextHints"])
 ANALYSIS_BINDING_KINDS = frozenset(PREFLIGHT["analysisBindingKinds"])
@@ -322,6 +324,48 @@ def _has_top_level_pipe(value: str) -> bool:
     return len(_split_pipeline(value)) > 1
 
 
+# C1 literal sources (TS parity: expr-grammar.ts `parseSource`): a number, ONE double-quoted
+# string, or `table [[header…], [row…], …]` (JSON rows, header first, cells stringified).
+_NUMBER_LITERAL = re.compile(r"^-?\d+(?:\.\d+)?$")
+MAX_LITERAL_TABLE_CELLS = 2000
+
+
+def _parse_table_literal(text: str):
+    usage = 'table literal usage: table [["col1","col2"],["a","1"],["b","2"]] (first row = header)'
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {"error": f"table literal is not valid JSON — {usage}"}
+    if not isinstance(parsed, list) or not parsed or not all(isinstance(r, list) for r in parsed):
+        return {"error": f"table literal must be a non-empty array of row arrays — {usage}"}
+
+    def cell(c):
+        if c is None:
+            return ""
+        if isinstance(c, bool):
+            return "true" if c else "false"
+        if isinstance(c, (str, int, float)):
+            return c if isinstance(c, str) else str(c)
+        return None
+
+    header = [cell(c) for c in parsed[0]]
+    if not header or any(c is None or not c.strip() for c in header):
+        return {"error": f"table literal header row needs non-empty column names — {usage}"}
+    columns = [c.strip() for c in header]
+    if len(set(columns)) != len(columns):
+        return {"error": "table literal header has duplicate column names"}
+    if len(parsed) * len(columns) > MAX_LITERAL_TABLE_CELLS:
+        return {"error": f"table literal too large (max {MAX_LITERAL_TABLE_CELLS} cells) — read it from the document instead"}
+    rows = []
+    for i, raw in enumerate(parsed[1:], start=2):
+        cells = [cell(c) for c in raw]
+        if any(c is None for c in cells):
+            return {"error": f"table literal row {i} has a non-scalar cell — {usage}"}
+        row = cells[: len(columns)] + [""] * max(0, len(columns) - len(cells))
+        rows.append(row)
+    return {"src": "table", "columns": columns, "rows": rows}
+
+
 def _parse_pipeline_source(head: str):
     if head == "outline":
         return {"src": "outline"}
@@ -329,19 +373,99 @@ def _parse_pipeline_source(head: str):
         if re.match(r"^\$[A-Za-z_][A-Za-z0-9_]*$", head):
             return {"src": "var", "name": head[1:]}
         return {"error": f"invalid pipeline variable '{head}'"}
+    if _NUMBER_LITERAL.match(head):
+        return {"src": "number", "value": float(head) if "." in head else int(head)}
+    if head.startswith('"'):
+        quoted = _scan_quoted(head)
+        if not quoted or quoted[1].strip():
+            return {"error": 'text literal source must be ONE double-quoted string — e.g. let $s = "hello"'}
+        return {"src": "text", "value": quoted[0]}
     parts = head.split(None, 1)
     src = parts[0].lower()
     arg = parts[1].strip() if len(parts) == 2 else ""
     if src == "read":
         # A bare `read` pages the document (TS parity): `read | count` is a valid pipeline.
         return {"src": "read", "selector": arg}
+    if src == "table" and arg.startswith("["):
+        return _parse_table_literal(arg)
     if len(parts) != 2:
         return {"error": "pipeline needs a source — e.g. read <selector> | <transform>"}
     if src == "search":
         if not arg:
             return {"error": "search pipeline source needs text"}
         return {"src": "search", "text": arg.strip('"')}
-    return {"error": f'unknown pipeline source "{parts[0]}" — use read <selector>, search <text>, outline, or $var'}
+    if src in EFFECT_VERBS:
+        return {"error": "effects can't be composed yet — emit them as standalone commands (Phase 2)"}
+    return {"error": f'unknown pipeline source "{parts[0]}" — use read <selector>, search <text>, outline, $var, a number, a "text" literal, or table [[…]]'}
+
+
+# C1 `each $row in $table: … end` — the bounded loop. Mirrors packages/contracts/src/each-grammar.ts:
+# the body is kept verbatim; each line must start with an effect verb and may reference the row
+# only as `$row.<column>`. Expansion (and column checks) happen in the runtime.
+_EACH_HEADER_RE = re.compile(r"^each\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+in\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*:$", re.IGNORECASE)
+_ROW_REF_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)")
+EACH_HEADER_USAGE = "usage: each $row in $table:  …effect lines…  end"
+
+
+def _is_each_header(line: str) -> bool:
+    return re.match(r"^each(?:\s|$)", line.strip(), re.IGNORECASE) is not None
+
+
+def _parse_each_header(line: str):
+    m = _EACH_HEADER_RE.match(line.strip())
+    if not m:
+        return {"error": f"malformed each header — {EACH_HEADER_USAGE}"}
+    if m.group(1) == m.group(2):
+        return {"error": f"each needs distinct names for the row and the table — {EACH_HEADER_USAGE}"}
+    return {"rowVar": m.group(1), "tableVar": m.group(2)}
+
+
+def _each_body_line_error(row_var: str, line: str):
+    head = line.split(None, 1)[0].lower()
+    if head not in EFFECT_VERBS:
+        return f"each body may only contain effect commands ({', '.join(sorted(EFFECT_VERBS))}) — got \"{head}\""
+    for m in _ROW_REF_RE.finditer(line):
+        if m.group(1) != row_var:
+            return f"unknown row variable ${m.group(1)} — the loop variable is ${row_var}"
+    if re.search(r"\$" + re.escape(row_var) + r"(?![A-Za-z0-9_.])", line):
+        return f"use ${row_var}.<column> to reference a cell — a bare ${row_var} has no value"
+    return None
+
+
+def _collect_each_block(header: str, lines, start: int):
+    """Group an each block whose header is `header` and whose body starts at lines[start]. Returns
+    (record, next_index) — the record is the block or a corrective error (then the scan skips to
+    the next `end` so the rest of the program still parses)."""
+    def skip_to_end(i):
+        while i < len(lines):
+            if lines[i].strip().lower() == "end":
+                return i + 1
+            i += 1
+        return i
+
+    parsed = _parse_each_header(header)
+    if "error" in parsed:
+        return parsed, skip_to_end(start)
+    row_var, table_var = parsed["rowVar"], parsed["tableVar"]
+    body = []
+    i = start
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.lower() == "end":
+            if not body:
+                return {"error": f"each ${row_var} in ${table_var} has an empty body"}, i
+            return {"kind": "each-block", "rowVar": row_var, "tableVar": table_var, "body": body}, i
+        if _is_each_header(line) or re.match(r"^def\s", line, re.IGNORECASE):
+            nested = "each" if _is_each_header(line) else "def"
+            return {"error": f"nested {nested} inside each ${row_var} is not allowed"}, skip_to_end(i)
+        bad = _each_body_line_error(row_var, line)
+        if bad:
+            return {"error": f'each body line "{line}": {bad}'}, skip_to_end(i)
+        body.append(line)
+    return {"error": f"each ${row_var} in ${table_var} is missing a closing `end`"}, i
 
 
 def _parse_pipeline(value: str):
@@ -491,6 +615,10 @@ def parse_line(line: str):
         if binding is not None:
             return binding
         return _parse_let(line)
+    if verb == "each":
+        # Only meaningful as a block (grouped by parse_block); a lone header is corrective.
+        parsed = _parse_each_header(line)
+        return parsed if "error" in parsed else {"error": f"each ${parsed['rowVar']} in ${parsed['tableVar']} is missing a closing `end`"}
     if _has_top_level_pipe(line):
         return _parse_pipeline(line)
 
@@ -898,12 +1026,25 @@ def parse_block(model_text: str):
         }
     out = []
     finished = False
-    for line in inner.splitlines():
+    lines = inner.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line or line.startswith("#"):
+            continue
+        if finished:
+            out.append({"error": "finish when=verified must be the final program entry"})
+            break
+        if line.lower() == "end":
+            out.append({"error": "`end` without a matching `def` or `each`"})
+            continue
+        if _is_each_header(line):
+            rec, i = _collect_each_block(line, lines, i)
+            out.append(rec)
+            continue
         rec = parse_line(line)
         if rec is not None:
-            if finished:
-                out.append({"error": "finish when=verified must be the final program entry"})
-                break
             out.append(rec)
             finished = rec.get("kind") == "verified-finish"
     requests_finish = any(re.match(r"^finish(?:\s|$)", line.strip(), re.IGNORECASE)
@@ -1149,6 +1290,41 @@ done
         assert verified_frame_error(response)
     assert verified_frame_error(" \n" + verified + "\n ") is None
     assert parse_block("Explanation\n" + plain + "\n" + plain)["commands"] == [{"verb": "set", "cell": "S!A2", "value": "6"}]
+
+    # C1 richer algebra (TS parity: expr-grammar.test.ts / each-grammar.test.ts).
+    assert parse_line("let $n = 5") == {"kind": "let", "name": "n", "pipeline": {"kind": "pipeline", "source": {"src": "number", "value": 5}, "stages": []}}
+    assert parse_line('let $s = "hi there"')["pipeline"]["source"] == {"src": "text", "value": "hi there"}
+    assert "error" in parse_line('let $s = "a" b')
+    lit = parse_line('let $t = table [["region","amount"],["East",100],["West",true,"x"],["North"]]')
+    assert lit["pipeline"]["source"] == {"src": "table", "columns": ["region", "amount"],
+                                         "rows": [["East", "100"], ["West", "true"], ["North", ""]]}
+    assert parse_line('table [["a"],["1"]] | count')["stages"] == [{"name": "count", "arg": ""}]
+    for bad in ("let $t = table [not json", "let $t = table []", 'let $t = table [["a",""]]',
+                'let $t = table [["a","a"]]', 'let $t = table [["a"],[{"x":1}]]'):
+        assert "error" in parse_line(bad), bad
+    assert "composed" in parse_line("table Sales!A1:B9 | count")["error"]
+    for stage in ("join $o on id", "group region agg sum(amount) as total", "distinct region", "rename a=b",
+                  "derive u = upper(name)", "filter region=East and not (amount<5 or amount>9)"):
+        assert "error" not in parse_line("let $x = $t | " + stage), stage
+    assert "unknown transform" in parse_line("let $x = $t | joinx $o")["error"]
+    each = parse_block("```cmd\nlet $t = read A1:B4\neach $r in $t:\n  set Summary!$r.cell $r.amount\n  # note\n\n  comment $r.cell \"x\"\nend\ndone\n```")["commands"]
+    assert each[1] == {"kind": "each-block", "rowVar": "r", "tableVar": "t",
+                       "body": ["set Summary!$r.cell $r.amount", 'comment $r.cell "x"']}, each
+    assert each[2] == {"verb": "done"}
+    assert block_is_complete(parse_block("```cmd\neach $r in $t:\nset B2 $r.a\nend\ndone\n```"))
+    unterminated = parse_block("```cmd\neach $r in $t:\nset B2 $r.a\n```")["commands"]
+    assert unterminated == [{"error": "each $r in $t is missing a closing `end`"}], unterminated
+    for program, needle in (("each $r in $t:\nend", "empty body"),
+                            ("each $r in $t:\neach $s in $u:\nset B2 1\nend\nend", "nested each"),
+                            ("each $r in $t:\nread $r.cell\nend", "effect commands"),
+                            ("each $r in $t:\nset B2 $row.a\nend", "unknown row variable $row"),
+                            ("each $r in $t:\nset B2 $r\nend", "bare $r"),
+                            ("each r in $t:\nset B2 1\nend", "malformed each header"),
+                            ("each $r in $r:\nset B2 1\nend", "distinct names"),
+                            ("set B2 1\nend", "without a matching")):
+        recs = parse_block("```cmd\n" + program + "\ndone\n```")["commands"]
+        assert any("error" in r and needle in r["error"] for r in recs), (program, recs)
+        assert recs[-1] == {"verb": "done"} or any("error" in r for r in recs), program
     print("SELF-TEST OK — fail-closed `done`, unclosed fence, trailing-token guards hold")
     return 0
 

@@ -58,6 +58,8 @@ function clipPreview(text: string, max = 60): string {
  * what lets a reviewer approve without opening every row.
  */
 export function effectChange(effect: PlanEffect): string | undefined {
+  // B3 — an undo reverses a landed change; what it does is the inverse, never the original params.
+  if (effect.request.undo) return effect.dryRun?.resolved;
   const p = effect.request.params;
   const after = effect.dryRun?.after;
   // Recipients first: a dry-run preview must never hide who the mail goes to.
@@ -133,7 +135,11 @@ function EffectRow({
         aria-controls={detailsId}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="plan-effect-kind">{kindLabel(effect.request.kind, language)}</span>
+        <span className="plan-effect-kind">
+          {effect.request.undo
+            ? `${t.undo} · ${kindLabel(effect.request.kind, language)}`
+            : kindLabel(effect.request.kind, language)}
+        </span>
         <span className="effect-target-summary">
           {description}
           {highImpact && <span className="effect-review">{t.check}</span>}
@@ -169,6 +175,18 @@ function EffectRow({
             <div className="plan-effect-row">
               <span className="k">{t.becomes}</span>
               <span className="v mono">{dry.resolved}</span>
+            </div>
+          )}
+          {dry?.evaluated && dry.evaluated.length > 0 && (
+            <div className="plan-effect-row" aria-label="Formula evaluation preview">
+              <span className="k">{t.evaluates}</span>
+              <span className="v mono">
+                {dry.evaluated.map((f) => (
+                  <span key={f.cell} className="plan-effect-eval">
+                    {f.cell} = {f.value ?? f.error ?? '?'}
+                  </span>
+                ))}
+              </span>
             </div>
           )}
           {dry?.before !== undefined && dry?.after !== undefined && (
@@ -226,6 +244,13 @@ export function PlanApprovalCard({
       <div className="card-top" aria-hidden="true" />
       <div className="card-in">
         <div className="plan-approval-title">{n === 1 ? t.reviewOne : t.reviewMany(n)}</div>
+        {plan.phase && (
+          <div className="plan-approval-phase" data-testid="plan-approval-phase">
+            {t.phaseOf(plan.phase.index + 1, plan.phase.count)}
+            {' · '}
+            {t.phaseClass[plan.phase.approvalClass] ?? plan.phase.approvalClass}
+          </div>
+        )}
         <ol className="plan-effects" aria-label={n === 1 ? t.reviewOne : t.reviewMany(n)}>
           {plan.effects.map((effect, i) => (
             <EffectRow

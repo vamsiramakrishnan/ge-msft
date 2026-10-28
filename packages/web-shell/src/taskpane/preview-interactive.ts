@@ -110,7 +110,11 @@ async function* streamScripted(
 /** A real controller over an explicitly scripted session. No credentials, network, or Office writes. */
 export function makeDemoController(
   surface: Surface,
-  { pace = 30, resume = false }: { pace?: number; resume?: boolean } = {},
+  {
+    pace = 30,
+    resume = false,
+    phases = false,
+  }: { pace?: number; resume?: boolean; phases?: boolean } = {},
 ): PanelController {
   // Demo-only recovery journal: each landed sample change can be undone (shows the Undo button).
   const journal = new Map<string, 'applied' | 'undone'>();
@@ -178,7 +182,13 @@ export function makeDemoController(
         options?.signal,
         'Preparing the sample change…',
       );
-      const approved = await options?.approvePlan?.(effects);
+      // ?phases=1: show the approval card as phase 1 of 2 (a mixed-authority plan, B1).
+      const approved = await options?.approvePlan?.(
+        effects,
+        phases
+          ? { approvalClass: effects[0]!.approvalClass, index: 0, count: 2 }
+          : { approvalClass: effects[0]!.approvalClass, index: 0, count: 1 },
+      );
       if (options?.signal?.aborted) return;
       if (approved) {
         journal.set(request.changeId, 'applied');
@@ -246,9 +256,40 @@ export function makeDemoController(
           canResume: false,
         })),
     },
-    async *runAnalysis(action) {
-      if (action.kind === 'undo' && 'id' in action && journal.has(action.id))
-        journal.set(action.id, 'undone');
+    async *runAnalysis(action, options?: RunCommandsOptions) {
+      if (action.kind === 'undo' && 'id' in action && journal.has(action.id)) {
+        // B3 — an undo is reviewed like any other write: the card shows the recorded inverse.
+        const request: ActuationRequest = {
+          changeId: asChangeId(`undo-${++sequence}`),
+          surface,
+          kind: sample.kind,
+          params: sample.params,
+          undo: {
+            of: asChangeId(action.id),
+            inverse: {
+              op: 'restore-cells',
+              range: sample.params.target?.range ?? 'A1',
+              values: [['']],
+            },
+          },
+        };
+        const effect = {
+          request,
+          command: renderCommandLine(request),
+          approvalClass: approvalClassOf(request.kind),
+          reversible: false,
+          dryRun: {
+            target: sample.params.target?.range ?? sample.title,
+            resolved: `restore the prior cells in ${sample.params.target?.range ?? 'A1'}`,
+          },
+        };
+        const approved = await options?.approvePlan?.([effect], {
+          approvalClass: effect.approvalClass,
+          index: 0,
+          count: 1,
+        });
+        if (approved) journal.set(action.id, 'undone');
+      }
       yield { type: 'done', turn: 1 };
     },
     startNewSession: () => undefined,

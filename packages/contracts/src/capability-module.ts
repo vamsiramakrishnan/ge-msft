@@ -179,6 +179,12 @@ const modules: readonly CapabilityModule[] = [
   ),
   module(
     'word',
+    'insert-annotation',
+    ['text', 'target', 'annotation', 'sources'],
+    'Read back the host-minted annotation by id; a comment fallback reports the comment location.',
+  ),
+  module(
+    'word',
     'insert-hyperlink',
     ['hyperlink', 'target', 'sources'],
     'Observe the screened hyperlink address on the resolved live range.',

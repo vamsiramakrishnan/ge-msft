@@ -111,8 +111,14 @@ function simulatedSession(
         effects,
         dag: [],
         approvalClasses: [...new Set(effects.map((effect) => effect.approvalClass))],
+        levels: [],
+        phases: [],
       };
-      const approved = await options.approvePlan?.(effects);
+      const approved = await options.approvePlan?.(effects, {
+        approvalClass: effects[0]?.approvalClass ?? 'in-document',
+        index: 0,
+        count: 1,
+      });
       for (const effect of effects) {
         if (approved) await options.beforeDispatch?.();
         const request = effect.request;

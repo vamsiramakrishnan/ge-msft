@@ -48,6 +48,44 @@ export function planAddComment(req: ActuationRequest): AddCommentPlan {
   };
 }
 
+/** The host-facing plan for an `insert-annotation` (a Word critique on the matched text). */
+export interface InsertAnnotationPlan {
+  readonly matchText?: string;
+  readonly contextHint?: string;
+  /** The finding, one line (control characters collapsed). */
+  readonly text: string;
+  readonly hasText: boolean;
+  /** The one-line replacement the popup offers, when the model gave one. */
+  readonly suggestion?: string;
+  readonly severity: 'info' | 'warning' | 'error';
+  /** Word's critique colour scheme for the severity (blue / lavender / red). */
+  readonly colorScheme: 'Blue' | 'Lavender' | 'Red';
+  /** What the comment fallback (below WordApi 1.7) writes: the finding, then the suggestion. */
+  readonly commentText: string;
+}
+
+const CRITIQUE_COLOR: Record<
+  InsertAnnotationPlan['severity'],
+  InsertAnnotationPlan['colorScheme']
+> = { info: 'Blue', warning: 'Lavender', error: 'Red' };
+
+export function planInsertAnnotation(req: ActuationRequest): InsertAnnotationPlan {
+  const p = req.params;
+  const text = oneLineSource(p.text ?? '');
+  const suggestion = oneLineSource(p.annotation?.suggestion ?? '');
+  const severity = p.annotation?.severity ?? 'info';
+  return {
+    ...(p.target?.matchText ? { matchText: p.target.matchText } : {}),
+    ...(p.target?.contextHint ? { contextHint: p.target.contextHint } : {}),
+    text,
+    hasText: text.length > 0,
+    ...(suggestion ? { suggestion } : {}),
+    severity,
+    colorScheme: CRITIQUE_COLOR[severity],
+    commentText: suggestion ? `${text} Suggestion: ${suggestion}` : text,
+  };
+}
+
 /** Collapse control chars + whitespace to one line so a source can't forge extra comment lines. */
 function oneLineSource(text: string): string {
   const stripped = Array.from(text, (ch) => {

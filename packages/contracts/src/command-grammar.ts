@@ -18,6 +18,12 @@ import {
   type ParsedSkillCall,
   type ParsedSkillDef,
 } from './skill-grammar.js';
+import {
+  eachBodyLineError,
+  isEachHeader,
+  parseEachHeader,
+  type ParsedEachBlock,
+} from './each-grammar.js';
 import { PlanContextHintSchema, type PlanContextHint } from './command-plan.js';
 import { ContextKindSchema, type ContextKind, type Surface } from './context.js';
 import { registryEntryForKindAndSurface } from './capability-registry.js';
@@ -1640,6 +1646,7 @@ export type ProgramEntry =
   | ParsedVerifiedFinish
   | ParsedSkillDef
   | ParsedSkillCall
+  | ParsedEachBlock
   | CommandParseError;
 
 /** A runtime-owned artifact binding. The name excludes `$`, like expression bindings. */
@@ -1699,6 +1706,10 @@ export function isProgramSkillDef(entry: ProgramEntry): entry is ParsedSkillDef 
 
 export function isProgramSkillCall(entry: ProgramEntry): entry is ParsedSkillCall {
   return 'kind' in entry && entry.kind === 'skill-call';
+}
+
+export function isProgramEachBlock(entry: ProgramEntry): entry is ParsedEachBlock {
+  return 'kind' in entry && entry.kind === 'each-block';
 }
 
 /**
@@ -1770,14 +1781,20 @@ export function parseProgramBlock(
     }
 
     if (isSkillEnd(line)) {
-      // A stray `end` with no open `def` — corrective, not a silent drop.
-      entries.push(atLine({ error: '`end` without a matching `def`' }, lineNo, line));
+      // A stray `end` with no open `def`/`each` — corrective, not a silent drop.
+      entries.push(atLine({ error: '`end` without a matching `def` or `each`' }, lineNo, line));
       continue;
     }
     if (isSkillDefHeader(line)) {
       const def = collectSkillDef(line, lines, i);
       entries.push(atLine(def.entry, lineNo, line));
       i = def.nextIndex;
+      continue;
+    }
+    if (isEachHeader(line)) {
+      const each = collectEachBlock(line, lines, i);
+      entries.push(atLine(each.entry, lineNo, line));
+      i = each.nextIndex;
       continue;
     }
     const entry = atLine(parseProgramLine(line, knownSkills), lineNo, line);
@@ -1866,6 +1883,60 @@ function collectSkillDef(
   // Ran off the end with no `end`.
   return {
     entry: { error: `def "${parsedHeader.name}" is missing a closing \`end\`` },
+    nextIndex: i,
+  };
+}
+
+/**
+ * Collect an `each $row in $table: … end` block (C1) starting at the header line (already
+ * consumed). The body is kept VERBATIM for the runtime to expand per row; here each line is checked
+ * against the shared structural rules ({@link eachBodyLineError}): effect verbs only, row references
+ * name the loop variable. A nested `each`/`def`, an empty body and a missing `end` are corrective.
+ */
+function collectEachBlock(
+  header: string,
+  lines: string[],
+  start: number,
+): { entry: ParsedEachBlock | CommandParseError; nextIndex: number } {
+  const parsedHeader = parseEachHeader(header);
+  if ('error' in parsedHeader) {
+    const skipTo = scanToEnd(lines, start);
+    return { entry: { error: parsedHeader.error }, nextIndex: skipTo.nextIndex };
+  }
+  const { rowVar, tableVar } = parsedHeader;
+  const body: string[] = [];
+  let i = start;
+  while (i < lines.length) {
+    const line = lines[i]!.trim();
+    i++;
+    if (line === '' || line.startsWith('#')) continue;
+    if (isSkillEnd(line)) {
+      if (body.length === 0) {
+        return {
+          entry: { error: `each $${rowVar} in $${tableVar} has an empty body` },
+          nextIndex: i,
+        };
+      }
+      return { entry: { kind: 'each-block', rowVar, tableVar, body }, nextIndex: i };
+    }
+    if (isEachHeader(line) || isSkillDefHeader(line)) {
+      const skipTo = scanToEnd(lines, i);
+      return {
+        entry: {
+          error: `nested ${isEachHeader(line) ? 'each' : 'def'} inside each $${rowVar} is not allowed`,
+        },
+        nextIndex: skipTo.nextIndex,
+      };
+    }
+    const bad = eachBodyLineError(rowVar, line);
+    if (bad !== undefined) {
+      const skipTo = scanToEnd(lines, i);
+      return { entry: { error: `each body line "${line}": ${bad}` }, nextIndex: skipTo.nextIndex };
+    }
+    body.push(line);
+  }
+  return {
+    entry: { error: `each $${rowVar} in $${tableVar} is missing a closing \`end\`` },
     nextIndex: i,
   };
 }
@@ -2259,6 +2330,8 @@ export const SPECIALIZED_SYNTAX: Partial<Record<ActuationKind, string>> = {
     '/insert-content-control type=richText|plainText [tag=<tag>] [title="..."] [match="exact anchor text"]',
   'insert-hyperlink':
     '/insert-hyperlink url=<https URL> [match="exact text to link"] [displayText="..."] [screenTip="..."]',
+  'insert-annotation':
+    '/insert-annotation match="exact finding text" text="why this needs attention" [suggestion="replacement text"] [severity=info|warning|error]',
   'find-replace':
     '/find-replace find="..." replace="..." [matchCase=true|false] [matchWholeWord=true|false]',
   'format-shape':

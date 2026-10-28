@@ -75,6 +75,7 @@ export const ActuationKindSchema = z.enum([
   'tracked-change', // Word: insert/replace as a tracked change
   'fill-content-control', // Word: populate a named content control
   'insert-content-control', // Word: insert a NEW content control
+  'insert-annotation', // Word: a native critique annotation (WordApi 1.7; comment fallback below)
   'insert-paragraph', // Word: insert a structural paragraph block
   'apply-style', // Word: apply a named (built-in/custom) style
   'define-style', // Word: define a new document style (WordApi 1.5; facets desktop-only)
@@ -484,6 +485,16 @@ export const ActuationParamsSchema = z.object({
   contentControl: z
     .object({ type: z.string(), tag: z.string().optional(), title: z.string().optional() })
     .optional(),
+  /**
+   * insert-annotation (Word): a native critique on the matched text. `severity` picks the critique
+   * colour scheme; `suggestion` is the one-line replacement the popup offers (WordApi 1.8 popups).
+   */
+  annotation: z
+    .object({
+      suggestion: z.string().max(2000).optional(),
+      severity: z.enum(['info', 'warning', 'error']).optional(),
+    })
+    .optional(),
   /** insert-break (Word). */
   break: z
     .object({ breakType: z.enum(['page', 'sectionNext', 'sectionContinuous', 'line']) })
@@ -747,6 +758,13 @@ export const ActuationRequestSchema = z
     params: ActuationParamsSchema,
     provenance: ProvenancePayloadSchema.optional(),
     preconditions: z.array(SourceVersionSchema).max(16).optional(),
+    // ADR-0007 / B3 — an UNDO request: apply the recorded inverse of change `of`. `kind` and `params`
+    // are the ORIGINAL effect's (so admission, preview and the journal see what is being reversed);
+    // a bridge routes on `undo` before anything else and never re-applies `params`. Only the pane
+    // mints these from a user action on a landed receipt; the model cannot emit one.
+    undo: z
+      .object({ of: ChangeIdSchema, inverse: z.lazy(() => InverseDescriptorSchema) })
+      .optional(),
   })
   .refine(
     (r) =>
@@ -790,6 +808,7 @@ export const InverseDescriptorSchema = z.discriminatedUnion('op', [
       'paragraph',
       'inline-picture',
       'content-control',
+      'annotation', // Word critique annotation (insert-annotation)
       'word-table',
       'hyperlink', // Word
       'outline-region',
@@ -829,7 +848,13 @@ export const InverseDescriptorSchema = z.discriminatedUnion('op', [
   // ── ADR-0007 cross-surface inverses (Word/PPT/OneNote/Outlook/Teams) ───────
   // In-place mutations record the prior state needed to restore it; each anchors by a re-resolvable
   // id captured at apply-time, per the inverse-identity rule above.
-  z.object({ op: z.literal('restore-text'), anchor: z.string(), priorText: z.string() }), // header/footer, find-replace, replace-selection, PPT shape text, OneNote title
+  z.object({
+    op: z.literal('restore-text'),
+    anchor: z.string(),
+    priorText: z.string(),
+    // Hash of the verified text landed by the original write, for conflict-safe undo.
+    expectedTextHash: z.string().optional(),
+  }), // header/footer, find-replace, replace-selection, PPT shape text, OneNote title
   z.object({ op: z.literal('restore-style'), anchor: z.string(), priorStyle: z.string() }), // Word apply-style
   z.object({
     op: z.literal('restore-content-control'),
@@ -891,6 +916,26 @@ export const ActuationResultSchema = z.object({
   // Teams): expected, not a failure. Distinct from `provenanceDropped` (a host that can store it
   // tried and failed). The record still exists in the panel's own store and the run ledger.
   provenanceUnsupported: z.boolean().optional(),
+  // ADR-0008 §7 / B4 — this receipt was NOT produced by a fresh dispatch: the task journal found a
+  // prior APPLIED + VERIFIED outcome for the same intent (stable idempotency key) and replayed it,
+  // naming the original change. Only a durable-program resume opts into replay; a plain retry never
+  // turns a prior receipt into a new one.
+  replayOf: ChangeIdSchema.optional(),
+  // ADR-0007 / B3 — this receipt reversed the named change (the request carried `undo.of`).
+  undoOf: ChangeIdSchema.optional(),
+  // A stable host anchor the bridge minted for the written object (PowerPoint `bindings`, 1.8).
+  // Later commands may address the shape as `binding:<id>` instead of a slide/shape id pair,
+  // which survives re-opens and re-ordering that shift ids. Absent ⇒ the host has no bindings.
+  bindingId: z.string().optional(),
+  // A visual receipt of the landed write: a bounded PNG of the slide (or shape) rendered by the
+  // host after the write synced. Best effort — an image failure never changes `ok`.
+  preview: z
+    .object({
+      mimeType: z.string(),
+      base64: z.string(),
+      width: z.number().int().positive().optional(),
+    })
+    .optional(),
   // `reason` refines `code` for diagnostics, which never export `message` (it can quote document
   // text). A closed enum, so no host or document text can ever ride it.
   error: z

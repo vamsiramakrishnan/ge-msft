@@ -8,7 +8,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from parse_commands import (  # noqa: E402
+    _each_body_line_error,
     _has_top_level_pipe,
+    _is_each_header,
+    _parse_each_header,
     _split_pipeline,
     extract_command_block_meta,
     parse_line,
@@ -23,8 +26,72 @@ __all__ = [
     "verified_frame_error",
     "_is_expr_line",
     "_infer_pipeline_type",
+    "_pipeline_law_errors",
     "_analysis_refs",
+    "_is_each_header",
+    "_parse_each_header",
+    "_each_body_line_error",
 ]
+
+
+_COLUMN_STAGES = {"filter", "sort", "derive", "sum", "avg", "min", "max"}
+
+
+def _stage_columns(name, arg):
+    """The column names a stage reads: `filter col=…`, `sort col [desc]`, `sum col`,
+    `derive new = a + b` (its operands), `select a,b` (its projection)."""
+    arg = arg.strip()
+    if not arg:
+        return []
+    if name == "select":
+        return [c.strip() for c in arg.split(",") if c.strip()]
+    if name == "filter":
+        # C1: a predicate may combine comparisons with and / or / not and parentheses; quoted
+        # values are data. Collect the column of every comparison.
+        cols = []
+        unquoted = re.sub(r'"(?:[^"\\]|\\.)*"', '""', arg)
+        for simple in re.split(r"\b(?:and|or)\b", unquoted, flags=re.IGNORECASE):
+            simple = re.sub(r"^(?:\s*(?:not\b|\())+", "", simple.strip(), flags=re.IGNORECASE).strip()
+            m = re.match(r"^(.+?)\s*(?:>=|<=|!=|=|>|<|\s+contains\s+)", simple, re.IGNORECASE)
+            if m:
+                cols.append(m.group(1).strip())
+        return cols
+    if name == "sort":
+        return [arg.split()[0]]
+    if name == "derive":
+        m = re.match(r"^\S+\s*=\s*(\S+)\s*[-+*/]\s*(\S+)$", arg)
+        return [t for t in (m.group(1), m.group(2)) if m and not re.match(r"^-?\d+(\.\d+)?$", t)] if m else []
+    if name in _AGG:
+        return [arg.split()[0]]
+    return []
+
+
+def _pipeline_law_errors(rhs: str):
+    """Type and column laws over one pipeline (algebra.md): no stage after an aggregate
+    (`sum | head` has no rows to take), and after `select C` a later stage may only name columns
+    in C (`filter(p, select(C, T))` is valid iff columns(p) ⊆ C)."""
+    parts = [p.strip() for p in _split_pipeline(rhs.strip())]
+    errors = []
+    selected = None
+    aggregated_by = None
+    for st in parts[1:]:
+        tokens = st.split(None, 1)
+        if not tokens:
+            continue
+        name = tokens[0].lower()
+        arg = tokens[1] if len(tokens) > 1 else ""
+        if aggregated_by is not None:
+            errors.append(f'type law: "{name}" expects a Table, but "{aggregated_by}" produced a Number')
+            break
+        if name in _AGG:
+            aggregated_by = name
+        if selected is not None and name in _COLUMN_STAGES:
+            for col in _stage_columns(name, arg):
+                if col not in selected:
+                    errors.append(f'column law: "{name}" uses column "{col}" that "select" did not keep ({", ".join(selected)})')
+        if name == "select":
+            selected = _stage_columns("select", arg)
+    return errors
 
 
 def _analysis_refs(action):
@@ -60,7 +127,13 @@ def _infer_pipeline_type(rhs: str):
     parts = [p.strip() for p in _split_pipeline(rhs.strip())]
     source = parts[0]
     stages = parts[1:]
-    vtype = "Number" if source.lstrip("$").split()[0] in _AGG else "Table"
+    # C1 literal sources type as what they carry; a read / $var / table literal is a Table.
+    if re.match(r"^-?\d+(?:\.\d+)?$", source):
+        vtype = "Number"
+    elif source.startswith('"'):
+        vtype = "Text"
+    else:
+        vtype = "Number" if source.lstrip("$").split()[0] in _AGG else "Table"
     names, unknown = [], []
     for st in stages:
         name = st.split()[0].lower() if st.split() else ""

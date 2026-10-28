@@ -77,6 +77,36 @@ unknown outcome. Recovery must not turn that uncertainty into automatic retry au
 It is a correlation key, not a universal host idempotency guarantee. Supported cell writes use
 snapshot/readback/recovery rules described in [compute and recovery](COMPUTE-RECOVERY.md).
 
+**Stable idempotency keys.** Every effect also carries `effectIdempotencyKey(request)` (contracts
+`plan-graph.ts`): a hash of its intent — surface, kind, params, preconditions — independent of the
+per-attempt `changeId`. The plan DAG node's `idempotencyKey` is this key, and the task journal stores
+it beside the `sha256` integrity fingerprint. `TaskJournal.priorOutcome(request)` answers "did this
+intent already land?" for a retry or resume; only a durable-program stage resume opts into
+`replayIntent`, where an `applied` + verified prior outcome of the same intent and task is replayed
+as a receipt marked `replayOf` instead of being dispatched twice. The plain command loop never
+replays: a re-emitted write is a new request that goes through approval and dispatch.
+
+**Plan scheduling and phased approval (ADR-0008 §7).** `planning.ts` partitions the inferred DAG
+into dependency levels (`scheduleEffectLevels`) and severity-ordered approval phases
+(`approvalPhases`: in-document → external → estate → irreversible, collapsing to one mixed phase
+when an effect depends on a later-phase effect). The `plan-preview` event carries `levels` and
+`phases`; `approvePlan(effects, phase)` is called once per phase and a declined phase blocks every
+later one. Dispatch follows `executionOrder` (phase by phase, level by level) and stays serial — the
+journal is single-writer — so levels decide order and let an independent effect proceed past a
+failed sibling, never run effects concurrently. `onEffectFailure: 'stop-plan'` halts at the first
+effect that does not land (`plan_stopped` for the rest); the default `skip-dependents` skips only
+dependents (`prerequisite_failed`).
+
+**Undo via recorded inverses (ADR-0007).** A landed receipt's `inverse` is the only authority for
+reversing it. The pane's undo action asks the runtime (`AssistSession.canUndo`) and, outside the
+Excel cell-recovery journal, mints an `ActuationRequest` carrying `undo: { of, inverse }` with the
+original kind and params (for admission and the approval card — never re-applied). The request
+passes the same approval card and gate as any write; `DocBridge.applyInverse` conflict-checks the
+recorded anchor (minted id or address) and returns a receipt marked `undoOf`, verified by readback
+or honestly `unknown`. A bridge without `applyInverse`, a `not-reversible` marker, a failed write and
+an undo receipt itself are never undoable, and the model cannot emit an undo (the loop refuses
+recovery actions inside a program).
+
 ## Capability authority
 
 Each bridge defines one executable handler table. `createBridgeDispatch` derives the immutable
@@ -98,6 +128,19 @@ and deterministic SDK programs converge on the existing compiler and effect boun
 pipeline cannot contain an effect. Effect arguments are resolved during dry-run before approval;
 macro expansion cannot bypass that process, inject extra command lines, or escape execution budgets.
 
+The pure algebra (`packages/contracts/src/expr-grammar.ts` owns the shape, `packages/runtime/src/compose.ts`
+the meaning): a pipeline source is a host read (`read`/`search`/`outline`), a `$var`, or a literal
+(`5`, `"text"`, `table [[…]]` — JSON rows, header first, bounded). `filter` takes a boolean predicate
+(`and`/`or`/`not`, parentheses); `join`, `group`, `distinct` and `rename` are relational transforms
+over bound tables; `derive` adds `upper lower trim len concat round year month day datediff`. The
+`each $row in $table: … end` block (`each-grammar.ts`) is grouped like a recipe and carries a
+verbatim body of effect lines; the runtime (`each-expansion.ts`) expands it into concrete effects
+BEFORE dry-run — at most 50 rows and never more lines than the per-turn write cap — and refuses the
+whole block otherwise, so the approval card always shows every substituted write. Substituted cell
+text is host content: it is escaped inside quoted arguments and refused outside them when it could
+re-shape a command. The Python preflight mirrors the literal sources, the transform names and the
+`each` structural rules (`parse_commands.py`, `surface_cli/checker.py`).
+
 The human intent tier remains `ask`, `summarize`, `explain`, `rewrite`, `review`, `draft`, and `notes`.
 Scope describes where; grounding describes the evidence. Write/annotation routes enter the command
 approval path rather than ordinary chat. Quick actions and palette options are capability-scoped.
@@ -105,6 +148,24 @@ approval path rather than ordinary chat. Quick actions and palette options are c
 The TypeScript planner parser owns supported planner keywords. Cross-surface guidance uses supported
 `step`/`clarify` lines; Python-only `workflow`, `source`, `target`, `phase`, and `handoff` directives are
 not accepted planner syntax. See [the planner skill](../skill/m365-command-planner/SKILL.md).
+
+**Static type pass.** Before dry-run, `runtime/src/static-types.ts` infers `Table | Number | Text |
+Artifact` for every binding and pipeline of the turn without touching the host, and refuses the
+whole program (one diagnostic per entry, a `type-error` event each, then the bounded repair turn)
+on an unknown transform (with a did-you-mean), a transform fed the wrong kind of value
+(`sum | head`), a `$name` used before it is bound — inside an effect's embedded expression or an
+`each … in $table` header too — and a column-law violation where the program itself determines the
+columns (a table literal and anything derived from it through `select`/`rename`/`derive`/`group`).
+A host read's columns are unknown until it runs, so no law is applied to them. The Python preflight
+(`surface_cli/parser.py`) enforces the same type and column laws.
+
+**Durable recipes.** A `def … end` the loop registers is also stored in the host document through
+`DocBridge.recoveryStorage` (`runtime/src/recipe-store.ts`, bounded: 32 recipes, 64 body lines) and
+reloaded at the start of each task (`recipes-loaded` event). Stored recipes are document content:
+each is re-parsed through the grammar and re-registered through the registry's own checks, and a
+recipe is still only a macro whose expansion flows through type-check, dry-run and the approval
+card. A host without recovery storage keeps recipes for the session only, and the registration
+result says which.
 
 The golden corpus (`skill/golden-corpus.jsonl`) is the differential conformance gate: every case
 runs through the TypeScript grammar (`packages/contracts/src/golden-corpus.test.ts`) and the Python

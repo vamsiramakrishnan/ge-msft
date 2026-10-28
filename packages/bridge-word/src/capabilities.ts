@@ -65,6 +65,15 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
       appliesTo: ['selection', 'paragraph'],
     },
     {
+      kind: 'insert-annotation',
+      surface: 'word',
+      title: 'Flag as critique',
+      description:
+        'Mark uniquely matched text with a native critique annotation (an irreversible comment below WordApi 1.7).',
+      reversible: true,
+      appliesTo: ['selection', 'paragraph'],
+    },
+    {
       kind: 'comment-reply',
       surface: 'word',
       title: 'Reply & resolve comment',

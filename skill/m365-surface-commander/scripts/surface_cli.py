@@ -30,6 +30,7 @@ from pathlib import Path
 # import; this file only runs as __main__), and so the package can reach parse_commands.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from surface_cli import analyze, normalize, _budget_exceeded, _cell_count  # noqa: E402
+from surface_cli.budget import DEFAULT_LIMITS  # noqa: E402
 from command_help import render as render_command_help  # noqa: E402
 
 
@@ -98,9 +99,9 @@ def _run(argv):
     ap.add_argument("topic", nargs="?")
     ap.add_argument("--surface")
     ap.add_argument("--capabilities", help="comma-separated verbs live this turn (optional scope)")
-    ap.add_argument("--max-effects", type=int, default=8)
-    ap.add_argument("--max-reads", type=int, default=8)
-    ap.add_argument("--max-cells", type=int, default=10000)
+    ap.add_argument("--max-effects", type=int, default=DEFAULT_LIMITS["max_effects"])
+    ap.add_argument("--max-reads", type=int, default=DEFAULT_LIMITS["max_reads"])
+    ap.add_argument("--max-cells", type=int, default=DEFAULT_LIMITS["max_cells"])
     ap.add_argument("--json", action="store_true", help="machine-readable output (for tests/orchestration)")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
@@ -341,6 +342,31 @@ done
     bare = analyze("```cmd\nlet $n = read | count\ndone\n```")
     if bare["errors"]:
         failures.append(f"bare `read` pipeline source rejected: {bare['errors']}")
+    # C1 richer algebra: literal sources type as what they carry; the relational transforms and
+    # boolean predicates pass the column law; an `each` block is a template of effects over a
+    # bound table, refused when the table is unbound/an artifact or a body line is not an effect.
+    lits = analyze('```cmd\nlet $n = 5\nlet $s = "hi"\nlet $t = table [["a","b"],["1","x"]]\n'
+                   'let $j = $t | select a,b | filter a>0 and not (b=x or b=y) | join $t on a left | '
+                   'group a agg sum(b) as total | distinct a | rename a=k\ndone\n```')
+    if lits["errors"]:
+        failures.append(f"C1 literal/relational program rejected: {lits['errors']}")
+    types = {b["name"]: b["type"] for b in lits["bindings"]}
+    if (types.get("n"), types.get("s"), types.get("t"), types.get("j")) != ("Number", "Text", "Table", "Table"):
+        failures.append(f"C1 literal typing wrong: {types}")
+    loop = analyze('```cmd\nlet $t = read A1:B4\neach $r in $t:\n  set Summary!$r.cell $r.amount\n'
+                   '  comment $r.cell "x"\nend\ndone\n```', capabilities={"read", "set", "comment"})
+    if loop["errors"]:
+        failures.append(f"C1 each block rejected: {loop['errors']}")
+    if [e.get("loop") for e in loop["effects"]] != ["$r in $t", "$r in $t"]:
+        failures.append(f"C1 each effects not marked as a loop template: {loop['effects']}")
+    for program, needle in (("each $r in $t:\nset B2 $r.a\nend", "used before it is bound"),
+                            ("let $t = read A1\neach $r in $t:\nread $r.a\nend", "effect commands"),
+                            ("let $t = read A1\neach $r in $t:\nset B2 $r.a", "missing a closing"),
+                            ("let $t = read A1\neach $r in $t:\neach $s in $t:\nset B2 1\nend\nend", "nested each"),
+                            ("set B2 1\nend", "without a matching")):
+        got = analyze("```cmd\n" + program + "\ndone\n```")
+        if not any(needle in e for e in got["errors"]):
+            failures.append(f"C1 each corrective missing {needle!r}: {got['errors']}")
     if failures:
         for f in failures:
             print("FAIL:", f)

@@ -238,3 +238,11 @@ durable recipes, the eval matrix, Copilot agent actions when out of preview.
 
 Each item touching identity, provenance or gates still routes through the `security-reviewer`
 agent before it is checked off, per `CLAUDE.md`.
+
+**Delivery (October 2026).** Tranche A merged in #18 (with mail and Teams attachments as context).
+Tranches B and C landed together in the following change; see `STATUS.md` § "Leverage tranches B
+and C" for what each item became. Two deliberate deviations: undo stays a user-initiated pane action
+backed by recorded inverses rather than a model-facing `undo` verb (the loop refuses recovery
+actions in a program by design), and dispatch stays serial — levels and phases decide order and
+approval, not concurrency — because the task journal is single-writer. Copilot agent actions
+remain out of scope until the API leaves preview.

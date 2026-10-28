@@ -26,6 +26,7 @@ class ExcelBridge implements DocBridge {
       contextKinds: ['range'],
       actuations: [
         { kind: 'write-cells', surface: 'excel', title: 'Write cells', reversible: true },
+        { kind: 'post-message', surface: 'excel', title: 'Post', reversible: true },
       ],
     };
   }
@@ -177,5 +178,100 @@ describe('AssistSession.runCommands — C1 each loop', () => {
     expect(approve).not.toHaveBeenCalled();
     expect(bridge.applied).toHaveLength(0);
     expect(bodies[2]).toContain('write cap of 4');
+  });
+
+  it('refuses a whole loop when earlier writes leave insufficient allowance', async () => {
+    const bridge = new ExcelBridge();
+    const bodies: string[] = [];
+    const s = session(
+      bridge,
+      [
+        '```cmd\nlet $t = read Sales!A1:B4\n```',
+        '```cmd\nset Summary!A1 1\neach $r in $t:\n  set Summary!$r.cell $r.amount\nend\n```',
+        '```cmd\ndone\n```',
+      ],
+      bodies,
+    );
+    const approve = vi.fn(() => true);
+    const events = await collectLoop(
+      s.runCommands('copy the amounts', { approvePlan: approve, maxWritesPerTurn: 3 }),
+    );
+
+    expect(eachEvents(events)[0]).toMatchObject({ rows: 0, lines: [] });
+    expect(bodies[2]).toContain('write cap of 2');
+    expect(approve).not.toHaveBeenCalled();
+    expect(bridge.applied).toHaveLength(0);
+    expect(events.filter((e) => e.type === 'capped')).toHaveLength(0);
+  });
+
+  it('allows a loop that exactly fits the remaining allowance', async () => {
+    const bridge = new ExcelBridge();
+    const s = session(bridge, [
+      '```cmd\nlet $t = read Sales!A1:B4\n```',
+      '```cmd\nset Summary!A1 1\neach $r in $t:\n  set Summary!$r.cell $r.amount\nend\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const previews: PlanEffect[][] = [];
+    const events = await collectLoop(
+      s.runCommands('copy the amounts', {
+        maxWritesPerTurn: 4,
+        approvePlan: (effects) => {
+          previews.push(effects);
+          return true;
+        },
+      }),
+    );
+
+    expect(eachEvents(events)[0]).toMatchObject({ rows: 3 });
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toHaveLength(4);
+    expect(bridge.applied).toHaveLength(4);
+  });
+
+  it('refuses a loop that exceeds the remaining outward-write allowance', async () => {
+    const bridge = new ExcelBridge();
+    const bodies: string[] = [];
+    const rows = Array.from({ length: 8 }, (_, i) => `["message ${i}"]`).join(',');
+    const s = session(
+      bridge,
+      [
+        `\`\`\`cmd\nlet $t = table [["message"],${rows}]\n\`\`\``,
+        '```cmd\npost "earlier"\neach $r in $t:\n  post "$r.message"\nend\n```',
+        '```cmd\ndone\n```',
+      ],
+      bodies,
+    );
+    const approve = vi.fn(() => true);
+    const events = await collectLoop(
+      s.runCommands('post the messages', { approvePlan: approve, maxWritesPerTurn: 12 }),
+    );
+
+    expect(eachEvents(events)[0]).toMatchObject({ rows: 0, lines: [] });
+    expect(bodies[2]).toContain('remaining outward write cap of 7');
+    expect(approve).not.toHaveBeenCalled();
+    expect(bridge.applied).toHaveLength(0);
+  });
+
+  it('refuses a nonempty loop when the write allowance is zero', async () => {
+    const bridge = new ExcelBridge();
+    const bodies: string[] = [];
+    const s = session(
+      bridge,
+      [
+        '```cmd\nlet $t = read Sales!A1:B4\n```',
+        '```cmd\neach $r in $t:\n  set Summary!$r.cell $r.amount\nend\n```',
+        '```cmd\ndone\n```',
+      ],
+      bodies,
+    );
+    const approve = vi.fn(() => true);
+    const events = await collectLoop(
+      s.runCommands('copy the amounts', { approvePlan: approve, maxWritesPerTurn: 0 }),
+    );
+
+    expect(eachEvents(events)[0]).toMatchObject({ rows: 0, lines: [] });
+    expect(bodies[2]).toContain('write cap of 0');
+    expect(approve).not.toHaveBeenCalled();
+    expect(bridge.applied).toHaveLength(0);
   });
 });

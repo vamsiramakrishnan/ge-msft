@@ -96,7 +96,7 @@ describe('expandEachBlock — bounds (fail closed, whole block)', () => {
         new Map([['t', ten]]),
         limits,
       ),
-    ).toMatchObject({ error: expect.stringContaining("exceeds this turn's write cap of 30") });
+    ).toMatchObject({ error: expect.stringContaining('exceeds the remaining write cap of 30') });
     expect(
       expandEachBlock(block(['set A1 = $r.v']), new Map([['t', table(['v'], [])]]), limits),
     ).toEqual({

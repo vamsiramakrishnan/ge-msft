@@ -544,6 +544,14 @@ export class PowerPointBridge implements DocBridge {
               range.load('text');
               await ctx.sync();
               const beforeHash = await contentHash({ text: range.text ?? '' });
+              if (!inverse.expectedTextHash || inverse.expectedTextHash !== beforeHash)
+                return undoConflict(
+                  req,
+                  inverse.expectedTextHash
+                    ? 'The shape text changed since the original write. Review it before undoing.'
+                    : 'The original shape text could not be verified. Review it before undoing.',
+                  'conflict',
+                );
               mutationQueued = true;
               writeParagraphs(range, inverse.priorText);
               await ctx.sync();
@@ -963,11 +971,18 @@ export class PowerPointBridge implements DocBridge {
           location: `shape:${target.slideId}:${target.shapeId}`,
           completion: verification.status === 'verified' ? 'verified' : 'unknown',
           verification,
-          inverse: {
-            op: 'restore-text',
-            anchor: `pp:shape:${target.slideId}:${target.shapeId}`,
-            priorText,
-          },
+          inverse:
+            verification.status === 'verified' && verification.afterHash
+              ? {
+                  op: 'restore-text',
+                  anchor: `pp:shape:${target.slideId}:${target.shapeId}`,
+                  priorText,
+                  expectedTextHash: verification.afterHash,
+                }
+              : {
+                  op: 'not-reversible',
+                  reason: 'The text written to the shape could not be verified.',
+                },
           ...extras,
         };
       });

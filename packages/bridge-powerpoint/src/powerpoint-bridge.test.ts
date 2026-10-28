@@ -2884,7 +2884,7 @@ describe('PowerPointBridge.actuate set-shape-text', () => {
     expect(result.error?.code).toBe('target_conflict');
     expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam');
   });
-  it('retains a landed change and inverse when its verification read fails', async () => {
+  it('reports an unverified write without offering an unsafe inverse', async () => {
     const d = deck(SAMPLE_SLIDES, [0]);
     installed = install(d);
     const original = FakeContext.prototype.sync;
@@ -2903,7 +2903,7 @@ describe('PowerPointBridge.actuate set-shape-text', () => {
         ok: true,
         completion: 'unknown',
         verification: { status: 'unknown' },
-        inverse: { op: 'restore-text', priorText: 'Pat, Sam' },
+        inverse: { op: 'not-reversible' },
       });
       expect(d.slides[1]?.shapes[1]?.text).toBe('New text');
     } finally {
@@ -4133,6 +4133,44 @@ describe('PowerPointBridge.applyInverse', () => {
       verification: { status: 'verified' },
     });
     expect(d.slides[1]?.shapes[1]?.text).toBe('Pat, Sam');
+  });
+
+  it('refuses to undo over intervening text edits', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const original = setShapeText('s2', 's2-shape-1', 'New text');
+    const written = await bridge.actuate(original);
+    expect(written.inverse).toMatchObject({
+      op: 'restore-text',
+      expectedTextHash: expect.any(String),
+    });
+    d.slides[1]!.shapes[1]!.text = 'New text with a coauthor edit';
+
+    const result = await bridge.applyInverse(undoOf(original, written));
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'target_conflict', reason: 'conflict' },
+    });
+    expect(d.slides[1]!.shapes[1]!.text).toBe('New text with a coauthor edit');
+  });
+
+  it('refuses a legacy text inverse without a verified landed hash', async () => {
+    const d = deck(SAMPLE_SLIDES, [0]);
+    installed = install(d);
+    const bridge = new PowerPointBridge();
+    const original = setShapeText('s2', 's2-shape-1', 'New text');
+    const written = await bridge.actuate(original);
+    const request = undoOf(original, written);
+    if (request.undo?.inverse.op !== 'restore-text') throw new Error('Expected text inverse');
+    delete request.undo.inverse.expectedTextHash;
+
+    const result = await bridge.applyInverse(request);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'target_conflict', reason: 'conflict' },
+    });
+    expect(d.slides[1]!.shapes[1]!.text).toBe('New text');
   });
 
   it('restores only the facets a format-shape recorded', async () => {

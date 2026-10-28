@@ -2164,6 +2164,28 @@ const skillExpanded = (
   >;
 
 describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => {
+  it('allows a recipe binding to feed a later effect in the same turn', async () => {
+    const bridge = new ComposeBridge();
+    const { fetch } = scriptedFetch([
+      '```cmd\ndef load($src):\n  let $t = read $src\nend\n```',
+      '```cmd\nload Sales!A1:B5\nset Summary!B2 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const session = new AssistSession(bridge, new StreamAssistClient(tokens, cfg, fetch), {
+      unit,
+      context: { docState: false },
+    });
+    const events = await collectLoop(
+      session.runCommands('sum the data', { approvePlan: () => true }),
+    );
+    expect(events.some((event) => event.type === 'type-error')).toBe(false);
+    expect(bridge.applied).toHaveLength(1);
+    expect(bridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] },
+    });
+  });
+
   it('a def registers (no execution) → a skill-registered event, nothing actuates', async () => {
     const bridge = new ComposeBridge();
     const { fetch } = scriptedFetch([
@@ -2199,7 +2221,7 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
     }
     const first = new DurableBridge();
     const { fetch } = scriptedFetch([
-      '```cmd\ndef writeTotal($a $b):\n  set $b = ($a | sum amount)\nend\n```',
+      '```cmd\ndef writeTotal($a):\n  let $t = read $a\nend\n```',
       '```cmd\ndone\n```',
     ]);
     const session = new AssistSession(first, new StreamAssistClient(tokens, cfg, fetch), {
@@ -2215,9 +2237,13 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
     expect(persisted).toMatchObject({ version: 1, recipes: [{ name: 'writeTotal' }] });
 
     // A new session over the same document finds the recipe before its first turn.
-    const again = scriptedFetch(['```cmd\ndone\n```']);
+    const again = scriptedFetch([
+      '```cmd\nwriteTotal Sales!A1:B5\nset Summary!B2 = ($t | sum amount)\n```',
+      '```cmd\ndone\n```',
+    ]);
+    const secondBridge = new DurableBridge();
     const second = new AssistSession(
-      new DurableBridge(),
+      secondBridge,
       new StreamAssistClient(tokens, cfg, again.fetch),
       { unit, context: { docState: false } },
     );
@@ -2227,6 +2253,11 @@ describe('AssistSession.runCommands — ADR-0005 Phase 3 (named skills)', () => 
       { type: 'recipes-loaded' }
     >;
     expect(loaded).toMatchObject({ loaded: ['writeTotal'], rejected: [] });
+    expect(later.some((event) => event.type === 'type-error')).toBe(false);
+    expect(secondBridge.applied[0]).toMatchObject({
+      kind: 'write-cells',
+      params: { target: { range: 'Summary!B2' }, cells: [['400']] },
+    });
   });
 
   it('a call expands, binds args, and runs as ONE plan gated by approvePlan (approve → actuates)', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseProgramBlock } from '@ge/contracts';
 import { typecheckProgram, inferPipeline, type StaticBinding } from './static-types.js';
+import { SkillRegistry } from './skill-registry.js';
 
 const program = (text: string) => parseProgramBlock('```cmd\n' + text + '\n```').entries;
 const check = (text: string, scope: Array<[string, StaticBinding]> = []) =>
@@ -40,6 +41,61 @@ describe('static type pass (B2)', () => {
 
   it('accepts a binding the running loop already holds', () => {
     expect(check('let $y = $t | sort amount', [['t', { type: 'Table' }]])).toEqual([]);
+  });
+
+  it('types recipe expansion in order, including nested calls and subsequent expressions', () => {
+    const skills = new SkillRegistry();
+    skills.register({
+      kind: 'skill-def',
+      name: 'load',
+      params: ['source'],
+      body: ['let $t = read $source'],
+    });
+    skills.register({
+      kind: 'skill-def',
+      name: 'wrapper',
+      params: ['source'],
+      body: ['load $source'],
+    });
+    const entries = parseProgramBlock(
+      '```cmd\nwrapper A1:B4\nset D1 = ($t | sum amount)\n```',
+      skills.names(),
+    ).entries;
+    const result = typecheckProgram(entries, new Map(), { skills });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.env.get('t')).toEqual({ type: 'Table' });
+  });
+
+  it('checks loaded recipes without changing their live definitions', () => {
+    const skills = new SkillRegistry();
+    expect(
+      skills.register({
+        kind: 'skill-def',
+        name: 'load',
+        params: [],
+        body: ['let $t = read A1:B4'],
+      }).ok,
+    ).toBe(true);
+    const entries = parseProgramBlock(
+      '```cmd\nload\nset D1 = ($t | sum amount)\n```',
+      skills.names(),
+    ).entries;
+    expect(typecheckProgram(entries, new Map(), { skills }).diagnostics).toEqual([]);
+    expect(skills.get('load')?.body).toEqual(['let $t = read A1:B4']);
+  });
+
+  it('reports an invalid recipe body before the call can execute', () => {
+    const skills = new SkillRegistry();
+    skills.register({
+      kind: 'skill-def',
+      name: 'bad',
+      params: [],
+      body: ['let $n = read A1:B4 | sum amount | head 3'],
+    });
+    const entries = parseProgramBlock('```cmd\nbad\n```', skills.names()).entries;
+    expect(typecheckProgram(entries, new Map(), { skills }).diagnostics).toEqual([
+      { index: 0, message: '"head" needs a table, but the value before it is a number' },
+    ]);
   });
 
   it('applies column laws only when the columns are statically known', () => {

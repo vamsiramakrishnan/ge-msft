@@ -27,7 +27,7 @@ export const MAX_EACH_ROWS = 50;
 
 export interface EachLimits {
   maxRows: number;
-  /** The per-turn write cap: the expansion may not produce more effect lines than this. */
+  /** Write allowance remaining for this expansion. */
   maxEffects: number;
 }
 
@@ -61,7 +61,7 @@ export function expandEachBlock(
   if (total > limits.maxEffects) {
     return {
       ok: false,
-      error: `each: ${table.rows.length} rows × ${body.length} line(s) = ${total} effects exceeds this turn's write cap of ${limits.maxEffects} — narrow the table or split the work`,
+      error: `each: ${table.rows.length} rows × ${body.length} line(s) = ${total} effects exceeds the remaining write cap of ${limits.maxEffects} — narrow the table or split the work`,
     };
   }
 

@@ -2991,6 +2991,7 @@ export class AssistSession {
     const typed = typecheckProgram(
       entries,
       staticScope(this.composeEnv, this.analysisBindings.snapshot().keys()),
+      { skills: this.skills, maxSkillDepth: MAX_SKILL_DEPTH, maxCommands },
     );
     if (typed.diagnostics.length > 0) {
       for (const diagnostic of typed.diagnostics) {
@@ -3436,7 +3437,9 @@ export class AssistSession {
       }
       const expanded = expandEachBlock(entry, this.composeEnv, {
         maxRows: MAX_EACH_ROWS,
-        maxEffects: opts.maxWritesPerTurn ?? DEFAULT_MAX_WRITES_PER_TURN,
+        // Earlier entries (including other loops and expanded recipes) may already have reserved
+        // slots. Check the entire loop against what remains before processing any of its body.
+        maxEffects: Math.max(0, plan.maxWrites - plan.planSlots.length),
       });
       if (!expanded.ok) {
         yield refuse(expanded.error);
@@ -3455,6 +3458,29 @@ export class AssistSession {
         const at =
           'source' in notEffect && notEffect.source !== undefined ? ` — ${notEffect.source}` : '';
         yield refuse(`each: expanded line rejected: ${why}${at}`);
+        return;
+      }
+      // Outward effects have a separate, lower cap. Reserve against it as a whole too, or the
+      // ordinary per-effect check below could admit a prefix of an otherwise valid expansion.
+      const outwardUsed = plan.planSlots.filter((slot) =>
+        leavesDocument(slot.effect.request.kind),
+      ).length;
+      const outwardCount = reparsed.filter((command) => {
+        if (!isProgramCommand(command)) return false;
+        const kind =
+          command.verb === 'invoke'
+            ? (command.kind as ActuationKind)
+            : WRITE_VERB_TO_KIND[command.verb as keyof typeof WRITE_VERB_TO_KIND];
+        return kind !== undefined && leavesDocument(kind);
+      }).length;
+      const outwardRemaining = Math.max(
+        0,
+        Math.min(plan.maxWrites, MAX_OUTWARD_WRITES_PER_TURN) - outwardUsed,
+      );
+      if (outwardCount > outwardRemaining) {
+        yield refuse(
+          `each: ${outwardCount} outward effects exceed the remaining outward write cap of ${outwardRemaining} — narrow the table or split the work`,
+        );
         return;
       }
       yield {

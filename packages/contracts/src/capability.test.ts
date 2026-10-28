@@ -151,12 +151,26 @@ describe('context + capability model', () => {
       { op: 'delete-object', objectType: 'table', name: 'Tbl1' },
       { op: 'restore-values', range: 'A1:B2', values: [['1', '2']] },
       { op: 'clear-conditional', range: 'E2:E20', ruleOrdinal: 0 },
+      {
+        op: 'restore-text',
+        anchor: 'pp:shape:s1:2',
+        priorText: 'before',
+        expectedTextHash: 'hash',
+      },
     ]) {
       expect(() => InverseDescriptorSchema.parse(inverse)).not.toThrow();
       expect(() =>
         ActuationResultSchema.parse({ ok: true, changeId: 'c', kind: 'create-table', inverse }),
       ).not.toThrow();
     }
+    expect(
+      InverseDescriptorSchema.parse({
+        op: 'restore-text',
+        anchor: 'pp:shape:s1:2',
+        priorText: 'before',
+        expectedTextHash: 'hash',
+      }),
+    ).toMatchObject({ expectedTextHash: 'hash' });
     // An unknown inverse op is rejected.
     expect(() => InverseDescriptorSchema.parse({ op: 'nuke', name: 'x' })).toThrow();
   });

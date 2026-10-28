@@ -3,6 +3,8 @@ import {
   isProgramCommand,
   isProgramEachBlock,
   isProgramExpr,
+  isProgramSkillCall,
+  isProgramSkillDef,
   type ParsedCommand,
   type ParsedExpr,
   type PipelineExpr,
@@ -10,6 +12,7 @@ import {
 } from '@ge/contracts';
 import { EFFECT_VERBS } from '@ge/contracts';
 import { TRANSFORMS } from './compose.js';
+import { reparseExpandedLines, SkillRegistry } from './skill-registry.js';
 
 /**
  * B2 — the STATIC type pass over a parsed program, run before dry-run (ADR-0005 Phase 2 type-check
@@ -253,10 +256,34 @@ function embeddedExpr(command: ParsedCommand): ParsedExpr | undefined {
 export function typecheckProgram(
   entries: readonly ProgramEntry[],
   scope: ReadonlyMap<string, StaticBinding>,
+  options: { skills?: SkillRegistry; maxSkillDepth?: number; maxCommands?: number } = {},
 ): { diagnostics: StaticDiagnostic[]; env: Map<string, StaticBinding> } {
   const env = new Map(scope);
   const diagnostics: StaticDiagnostic[] = [];
-  entries.forEach((entry, index) => {
+  // A definition affects later calls, but this preflight must not mutate the live registry. Seed
+  // a private copy with the recipes already loaded from the document or registered in-session.
+  const skills = new SkillRegistry();
+  for (const name of options.skills?.names() ?? []) {
+    skills.register({ kind: 'skill-def', ...options.skills!.get(name)! });
+  }
+  let remaining = options.maxCommands ?? 4096;
+  const maxDepth = options.maxSkillDepth ?? 8;
+  const visit = (entry: ProgramEntry, index: number, depth: number): void => {
+    if (remaining <= 0) return;
+    remaining -= 1;
+    if (isProgramSkillDef(entry)) {
+      // Registration and expansion errors are reported by the execution path itself.
+      skills.register(entry);
+      return;
+    }
+    if (isProgramSkillCall(entry)) {
+      if (depth >= maxDepth) return;
+      const expanded = skills.expand(entry);
+      if (!expanded.ok) return;
+      for (const child of reparseExpandedLines(expanded.lines, skills.names()))
+        visit(child, index, depth + 1);
+      return;
+    }
     if (isProgramExpr(entry)) {
       const pipeline = entry.kind === 'let' ? entry.pipeline : entry;
       const { binding, error } = inferPipeline(pipeline, env);
@@ -306,7 +333,8 @@ export function typecheckProgram(
       const { error } = inferPipeline(pipeline, env);
       if (error) diagnostics.push({ index, message: error });
     }
-  });
+  };
+  entries.forEach((entry, index) => visit(entry, index, 0));
   return { diagnostics, env };
 }
 

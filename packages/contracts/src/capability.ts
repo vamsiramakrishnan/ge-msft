@@ -848,7 +848,13 @@ export const InverseDescriptorSchema = z.discriminatedUnion('op', [
   // ── ADR-0007 cross-surface inverses (Word/PPT/OneNote/Outlook/Teams) ───────
   // In-place mutations record the prior state needed to restore it; each anchors by a re-resolvable
   // id captured at apply-time, per the inverse-identity rule above.
-  z.object({ op: z.literal('restore-text'), anchor: z.string(), priorText: z.string() }), // header/footer, find-replace, replace-selection, PPT shape text, OneNote title
+  z.object({
+    op: z.literal('restore-text'),
+    anchor: z.string(),
+    priorText: z.string(),
+    // Hash of the verified text landed by the original write, for conflict-safe undo.
+    expectedTextHash: z.string().optional(),
+  }), // header/footer, find-replace, replace-selection, PPT shape text, OneNote title
   z.object({ op: z.literal('restore-style'), anchor: z.string(), priorStyle: z.string() }), // Word apply-style
   z.object({
     op: z.literal('restore-content-control'),

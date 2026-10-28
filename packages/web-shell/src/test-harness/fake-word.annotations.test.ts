@@ -41,7 +41,7 @@ describe('Word critique annotations against the simulator', () => {
     const bridge = new WordBridge();
     const res = await bridge.actuate(
       request({
-        target: { matchText: '99.5%', contextHint: 'Credits apply' },
+        target: { matchText: '99.5% downtime', contextHint: 'Credits apply' },
         text: 'Policy requires 99.9%.',
         annotation: { suggestion: '99.9%', severity: 'warning' },
       }),
@@ -53,15 +53,15 @@ describe('Word critique annotations against the simulator', () => {
       inverse: { op: 'delete-object', objectType: 'annotation', name: 'sim-word-annotation-1' },
     });
     const [annotation] = simulator.snapshot().annotations;
-    // The context hint picks the SECOND hit ("beyond 99.5% downtime"); offsets are paragraph-local.
+    // The unique hit is within the paragraph; offsets are paragraph-local.
     expect(annotation).toMatchObject({
       paragraphIndex: 1,
-      anchor: '99.5%',
+      anchor: '99.5% downtime',
       colorScheme: 'Lavender',
       state: 'Created',
     });
     expect(annotation!.start).toBe('The SLA is 99.5%. Credits apply beyond '.length);
-    expect(annotation!.length).toBe('99.5%'.length);
+    expect(annotation!.length).toBe('99.5% downtime'.length);
     // Popup options need manifest resource ids: none configured ⇒ no popup, no suggestions.
     expect(annotation!.suggestions).toEqual([]);
     // Document content is untouched: a critique is an overlay, not an edit.
@@ -83,6 +83,36 @@ describe('Word critique annotations against the simulator', () => {
       }),
     ).rejects.toThrow('ItemNotFound');
   });
+
+  it('refuses an ambiguous repeated anchor instead of annotating the wrong occurrence', async () => {
+    simulator = installFakeWord(seed(), { WordApi: 8 });
+    const res = await new WordBridge().actuate(
+      request({ target: { matchText: '99.5%', contextHint: 'Credits apply' }, text: 'finding' }),
+    );
+    expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'anchor_drift' } });
+    expect(simulator.snapshot().annotations).toEqual([]);
+  });
+
+  it.each([6, 8])(
+    'refuses the same anchor in different paragraphs on a WordApi 1.%i host',
+    async (version) => {
+      simulator = installFakeWord(
+        wordSeed({
+          paragraphs: [
+            { text: 'First SLA: 99.5%', styleBuiltIn: 'Normal' },
+            { text: 'Second SLA: 99.5%', styleBuiltIn: 'Normal' },
+          ],
+        }),
+        { WordApi: version },
+      );
+      const res = await new WordBridge().actuate(
+        request({ target: { matchText: '99.5%', contextHint: 'Second SLA' }, text: 'finding' }),
+      );
+      expect(res).toMatchObject({ ok: false, degraded: true, error: { code: 'anchor_drift' } });
+      expect(simulator.snapshot().annotations).toEqual([]);
+      expect(simulator.snapshot().addedComments).toEqual([]);
+    },
+  );
 
   it('falls back to an anchored comment on a WordApi 1.6 host', async () => {
     simulator = installFakeWord(seed(), { WordApi: 6 });
@@ -168,6 +198,7 @@ describe('Word critique annotations against the simulator', () => {
     const bridge = new WordBridge();
     const before = simulator.snapshot().bodyText;
     await bridge.revealContext(clauseRef);
+    expect(simulator.seed.selectionText).toBe('99.5%');
     expect(simulator.snapshot().highlights).toEqual(['99.5%']);
     expect(simulator.snapshot().bodyText).toBe(before);
     await bridge.clearPreview();

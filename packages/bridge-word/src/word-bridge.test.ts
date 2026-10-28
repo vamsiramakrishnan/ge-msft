@@ -702,10 +702,12 @@ describe('WordBridge orchestration (against a fake host)', () => {
         // A second reveal clears the previous highlight before applying the next one.
         await bridge.revealContext(ref);
         expect(host.highlighted).toEqual(['SLA clause']);
-        expect(host.clearedHighlights).toBe(1);
+        // The first reveal also clears any host-owned prior preview; that clear is a no-op when
+        // there was no prior highlight, but the fake counts the call.
+        expect(host.clearedHighlights).toBe(2);
         await bridge.clearPreview();
         expect(host.highlighted).toEqual([]);
-        expect(host.clearedHighlights).toBe(2);
+        expect(host.clearedHighlights).toBe(3);
       } finally {
         restore();
       }
@@ -1208,6 +1210,47 @@ describe('WordBridge orchestration (against a fake host)', () => {
       } finally {
         restoreOld();
       }
+    });
+
+    it('advertises and dispatches comment fallback at WordApi 1.4, but refuses below 1.4', async () => {
+      const host = new FakeWordHost();
+      host.searchHits.set('clause', ['clause']);
+      const bridge = new WordBridge(host);
+      const restore14 = installWordRequirements(4);
+      try {
+        expect(
+          bridge.getCapabilities().actuations.find((a) => a.kind === 'insert-annotation'),
+        ).toMatchObject({ reversible: false });
+        const result = await bridge.actuate(
+          insertAnnotationReq({ target: { matchText: 'clause' }, text: 'finding' }),
+        );
+        expect(result).toMatchObject({ ok: true, location: 'comment', degraded: true });
+        expect(host.addedComments).toHaveLength(1);
+      } finally {
+        restore14();
+      }
+
+      const restore13 = installWordRequirements(3);
+      try {
+        expect(
+          bridge.getCapabilities().actuations.some((a) => a.kind === 'insert-annotation'),
+        ).toBe(false);
+        const result = await bridge.actuate(
+          insertAnnotationReq({ target: { matchText: 'clause' }, text: 'finding' }),
+        );
+        expect(result).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+        expect(host.addedComments).toHaveLength(1);
+        expect(host.insertedAnnotations).toHaveLength(0);
+      } finally {
+        restore13();
+      }
+    });
+
+    it('reports a native critique as reversible when the host supports it', () => {
+      const capability = new WordBridge(new FakeWordHost())
+        .getCapabilities()
+        .actuations.find((a) => a.kind === 'insert-annotation');
+      expect(capability).toMatchObject({ reversible: true });
     });
 
     it('falls back to a comment on a port without the annotation API even at WordApi 1.8', async () => {

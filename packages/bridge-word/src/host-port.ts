@@ -451,7 +451,12 @@ export interface WordHost {
    * API is unsupported or the anchor text is gone — the caller must NOT treat that as failing the
    * underlying change.
    */
-  addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }>;
+  addComment(
+    query: string,
+    matchCase: boolean,
+    text: string,
+    options?: { requireUnique?: boolean },
+  ): Promise<{ ok: boolean }>;
 
   /**
    * Persist a durable-provenance custom XML part carrying `xml` into the document (BUILD-PLAN 1.6).
@@ -871,24 +876,48 @@ export class OfficeWordHost implements WordHost {
     });
   }
 
-  async addComment(query: string, matchCase: boolean, text: string): Promise<{ ok: boolean }> {
+  async addComment(
+    query: string,
+    matchCase: boolean,
+    text: string,
+    options?: { requireUnique?: boolean },
+  ): Promise<{ ok: boolean }> {
     // Feature-detect the comments API by requirement set, NOT property truthiness:
     // `Range.insertComment` → WordApi 1.4 (typings l.108627). On an older host we skip silently
     // so a missing citation comment never disturbs the already-applied tracked change.
     if (!isSet('WordApi', '1.4')) return { ok: false };
+    let mutationQueued = false;
     try {
       return await nativeRun(async (ctx) => {
         const results = ctx.document.body.search(query, { matchCase });
-        results.load('items');
+        results.load(options?.requireUnique ? 'items/text' : 'items');
         // Re-resolve the anchor at apply-time: the comment lands on the live range, or nowhere.
         await ctx.sync();
+        // Critique fallback must not silently choose between multiple matching ranges. Counting
+        // every result is conservative even if search includes tracked-deleted text.
+        if (options?.requireUnique && results.items.length !== 1) return { ok: false };
         const range = results.items[0];
         if (!range) return { ok: false };
+        if (options?.requireUnique) {
+          if (isSet('WordApi', '1.6')) {
+            if ((await withoutTrackedDeletions(ctx, [range])).length !== 1) return { ok: false };
+          } else {
+            // The tracked-change collection needs 1.6. On 1.4–1.5, compare the reviewed current
+            // text to the raw hit and refuse if the host cannot establish a live, intact anchor.
+            const current = await reviewedText(ctx, range);
+            if (current === undefined || current !== range.text) return { ok: false };
+          }
+        }
+        mutationQueued = true;
         range.insertComment(text);
         await ctx.sync();
         return { ok: true };
       });
-    } catch {
+    } catch (error) {
+      // Unlike best-effort citations, critique fallback is the primary effect. Once queued its
+      // outcome may be unknown; let the dispatcher preserve that uncertainty instead of reporting
+      // a definite anchor refusal and making a retry look safe.
+      if (options?.requireUnique && mutationQueued) throw error;
       // Host quirk / comments unavailable — best-effort, log-and-continue.
       return { ok: false };
     }
@@ -1289,19 +1318,23 @@ export class OfficeWordHost implements WordHost {
       await ctx.sync();
       // A tracked deletion still matches the search: never critique struck-out text.
       const live = await withoutTrackedDeletions(ctx, results.items);
+      // Search hits expose the matching text, not surrounding context. Refuse when multiple
+      // matches remain because choosing from identical hit texts can select the wrong paragraph.
+      if (live.length !== 1) return { status: 'drift' };
       const idx = choose(live.map((r) => r.text));
       const range = idx >= 0 ? live[idx] : undefined;
       if (!range) return { status: 'drift' };
-      // A critique is addressed by (start, length) INSIDE its paragraph: read the containing
-      // paragraph's text and locate the hit in it. Office returns the hit with the document's own
-      // casing, so an exact index finds it; a hit that straddles paragraphs is critiqued from its
-      // first paragraph for the length that paragraph holds.
+      // A critique is addressed by (start, length) INSIDE its paragraph. A range's text alone
+      // does not identify its offset when that text occurs more than once in the paragraph. Refuse
+      // ambiguous or cross-paragraph hits rather than silently annotating a different occurrence.
       const paragraph = range.paragraphs.getFirst();
       paragraph.load('text');
       await ctx.sync();
       const hitText = range.text;
-      const start = Math.max(0, paragraph.text.indexOf(hitText));
-      const length = Math.max(1, Math.min(hitText.length, paragraph.text.length - start));
+      const start = paragraph.text.indexOf(hitText);
+      if (!hitText || start < 0 || start !== paragraph.text.lastIndexOf(hitText))
+        return { status: 'drift' };
+      const length = hitText.length;
       const popup = this.options.annotationPopup;
       const popupOptions =
         popup && isSet('WordApi', '1.8')

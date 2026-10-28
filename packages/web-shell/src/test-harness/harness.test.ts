@@ -212,10 +212,37 @@ interface WordCtx {
 }
 interface WordHit {
   text: string;
+  select(): void;
+  paragraphs: { getFirstOrNullObject(): { text: string } };
   insertText(t: string, loc: string): void;
 }
 
 describe('fake-word fidelity', () => {
+  it('returns each occurrence with its original casing and containing paragraph', async () => {
+    const sim = installFakeWord(
+      wordSeed({
+        paragraphs: [
+          { text: 'Alpha alpha', styleBuiltIn: 'Normal' },
+          { text: 'Before ALPHA after', styleBuiltIn: 'Normal' },
+        ],
+      }),
+    );
+    restore = sim.restore;
+    const Word = host<WordLike>('Word');
+    await Word.run(async (ctx) => {
+      const results = ctx.document.body.search('alpha');
+      results.load('items/text');
+      await ctx.sync();
+      expect(results.items.map((hit) => hit.text)).toEqual(['Alpha', 'alpha', 'ALPHA']);
+      expect(results.items[2]?.paragraphs.getFirstOrNullObject().text).toBe('Before ALPHA after');
+      results.items[2]?.select();
+      expect(sim.seed.selectionText).toBe('ALPHA');
+      results.items[1]?.insertText('beta', Word.InsertLocation.replace);
+      await ctx.sync();
+    });
+    expect(sim.snapshot().bodyText).toBe('Alpha beta\nBefore ALPHA after');
+  });
+
   it('body.search re-resolves against the live body; insertText replaces in place', async () => {
     const sim = installFakeWord();
     restore = sim.restore;

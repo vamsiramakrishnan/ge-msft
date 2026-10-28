@@ -69,7 +69,7 @@ export const WORD_CAPABILITIES: CapabilityManifest = {
       surface: 'word',
       title: 'Flag as critique',
       description:
-        'Mark the matched text with a native critique annotation (a comment below WordApi 1.7).',
+        'Mark uniquely matched text with a native critique annotation (an irreversible comment below WordApi 1.7).',
       reversible: true,
       appliesTo: ['selection', 'paragraph'],
     },

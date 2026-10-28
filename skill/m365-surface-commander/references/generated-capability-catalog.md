@@ -58,6 +58,7 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 | word | implemented | `reply` | `comment-reply` | Word comment reply | WordApi 1.4 | reply to or resolve an existing Word comment by id |
 | word | implemented | `/fill-content-control` | `fill-content-control` | Word content-control fill | WordApi 1.1 | populate a known content control by id, tag, or title |
 | word | implemented | `/find-replace` | `find-replace` | Word bounded find/replace | WordApi 1.1 | replace repeated exact text after previewing hit count and blast radius |
+| word | implemented | `/insert-annotation` | `insert-annotation` | Word critique annotation | WordApi 1.4 (WordApi 1.7 enables native critiques and 1.8 enables popup options; WordApi 1.4–1.6 uses an anchored comment) | flag one exact passage as a finding with a native critique (coloured underline + popup suggestion) instead of a comment thread |
 | word | implemented | `/insert-content-control` | `insert-content-control` | Word content-control insertion | WordApi 1.1 | create a new plain, rich-text, or tagged content control at a resolved Word range |
 | word | implemented | `/insert-hyperlink` | `insert-hyperlink` | Word screened hyperlink | WordApi 1.4 | add or update a hyperlink on exact Word text after URL safety screening |
 | word | implemented | `/insert-ooxml` | `insert-ooxml` | Word screened OOXML insertion | WordApi 1.1 | insert a screened rich Word fragment where plain text is insufficient |
@@ -73,4 +74,4 @@ This file is generated from `packages/contracts/src/capability-registry.ts`. Reg
 - **outlook:** `add-attachment`, `create-mail`, `reply-mail`, `set-body`, `set-recipients`, `set-subject`
 - **powerpoint:** `add-shape`, `add-table-slide`, `apply-slide-layout`, `format-shape`, `insert-slide`, `set-shape-text`
 - **teams:** `post-message`
-- **word:** `add-comment`, `apply-style`, `comment-reply`, `fill-content-control`, `find-replace`, `insert-content-control`, `insert-hyperlink`, `insert-ooxml`, `insert-table`, `insert-text`, `replace-selection`, `tracked-change`
+- **word:** `add-comment`, `apply-style`, `comment-reply`, `fill-content-control`, `find-replace`, `insert-annotation`, `insert-content-control`, `insert-hyperlink`, `insert-ooxml`, `insert-table`, `insert-text`, `replace-selection`, `tracked-change`

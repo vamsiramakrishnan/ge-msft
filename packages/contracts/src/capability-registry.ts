@@ -609,23 +609,23 @@ export const CAPABILITY_REGISTRY: readonly CapabilityRegistryEntry[] = [
     requirementSets: [
       {
         name: 'WordApi',
-        minVersion: '1.7',
+        minVersion: '1.4',
         notes:
-          'popup title/subtitle/suggestions need WordApi 1.8; below 1.7 the finding lands as an anchored comment',
+          'WordApi 1.7 enables native critiques and 1.8 enables popup options; WordApi 1.4–1.6 uses an anchored comment',
       },
     ],
     contextKinds: ['selection', 'paragraph'],
     discovery: ['search <anchor>', 'inspect <paragraph-ref>'],
     sequence: [
-      'Resolve the exact passage first; the critique spans the matched text only.',
+      'Resolve a unique exact passage first; missing or ambiguous matches are refused.',
       'Keep one finding per annotation; put the fix in suggestion= when you have one.',
-      'Emit one /insert-annotation command; it is reversible by deleting the minted annotation.',
+      'Emit one /insert-annotation command; native critiques can be undone by deleting the minted annotation.',
     ],
     examples: [
       '/insert-annotation match="99.5%" text="Policy requires 99.9%." suggestion="99.9%" severity=warning',
     ],
     preview: ['anchor text', 'finding text', 'suggestion', 'severity → colour scheme'],
-    inverse: 'delete the host-minted annotation by id (comment fallback: delete the comment)',
+    inverse: 'delete the host-minted annotation by id; comment fallback has no automatic inverse',
     provenance:
       'record anchor text hash, finding/suggestion hashes, severity, annotation id, changeId',
     failureModes: [

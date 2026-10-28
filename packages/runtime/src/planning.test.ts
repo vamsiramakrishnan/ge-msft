@@ -170,6 +170,9 @@ describe('planning — dependency DAG (ADR-0008 §7)', () => {
     expect(isReversibleKind('insert-ooxml')).toBe(false);
     expect(approvalClassOf('insert-text')).toBe('irreversible');
     expect(approvalClassOf('insert-ooxml')).toBe('irreversible');
+    // This kind can fall back to a comment without an inverse on older Word hosts.
+    expect(isReversibleKind('insert-annotation')).toBe(false);
+    expect(approvalClassOf('insert-annotation')).toBe('irreversible');
   });
 
   it('carries a STABLE intent hash as the idempotency key, independent of the changeId (B4)', () => {

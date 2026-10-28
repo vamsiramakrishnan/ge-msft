@@ -76,6 +76,9 @@ export type PlanNode = z.infer<typeof PlanNodeSchema>;
 export const IRREVERSIBLE_KINDS: ReadonlySet<ActuationKind> = new Set([
   'insert-text',
   'insert-ooxml',
+  // Word's native critique can be deleted, but its comment fallback has no recorded inverse.
+  // Planning is kind-based, so use the stronger approval until it can select by host capability.
+  'insert-annotation',
   'resolve-revisions',
   'send-activity-notification',
   'delete-message',

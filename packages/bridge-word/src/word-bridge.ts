@@ -174,7 +174,16 @@ export class WordBridge implements DocBridge {
   }
 
   getCapabilities(): CapabilityManifest {
-    return negotiateCapabilities(WORD_CAPABILITIES, this.getHostProfile());
+    const manifest = negotiateCapabilities(WORD_CAPABILITIES, this.getHostProfile());
+    const nativeCritique = Boolean(this.host.insertAnnotation) && isSet('WordApi', '1.7');
+    return {
+      ...manifest,
+      actuations: manifest.actuations.map((operation) =>
+        operation.kind === 'insert-annotation' && !nativeCritique
+          ? { ...operation, reversible: false }
+          : operation,
+      ),
+    };
   }
 
   async listContext(): Promise<ContextRef[]> {
@@ -530,10 +539,15 @@ export class WordBridge implements DocBridge {
       changeId: req.changeId,
       kind: req.kind,
       degraded: true,
-      error: { code: 'anchor_drift', message: 'The matched text is no longer in the document.' },
+      error: {
+        code: 'anchor_drift',
+        message: 'The matched text could not be uniquely verified in the document.',
+      },
     };
     if (!this.host.insertAnnotation || !isSet('WordApi', '1.7')) {
-      const fallback = await this.host.addComment(plan.matchText, false, plan.commentText);
+      const fallback = await this.host.addComment(plan.matchText, false, plan.commentText, {
+        requireUnique: true,
+      });
       if (!fallback.ok) return drift;
       const dropped = await this.persistProvenance(req);
       return {

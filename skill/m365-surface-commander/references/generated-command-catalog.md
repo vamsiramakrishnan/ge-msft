@@ -48,12 +48,12 @@ These actuation kinds are reached as `/<kind> key=value ...` only when the live 
 - `/categorize-message`, `/compose-appointment`, `/copy-message`, `/create-event`, `/create-mail-rule`, `/create-online-meeting`
 - `/create-section`, `/create-section-group`, `/create-task`, `/define-style`, `/delete-message`, `/delete-slide`
 - `/duplicate-slide`, `/fill-content-control`, `/filter-range`, `/find-replace`, `/flag-message`, `/format-chart`
-- `/format-shape`, `/graph-create-page`, `/graph-create-section`, `/graph-patch-page`, `/insert-bookmark`, `/insert-break`
-- `/insert-content-control`, `/insert-field`, `/insert-html`, `/insert-html-at-cursor`, `/insert-hyperlink`, `/insert-image`
-- `/insert-link-at-cursor`, `/insert-note`, `/insert-ooxml`, `/insert-paragraph`, `/insert-pivot`, `/insert-table`
-- `/insert-text`, `/manage-worksheet`, `/move-message`, `/move-slide`, `/post-card`, `/post-channel-message`
-- `/post-chat-message`, `/prepend-body`, `/remove-attachment`, `/replace-selection`, `/reply-channel-message`, `/resolve-revisions`
-- `/save-draft`, `/send-activity-notification`, `/set-body`, `/set-data-validation`, `/set-delay-delivery`, `/set-doc-properties`
-- `/set-entity-card`, `/set-header-footer`, `/set-internet-headers`, `/set-page-layout`, `/set-page-title`, `/set-reaction`
-- `/set-recipients`, `/set-sensitivity`, `/set-sensitivity-label`, `/set-speaker-notes`, `/set-subject`, `/sort-range`
-- `/update-message`
+- `/format-shape`, `/graph-create-page`, `/graph-create-section`, `/graph-patch-page`, `/insert-annotation`, `/insert-bookmark`
+- `/insert-break`, `/insert-content-control`, `/insert-field`, `/insert-html`, `/insert-html-at-cursor`, `/insert-hyperlink`
+- `/insert-image`, `/insert-link-at-cursor`, `/insert-note`, `/insert-ooxml`, `/insert-paragraph`, `/insert-pivot`
+- `/insert-table`, `/insert-text`, `/manage-worksheet`, `/move-message`, `/move-slide`, `/post-card`
+- `/post-channel-message`, `/post-chat-message`, `/prepend-body`, `/remove-attachment`, `/replace-selection`, `/reply-channel-message`
+- `/resolve-revisions`, `/save-draft`, `/send-activity-notification`, `/set-body`, `/set-data-validation`, `/set-delay-delivery`
+- `/set-doc-properties`, `/set-entity-card`, `/set-header-footer`, `/set-internet-headers`, `/set-page-layout`, `/set-page-title`
+- `/set-reaction`, `/set-recipients`, `/set-sensitivity`, `/set-sensitivity-label`, `/set-speaker-notes`, `/set-subject`
+- `/sort-range`, `/update-message`

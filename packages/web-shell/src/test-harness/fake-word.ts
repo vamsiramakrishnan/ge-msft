@@ -23,11 +23,10 @@
  *     with {@link WordSimulator.fireAnnotationEvent} to simulate the host.
  *
  * Fidelity notes / boundary:
- *   - `body.search` is a case-insensitive substring scan over each paragraph's text; a hit's text is
- *     the matched query (as Office returns the matched range), and its first-paragraph context hint
- *     is the containing paragraph. This is faithful enough for anchor choice + drift degradation.
- *   - `insertText(replace)` replaces the FIRST occurrence of the anchor text in the body, so a later
- *     search for the old anchor degrades to drift (the apply-time re-resolution the bridge relies on).
+ *   - `body.search` returns an individual range for each match, retaining the matched casing and
+ *     paragraph-local position. Its first-paragraph context is the containing paragraph.
+ *   - `insertText(replace)` updates the selected occurrence, so a later search for the old anchor
+ *     degrades to drift when no matching text remains.
  */
 
 import { installGlobal, composeRestores } from './globals.js';
@@ -268,14 +267,16 @@ class FakeSearchResult {
   constructor(
     private readonly seed: WordSeed,
     matchText: string,
+    position?: { para: number; start: number; length: number },
   ) {
     this.text = matchText;
-    const paragraph = seed.paragraphs.findIndex((p) =>
-      p.text.toLowerCase().includes(matchText.toLowerCase()),
-    );
+    this.position = position;
+    const paragraph =
+      position?.para ??
+      seed.paragraphs.findIndex((p) => p.text.toLowerCase().includes(matchText.toLowerCase()));
     if (paragraph >= 0) {
       const text = seed.paragraphs[paragraph]!.text;
-      const start = text.toLowerCase().indexOf(matchText.toLowerCase());
+      const start = position?.start ?? text.toLowerCase().indexOf(matchText.toLowerCase());
       this.reviewedSpan = {
         paragraph,
         prefix: text.slice(0, start),
@@ -375,9 +376,15 @@ class FakeSearchResult {
     this.style = name;
   }
   private anchorIndex(): number {
-    return this.seed.paragraphs.findIndex((p) =>
-      p.text.toLowerCase().includes(this.text.toLowerCase()),
+    return (
+      this.position?.para ??
+      this.seed.paragraphs.findIndex((p) => p.text.toLowerCase().includes(this.text.toLowerCase()))
     );
+  }
+  /** Select this range without modifying the document. */
+  select(): void {
+    this.seed.selectionText = this.text;
+    if (this.position) this.seed.cursorParagraph = this.position.para;
   }
   /** Inline OOXML after the anchor text. */
   insertOoxml(ooxml: string, _location: string): void {
@@ -519,30 +526,21 @@ class FakeSearchResultCollection {
   private readonly hits: FakeSearchResult[];
   private readonly createdAt = syncGeneration;
   constructor(seed: WordSeed, query: string, matchCase: boolean, matchWholeWord?: boolean) {
-    // A find/replace search (it always passes matchWholeWord): one hit per occurrence, at its exact
-    // position, honouring whole-word and case like Word. "month" never matches inside "monthly".
-    if (matchWholeWord !== undefined) {
-      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(
-        matchWholeWord ? `(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])` : escaped,
-        matchCase ? 'gu' : 'giu',
-      );
-      this.hits = seed.paragraphs.flatMap((p, para) =>
-        [...p.text.matchAll(pattern)].map((m) => {
-          const hit = new FakeSearchResult(seed, m[0]);
-          hit.position = { para, start: m.index ?? 0, length: m[0].length };
-          return hit;
-        }),
-      );
+    // Word returns one range for each occurrence, including repeated hits in one paragraph.
+    if (!query) {
+      this.hits = [];
       return;
     }
-    const hay = (s: string): string => (matchCase ? s : s.toLowerCase());
-    const needle = matchCase ? query : query.toLowerCase();
-    // One hit per paragraph that contains the query (mirrors Office's per-occurrence ranges,
-    // collapsed to paragraph granularity — enough for anchor choice + drift).
-    this.hits = seed.paragraphs
-      .filter((p) => hay(p.text).includes(needle))
-      .map(() => new FakeSearchResult(seed, query));
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(
+      matchWholeWord ? `(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])` : escaped,
+      matchCase ? 'gu' : 'giu',
+    );
+    this.hits = seed.paragraphs.flatMap((p, para) =>
+      [...p.text.matchAll(pattern)].map(
+        (m) => new FakeSearchResult(seed, m[0], { para, start: m.index ?? 0, length: m[0].length }),
+      ),
+    );
   }
   /** Like Word, `items` is unavailable until a sync: reading it first throws PropertyNotLoaded. */
   get items(): FakeSearchResult[] {

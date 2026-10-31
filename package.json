@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "bun run --workspaces --if-present build",
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "dev": "vite --config packages/web-shell/vite.preview.config.ts",
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",

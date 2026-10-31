@@ -87,6 +87,9 @@ bun run typecheck            # tsc --noEmit across workspaces
 bun run test                 # vitest across workspaces
 bun run lint                 # eslint + prettier check
 ```
+`bun install` also points git at `.githooks/` (the `prepare` script), so `git push` first runs eslint
+and prettier on the files the push changes and `bun run typecheck`; fix what fails rather than
+pushing with `--no-verify`. CI runs once per change: on a pull request, or on a push to `main`.
 Use `.env.example` and the setup guide for client configuration. There is no gateway workspace to run.
 
 ## Critical constraints

@@ -1,11 +1,18 @@
 name: CI
 
+# One run per change: a push to main, or a pull request (every push to its
+# branch). A push to a pull request's branch is not a second run, and a newer
+# push to the same ref cancels the run still going for the older one.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_call:
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
@@ -86,7 +93,22 @@ jobs:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bunx playwright install --with-deps chromium
+      # The Chromium build Playwright wants is keyed by the Playwright version
+      # bun.lock resolves, so the download is restored from the cache on every
+      # run after the first one for that version; the system libraries it needs
+      # are installed either way.
+      - name: Playwright version from bun.lock
+        id: playwright
+        run: echo "version=$(grep -o '"playwright@[0-9][0-9.]*"' bun.lock | head -1 | tr -d '"' | cut -d@ -f2)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: bunx playwright install --with-deps chromium
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: bunx playwright install-deps chromium
       - run: bun run test:browser-contracts
       - name: workflow panel screenshots
         run: |

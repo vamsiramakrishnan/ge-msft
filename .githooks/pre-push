@@ -1,0 +1,29 @@
+#!/bin/sh
+# pre-push: the lint, format and type gates on what this push changes, before CI sees it.
+# Installed by `bun install` (the `prepare` script sets core.hooksPath to .githooks).
+# Skip once with `git push --no-verify`; fix the failure rather than making that a habit.
+set -eu
+cat > /dev/null # git writes the refs being pushed to stdin; the checks do not need them
+
+base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD~1 2>/dev/null || echo "")
+if [ -n "$base" ]; then
+  changed=$(git diff --name-only --diff-filter=ACMR "$base" HEAD)
+else
+  changed=""
+fi
+
+lint_files=$(printf '%s\n' "$changed" | grep -E '\.(ts|tsx|js|jsx|mjs)$' || true)
+format_files=$(printf '%s\n' "$changed" | grep -E '\.(ts|tsx|js|jsx|mjs|cjs|json|css|html|yml|yaml|md)$' || true)
+
+if [ -n "$lint_files" ]; then
+  echo "pre-push: eslint on $(printf '%s\n' "$lint_files" | wc -l | tr -d ' ') changed file(s)"
+  # shellcheck disable=SC2086
+  bunx eslint $lint_files
+fi
+if [ -n "$format_files" ]; then
+  echo "pre-push: prettier --check on $(printf '%s\n' "$format_files" | wc -l | tr -d ' ') changed file(s)"
+  # shellcheck disable=SC2086
+  bunx prettier --check $format_files
+fi
+echo "pre-push: bun run typecheck"
+bun run typecheck

@@ -295,3 +295,7 @@ Use the ADRs for architecture decisions and `docs/STATUS.md` for the current imp
 ## License
 
 See [LICENSE](LICENSE).
+
+## Related projects
+
+- [ge-slack](https://github.com/vamsiramakrishnan/ge-slack). Use Gemini Enterprise from Slack channels, threads and workflows.
